@@ -1,10 +1,11 @@
-/* A GENERIC DUAL-WEIGHTED ESTIMATOR: the same construction as Result 55 with the affine adjoint
-   replaced by a linearisation, and the price of doing so.
+/* A GENERIC DUAL-WEIGHTED ESTIMATOR: the same construction as mean_field_dwr.mac with the affine
+   adjoint replaced by a linearisation, and the price of doing so.
 
-   Result 55 gave an EXACT error quotient for the LQ mean-field game, and said plainly that the
-   exactness was a property of the affine reduced problem: "for a non-quadratic mean-field game the
-   same construction is the standard dual-weighted residual (Becker-Rannacher) and is first-order,
-   with the adjoint solved numerically".  This file does three things with that sentence.
+   mean_field_dwr.mac gave an EXACT error quotient for the LQ mean-field game, and
+   chc.research.deep_galerkin.dual_weighted_error_estimate says plainly that the exactness is a
+   property of the affine reduced problem: for a non-quadratic mean-field game the same
+   construction is the standard dual-weighted residual (Becker-Rannacher) and is first-order, with
+   the adjoint solved numerically.  This file does three things with that sentence.
 
    (1) It produces the smallest mean-field game that breaks the affine reduction WITHOUT breaking
    the reduction itself: pay for distance from a CONGESTION-SHIFTED target,
@@ -79,7 +80,7 @@ print("        and z(0).delta(0) = z2(0) (J(yhat) - J(y))")$
 print("STEP 3c choose z(T) = B_T^T, so z(T).delta(T) = B_T delta(T) = eps, the terminal defect")$
 print("STEP 3d therefore  J(yhat) - J(y) = (eps - int_0^T z.g dt) / z2(0)")$
 print("STEP 3e and z2(0) is the obstruction denominator: for a constant Jacobian M,")$
-print("        z(s) = exp(M^T (T-s)) B_T^T, so z2(0) = B_T Phi(T) e2 = den(T) of Result 55")$
+print("        z(s) = exp(M^T (T-s)) B_T^T, so z2(0) = B_T Phi(T) e2 = den(T) of mean_field_dwr.mac")$
 
 /* ===== STEP 4: what the linearisation costs ===== */
 
@@ -109,7 +110,7 @@ print("STEP 4d order eta^3 =", third, " -- the cubic terminates, so this expansi
 print("STEP 4e AFFINE FIELD (gam = 0): the eta^2 and eta^3 terms both vanish,")$
 print("        residual =", ratsimp( subst(gam = 0, second + third) ), " ([0, 0])")$
 print("        so g is EXACTLY eta (p' - M p) at ANY eta and the formula of STEP 3d has NO")$
-print("        remainder -- Result 55's exactness, recovered as the gam = 0 case")$
+print("        remainder -- mean_field_dwr.mac's exactness, recovered as the gam = 0 case")$
 print("STEP 4f NONLINEAR FIELD: the eta^2 term survives, so")$
 print("            estimate - (J(yhat) - J(y)) = O(eta^2),  relative error O(eta)")$
 print("        Both exponents are measurable, and nonlinear_dwr_certificate FITS them on a")$

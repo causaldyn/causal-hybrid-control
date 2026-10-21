@@ -1,5 +1,5 @@
-(* Rocq (CONTRIBUTION 3, publishable upgrade): the FORMAL van Trees (Bayesian Cramer-Rao) inequality
-   that result 20 (adaptive_exploration) ASSUMED as the floor C/m_t. Van Trees: for a Bayesian model and
+(* Rocq: the FORMAL van Trees (Bayesian Cramer-Rao) inequality that proofs/adaptive_exploration.v
+   ASSUMED as the floor C/m_t. Van Trees: for a Bayesian model and
    ANY estimator, the Bayes risk obeys E[(theta_hat - theta)^2] >= 1/(I_data + I_prior). Unlike ordinary
    Cramer-Rao it holds for SEQUENTIAL/adaptive designs and any (even biased) estimator. The proof is
    Cauchy-Schwarz on the Bayesian score psi: with the van-Trees identity E[psi*Delta] = 1 and the
@@ -72,7 +72,7 @@ Qed.
 
 (* CONFOUNDING raises the van-Trees floor: the floor 1/(I_prior + I_data) is antitone in the data
    information, and confounding reduces I_data (steals identifying variation) -- the Bayesian /
-   sequential analogue of results 10 and 12. *)
+   sequential analogue of information_lower_bound.v and hinf_robust_regret.v. *)
 Theorem confounding_raises_van_trees_floor : forall j i1 i2,
   0 < j + i1 -> i1 <= i2 -> 1 / (j + i2) <= 1 / (j + i1).
 Proof.

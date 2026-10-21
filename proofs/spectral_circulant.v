@@ -24,7 +24,8 @@
    - product_bound_is_strictly_loose: for a COMPOSITION the exact norm is max_k prod_m g_mk, while
      bounding each factor separately gives prod_m max_k g_mk, and the second is STRICTLY larger
      whenever the two operators' maximising modes differ.  That gap is exactly the conservatism the
-     Result 28/30 rollout tube pays per step, and what a circulant residual removes.
+     rollout tube of lipschitz_rollout.v and contractive_euler.v pays per step, and what a circulant
+     residual removes.
 
    Honest scope: two modes, because that is enough to exhibit "max of products < product of maxes";
    the n-mode statement is the same induction with no new idea.  The DFT diagonalisation itself is
@@ -149,7 +150,8 @@ Qed.
 
 (* ...and it is STRICTLY loose exactly when the two operators peak on different modes.  Bounding
    each factor separately then pays a fixed multiplicative penalty at every step of a rollout, which
-   is the conservatism a circulant residual removes from the Result 28/30 tube. *)
+   is the conservatism a circulant residual removes from the Lipschitz and contractive rollout
+   tubes. *)
 Theorem product_bound_is_strictly_loose : forall g0 g1 h0 h1,
   0 < g0 -> 0 <= g1 -> 0 <= h0 -> 0 < h1 ->
   g1 < g0 -> h0 < h1 ->

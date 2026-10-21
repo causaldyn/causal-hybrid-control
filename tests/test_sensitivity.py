@@ -19,10 +19,10 @@ def test_all_advertised_symbols_are_importable() -> None:
 
 
 def test_estimate_to_radius_to_control_pipeline_runs() -> None:
-    # the documented chain: effect estimate -> §32 half-width -> §35 robust gain vs CE
+    # the documented chain: effect estimate -> MSM half-width -> minimax robust gain vs CE
     b_hat, target, gamma = 1.3, 1.0, 2.5
     cvar_gap = (
-        b_hat  # effect-scale calibration (as in Result 37); keeps D < b_hat (identified sign)
+        b_hat  # effect-scale calibration (marketplace benchmark); keeps D < b_hat (identified sign)
     )
     halfwidth = sensitivity.confounding_robust_inflation(cvar_gap, 0.0, gamma)
     u_ce = sensitivity.certainty_equivalence_control(b_hat, target)

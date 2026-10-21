@@ -1,9 +1,9 @@
-"""Grounding §35: confounding-robust controller vs certainty-equivalence on a marketplace task.
+"""The minimax confounding-robust controller vs certainty-equivalence on a marketplace task.
 
 A synthetic OBSERVATIONAL confounded marketplace (the action follows the demand confounder z --
 confounded logging, not a randomised switchback) where the naive effect estimate is biased. The
 certainty-equivalence controller trusts it and under-incentivises (missing completions -- expensive
-when rider churn outweighs budget waste); the §35 confounding-robust controller uses an assumed
+when rider churn outweighs budget waste); the confounding-robust controller uses an assumed
 sensitivity to shift the incentive and hedge the costlier error. Full estimate->control pipeline.
 
 Run: uv run python scripts/run_confounding_control_demo.py

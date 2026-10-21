@@ -1,4 +1,4 @@
-(* Rocq: the algebraic core of the OMEGA-JENSEN gap (Result 51 (k)-(m)).
+(* Rocq: the algebraic core of the OMEGA-JENSEN gap.
 
    validation/omega_jensen_gap.mac derives, for theta_hat = u'A eps / u'A u with u ~ N(0, Om):
 

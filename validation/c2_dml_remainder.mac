@@ -1,4 +1,4 @@
-/* DISCOVERY (CONTRIBUTION 2, §26 remainder structure): the EXACT orthogonal-DML remainder for the
+/* DISCOVERY (the cross-fit rate's remainder): the EXACT orthogonal-DML remainder for the
    Robinson double-residual moment. External review: the remainder is NOT only the product of nuisance
    errors -- it also carries a same-channel SQUARE term. This file verifies that structure symbolically.
 
@@ -9,7 +9,7 @@
        E[psi] = E[dl*dm] - b0*E[dm^2]  =  O(||dl||*||dm||  +  ||dm||^2).
    So the correct rate is ||B_hat - B|| = O_p(G^{-1/2} + ||dl||*||dm|| + ||dm||^2), and per channel the
    +||dm||^2 becomes delta_{m,d}^2, delta_{m,s}^2 and a cross term delta_{m,d}*delta_{m,s}. At equal
-   nuisance rates this is still O(delta^2), so the C2 bottleneck is unchanged -- but the theorem formula
+   nuisance rates this is still O(delta^2), so the bottleneck is unchanged -- but the theorem formula
    must include the square, not only the product. */
 display2d : false$
 

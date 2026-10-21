@@ -614,7 +614,7 @@ class DecisionCertificate:
     # not one of the solver's three. Same convention as the certified-horizon fields above.
     solver_status: SolverStatus | None
     solver_iterations: int
-    # How far the plan can be from the best one the SAME BOX allows on the FITTED model (Result 69),
+    # How far the plan can be from the best one the SAME BOX allows on the FITTED model,
     # read from its own gradient with no optimum needed; ``regret_status`` says whether that is a
     # certificate. ``inf`` means the objective was not convex where its curvature was read, so
     # nothing bounds it; ``None`` means no plan was solved at all. This is a gap in the PLANNING
@@ -1918,7 +1918,7 @@ def prescribe(
             ``t = 0``, so a ``known`` that reads the time is planned on the clock of the panel's
             first period, not of the start.
         dt: the time step one panel period represents.
-        gamma: the marginal sensitivity model's level the barrier is priced at (§40), passed to
+        gamma: the marginal sensitivity model's level the barrier is priced at, passed to
             :func:`chc.plan.certify_safety` with its default gap, the fitted channel's own size,
             and each lever's largest action as ``u_max``, so ``gamma_star`` and the barrier's
             certified steps read the same in any units of the state or of each lever (ADR 0085,

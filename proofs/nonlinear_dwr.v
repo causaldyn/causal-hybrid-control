@@ -1,9 +1,9 @@
 (* A GENERIC DUAL-WEIGHTED ESTIMATOR: the algebraic core of replacing a known adjoint matrix by a
    linearisation.
 
-   Result 55 gave an EXACT error quotient for the LQ mean-field game and recorded that the
-   exactness was a property of the AFFINE reduced problem.  validation/nonlinear_dwr.mac builds the
-   smallest game that breaks the affinity without breaking the reduction -- a congestion-shifted
+   proofs/mean_field_dwr.v gave an EXACT error quotient for the LQ mean-field game and recorded that
+   the exactness was a property of the AFFINE reduced problem.  validation/nonlinear_dwr.mac builds
+   the smallest game that breaks the affinity without breaking the reduction -- a congestion-shifted
    target (q/2)(x - c m - gam m^3)^2, whose reduced field is
 
        F(m, S) = (A m - (b^2/r) S,  q (c m + gam m^3) - A S)
@@ -110,8 +110,8 @@ Proof.
 Qed.
 
 (* At a vanishing denominator the equation is `0 = terminal - interior`: either no error solves it
-   or every error does.  That is the obstruction of Result 49 reappearing in the estimator, and it
-   is why `adjoint_weighted_error` reports infinity there rather than a number. *)
+   or every error does.  That is the mean-field obstruction of lq_mean_field.v reappearing in the
+   estimator, and it is why `adjoint_weighted_error` reports infinity there rather than a number. *)
 Theorem a_vanishing_denominator_determines_nothing :
   forall terminal interior,
     terminal - interior = 0 -> forall e, 0 * e = terminal - interior.
@@ -141,8 +141,8 @@ Theorem cubic_remainder_is_second_order :
       = 3 * gam * m * (h * h) + gam * (h * h * h).
 Proof. intros. unfold response. ring. Qed.
 
-(* At gam = 0 the remainder is identically zero at EVERY h -- Result 55's exactness, recovered as
-   a special case rather than assumed as a hypothesis. *)
+(* At gam = 0 the remainder is identically zero at EVERY h -- mean_field_dwr.v's exactness,
+   recovered as a special case rather than assumed as a hypothesis. *)
 Corollary no_congestion_means_no_remainder :
   forall c m h, response c 0 (m + h) - response c 0 m - (c + 3 * 0 * (m * m)) * h = 0.
 Proof. intros. rewrite cubic_remainder_is_second_order. ring. Qed.

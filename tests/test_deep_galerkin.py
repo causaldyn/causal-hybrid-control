@@ -164,7 +164,7 @@ def test_quadrature_nodes_are_not_trainable() -> None:
 
 
 def test_dual_weighted_estimate_recovers_the_error_without_the_closed_form() -> None:
-    # Result 55: a deliberately under-trained model, so the error is large and the estimate has
+    # A deliberately under-trained model, so the error is large and the estimate has
     # something to find. The estimator sees only the network and the cost parameters.
     game = LQMeanFieldGame(
         a=-0.5,
@@ -202,7 +202,7 @@ def test_lq_mean_field_certificate_holds() -> None:
     assert curve.near_control_error > 5.0 * curve.far_control_error
     assert curve.near_residual < curve.far_residual
     assert curve.residual_blindness > 5.0
-    # Result 55: the dual-weighted estimator, built from the model's own linearisation and never
+    # The dual-weighted estimator, built from the model's own linearisation and never
     # from the closed form, recovers the error the raw residual inverts -- and does so to within
     # a few percent at a horizon where the true error is two orders larger.
     assert curve.near_value_error > 5.0 * curve.far_value_error
@@ -235,7 +235,7 @@ def test_lbfgs_on_one_fixed_draw_reproduces_the_monotone_equilibrium() -> None:
 
 
 def test_the_dual_weighted_estimate_ranks_the_error_the_residual_cannot() -> None:
-    """Result 55 (d) in miniature: three horizons toward ``T* = 0.8036`` on a short budget."""
+    """Three horizons toward ``T* = 0.8036`` on a short budget."""
     sweep = residual_blindness_sweep((0.30, 0.60, 0.76), steps=150, seed=1)
     assert sweep.errors[0] < sweep.errors[1] < sweep.errors[2]
     assert sweep.rank_dual_weighted == pytest.approx(1.0)
@@ -383,13 +383,13 @@ def test_nonlinear_dwr_certificate_holds() -> None:
     assert max(curve.affine_relative_errors) < 1e-5
     assert max(curve.affine_relative_errors) / min(curve.affine_relative_errors) < 1.1
     assert curve.affine_quadrature_ratio > 3.0
-    # And the adjoint it builds by autodiff agrees with Result 55's closed-form denominator.
+    # And the adjoint it builds by autodiff agrees with the LQ closed-form denominator.
     assert curve.denominator_against_result_55 < 1e-6
     # On the congested field the remainder is the second variation: second order in the defect,
     # first order in the relative error, on an arm where that error is percent-scale not noise.
     assert curve.congested_exponent == pytest.approx(2.0, abs=0.15)
     assert curve.congested_relative_error > 0.01
-    # The right adjoint is worth exactly one order; the affine model, which is what the Result 55
+    # The right adjoint is worth exactly one order; the affine model, which is what the LQ
     # estimator would apply here, stops tracking the error altogether.
     assert curve.affine_adjoint_exponent == pytest.approx(1.0, abs=0.15)
     assert curve.affine_model_exponent == pytest.approx(0.0, abs=0.15)

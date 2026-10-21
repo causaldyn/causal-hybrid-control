@@ -48,7 +48,8 @@ Proof.
   nra.
 Qed.
 
-(* ... and the irreducible cost floor 2*A*v_star rises with it (ties to Result 10's higher floor). *)
+(* ... and the irreducible cost floor 2*A*v_star rises with it (ties to the Cramer-Rao floor of
+   information_lower_bound.v). *)
 Theorem confounding_raises_floor : forall A v1 v2,
   0 <= A -> v1 <= v2 -> 2 * A * v1 <= 2 * A * v2.
 Proof.

@@ -1,13 +1,13 @@
-/* P2.3 / A11 -- the matrix ratio moment at GENERAL q, where Result 54 stopped at q = 2.
+/* The matrix ratio moment at GENERAL q, where validation/matrix_ratio_moment.mac stopped at q = 2.
  *
- * Result 54 computed V = E[(X'AX)^-1 X'A Sigma A X (X'AX)^-1] for a TWO-channel regressor block
- * by writing M^-1 = adj(M)/det(M), expanding every sandwich entry into a product of THREE
+ * validation/matrix_ratio_moment.mac computed V = E[(X'AX)^-1 X'A Sigma A X (X'AX)^-1] for a
+ * TWO-channel regressor block by writing M^-1 = adj(M)/det(M), expanding every sandwich entry into a product of THREE
  * quadratic forms, and killing det(M)^-2 with the 2x2 Ingham-Siegel integral.  Both halves were
  * hard-coded at q = 2.  This file derives the q-general replacements and checks them.
  *
  * STEP 1 is the load-bearing one: the Gaussian moment of a product of m quadratic forms is a sum
  * over the SYMMETRIC GROUP S_m, one term per permutation, weight 2^(m - cycles) and one trace per
- * cycle.  That is what replaces Result 54's hand-written 15-pairing Isserlis expansion, and it is
+ * cycle.  That is what replaces matrix_ratio_moment.mac's hand-written 15-pairing Isserlis expansion, and it is
  * what makes m = 2q-1 mechanical at any q.
  *
  *   timeout 900 maxima --very-quiet -b validation/general_q_ratio_moment.mac
@@ -45,7 +45,7 @@ perm_moment(KK, SS) := block([m : length(KK), total : 0, p, cyc],
     total : total + 2^(m - length(cyc)) * product(cycle_trace(cyc[k], KK, SS), k, 1, length(cyc))),
   ratsimp(total))$
 
-/* --- the m = 1, 2, 3 cases against the forms Result 54 already uses --- */
+/* --- the m = 1, 2, 3 cases against the forms matrix_ratio_moment.mac already uses --- */
 S2 : matrix([s11, s12], [s12, s22])$
 K1 : matrix([a11, a12], [a12, a22])$
 K2 : matrix([b11, b12], [b12, b22])$
@@ -56,7 +56,7 @@ d3(K, L, M) := mat_trace(K . S2 . L . S2 . M . S2)$
 
 print("(1) m=1:", ratsimp(perm_moment([K1], S2) - tr(K1)))$
 print("(2) m=2:", ratsimp(perm_moment([K1, K2], S2) - (tr(K1)*tr(K2) + 2*c2(K1, K2))))$
-print("(3) m=3 vs Result 54's shipped expansion:",
+print("(3) m=3 vs the shipped q = 2 expansion:",
       ratsimp(perm_moment([K1, K2, K3], S2)
               - (tr(K1)*tr(K2)*tr(K3)
                  + 2*(tr(K1)*c2(K2,K3) + tr(K2)*c2(K1,K3) + tr(K3)*c2(K1,K2))
@@ -108,7 +108,7 @@ print("=== STEP 2: the Ingham-Siegel constant and exponent at general q ===")$
 mgamma(q, s) := %pi^(q*(q-1)/4) * product(gamma(s - (j-1)/2), j, 1, q)$
 print("(7) Gamma_1(2) =", ratsimp(mgamma(1, 2)), " exponent", ratsimp(2 - (1+1)/2))$
 print("(8) Gamma_2(2) =", ratsimp(mgamma(2, 2)), " exponent", ratsimp(2 - (2+1)/2),
-      "  (Result 54 uses 2/pi and det(T)^(1/2))")$
+      "  (the q = 2 file uses 2/pi and det(T)^(1/2))")$
 print("(9) Gamma_3(2) =", ratsimp(mgamma(3, 2)), " exponent", ratsimp(2 - (3+1)/2))$
 print("(10) Gamma_4(2) =", ratsimp(mgamma(4, 2)), " exponent", ratsimp(2 - (4+1)/2))$
 /* validity: s = 2 must exceed (q-1)/2, so the representation survives to q = 4 and fails at q = 6 */
@@ -153,7 +153,7 @@ print("(18) variance- vs scale-parameterisation factor:", ratsimp(nu/(nu-2) - 1)
 print("=== done ===")$
 
 /* --------------------------------------------------------------------------
-   Result 63 (d''') -- what a grid-refinement residual is actually worth.
+   What a grid-refinement residual is actually worth.
 
    Let the quadrature error decay geometrically in a FIXED direction:
    X_k - X = c * r^(-k) with r > 1.  The shipped residual is |X_k - X_(k-1)|.
@@ -207,7 +207,7 @@ for j : 1 thru 2 do
 print("24 ok: residual ratios do not track error ratios -- no Richardson rescue")$
 
 /* --------------------------------------------------------------------------
-   Result 63 (g) -- an exact anchor with an ANISOTROPIC numerator.
+   An exact anchor with an ANISOTROPIC numerator.
    With Omega = I and C = I, for ANY PSD B:  E[M^-1 X'BX M^-1] = (tr B / n) I / (n-q-1).
    Polar decomposition X = H T: H is Haar on the Stiefel manifold and independent of
    T = (X'X)^(1/2), the sandwich is T^-1 (H'BH) T^-1, and E[H'BH] = (tr B/n) I.

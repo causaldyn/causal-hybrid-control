@@ -1,6 +1,6 @@
-(* Rocq: the algebraic core of the SCHEDULED and BUDGETED capped exploration law (Result 66).
+(* Rocq: the algebraic core of the SCHEDULED and BUDGETED capped exploration law.
 
-   Result 56 answered "how long do you explore under a per-round action cap" with a single
+   capped_exploration.v answered "how long do you explore under a per-round action cap" with a single
    number, n* = sqrt(K T/(A c))/cap, and recorded as honest scope that a cap which VARIES over
    rounds, or a total budget on top of the cap, changes the feasible set so that n* is no longer
    a formula. validation/capped_exploration_schedule.mac closes that: differentiating the
@@ -10,7 +10,7 @@
    What is proved here is the scalar spine of that statement:
      (A) a positive factor cannot move a root -- the mass does not know the cap level;
      (B) the bracket is strictly increasing in the mass, so it crosses zero once;
-     (C) the explicit root, and the constant-cap corollary that recovers Result 56 with the O(1)
+     (C) the explicit root, and the constant-cap corollary that recovers capped_exploration.v with the O(1)
          prior-information term it declined to model;
      (D) below the root more mass still pays, which is why a binding budget is spent in full;
      (E) a round that delivers no mass costs exactly nothing -- the flat tail that makes the
@@ -86,7 +86,7 @@ Proof.
   lra.
 Qed.
 
-(* ===== (C) THE ROOT, AND RESULT 56 AS ITS CONSTANT-CAP COROLLARY ===== *)
+(* ===== (C) THE ROOT, AND THE CONSTANT-CAP LAW AS ITS COROLLARY ===== *)
 
 (* The bracket vanishes exactly where the marginal estimation gain equals the marginal control
    price; stating it as a product identity keeps the division out of the algebra. *)
@@ -174,7 +174,7 @@ Qed.
 
 (* ===== (G) THE EXCHANGE ARGUMENT UNDER TWO DIFFERENT CAPS ===== *)
 
-(* Result 56's exchange inequality is about prefix masses and never mentions a cap. What a
+(* The constant-cap exchange inequality is about prefix masses and never mentions a cap. What a
    varying cap adds is a FEASIBILITY obligation: the earlier round must be able to absorb the
    mass moved into it. Once it can, the inequality is the old one. *)
 Lemma moving_mass_earlier_is_feasible_and_strictly_cheaper :
@@ -192,7 +192,7 @@ Proof.
   apply Rinv_lt_contravar; nra.
 Qed.
 
-(* ===== (H) THE O(1) TERM RESULT 56 DROPPED (P3.2) ===== *)
+(* ===== (H) THE O(1) TERM THE CONSTANT-CAP LAW DROPPED ===== *)
 
 (* Under a CONSTANT cap the stopping round is n = s/kap, so the remaining horizon inside the
    bracket is itself a function of the mass and the root stops being a square root. Writing
@@ -200,7 +200,7 @@ Qed.
 
        a*w^2 + (k/kap)*w = k*c*t + k*i0/kap                                                 (He)
 
-   while Result 56's closed form s56 = sqrt(k t/(a c)) - i0/c is the root of the SAME balance with
+   while the constant-cap closed form s56 = sqrt(k t/(a c)) - i0/c is the root of the SAME balance with
    the remaining horizon held at the FULL t, i.e. w0 = i0 + c*s56 solves
 
        a*w0^2 = k*c*t                                                                       (H0)
@@ -250,7 +250,7 @@ Qed.
 
 (* The gap in closed form, division-free: this is the O(1) term BEFORE any expansion. As the
    horizon grows both roots grow like c*s, the second factor tends to 2*a*c*s, and the quotient
-   tends to k/(2*a*kap) -- which in mass units is the constant Result 56 dropped. *)
+   tends to k/(2*a*kap) -- which in mass units is the constant the constant-cap law dropped. *)
 Lemma the_overstatement_is_an_exact_product :
   forall a k c kap s we w0,
     a * (w0 * w0 - we * we) = k * c * s / kap ->

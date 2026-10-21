@@ -1,6 +1,6 @@
-/* DISCOVERY (does Psi describe an ESTIMATOR?): Result 51's honest-scope note says Psi is the
+/* DISCOVERY (does Psi describe an ESTIMATOR?): the Psi of delayed_network_exposure.mac is the
    sandwich functional that delayed_exposure_gate.mac STEP 6 forced, evaluated with the fold
-   operator held fixed while Sigma varies -- "not a re-derived estimator". Plan 24's P2.6 asks
+   operator held fixed while Sigma varies -- not a re-derived estimator. The question here is
    whether it describes the variance of a REAL cross-fit DML fit. The algebra below says what to
    expect before the experiment is run, and the expectation is not flattering to the design: the
    whole partition effect decays like 1/g in the number of INDEPENDENT CORRELATED BLOCKS.
@@ -15,7 +15,7 @@ trA   : n - r^2 + (r^2 - 1)*k$
 psi   : n^2 * trA2S / (trA^2 * trS)$
 
 /* (1) THE PARTITION ENTERS ONCE, LINEARLY, WITH A POSITIVE WEIGHT. Everything else in Psi is
-   partition-free, so ranking designs is ranking the same-fold mass -- Result 52's premise. */
+   partition-free, so ranking designs is ranking the same-fold mass -- the premise of fold_spectrum_law.mac. */
 print("(1) d(Psi)/d(same-fold mass) =", factor( ratsimp( diff(psi, ss) ) ),
       "  (>0 for k>=2, r=k/(k-1)>1: smaller same-fold mass is better)")$
 

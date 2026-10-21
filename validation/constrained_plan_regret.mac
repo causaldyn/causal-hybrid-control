@@ -2,10 +2,11 @@
 
    chc.plan.causal_plan minimises J(U) over U in a box of lever bounds, and DecisionCertificate
    ships without a regret_bound because nothing in chc.regret takes a CausalPlan: every certificate
-   there is over a scalar or a curve.  The natural candidate is Result 6's self-certifying PL bound
-   J(U) - J* <= |grad J|^2/(2 mu), computed from the achieved gradient with no optimum needed.  It
-   does not survive the box: at a lever pinned to its bound grad J is nonzero and the bound reports
-   regret where there is none.  Result 13 read the same fact from the other side -- once the cap is
+   there is over a scalar or a curve.  The natural candidate is the self-certifying PL bound
+   J(U) - J* <= |grad J|^2/(2 mu) of validation/nonlinear_regret.mac, computed from the achieved
+   gradient with no optimum needed.  It does not survive the box: at a lever pinned to its bound
+   grad J is nonzero and the bound reports regret where there is none.
+   validation/constrained_ce_regret.mac read the same fact from the other side -- once the cap is
    active the control freezes and the regret's curvature collapses -- and concluded the modulus
    collapses with it.
 
@@ -24,7 +25,7 @@
 
 assume(mu > 0, bb > 0, aa < 0, gg < 0, bb0 > 0)$
 print("================================================================")$
-print("A SELF-CERTIFYING REGRET BOUND INSIDE A BOX (L3.2)")$
+print("A SELF-CERTIFYING REGRET BOUND INSIDE A BOX")$
 print("================================================================")$
 
 /* ===== STEP 1: strong convexity, evaluated at the constrained optimum ===== */
@@ -40,14 +41,14 @@ print("STEP 1b U* is FEASIBLE, so ds lies in the box's local offsets [lo-U, hi-U
 print("        and aa <= 0 <= bb because U is feasible too.  So J - J* <= max over that interval,")$
 print("        and the maximum is a quantity the caller can compute from g alone")$
 
-/* ===== STEP 2: the unconstrained maximiser is Result 6's bound ===== */
+/* ===== STEP 2: the unconstrained maximiser is the PL bound ===== */
 
-print("=== STEP 2: with no box the maximum is |g|^2/(2 mu), which is Result 6 ===")$
+print("=== STEP 2: with no box the maximum is |g|^2/(2 mu), which is the PL bound ===")$
 
 d0 : rhs(solve(diff(q(d), d) = 0, d)[1])$
 print("STEP 2a dq/dd =", diff(q(d), d), " vanishes at d0 =", d0)$
 print("STEP 2b d^2q/dd^2 =", diff(q(d), d, 2), " < 0, so d0 is a MAXIMUM (mu > 0)")$
-print("STEP 2c q(d0) - g^2/(2 mu) =", ratsimp( q(d0) - gg^2/(2*mu) ), " (0) -- Result 6's bound")$
+print("STEP 2c q(d0) - g^2/(2 mu) =", ratsimp( q(d0) - gg^2/(2*mu) ), " (0) -- the PL bound")$
 
 /* ===== STEP 3: clipping costs exactly a square, so the box can only help ===== */
 
@@ -60,9 +61,9 @@ print("        gap = g^2/(2 mu) - (mu/2)(dhat - d0)^2 <= g^2/(2 mu), with the DE
 print("        form: the box never loosens the bound, and how much it tightens it is measurable")$
 print("STEP 3b a lever the gradient itself holds against a bound has dhat = 0, and there")$
 print("        gap = ", ratsimp( subst(dd = 0, q(dd)) ), " -- EXACTLY zero, not small.")$
-print("        Result 6's bound reports g^2/(2 mu) > 0 at that same point: it charges regret to a")$
-print("        coordinate that cannot move, which is Result 13's frozen control seen from the")$
-print("        certificate side")$
+print("        The PL bound reports g^2/(2 mu) > 0 at that same point: it charges regret to a")$
+print("        coordinate that cannot move, the active-set kink's frozen control seen from")$
+print("        the certificate side")$
 print("STEP 3c gap >= 0 always, because d = 0 is feasible (aa <= 0 <= bb) and q(0) = 0;")$
 print("        q(0) =", q(0), " (0)")$
 
@@ -77,10 +78,10 @@ print("        small enough modulus.  The value there at mu = 0 is")$
 print("        subst(mu = 0, -g*bb - (mu/2)bb^2) =", subst(mu = 0, -gg*bb - (mu/2)*bb^2),
       " = fw, and the approach is LINEAR in mu, deficit =",
       ratsimp( (-gg*bb) - (-gg*bb - (mu/2)*bb^2) ))$
-print("STEP 4c Result 6's bound over the same range is O(1/mu).  Its ratio to fw is")$
+print("STEP 4c The PL bound over the same range is O(1/mu).  Its ratio to fw is")$
 print("        (g^2/(2 mu))/(-g*bb) =", ratsimp( (gg^2/(2*mu))/(-gg*bb) ),
       " -- unbounded as mu -> 0.")$
-print("        This is the whole point of L3.2: Result 13's collapsing modulus destroys the")$
+print("        This is the whole point: the active-set kink's collapsing modulus destroys the")$
 print("        unconstrained certificate and leaves the constrained one finite")$
 print("STEP 4d the gap is NON-INCREASING in mu, so a conservative (smaller) modulus is a LARGER")$
 print("        bound and never an invalid one.  Interior branch: d/dmu [g^2/(2mu)] =",
@@ -101,14 +102,14 @@ print("        SUM OF NONNEGATIVE PER-LEVER TERMS: the worst-case regret is attr
 print("        general convex set does not separate; a box of lever bounds does, which is exactly")$
 print("        the feasible set chc.decision.Lever declares")$
 
-/* ===== STEP 6: tight where Result 6's bound is worst ===== */
+/* ===== STEP 6: tight where the PL bound is worst ===== */
 
-print("=== STEP 6: at a constrained optimum the gap is 0 and Result 6's bound is not ===")$
+print("=== STEP 6: at a constrained optimum the gap is 0 and the PL bound is not ===")$
 
 print("STEP 6a take J(u) = (mu/2)(u - us)^2 with the unconstrained optimum us OUTSIDE the box,")$
 print("        so the constrained optimum is the nearer bound U = bb0 and the true regret is 0")$
 print("STEP 6b g = dJ/du at U =", diff((mu/2)*(uu - us)^2, uu), " -> mu*(bb0 - us)")$
-print("STEP 6c Result 6's bound there is g^2/(2 mu) =",
+print("STEP 6c The PL bound there is g^2/(2 mu) =",
       ratsimp( (mu*(bb0 - us))^2/(2*mu) ), " -- nonzero regret at the OPTIMUM")$
 print("STEP 6d the gap's maximiser is d0 = -g/mu = us - bb0, which points OUT of the box, so")$
 print("        dhat = 0 and gap =", ratsimp( subst(dd = 0, -mu*(bb0-us)*dd - (mu/2)*dd^2) ), " (0).")$

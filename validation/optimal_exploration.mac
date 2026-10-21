@@ -1,6 +1,7 @@
 /* DISCOVERY / derivation: the OPTIMAL EXPLORATION law for causal control -- the actionable DUAL of the
-   Cramer-Rao lower bound (Result 10). Result 10 says: given identifying action variance V_id, the
-   control-regret floor is C*sigma^2/(n*V_id). But you BUY V_id by injecting exploration variance v into
+   Cramer-Rao lower bound (information_lower_bound.mac). That bound says: given identifying action
+   variance V_id, the control-regret floor is C*sigma^2/(n*V_id). But you BUY V_id by injecting
+   exploration variance v into
    the action -- and exploration itself costs control (it is action error, penalised by certainty-
    equivalence quadraticity). So there is an OPTIMAL exploration variance balancing the two. This is the
    explore-exploit tradeoff (design of experiments / bandits) made exact for causal control. Maxima is
@@ -39,7 +40,8 @@ gap : ratsimp( (A*v + (A*vs^2)/v) - (A*vs + (A*vs^2)/vs) )$    /* B replaced by 
 print("excess(v) - excess(v*) =", gap, "  = A*(v - vs)^2 / v  >= 0   (SOS; proves optimality)")$
 print("check A*(v-vs)^2/v - gap =", ratsimp(A*(v - vs)^2/v - gap), " (0 confirms the identity)")$
 
-/* CONSEQUENCE (ties to Result 10): confounding raises the estimation floor B (less identifying info /
+/* CONSEQUENCE (ties to the Cramer-Rao floor): confounding raises the estimation floor B (less
+   identifying info /
    an added bias term), so BOTH the optimal exploration v* = sqrt(B/A) and the irreducible cost
    2*sqrt(A*B) INCREASE monotonically in B. You must explore MORE, and pay MORE irreducibly, to
    control a confounded plant. */

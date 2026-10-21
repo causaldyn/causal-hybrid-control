@@ -1,4 +1,5 @@
-(* Rocq + MathComp: CIRCULANT RESIDUALS over any number of modes and factors (Result 48).
+(* Rocq + MathComp: CIRCULANT RESIDUALS over any number of modes and factors
+   (proofs/spectral_circulant.v).
 
    proofs/spectral_circulant.v carries two modes, enough to exhibit "max of products < product of
    maxes". This file proves the N-mode, M-factor statements over any real field (realFieldType),

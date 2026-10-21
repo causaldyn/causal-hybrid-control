@@ -1,4 +1,4 @@
-/* Result 41: the drift spectrum of a control-affine fit is not invariant to the actuator's
+/* The drift spectrum of a control-affine fit is not invariant to the actuator's
    coordinate origin, while the closed-loop decay at a stated action is.
 
    Motivation is empirical. `causaldyn-bench` Track D-causal reported a *positive* thermal pole --

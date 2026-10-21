@@ -88,11 +88,11 @@ def test_robust_radius_grows_from_the_nominal_and_is_monotone() -> None:
     assert base <= r2 <= r3  # never below nominal; wider with more assumed confounding
 
 
-# --- Result 34: confounding-robust CLOSED LOOP (§32 radius x §31 replan-tube) ---
+# --- Confounding-robust CLOSED LOOP (MSM radius x closed-loop replan tube) ---
 
 
 def test_closed_loop_bound_recovers_the_plain_tube_at_gamma_one() -> None:
-    # Gamma=1: no confounding inflation, so it equals the plain §31 closed-loop tube exactly
+    # Gamma=1: no confounding inflation, so it equals the plain closed-loop tube exactly
     args = (1.0, 0.5, 1.5, 0.05, 0.05, 25)  # state_lip, control_lip, policy_lip, error, dt, horizon
     # (state_lip, control_lip, policy_lip, base_error, control_mag, cvar_gap, gamma, dt, horizon)
     robust = confounding_robust_closed_loop_bound(1.0, 0.5, 1.5, 0.05, 0.8, 0.4, 1.0, 0.05, 25)
@@ -135,7 +135,7 @@ def test_certified_safe_step_is_the_last_step_whose_margin_holds(gamma: float) -
 def test_certificate_confirms_shrinking_safe_horizon() -> None:
     cert = confounding_robust_closed_loop_certificate(gamma=3.0)
     assert cert.ok
-    assert cert.robust_radius >= cert.nominal_radius  # Gamma=1 recovers §31; Gamma>1 is wider
+    assert cert.robust_radius >= cert.nominal_radius  # Gamma=1: the plain tube; Gamma>1 is wider
     assert cert.robust_safe_step <= cert.nominal_safe_step  # confounding erodes the safe horizon
     assert cert.radius_monotone  # tube nondecreasing over the Gamma grid
     assert cert.horizon_monotone  # safe horizon nonincreasing over the Gamma grid

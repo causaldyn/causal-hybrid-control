@@ -1,5 +1,5 @@
-(* Rocq + MathComp: THE MULTIVARIATE LIFT OF RESULT 40, and the discrete-time core of forward
-   invariance.
+(* Rocq + MathComp: THE MULTIVARIATE LIFT OF proofs/barrier_feasibility.v, and the discrete-time
+   core of forward invariance.
 
    proofs/barrier_feasibility.v proves the scalar algebra of the robust barrier margin
    a + g u - d |u|. This file proves the vector statements chc.barrier implements -- a Euclidean
@@ -11,9 +11,9 @@
      a + w.u - Delta ||grad h|| ||u||, and a rank-one E in the ball attains it. The matrix
      uncertainty set reduces EXACTLY to the channel ball of radius d = Delta ||grad h||.
    - margin_upper_bound_mv / margin_attained_mv: the best guaranteed margin over ||u|| <= U is
-     a + max(0, ||w|| - d) U, and it is attained -- Result 40 (a) with |g| replaced by ||w||.
+     a + max(0, ||w|| - d) U, and it is attained -- the scalar closed form with |g| as ||w||.
    - certified_iff_below_threshold: certifiable iff d <= ||w|| - (-alpha h - a)/U, the sharp
-     threshold of Result 40 (b). zero_action_optimal_mv, certified_without_deficit,
+     scalar threshold. zero_action_optimal_mv, certified_without_deficit,
      no_certificate_when_deficit_exceeds_authority_mv and margin_loss_saturates_mv lift the rest.
    - discrete_forward_invariance / robust_filter_keeps_the_true_plant_safe: for an AFFINE barrier
      h(x) = c + g.x under the Euler step x' = x + dt v with 0 <= alpha dt <= 1, the pointwise
@@ -145,7 +145,7 @@ Variable m : nat.
 Definition robust_margin (a : R) (w : 'rV[R]_m) (d : R) (u : 'rV[R]_m) : R :=
   a + dot w u - d * norm u.
 
-(* The closed form of Result 40 (a), with |g| replaced by ||B^T grad h||. *)
+(* The scalar closed form, with |g| replaced by ||B^T grad h||. *)
 Definition best_margin (a : R) (w : 'rV[R]_m) (d U : R) : R :=
   a + Num.max 0 (norm w - d) * U.
 
@@ -412,8 +412,8 @@ Section DiscreteInvariance.
 Variable R : rcfType.
 Variables n m : nat.
 
-(* An affine barrier h(x) = c + g.x -- a half-space safe set, the shape of Result 40 (d)'s
-   benchmark (h = x_limit - x). *)
+(* An affine barrier h(x) = c + g.x -- a half-space safe set, the shape of
+   chc.barrier.safety_filter_benchmark's plant (h = x_limit - x). *)
 Definition affine_barrier (c : R) (g x : 'rV[R]_n) : R := c + dot g x.
 
 Lemma euler_step_on_affine_barrier (c dt : R) (g x v : 'rV[R]_n) :
@@ -446,8 +446,9 @@ move=> k; split; first exact: floor.
 by apply: le_trans (floor k); rewrite mulr_ge0 ?exprn_ge0.
 Qed.
 
-(* The closed loop Result 40 (d) measures: a filter that certifies robust_margin on the ESTIMATED
-   channel keeps the TRUE plant safe, whenever the true channel lies in the identified ball. *)
+(* The closed loop chc.barrier.safety_filter_benchmark measures: a filter that certifies
+   robust_margin on the ESTIMATED channel keeps the TRUE plant safe, whenever the true channel lies
+   in the identified ball. *)
 Theorem robust_filter_keeps_the_true_plant_safe (c d dt alpha : R) (g : 'rV[R]_n)
     (xs vs : nat -> 'rV[R]_n) (a : nat -> R) (w delta us : nat -> 'rV[R]_m) :
   0 <= dt -> 0 <= alpha * dt -> alpha * dt <= 1 ->

@@ -49,7 +49,7 @@ def test_port_hamiltonian_output_has_state_shape_and_composes() -> None:
 
 
 def test_a_convex_energy_turns_the_passivity_inequality_into_an_invariant_ball() -> None:
-    # Result 68, validation/convex_port_hamiltonian.mac, proofs/convex_port_hamiltonian.v.
+    # validation/convex_port_hamiltonian.mac, proofs/convex_port_hamiltonian.v.
     # H' <= 0 is an identity of (J - R) grad H and holds for ANY energy network, so it cannot tell
     # a useful energy from a useless one. What separates them is whether { H <= H(x0) } is bounded.
 
@@ -262,7 +262,7 @@ def test_closed_form_fit_recovers_the_advection_diffusion_operator() -> None:
 
 
 def test_spectral_certificate_beats_the_mlp_and_records_where_it_does_not() -> None:
-    # Result 48. The spectral backbone was skipped under a kill-criterion whose reopening condition
+    # The spectral backbone was skipped under a kill-criterion whose reopening condition
     # was tying a learned spectral operator into chc.research.transport; both halves exist now, so
     # the criterion is live and every block below can fail on its own.
     curve = spectral_residual_certificate()

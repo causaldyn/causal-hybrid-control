@@ -2,12 +2,13 @@
    through the certainty-equivalence order-doubling to a CONTROL-REGRET bound. In the scalar LQ toy
    (validation/confounding_lq_regret.mac) the regret of the effect-estimate-optimal controller is
    L_reg*(effect error)^2 to leading order -- QUADRATIC in the error (order-doubling). Under Tan's MSM
-   the effect error carries an irreducible bias half-width `infl` = the §32 inflation, so the
+   the effect error carries an irreducible bias half-width `infl` = the MSM inflation, so the
    confounding-robust regret is `cr_regret L eps infl = L*(eps + infl)^2`. We prove it is nonnegative,
    recovers the pure statistical regret at infl=0 (Gamma=1), is monotone in the confounding, and -- the
    headline -- has a SECOND-ORDER confounding floor `L*infl^2`: a Gamma that biases the EFFECT by `infl`
    biases the REGRET by only `infl^2`, so downstream control is quadratically more robust to confounding
-   than effect estimation. Compose `cr_regret_monotone_infl` with §32 `msm_inflation_monotone` for
+   than effect estimation. Compose `cr_regret_monotone_infl` with `msm_inflation_monotone`
+   (confounding_robust_cvar.v) for
    monotone-in-Gamma. Algebraic (the CE quadraticity is the cited Mania-Tu-Recht bound, not re-proved). *)
 
 From Stdlib Require Import Reals.

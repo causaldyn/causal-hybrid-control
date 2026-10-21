@@ -611,8 +611,8 @@ def test_a_plan_says_whether_its_own_solve_finished() -> None:
 
 
 def test_a_boxed_plan_certifies_its_own_optimality_gap_where_the_pl_bound_charges_regret() -> None:
-    # Result 69 (L3.2), validation/constrained_plan_regret.mac, proofs/constrained_plan_regret.v.
-    # Result 6's |grad J|^2/(2 mu) needs no optimum, which is what makes it a certificate -- and it
+    # validation/constrained_plan_regret.mac, proofs/constrained_plan_regret.v.
+    # PL's |grad J|^2/(2 mu) needs no optimum, which is what makes it a certificate -- and it
     # does not survive a box: at a lever the gradient holds against its own bound grad J is nonzero
     # while the true regret is zero.
     dt, horizon = 0.1, 12
@@ -634,12 +634,12 @@ def test_a_boxed_plan_certifies_its_own_optimality_gap_where_the_pl_bound_charge
         return float(best)
 
     # 1. THE HEADLINE. A box tight enough to clip the optimum away leaves every action pinned,
-    #    so the plan IS optimal -- and the bound says exactly zero where Result 6's says 56.
+    #    so the plan IS optimal -- and the bound says exactly zero where the PL bound says 56.
     pinned = causal_plan(plant, x0, cost, dt, horizon, -0.2, 0.2, steps=20_000)
     tight = plan_regret_bound(pinned, plant, x0, cost, dt, -0.2, 0.2, probes=8)
     assert tight.pinned_actions == pinned.actions.size  # the gradient holds all of them
     assert tight.bound == 0.0  # exactly, not approximately: the maximiser is d = 0
-    assert tight.unconstrained_bound > 50.0  # ... and Result 6 charges regret to the optimum
+    assert tight.unconstrained_bound > 50.0  # ... and the PL bound charges regret to the optimum
     assert pinned.task_cost - reached(plant, -0.2, 0.2, 1, 0) <= 1e-9
 
     # 2. THE GATE THAT CAN FAIL: on genuinely unconverged plans the bound must sit ABOVE the

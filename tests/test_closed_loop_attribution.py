@@ -1,6 +1,6 @@
-"""chc.dynamics_id: what a setpoint-tracked log identifies, and what it manufactures (§41 (e)).
+"""chc.dynamics_id: what a setpoint-tracked log identifies, and what it manufactures.
 
-Result 41 left open why the interaction coefficient comes out large and negative on a tracked zone.
+Why the interaction coefficient comes out large and negative on a tracked zone:
 A proportional loop puts the log on an affine manifold, and on that manifold only the interaction
 reaches the action's quadratic term -- so it is the identified coefficient while the pole is not,
 and a misspecified curvature is reported as `-gain * curvature`, growing with the controller.

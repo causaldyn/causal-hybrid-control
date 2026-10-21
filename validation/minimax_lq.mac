@@ -1,7 +1,7 @@
-/* DISCOVERY (minimax LQ over the identified interval): §33 proved that certainty equivalence is NOT
-   minimax for the LQ loss by exhibiting one counterexample, and closed with "a minimax LQ controller
-   over the identified interval is NOT built in this repo". This is the controller. The effect b is
-   only partially identified in [bh-D, bh+D] (the §32 sensitivity interval); the analyst wants the
+/* DISCOVERY (minimax LQ over the identified interval): certainty equivalence is NOT minimax for the
+   LQ loss -- one counterexample, (6) below, shows it. This is the minimax controller. The effect b
+   is only partially identified in [bh-D, bh+D] (the sensitivity interval of
+   confounding_robust_cvar.mac); the analyst wants the
    action minimising the WORST case over that interval, not the action optimal for the midpoint.
    Everything below is exact: the inner maximisation collapses to two endpoints, so the outer problem
    is the minimisation of a max of two convex quadratics -- a closed form, not a search.
@@ -45,7 +45,7 @@ gap_hi : ratsimp( uk - ustar(bhi) )$
 print("(5) uk - ustar(bhi) residual vs t*(r + p*bhi*D)/(bh*(p*bhi^2+r)) =",
       ratsimp( gap_hi - t*(r + p*bhi*D)/(bh*(p*bhi^2 + r)) ), "  (=0; numerator >0 always)")$
 
-/* (6) the §33 counterexample, exactly: bh=1, D=1/2, t=1, r=1. CE plays 1/2 and is beaten. */
+/* (6) the counterexample, exactly: bh=1, D=1/2, t=1, r=1. CE plays 1/2 and is beaten. */
 inst : [p = 1, t = 1, r = 1, bh = 1, D = 1/2]$
 Fmax(uu) := max( subst(inst, subst(u = uu, f(blo,u))), subst(inst, subst(u = uu, f(bhi,u))) )$
 u_mm : subst(inst, ustar(blo))$

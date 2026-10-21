@@ -1,5 +1,6 @@
-/* DISCOVERY (CONTRIBUTION 2, the LOWER bound): the clustered van-Trees lower bound that makes the
-   G^{-1} control-regret rate IRREDUCIBLE. The end-to-end theorem (Result 24) proved only R <= c/G at
+/* DISCOVERY (the multichannel LOWER bound): the clustered van-Trees lower bound that makes the
+   G^{-1} control-regret rate IRREDUCIBLE. The end-to-end theorem
+   (validation/c2_end_to_end.mac) proved only R <= c/G at
    zero nuisance error -- an UPPER bound. Here we establish the matching LOWER bound
        liminf_{G->inf} G * E[R] >= kappa0 / Ic = c0 > 0,
    so no estimator (biased or not) makes the sampling regret decay faster than 1/G. Ingredients:

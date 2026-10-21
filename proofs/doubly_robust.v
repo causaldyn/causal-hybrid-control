@@ -1,4 +1,4 @@
-(* Rocq: the DOUBLY-ROBUST version of result 0 (proofs/orthogonal_control.v). For a binary
+(* Rocq: the DOUBLY-ROBUST version of orthogonal CE control (proofs/orthogonal_control.v). For a binary
    intervention the AIPW estimator of the control effect has a bias that is the PRODUCT of the
    outcome-model error dmu and the propensity error de: bias = dmu*de/(e+de) (derived in
    validation/doubly_robust.mac). Hence it is exactly ZERO if EITHER nuisance is correct -- double

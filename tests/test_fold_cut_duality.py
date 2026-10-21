@@ -1,4 +1,4 @@
-"""Result 61 -- the fold design is a MAX-bisection, and the exact route reaches it at any m."""
+"""The fold design is a MAX-bisection, and the exact route reaches it at any m."""
 
 import itertools
 from math import comb

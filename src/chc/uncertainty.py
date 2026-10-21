@@ -838,13 +838,14 @@ class WassersteinPenalty(eqx.Module):
 
 
 class ConfoundingRobustPenalty(eqx.Module):
-    """Pessimism against a HIDDEN-CONFOUNDING effect error, for the general OC stack (§34/§38).
+    """Pessimism against a HIDDEN-CONFOUNDING effect error, for the general OC stack.
 
-    The §35 controller robustifies a scalar tracker; this lifts the same sensitivity radius into the
-    multivariate hybrid solver. Under hidden confounding the control-effect matrix ``B`` is only
-    partially identified: the offline estimate ``B_hat`` sits within a sensitivity half-width
-    ``radius`` (the §32 ``Delta(Gamma)``) of the truth. By the §34 dimensional insight a per-step
-    control ``u_t`` then carries a per-step **transition** error
+    :func:`chc.research.regret.confounding_robust_control` robustifies a scalar tracker; this lifts
+    the same sensitivity radius into the multivariate hybrid solver. Under hidden confounding the
+    control-effect matrix ``B`` is only partially identified: the offline estimate ``B_hat`` sits
+    within a sensitivity half-width ``radius`` (the MSM ``Delta(Gamma)``) of the truth. An effect
+    error times an action is a state error, so a per-step control ``u_t`` carries a per-step
+    **transition** error
     ``||Delta_B @ u_t|| <= radius * ||u_t||``, and ``radius * Sigma_t ||u_t||`` accumulates that
     over a trajectory. Penalising it steers control away from *exploiting* a partially-identified
     effect with large actions -- the confounding analogue of :class:`WassersteinPenalty`'s
@@ -853,7 +854,7 @@ class ConfoundingRobustPenalty(eqx.Module):
     :func:`chc.support.pessimistic_control` unchanged.
 
     HONEST SCOPE, and it now depends on which constructor was used. Plain
-    ``ConfoundingRobustPenalty(radius=...)`` is an **identification-radius regulariser**: the §34
+    ``ConfoundingRobustPenalty(radius=...)`` is an **identification-radius regulariser**: that
     inequality bounds the *state-transition* error, and converting that into a bound on the
     objective needs the sensitivity multiplier ``Delta J <= Sigma_t L_{V,t+1} * radius * ||u_t||``,
     which this path does not supply -- so ``lam_unc`` absorbs it as an unidentified scale.
@@ -861,7 +862,7 @@ class ConfoundingRobustPenalty(eqx.Module):
     and a second-order deviation tube -- and on that path ``lam_unc = 1`` *is* the bound rather than
     a knob. :func:`confounding_cost_bound_certificate` is the gate that can fail it.
 
-    Either way the COEFFICIENT is derived from the §32 sensitivity rather than being an arbitrary
+    Either way the COEFFICIENT is derived from the MSM sensitivity rather than being an arbitrary
     actuation budget; ``Gamma`` and the CVaR-gap calibration remain the analyst's inputs, and it
     does NOT test for confounding.
     """
@@ -871,7 +872,7 @@ class ConfoundingRobustPenalty(eqx.Module):
 
     @classmethod
     def from_sensitivity(cls, cvar_gap: float, gamma: float) -> ConfoundingRobustPenalty:
-        """Radius = the §32 bounded-density-ratio inflation ``(Gamma-1)/(Gamma+1) * cvar_gap``."""
+        """Radius = the bounded-density-ratio inflation ``(Gamma-1)/(Gamma+1) * cvar_gap``."""
         return cls(radius=confounding_robust_inflation(cvar_gap, 0.0, gamma))
 
     @classmethod
@@ -886,7 +887,7 @@ class ConfoundingRobustPenalty(eqx.Module):
     ) -> ConfoundingRobustPenalty:
         """Supply the missing multiplier, so ``lam_unc = 1`` *is* the bound rather than a free knob.
 
-        The §34 inequality bounds the per-step transition error; turning it into a bound on the
+        The radius bounds the per-step transition error; turning it into a bound on the
         objective needs ``Delta J <= Sigma_t L_{V,t+1} * radius * ||u_t||``, and ``L_{V,t+1}`` is
         locally the adjoint norm ``||lambda_{t+1}||``. That is a quantity the planner already
         computes, so leaving it to be absorbed by ``lam_unc`` was throwing away information, not
@@ -938,7 +939,7 @@ class ConfoundingRobustPenalty(eqx.Module):
         after an adversary, as :func:`confounding_cost_bound_certificate` runs on an oscillator,
         has failed to pass it.
         """
-        del xs  # the confounded effect error scales with the ACTION magnitude (§34), not the state
+        del xs  # the confounded effect error scales with the ACTION magnitude, not the state
         # smoothed L2 norm sqrt(||u||^2 + eps^2): ||u|| is non-differentiable at u=0 (NaN grad), and
         # a caller differentiating this penalty may start from us0=0 exactly on that singularity.
         # The penalised descent of chc.support does not: without linear rows it minimises the norm
@@ -946,7 +947,7 @@ class ConfoundingRobustPenalty(eqx.Module):
         # here. eps is a millionth of the root-mean-square ||u_t|| over these very actions, the one
         # size of them every caller hands over, so the penalty reads the same in any units of the
         # actions; a fixed eps=1e-6 outweighed actions logged in millionths of their units. Stays
-        # ABOVE ||u||, which is what the §34 upper bound needs, by at most eps per step. All-zero
+        # ABOVE ||u||, which is what an upper bound needs, by at most eps per step. All-zero
         # actions have no size, and there the floor is the smallest normal number, which keeps
         # their gradient zero, not NaN.
         squares = jnp.sum(us**2, axis=-1)
@@ -1188,7 +1189,7 @@ def contractive_rollout_certificate(
     )
 
 
-# ---- Result 28 UPGRADES (review): time-varying budget, safety tightening, closed loop. ----
+# ---- The rollout bound, extended: time-varying budget, safety tightening, closed loop. ----
 
 
 def _rk4_phi(z: float) -> float:
@@ -2077,10 +2078,10 @@ def confounding_robust_closed_loop_bound(
     dt: float,
     horizon: int,
 ) -> float:
-    """Closed-loop rollout radius (Result 31) with the per-step budget inflated by MSM confounding.
+    """Closed-loop rollout radius with the per-step budget inflated by MSM confounding.
 
-    Composes the confounding radius (§32) with the closed-loop replan tube (§31): the growth rate is
-    ``L_x + L_u*L_pi`` (re-planning feeds state error through an ``L_pi``-Lipschitz policy). The §32
+    Composes the MSM confounding radius with the closed-loop replan tube: the growth rate is
+    ``L_x + L_u*L_pi`` (re-planning feeds state error through an ``L_pi``-Lipschitz policy). The MSM
     half-width ``Delta_B = confounding_robust_inflation(cvar_gap, 0, gamma)`` is an *effect* (``B``)
     error; the per-step *state-transition* error it induces is ``||Delta_B * u_k|| <=
     control_magnitude*Delta_B``, so the budget is ``eps_k = base_error + control_magnitude*Delta_B``
@@ -2097,7 +2098,7 @@ def confounding_robust_closed_loop_bound(
 class ConfoundingRobustClosedLoopCertificate:
     """Evidence confounding widens the closed-loop tube and shortens the certified-safe horizon."""
 
-    nominal_radius: float  # Gamma=1: the plain §31 closed-loop tube (no confounding)
+    nominal_radius: float  # Gamma=1: the plain closed-loop tube (no confounding)
     robust_radius: float  # Gamma>1: a wider tube
     nominal_safe_step: int  # certified-safe horizon with no confounding
     robust_safe_step: int  # <= nominal: confounding erodes the safe horizon
@@ -2109,7 +2110,7 @@ class ConfoundingRobustClosedLoopCertificate:
 def confounding_robust_closed_loop_certificate(
     gamma: float = 3.0, horizon: int = 25, dt: float = 0.05
 ) -> ConfoundingRobustClosedLoopCertificate:
-    """Show the §32-inflated §31 closed-loop tube widens and its safe horizon shrinks with Gamma.
+    """Show the MSM-inflated closed-loop tube widens and its safe horizon shrinks with Gamma.
 
     A re-planning controller (``L_pi``-Lipschitz policy) on an ``L_x``/``L_u`` plant, a nominal
     margin to a constraint ``g <= 0``: as the assumed MSM sensitivity ``Gamma`` grows the
@@ -2152,7 +2153,7 @@ class _ControlChannelOffset(eqx.Module):
     """``f(t, x, u) + M u`` -- the support model's admissible field error, made concrete.
 
     ``||M u|| <= ||M||_2 ||u||``, so a spectral-norm ball of radius ``r`` around zero is exactly the
-    set the §34 inequality allows. Distinct from :class:`_PerturbedField`, whose offset is constant
+    set the per-step bound allows. Distinct from :class:`_PerturbedField`, whose offset is constant
     in ``u`` and therefore models a *drift*, not a mis-identified effect.
     """
 
@@ -2259,7 +2260,7 @@ def confounding_cost_bound_certificate(
     )
 
 
-# --- Result 32 (A19): Gamma is unfalsifiable only if nobody benchmarks it ---
+# --- Gamma is unfalsifiable only if nobody benchmarks it ---
 
 
 def _logistic_fit(
@@ -2328,10 +2329,9 @@ def benchmark_gamma(
 ) -> GammaBenchmark:
     """Price an assumed MSM ``Gamma`` against the observed covariates, in MSM units.
 
-    ``Gamma`` is the analyst's unfalsifiable input, and Result 32 says so every time it is used. It
-    is unfalsifiable; it is not *uncalibrated*. The MSM bounds the assignment odds ratio between the
-    true propensity and the modelled one uniformly over units, and dropping an observed covariate
-    produces exactly such a pair -- so
+    ``Gamma`` is the analyst's input. It is unfalsifiable; it is not *uncalibrated*.
+    The MSM bounds the assignment odds ratio between the true propensity and the modelled one
+    uniformly over units, and dropping an observed covariate produces exactly such a pair -- so
 
         ``Gamma_j = exp( quantile_i | logit e(x_i) - logit e_{-j}(x_i) | )``
 

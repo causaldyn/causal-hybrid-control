@@ -1,18 +1,18 @@
-(* Rocq (SPACE-TIME FOLDS). Result 51 showed the delayed-network covariance is
-   separable only at delta = 0; Result 52 designed folds on the SPACE axis alone. This file proves
-   the algebra that makes the TWO-axis problem tractable and says what the one-axis restriction
-   costs, as derived in validation/space_time_folds.mac.
+(* Rocq (SPACE-TIME FOLDS). The delayed-network covariance is separable only at delta = 0
+   (proofs/delayed_network_exposure.v); fold_spectrum_law.v designs folds on the SPACE axis alone.
+   This file proves the algebra that makes the TWO-axis problem tractable and says what the one-axis
+   restriction costs, as derived in validation/space_time_folds.mac.
 
    Four groups. (i) The fold operator lives in the closed algebra <I, E, F> (E the grand-mean
    projector, F the within-fold projector, E^2 = E, F^2 = F, EF = FE = E), so an operator is a
    COEFFICIENT TRIPLE and squaring is arithmetic: A_u^2 = (1, -r^4, r^4-1). Only the F coefficient
    sees the partition and it is strictly positive, which is what turns the design into a
-   same balanced max-cut on the product set (Result 61). (ii) `pair_splits` is the entrywise content of
-   `P (x) T + P^T (x) T^T = 2(sym (x) sym + skew (x) skew)`: each +-shift pair costs at most TWO
-   Kronecker terms and exactly one when the spatial factor is symmetric, which bounds the rank by
-   2D rather than 2D+1. (iii) delta = 0 collapses every shift, recovering separability. (iv) The
-   panel weight w_1 STRICTLY EXCEEDS the single-slice weight phi on (0,1) -- so scoring a
-   time-constant fold on a panel is not the cross-sectional design rescaled. *)
+   same balanced max-cut on the product set (fold_cut_duality.v). (ii) `pair_splits` is the
+   entrywise content of `P (x) T + P^T (x) T^T = 2(sym (x) sym + skew (x) skew)`: each +-shift pair
+   costs at most TWO Kronecker terms and exactly one when the spatial factor is symmetric, which
+   bounds the rank by 2D rather than 2D+1. (iii) delta = 0 collapses every shift, recovering
+   separability. (iv) The panel weight w_1 STRICTLY EXCEEDS the single-slice weight phi on (0,1) --
+   so scoring a time-constant fold on a panel is not the cross-sectional design rescaled. *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
@@ -111,9 +111,9 @@ Qed.
 (* --- (iv) the panel weight is not the single-slice weight --- *)
 
 (* At p = 3, delta = 1 the exact sums are w_0 = 2 ph^2 + 4 ph + 3 and w_1 = ph^3 + 2 ph^2 + 4 ph + 2
-   (validation/space_time_folds.mac (6), cross-checked numerically). Result 52 scores a fold with
-   the single-slice weight ph^delta; a fold held constant in time and scored on the PANEL carries
-   w_1/w_0 instead, and the two differ everywhere strictly inside (0,1). *)
+   (validation/space_time_folds.mac (6), cross-checked numerically). fold_spectrum_law.v scores a
+   fold with the single-slice weight ph^delta; a fold held constant in time and scored on the PANEL
+   carries w_1/w_0 instead, and the two differ everywhere strictly inside (0,1). *)
 Definition w0 (ph : R) : R := 2 * ph ^ 2 + 4 * ph + 3.
 Definition w1 (ph : R) : R := ph ^ 3 + 2 * ph ^ 2 + 4 * ph + 2.
 

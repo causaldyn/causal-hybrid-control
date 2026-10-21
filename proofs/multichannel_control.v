@@ -1,12 +1,13 @@
-(* Rocq (CONTRIBUTION 2): MULTI-CHANNEL orthogonal control -- the serious form of result 4x0 (derived
-   in validation/multichannel_control.mac). On a network the control-relevant total effect of a uniform
-   action is B = b_d + b_s (direct + spillover/exposure channels). The control regret is quadratic in
-   the total-effect error e_d + e_s, so it is bounded by the SUM of the channel errors (triangle), and
-   the regret ORDER is set by the LEAST-orthogonalised channel: orthogonalising only the direct channel
-   caps the regret at O(delta^2) if the spillover channel stays first-order biased; orthogonalising BOTH
-   reaches O(delta^4). This is the multi-channel generalisation of the transfer theorem
-   (composition_transfer.v). The cross-fitting / cluster-robust / nonasymptotic parts are empirical
-   (chc.regret certificate); here we prove the deterministic order-bottleneck core. *)
+(* Rocq: MULTI-CHANNEL orthogonal control -- the serious form of interference x orthogonality
+   (derived in validation/multichannel_control.mac). On a network the control-relevant total effect
+   of a uniform action is B = b_d + b_s (direct + spillover/exposure channels). The control regret
+   is quadratic in the total-effect error e_d + e_s, so it is bounded by the SUM of the channel
+   errors (triangle), and the regret ORDER is set by the LEAST-orthogonalised channel:
+   orthogonalising only the direct channel caps the regret at O(delta^2) if the spillover channel
+   stays first-order biased; orthogonalising BOTH reaches O(delta^4). This is the multi-channel
+   generalisation of the transfer theorem (composition_transfer.v). The cross-fitting /
+   cluster-robust / nonasymptotic parts are empirical (chc.regret certificate); here we prove the
+   deterministic order-bottleneck core. *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.

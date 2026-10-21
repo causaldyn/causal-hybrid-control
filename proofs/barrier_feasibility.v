@@ -1,4 +1,4 @@
-(* Rocq (Result 40): safety under a PARTIALLY IDENTIFIED control effect.
+(* Rocq: safety under a PARTIALLY IDENTIFIED control effect.
 
    Setting (Maxima: validation/barrier_feasibility.mac). Control-affine plant, safe set {h >= 0},
    barrier condition  grad h . (f + B u) >= -alpha*h.  Write a = grad h . f for the drift term,
@@ -16,7 +16,7 @@
        "the max equals the closed form" without quantifying over a continuum.
      - zero_action_optimal_when_unidentified: once d >= g, EVERY action is dominated by u = 0.
        If the sign of the control channel is not identified, the safest thing is to do nothing --
-       the safety analogue of the sign-identification threshold in Result 11.
+       the safety analogue of the sign-identification threshold in partial_id_control.v.
      - certified_below_threshold / violated_above_threshold: feasibility is SHARP at
        d* = g - D/U, with D = -alpha*h - a the deficit the drift leaves for the controller.
      - authority_is_affine_in_radius: the retained control authority falls at a CONSTANT rate U per
@@ -135,7 +135,7 @@ Proof. intros g U d1 d2. ring. Qed.
 (* ... but only while there is authority to lose. Relative to a perfectly identified channel the
    margin lost is U*min(d,g): affine with slope U below the kink, flat at U*g above it. Stating
    "affine in the radius, constant slope U" without this qualifier is false globally, and the
-   first-order/second-order comparison with Result 33 lives on the low branch. *)
+   first-order/second-order comparison with confounding_lq_regret.v lives on the low branch. *)
 Lemma margin_loss_saturates :
   forall a g d U : R,
     0 <= d -> 0 < U ->
@@ -168,7 +168,7 @@ Qed.
 
 (* --- Inverting the sensitivity model at the threshold. ------------------------------------- *)
 
-(* Result 32's radius is Delta(Gamma) = (Gamma-1)/(Gamma+1)*gap. At Gamma* = (gap+ds)/(gap-ds) it
+(* The MSM radius (confounding_robust_cvar.v) is Delta(Gamma) = (Gamma-1)/(Gamma+1)*gap. At Gamma* = (gap+ds)/(gap-ds) it
    equals exactly the threshold radius ds -- so Gamma* is the largest confounding level the safety
    certificate tolerates, and it is finite whenever the design has slack (0 < ds < gap). *)
 Lemma msm_radius_at_gamma_star :

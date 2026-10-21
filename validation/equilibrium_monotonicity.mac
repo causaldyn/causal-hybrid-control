@@ -1,16 +1,18 @@
-/* DISCOVERY (GLOBAL monotonicity of the congestion equilibrium map): §39 (b) bounds
-   ||(I - S')^{-1}|| at ONE point -- an implicit-function derivative, so it licenses a statement about
-   infinitesimal operator perturbations only, and §39 says so ("Both numbers are LOCAL ... the global
-   version would need strong monotonicity of F(x) = x - S(x) and is NOT proved here"). This proves it.
+/* DISCOVERY (GLOBAL monotonicity of the congestion equilibrium map):
+   validation/equilibrium_transfer.mac bounds ||(I - S')^{-1}|| at ONE point -- an implicit-function
+   derivative, so it licenses a statement about infinitesimal operator perturbations only; the
+   global version needs strong monotonicity of F(x) = x - S(x). This proves it.
    F' = I + kappa*J with J = diag(s) - s s^T the softmax Jacobian, and J is a covariance matrix, so
    F' >= I EVERYWHERE, not just at the equilibrium: F is 1-strongly monotone globally. On the
    fixed-mass tangent space the modulus is strictly bigger, and the pairwise form of the variance
    gives a computable lower bound n*s_min^2 that is EXACTLY attained at the two-point uniform s --
-   the same configuration that makes §39 (a)'s Popoviciu bound sharp.
+   the same configuration that makes the Popoviciu bound of validation/congestion_contraction.mac
+   sharp.
    proofs/equilibrium_monotonicity.v proves the monotone core; the box bound on s_min is (5). */
 display2d : false$
 
-/* (1) the quadratic form of the softmax Jacobian is the s-variance -- §39 (a)'s identity, re-derived
+/* (1) the quadratic form of the softmax Jacobian is the s-variance -- the identity of
+   validation/congestion_contraction.mac (2), re-derived
    here for n=4 because everything below is a statement about that form. */
 n : 4$
 s : [s1, s2, s3, s4]$
@@ -64,8 +66,8 @@ print("(6) J.1 under sum(s)=1  residual =",
 
 /* (7) GLOBAL CONSEQUENCE. F' >= mu*I pointwise with mu = 1 gives strong monotonicity by the mean
    value theorem, and strong monotonicity gives the inverse-Lipschitz bound
-   ||x - y|| <= ||F(x) - F(y)||/mu for ALL x,y -- the finite-perturbation statement §39 (b) could
-   not make. With mu = 1 the equilibrium displacement is bounded by the operator perturbation
-   one-for-one, globally. Verified numerically over a box, not just at a point, by
+   ||x - y|| <= ||F(x) - F(y)||/mu for ALL x,y -- the finite-perturbation statement the pointwise
+   bound could not make. With mu = 1 the equilibrium displacement is bounded by the operator
+   perturbation one-for-one, globally. Verified numerically over a box, not just at a point, by
    chc.research.games.equilibrium_monotonicity_certificate. */
 print("(7) inverse-Lipschitz constant 1/mu at mu=1 is", 1/1, " (one-for-one, globally)")$

@@ -1,5 +1,6 @@
-/* DISCOVERY / derivation (CONTRIBUTION 3): the ADAPTIVE information-exploration duality, the SEQUENTIAL
-   analogue of results 10 (static Cramer-Rao) and 11 (static Av+B/v rule). At round t the controller
+/* DISCOVERY / derivation: the ADAPTIVE information-exploration duality, the SEQUENTIAL analogue of
+   the static Cramer-Rao floor (validation/information_lower_bound.mac) and the static Av+B/v rule
+   (validation/optimal_exploration.mac). At round t the controller
    injects exploration variance v_t; the accumulated Fisher information about the effect is
    m_t = m0 + sum_{s<t} v_s (variance units, m0 the prior/van-Trees info). The VAN TREES (Bayesian
    Cramer-Rao) inequality bounds the Bayes risk of the effect estimate BELOW by K/m_t even for
@@ -57,7 +58,8 @@ print("eta-scaled SOS check =", gEta,
 /* van Trees floor is ANTITONE in accumulated info: more exploration so far => lower estimation floor. */
 print("van-Trees floor K/(m0 + I) is antitone in accumulated info I (Rocq: van_trees_floor_antitone)")$
 
-/* contrast with result 11 (static): result 11 minimises A*v + B/v (single-shot, m=0), giving a CONSTANT
+/* contrast with the static rule (validation/optimal_exploration.mac):
+   it minimises A*v + B/v (single-shot, m=0), giving a CONSTANT
    v* applied every round -- which OVER-explores (keeps paying A*v after info is plentiful). The adaptive
    schedule strictly improves cumulative regret by tapering exploration to the van-Trees floor. */
-print("static (result 11) v*=sqrt(B/A) applied every round over-explores; adaptive schedule tapers")$
+print("static rule v*=sqrt(B/A) applied every round over-explores; adaptive schedule tapers")$

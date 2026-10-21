@@ -1,7 +1,7 @@
 /* Maxima is the AUTHORITATIVE reference for the stabilising ball in DELAY space.
 
-   Result 44 gives a ball in the dynamics error ||dB||: symmetric, with a regret quadratic in the
-   radius.  This file asks the same question about the DELAY of a plant whose model of it is an
+   validation/ce_explicit_constants.mac gives a ball in the dynamics error ||dB||: symmetric, with a
+   regret quadratic in the radius.  This file asks the same question about the DELAY of a plant whose model of it is an
    estimate.  Both halves of the answer come out different, and they point opposite ways.
 
    Plant:      x'(t) = -K x(t - tau)                       (a = 0 branch of delay_margin.mac)
@@ -32,7 +32,7 @@ print("  r_min = 2/(pi e) =", bfloat(rhs(rmin)), " -- an UNDER-estimate of tau b
 print("  rho_minus = 1 - 2/(pi e) =", bfloat(1 - rhs(rmin)), " of tau destabilises the true plant.")$
 print("  r_max = +inf: OVER-estimating the delay never destabilises, at any magnitude,")$
 print("  because kappa = 1/(e r) is antitone in r and the boundary is an upper bound on kappa.")$
-print("  This is where the delay ball parts company with Result 44's symmetric ||dB|| ball.")$
+print("  This is where the delay ball parts company with the symmetric ||dB|| ball.")$
 
 print("")$
 print("=== 3. the rightmost root near the optimum: one series, two regimes ===")$

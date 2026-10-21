@@ -1,4 +1,4 @@
-"""Safety certificates when the control effect is only PARTIALLY IDENTIFIED (§40).
+"""Safety certificates when the control effect is only PARTIALLY IDENTIFIED.
 
 The pessimism line (:mod:`chc.support`, :mod:`chc.uncertainty`) spends an identification radius on
 *performance*: a worse effect estimate buys a wider penalty and a costlier plan. This module spends
@@ -7,7 +7,7 @@ the same radius on *safety*, and the accounting is different in a way that matte
 For a control-affine plant ``xdot = f(x) + B u`` and a safe set ``{h >= 0}``, the barrier condition
 is ``grad h . (f + B u) >= -alpha * h``. Write ``a = grad h . f`` for the drift term, ``g`` for the
 control channel and ``U`` for the actuation limit. If the effect matrix is known only up to a radius
-``Delta`` -- here an *identification* radius from §32's bounded-density-ratio model at level
+``Delta`` -- here an *identification* radius from the bounded-density-ratio model at level
 ``Gamma``, not a disturbance bound -- the guaranteed barrier derivative is ``a + g*u - d*|u|`` with
 ``d = Delta * ||grad h||``, and:
 
@@ -15,7 +15,8 @@ control channel and ``U`` for the actuation limit. If the effect matrix is known
   radius ``d`` is ``U * min(d, |g|)`` -- **first order in ``d`` while control authority lasts**,
   then flat: past ``d = |g|`` there is nothing left to lose;
 * at ``d >= |g|`` the robust-optimal action is exactly **zero**: with the sign of the channel
-  unidentified, acting cannot improve the guarantee (the safety analogue of §11's sign threshold);
+  unidentified, acting cannot improve the guarantee (the safety analogue of the sign threshold of
+  :func:`chc.research.regret.partial_id_control_certificate`);
 * certification is sharp at ``d* = |g| - D/U``, where ``D = -alpha*h - a`` is the deficit the drift
   leaves for the controller, which inverts to a largest tolerable sensitivity ``Gamma*``. Three
   regimes, and only the third is the interesting one: ``D <= 0`` (the drift alone is safe, no radius
@@ -24,7 +25,7 @@ control channel and ``U`` for the actuation limit. If the effect matrix is known
 
 The tightening itself is the standard robust-CBF one (Jankovic 2018; Kolathaya-Ames 2019). What is
 new here is the source of the radius and the resulting **order dichotomy**: the same effect error
-costs performance regret only at second order (§33, ``L_reg * e**2``): an interior optimum has a
+costs performance regret only at second order (``L_reg * e**2``): an interior optimum has a
 vanishing gradient, while a *binding constraint* has no envelope protection and pays at first
 order. Objectives are protected; constraints are not. That comparison lives in ``d < |g|``, which is
 also where any usable controller lives -- once the radius exceeds the channel the safety loss is
@@ -39,7 +40,7 @@ are only an outer bound. For an *asymmetric* scalar interval ``g_true in [g - d_
 two branch slopes differ (``g - d_lo`` right, ``g + d_hi`` left) and the zero-action rule reads in
 its general form: **acting is pointless exactly when the identified interval contains zero.**
 
-NumPy, like the rest of the §32-§40 sensitivity line, so it is independent of the JAX x64 flag.
+NumPy, like the rest of :mod:`chc.research.sensitivity`, so it is independent of the JAX x64 flag.
 Maxima ``validation/barrier_feasibility.mac``, Rocq ``proofs/barrier_feasibility.v``.
 """
 
@@ -154,7 +155,7 @@ def identification_radius_threshold(
 def barrier_gamma_star(threshold_radius: float, cvar_gap: float, grad_norm: float) -> float:
     """Largest MSM ``Gamma`` a safety certificate survives: ``(gap + c) / (gap - c)``.
 
-    Inverts §32's ``Delta(Gamma) = (Gamma-1)/(Gamma+1) * cvar_gap`` at ``threshold_radius``, with
+    Inverts ``Delta(Gamma) = (Gamma-1)/(Gamma+1) * cvar_gap`` at ``threshold_radius``, with
     ``c = threshold_radius / grad_norm`` the effect-space radius the barrier can absorb. The closed
     form is only valid on ``0 < c < cvar_gap``; outside it the four cases are genuinely different
     answers rather than edge-case noise, and the denominator would silently change sign:
@@ -244,7 +245,7 @@ def robust_safety_filter(
 
 @dataclass(frozen=True)
 class BarrierConfoundingCurve:
-    """Measured evidence for §40 over a sensitivity grid on one confounded safety problem."""
+    """Measured evidence for the first-order safety loss over a sensitivity grid on one problem."""
 
     gammas: tuple[float, ...]
     radii: tuple[float, ...]  # Delta(Gamma) * ||grad h||
@@ -255,7 +256,7 @@ class BarrierConfoundingCurve:
     last_certified_gamma: float  # the largest grid Gamma that actually certifies
     # log-log slope of the margin robust_barrier_margin loses in the effect error (theory: 1)
     safety_slope: float
-    # log-log slope of the §33 regret L_reg * error^2: 2 by construction, the order the theory
+    # log-log slope of the regret L_reg * error^2: 2 by construction, the order the theory
     # states, not a measurement of it
     regret_slope: float
     ok: bool
@@ -327,7 +328,7 @@ def barrier_confounding_certificate(
 
 @dataclass(frozen=True)
 class SafetyFilterBenchmark:
-    """Closed-loop evidence for the §40 claim that a regret-sized budget is not a safety budget."""
+    """Closed-loop evidence for the claim that a regret-sized budget is not a safety budget."""
 
     controllers: tuple[str, ...]
     violation_rate: tuple[float, ...]  # fraction of steps outside the safe set on the TRUE plant
@@ -366,9 +367,9 @@ def safety_filter_benchmark(
     The four rows are the point:
 
     * ``oracle`` filters with the true gain and a zero radius -- the best achievable safe tracking;
-    * ``safety_calibrated`` filters with the biased gain and the §32 radius at ``gamma``;
-    * ``regret_calibrated`` shrinks its action by the §33 accounting instead -- the radius spent on
-      the *objective*, which is what this library did everywhere before §40;
+    * ``safety_calibrated`` filters with the biased gain and the MSM radius at ``gamma``;
+    * ``regret_calibrated`` shrinks its action by the second-order regret accounting instead -- the
+      radius spent on the *objective*, which is what the pessimism line does;
     * ``greedy`` believes the biased gain and does nothing about it.
 
     Returns violation rate, worst excursion and tracking cost for each. Read the tracking column
@@ -414,7 +415,7 @@ def safety_filter_benchmark(
                     alpha_h=alpha * (x_limit - x),
                 )
             elif mode == "regret_calibrated":
-                u *= abs(b_hat) / (abs(b_hat) + radius)  # shrink by the §33 effect-error accounting
+                u *= abs(b_hat) / (abs(b_hat) + radius)  # the regret's effect-error shrink
             x = x + dt * (decay * x + b_true * u)
             excursion = x - x_limit
             violations += excursion > 0.0

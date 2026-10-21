@@ -1,4 +1,4 @@
-(* Rocq (Result 39 §B): the contraction certificate for the damped logit congestion map used by
+(* Rocq: the contraction certificate for the damped logit congestion map used by
    chc.games. The map is T(x) = x/2 + (m/2)*softmax(beta*(a + u - c*x/m)), and Maxima
    (validation/congestion_contraction.mac) reduces its Jacobian to
 

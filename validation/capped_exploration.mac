@@ -1,8 +1,9 @@
 /* THE PER-ROUND ACTION CAP: what it actually does to the optimal exploration schedule.
 
-   Result 20 / the minimax exploration bound left one item open and one conjecture unchecked:
-   "a per-round action cap -- which every real actuator has -- is what makes a taper the right
-   shape", and "a matching causal policy under a per-round action cap is still open".
+   The adaptive and minimax exploration bounds (validation/adaptive_exploration.mac,
+   validation/minimax_exploration.mac) left one conjecture unchecked and one item open: that a
+   per-round action cap -- which every real actuator has -- is what makes a taper the right
+   shape, and a matching causal policy under a per-round action cap.
 
    This file settles both, and the conjecture is WRONG.  The capped problem is CONVEX, and a
    convex objective that depends on the schedule only through its PREFIX SUMS is minimised by

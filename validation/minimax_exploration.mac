@@ -1,7 +1,8 @@
-/* DISCOVERY / derivation (CONTRIBUTION 3, the open item closed): the FULL LOCAL-MINIMAX sequential
-   lower bound  inf_pi sup_theta E R_T >= c_causal*sqrt(T)  with an EXPLICIT c_causal.
+/* DISCOVERY / derivation (the adaptive exploration bound, made minimax): the FULL LOCAL-MINIMAX
+   sequential lower bound  inf_pi sup_theta E R_T >= c_causal*sqrt(T)  with an EXPLICIT c_causal.
 
-   What result 20 already had: a SEQUENCE lower bound  sum_t[A*v_t + K/m_t] >= 2*sqrt(A*K*T/eta),
+   What adaptive_exploration.mac already had: a SEQUENCE lower bound
+   sum_t[A*v_t + K/m_t] >= 2*sqrt(A*K*T/eta),
    i.e. a bound over exploration SCHEDULES, inside an assumed per-round decomposition, with K an
    opaque "van-Trees floor numerator". What was open: the genuine inf over ALL policies and sup over
    theta, and K identified in primitives. Both are done here.
@@ -49,7 +50,7 @@ print("STEP 3 AM-GM SOS residual =", amgm,
 
 /* ---------------------------------------------------------------------------------------------
    STEP 4. THE CONSTANT. 2*sqrt(a*k) with a = A*sigma2/eta and k = A*gp^2*T collapses to a fully
-   explicit functional of primitives -- this is what result 20 left opaque as "K". */
+   explicit functional of primitives -- this is what adaptive_exploration.mac left opaque as "K". */
 /* the bound is 2*sqrt(a*k) = c_causal*sqrt(T), so c_causal^2 = 4*a*k/T. */
 c_sq       : ratsimp( 4*a*k / T )$
 c_claimed  : 2*A*abs(gp)*sqrt(sigma2)/sqrt(eta)$
@@ -73,10 +74,11 @@ print("STEP 5 liminf_T then liminf_H:", limit(limit(per_root, T, inf), H, inf),
       " (the I0 term dies with T, the prior term with H: the sharp constant survives)")$
 
 /* ---------------------------------------------------------------------------------------------
-   STEP 6. Consistency with result 20: its opaque K is identified here as K = A*gp^2*sigma2. */
-print("STEP 6 result-20 form 2*sqrt(A*K*T/eta) with K = A*gp^2*sigma2, residual of squares =",
+   STEP 6. Consistency with adaptive_exploration.mac: its opaque K is identified here as
+   K = A*gp^2*sigma2. */
+print("STEP 6 adaptive form 2*sqrt(A*K*T/eta) with K = A*gp^2*sigma2, residual of squares =",
       ratsimp( 4*A*(A*gp^2*sigma2)*T/eta - 4*a*k ),
-      " (0 confirms the new derivation reproduces result 20's rate, with K no longer opaque)")$
+      " (0 confirms the new derivation reproduces the adaptive rate, with K no longer opaque)")$
 
 /* ---------------------------------------------------------------------------------------------
    STEP 7. Monotonicity in the causal primitive: d/deta of the constant is negative, so worse
@@ -95,7 +97,8 @@ print("STEP 8 optimal budget M* =", ratsimp(Mstar),
       " (spent in round 1; then every later round already sits at the final information x*)")$
 
 /* ---------------------------------------------------------------------------------------------
-   STEP 9. THE COST OF TAPERING. The rate-optimal schedule of result 20, v_t = kappa/sqrt(t), has
+   STEP 9. THE COST OF TAPERING. The rate-optimal schedule of adaptive_exploration.mac,
+   v_t = kappa/sqrt(t), has
    sum_t v_t ~ 2*kappa*sqrt(T) and m_t ~ (eta/sigma2)*2*kappa*sqrt(t), so its cumulative cost is
        sqrt(T) * [ 2*A*kappa + K*sigma2/(kappa*eta) ],   K = A*gp^2,
    minimised over kappa at 2*sqrt(2*A*K*sigma2/eta). Against the floor 2*sqrt(A*K*sigma2/eta) that is

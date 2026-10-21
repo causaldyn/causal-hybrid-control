@@ -1,11 +1,12 @@
-(* Rocq: strong convexity UNDER interference -- combines result #3 (proofs/nonlinear_regret.v, the
-   Polyak-Lojasiewicz self-certifying bound grad^2/(2 mu)) with section A (proofs/interference_regret.v).
-   Marketplace interference is cannibalisation: the benefit of incentivising saturates, adding
-   convexity to the control objective, so the effective strong-convexity rises to mu + kappa_int
-   (kappa_int >= 0 the cannibalisation curvature; derived in validation/interference_convexity.mac).
-   Since the PL bound decreases in the convexity constant, cannibalising interference makes the
-   self-certifying regret certificate TIGHTER -- a curse-and-blessing duality: interference hurts
-   identification (section A) but helps the control certificate. *)
+(* Rocq: strong convexity UNDER interference -- combines the bound of proofs/nonlinear_regret.v (the
+   Polyak-Lojasiewicz self-certifying bound grad^2/(2 mu)) with interference
+   (proofs/interference_regret.v). Marketplace interference is cannibalisation: the benefit of
+   incentivising saturates, adding convexity to the control objective, so the effective
+   strong-convexity rises to mu + kappa_int (kappa_int >= 0 the cannibalisation curvature; derived
+   in validation/interference_convexity.mac). Since the PL bound decreases in the convexity
+   constant, cannibalising interference makes the self-certifying regret certificate TIGHTER -- a
+   curse-and-blessing duality: interference hurts identification but helps the control
+   certificate. *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.

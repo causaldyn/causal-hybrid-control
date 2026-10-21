@@ -1,9 +1,9 @@
 /* THE CONDITIONED RESIDUAL: what a Deep Galerkin solver must divide by before it may believe
    its own residual near the mean-field obstruction.
 
-   Result 49 measured a residual that FALLS as the answer degrades: on the anti-monotone LQ
-   mean-field game the control error grows to 111% while the normalised interior residual drops
-   6.7x, so a residual-based stopping rule reports its cleanest convergence exactly where the
+   chc.research.deep_galerkin.lq_mean_field_certificate measured a residual that FALLS as the
+   answer degrades: on the anti-monotone LQ mean-field game the control error grows to 111% while
+   the normalised interior residual drops 6.7x, so a residual-based stopping rule reports its cleanest convergence exactly where the
    solution is worst.  It recorded that as a warning and left the remedy open.
 
    This file closes it.  The fixed point is AFFINE (lq_mean_field.mac STEP 5), which is stronger
@@ -18,7 +18,7 @@
    horizon-continuous constant, and from below only where the adjoint projection of the defect
    stays away from zero, which is a property of the approximator (STEP 3d).
 
-   The last step derives what Result 49 could only measure: den has a SIMPLE zero at T*, so the
+   The last step derives what the certificate could only measure: den has a SIMPLE zero at T*, so the
    pole is exactly of order 1 -- the -0.998 exponent it fitted.
 
    Certificate: chc.research.deep_galerkin.lq_mean_field_certificate; proofs/mean_field_dwr.v. */
@@ -38,7 +38,7 @@ num : ratsimp( (v . Eg)[1][1] )$
 print("=== STEP 1: the perturbed two-point boundary value problem ===")$
 print("STEP 1a a numerical solve does not satisfy y' = M y; it satisfies y' = M y + g(t) for its")$
 print("        own defect g, with the INITIAL mean exact (the density carries rho(0,.) as a")$
-print("        structural factor -- Result 49 (e)), and the terminal consistency only up to eps")$
+print("        structural factor), and the terminal consistency only up to eps")$
 
 /* Verify variation of constants on a constant defect g, where the integral is in closed form. */
 g    : matrix([g1], [g2])$
@@ -101,7 +101,7 @@ print("        within (1 + |A| + |q c|) B while its error exceeds |num m0|/|den|
 print("        (proofs/mean_field_dwr.v, bounded_approximator_is_blind): the residual CANNOT")$
 print("        follow the error.  Whether it FALLS is not decided here; that is measured")$
 
-/* ===== STEP 5: the pole is SIMPLE -- Result 49's fitted -0.998 is exactly -1 ===== */
+/* ===== STEP 5: the pole is SIMPLE -- the fitted -0.998 is exactly -1 ===== */
 
 print("=== STEP 5: the order of the pole ===")$
 kk   : AA + qT*cT*b^2/r$
@@ -113,6 +113,6 @@ print("STEP 5a den(T) = cos(wT) - k sin(wT)/w and den'(T) =", dprime)$
 print("STEP 5b at the obstruction cot(w T*) = k/w, so den'(T*) =", atstar,
       " = -sin(w T*) (w^2 + k^2)/w")$
 print("STEP 5c sin(w T*) is nonzero there (cot is finite), and w^2 + k^2 > 0, so den has a SIMPLE")$
-print("        zero: |e| ~ C/|T* - T|.  Result 49 FITTED the pole exponent as -0.998 on a")$
+print("        zero: |e| ~ C/|T* - T|.  The certificate FITTED the pole exponent as -0.998 on a")$
 print("        five-point log-log regression; it is exactly -1, and the conditioned estimator")$
 print("        inherits the same simple pole -- which is why it tracks")$

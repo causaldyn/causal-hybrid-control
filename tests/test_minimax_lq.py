@@ -1,7 +1,7 @@
-"""chc.regret: the minimax LQ controller over a partially identified effect interval (§58).
+"""chc.regret: the minimax LQ controller over a partially identified effect interval.
 
-§33 showed by counterexample that certainty equivalence is not minimax for the LQ loss and left the
-robust controller unbuilt. These pin the closed form against brute force, against CE, and against
+Certainty equivalence is not minimax for the LQ loss (counterexample: ``proofs/minimax_lq.v``).
+These pin the closed form against brute force, against CE, and against
 the structural claim that makes the horizon case work -- the adversary never switches endpoints.
 """
 

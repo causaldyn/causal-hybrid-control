@@ -1,7 +1,7 @@
-"""chc.regret / chc.network_causal: folds on BOTH axes of a delayed-network panel (§59).
+"""chc.regret / chc.network_causal: folds on BOTH axes of a delayed-network panel.
 
-Result 51 showed the delayed-network covariance is separable only at ``lag = 0``; Result 52 designed
-folds on the space axis and said so. These pin the two-axis structure: the covariance is the
+The delayed-network covariance is separable only at ``lag = 0``, and the fold design law places
+folds on the space axis only. These pin the two-axis structure: the covariance is the
 simulator's, its Kronecker rank follows the commutation law, and the price of holding a fold
 constant in time is a function of the delay -- small at ``lag = 1`` and not small beyond it.
 
@@ -84,7 +84,7 @@ def test_time_axis_none_leaves_the_one_axis_design_untouched() -> None:
 
 
 def test_the_wrong_weight_and_the_wrong_axis_cross_over() -> None:
-    # two different mistakes: Result 52's cross-sectional WEIGHT, and a frozen time AXIS
+    # two different mistakes: the design law's cross-sectional WEIGHT, and a frozen time AXIS
     m, p = 8, 4
     shells = cycle_shells(m, 2)
     slice_penalty, axis_price = [], []

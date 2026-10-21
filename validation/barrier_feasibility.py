@@ -1,4 +1,4 @@
-"""Numeric cross-check of validation/barrier_feasibility.mac (Result 40), in NumPy not JAX.
+"""Numeric cross-check of validation/barrier_feasibility.mac, in NumPy not JAX.
 
 Nothing here uses the closed form under test as an oracle: every claim is checked against a brute
 force search, so an algebra slip in the module would show up rather than be reproduced.

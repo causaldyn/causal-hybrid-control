@@ -1,10 +1,11 @@
-(* Rocq (§35 minimax confounding-robust CONTROLLER): under an ASYMMETRIC loss (overshoot penalty al,
+(* Rocq (minimax confounding-robust CONTROLLER): under an ASYMMETRIC loss (overshoot penalty al,
    undershoot penalty be) the pessimism radius D SHIFTS the control gain and the robust controller
    STRICTLY beats certainty-equivalence (CE) in worst-case loss. Closed forms in
    validation/confounding_robust_control.mac (residual 0). We prove the control-relevant sign facts:
    the gain-shift factor is nonnegative (so the robust gain is <= CE -- more conservative), and the
    worst-case-loss improvement gap is nonnegative, strictly positive under real asymmetry + confounding,
-   and exactly zero when the loss is symmetric (recovering §33: pessimism = the CE centre). Algebraic;
+   and exactly zero when the loss is symmetric (recovering confounding_lq_regret.v: pessimism = the
+   CE centre). Algebraic;
    al,be,D,Gamma are the analyst's inputs, not proved. *)
 
 From Stdlib Require Import Reals.
@@ -100,7 +101,8 @@ Proof.
   - apply Rinv_0_lt_compat. apply rob_gap_denom_pos; lra.
 Qed.
 
-(* SYMMETRIC LOSS: al = be gives zero improvement -- pessimism = the CE centre (recovers §33). *)
+(* SYMMETRIC LOSS: al = be gives zero improvement -- pessimism = the CE centre (recovers
+   confounding_lq_regret.v). *)
 Lemma rob_gap_symmetric_zero :
   forall al tau bhat D : R, rob_gap al al tau bhat D = 0.
 Proof.
@@ -109,9 +111,10 @@ Proof.
   rewrite H0. unfold Rdiv. rewrite Rmult_0_l. reflexivity.
 Qed.
 
-(* UNDERSHOOT-DOMINANT branch (reviewer-8): the improvement gap is PIECEWISE in max(al,be). The first
-   branch (rob_gap, al>=be) has W_ce = al*tau*D/bhat; for be >= al -- undershoot costlier, e.g. Result
-   37's churn = 4x waste -- W_ce = be*tau*D/bhat and the sharp improvement is this SECOND branch. Both
+(* UNDERSHOOT-DOMINANT branch: the improvement gap is PIECEWISE in max(al,be). The first
+   branch (rob_gap, al>=be) has W_ce = al*tau*D/bhat; for be >= al -- undershoot costlier, e.g. the
+   marketplace benchmark's churn = 4x waste -- W_ce = be*tau*D/bhat and the sharp improvement is
+   this SECOND branch. Both
    are nonneg for bhat > D > 0 (identified effect sign) and strictly positive for D > 0, al <> be. *)
 Definition rob_gap_under (al be tau bhat D : R) : R :=
   be * tau * D * (be - al) * (bhat - D) / (bhat * ((al + be) * bhat + (al - be) * D)).

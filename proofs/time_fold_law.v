@@ -1,20 +1,20 @@
-(* Rocq: the algebraic core of the TIME-FOLD LAW (Result 53).
+(* Rocq: the algebraic core of the TIME-FOLD LAW.
 
    validation/time_fold_law.mac derives, for cross-fit folds that cut TIME under an AR(1)
    covariance Sigma[t,s] = phi^|t-s|: the fold partition enters the sandwich only through the
-   same-fold phi-weighted pair count (the affine reduction of Result 52, linear here because the
-   time functional is linear in Sigma), and the stationary mode score is the AR(1) spectral
-   density lambda(c) = (1-phi^2)/(1-2 phi c + phi^2), c = cos theta -- STRICTLY INCREASING in c
-   for every phi in (0,1). All spectral mass therefore belongs at c = -1: ALTERNATE time points
+   same-fold phi-weighted pair count (the affine reduction of fold_spectrum_law.v, linear here
+   because the time functional is linear in Sigma), and the stationary mode score is the AR(1)
+   spectral density lambda(c) = (1-phi^2)/(1-2 phi c + phi^2), c = cos theta -- STRICTLY INCREASING
+   in c for every phi in (0,1). All spectral mass therefore belongs at c = -1: ALTERNATE time points
    between folds at every phi; there is no threshold and no stripe regime, unlike the spatial law
    (fold_spectrum_law.v), because this kernel is completely monotone in the lag. The lag-convexity
-   (second difference phi^r (1-phi)^2 >= 0) is Hubbard's most-homogeneous-ground-state hypothesis
-   at density 1/2, which is the alternating configuration.
+   (second difference phi^r (1-phi)^2 >= 0) is Hubbard's most-homogeneous-ground-state hypothesis at
+   density 1/2, which is the alternating configuration.
 
    Honest scope: Stdlib has no matrices, so what is proved here is the scalar spine -- the
    denominator floor, the cross-multiplied strict ordering of mode scores (division-free form; the
    Maxima file carries the division), and the convexity identity with symbolic nat lag. The
-   finite-path argmin/argmax facts are exhaustive enumeration in the research log (p <= 14). *)
+   finite-path argmin/argmax facts are exhaustive enumeration (p <= 14), not shipped here. *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.

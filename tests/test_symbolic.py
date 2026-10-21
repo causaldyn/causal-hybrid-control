@@ -53,7 +53,7 @@ def test_extraction_recovers_a_planted_closed_form() -> None:
 
 
 def test_extraction_certificate_recovers_the_truth_and_prices_both_boundaries() -> None:
-    # Result 46 (proofs/symbolic_kan.v). RBFKANLayer advertised "an extractable 1D curve" with no
+    # proofs/symbolic_kan.v. RBFKANLayer advertised "an extractable 1D curve" with no
     # extraction API; this checks that the extraction has a right answer AND that the two places it
     # stops working are measured rather than assumed away. Each block can fail on its own.
     curve = symbolic_extraction_certificate()

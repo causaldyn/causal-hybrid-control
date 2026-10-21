@@ -1,6 +1,7 @@
-(* Rocq + MathComp: THE MATRIX STEPS OF RESULT 44, and the positive-definite side of Result 45.
+(* Rocq + MathComp: THE MATRIX STEPS OF ce_explicit_constants.v, and the PD side of
+   conjugate_time.v.
 
-   proofs/ce_explicit_constants.v proves the SCALAR shadow of each step of Result 44, because Stdlib
+   proofs/ce_explicit_constants.v proves the SCALAR shadow of each step, because Stdlib
    has no matrices. This file proves the matrix statements for any state dimension n and action
    dimension m, over an abstract field (identities) or real field (order):
 
@@ -16,15 +17,15 @@
    - summed_gain_gap_explicit_bound / ce_regret_explicit_bound_matrix: the certainty-equivalence
      regret over ANY horizon T is at most 2 (hi/lo) ||R_K|| L_K^2 |x0|^2 / theta * d^2 -- the
      scalar shadow's constant C, now for the matrix loop.
-   - no_conjugate_point_with_a_psd_cost (Result 45): for Q >= 0, R > 0 and P0 >= 0 every iterate of
-     the discrete Riccati recursion P_{k+1} = Ric(P_k) stays symmetric and PSD, and every
-     R + B'P_kB stays positive definite, so the recursion never breaks down.
+   - no_conjugate_point_with_a_psd_cost (proofs/conjugate_time.v): for Q >= 0, R > 0 and P0 >= 0
+     every iterate of the discrete Riccati recursion P_{k+1} = Ric(P_k) stays symmetric and PSD, and
+     every R + B'P_kB stays positive definite, so the recursion never breaks down.
 
    Cited, not proved. Eigenvalue and norm constants (lo, hi, ||R_K||, the contraction modulus)
    enter as the quadratic-form inequalities they denote, because MathComp's spectral theorem is
    stated over algebraically closed fields only. The gain perturbation bound ||K^ - K|| <= L_K d --
    uniform validity of L_K on the ball (Konstantinov-Petkov-Christov-Angelova 1993; Sun 1998) --
-   enters as the hypothesis on the gain gap, as in the scalar file. Result 45's continuous-time
+   enters as the hypothesis on the gain gap, as in the scalar file. The continuous-time
    conjugate time is the escape time of a Riccati ODE, which is analysis, and stays in Maxima. *)
 
 Set Warnings "-notation-overridden,-ambiguous-paths".
@@ -506,7 +507,7 @@ Qed.
 
 End Theorem44.
 
-(* ===== (F) NO CONJUGATE POINT UNDER A POSITIVE COST, in discrete time (Result 45's PD side) ===== *)
+(* ===== (F) NO CONJUGATE POINT UNDER A POSITIVE COST, in discrete time (conjugate_time.v) ===== *)
 Section RiccatiRecursion.
 Variable R : realFieldType.
 Variables n m : nat.

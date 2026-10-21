@@ -1,5 +1,6 @@
-(* Rocq (BENCHMARKING Gamma): Result 32 ships Gamma as the analyst's unfalsifiable input. This file
-   proves the algebra that makes it *calibrated* anyway, as derived in validation/gamma_benchmark.mac.
+(* Rocq (BENCHMARKING Gamma): the MSM radius takes Gamma as the analyst's unfalsifiable input. This
+   file proves the algebra that makes it *calibrated* anyway, as derived in
+   validation/gamma_benchmark.mac.
 
    Three groups. (i) The sharp MSM bound collapses: the shipped three-constant expression equals a
    single blend `mu + (1 - 1/g)*(cp - mu)`, which is monotone in g, equals mu at g = 1, and

@@ -678,7 +678,7 @@ def solve_mfg_dgm(
 
 @dataclass(frozen=True)
 class MeanFieldCurve:
-    """Evidence for Result 49 -- the coupled solve, and what its own residual fails to see."""
+    """Evidence for the LQ mean-field closed form: the coupled solve and what its residual hides."""
 
     closed_form_hjb_residual: float
     closed_form_fp_residual: float
@@ -797,13 +797,14 @@ def _model_traces(
 def dual_weighted_error_estimate(
     game: LQMeanFieldGame, model: MeanFieldDGM, n_time: int = 401
 ) -> float:
-    """An a-posteriori estimate of ``|S_hat(0) - S(0)|`` from the model alone -- Result 55.
+    """An a-posteriori estimate of ``|S_hat(0) - S(0)|`` from the model alone.
 
-    Result 49 measured a residual that FALLS as the answer degrades near the mean-field obstruction,
-    so a residual-based stopping rule reports its cleanest convergence exactly where the solution is
-    worst (under Adam; the fall is the optimiser's, see below). The remedy is not a bigger residual
-    budget but the right functional. Because the reduced fixed point is AFFINE, the error is an
-    exact quotient (``validation/mean_field_dwr.mac`` STEPs 2-3, ``proofs/mean_field_dwr.v``)::
+    :func:`lq_mean_field_certificate` measured a residual that FALLS as the answer degrades near
+    the mean-field obstruction, so a residual-based stopping rule reports its cleanest convergence
+    exactly where the solution is worst (under Adam; the fall is the optimiser's, see below). The
+    remedy is not a bigger residual budget but the right functional. Because the reduced fixed
+    point is AFFINE, the error is an exact quotient (``validation/mean_field_dwr.mac`` STEPs 2-3,
+    ``proofs/mean_field_dwr.v``)::
 
         S_hat(0) - S(0) = eps/den(T) - int_0^T z(s).g(s) ds,   z(s) = Phi(T-s)^T v / den(T)
 
@@ -1042,7 +1043,7 @@ def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurv
 
 @dataclass(frozen=True)
 class BlindnessSweep:
-    """Result 55 (d): one solve per horizon on the anti-monotone instance, scored three ways.
+    """One solve per horizon on the anti-monotone instance, scored three ways.
 
     Every score is read off the trained model; ``exact_slopes``, ``errors`` and ``control_errors``
     need the closed form, and are what the scores are judged by. The ranks are Spearman's, each
@@ -1157,7 +1158,7 @@ class FinitePopulationGap:
 def finite_population_gap_certificate(
     replicates: int = 400, seed: int = 0, n_step: int = 400
 ) -> FinitePopulationGap:
-    """Price Result 49's modelling gap: the Fokker-Planck density is the ``N -> infinity`` limit.
+    """Price the mean-field model's gap: the Fokker-Planck density is the ``N -> infinity`` limit.
 
     Four arms, in increasing order of what they can tell you.
 
@@ -1307,8 +1308,9 @@ class CongestedMeanFieldGame:
     That is the smallest change that breaks :meth:`LQMeanFieldGame.solve`'s closed form without
     breaking the reduction it rests on, which is what makes it a usable gate for a *generic*
     dual-weighted estimator. At ``congestion = 0`` it is the LQ game exactly, and
-    :func:`adjoint_weighted_error` is then exact rather than first-order -- Result 55, recovered as
-    a special case. Derived in ``validation/nonlinear_dwr.mac``.
+    :func:`adjoint_weighted_error` is then exact rather than first-order --
+    :func:`dual_weighted_error_estimate`, recovered as a special case. Derived in
+    ``validation/nonlinear_dwr.mac``.
     """
 
     base: LQMeanFieldGame
@@ -1382,7 +1384,8 @@ def adjoint_weighted_error(
 ) -> float:
     """Estimate ``J(yhat) - J(y)`` for ``J(y) = y(0)[free_component]``, from ``yhat`` alone.
 
-    The generic form of Result 55. Pairing the linearised primal with the transposed adjoint gives
+    The generic form of :func:`dual_weighted_error_estimate`. Pairing the linearised primal with
+    the transposed adjoint gives
     ``d/dt (z . delta) = z . g`` for *any* field (``validation/nonlinear_dwr.mac`` STEP 2, residual
     0), and integrating it across the interval leaves
 
@@ -1490,10 +1493,10 @@ def nonlinear_dwr_certificate(
 ) -> NonlinearDwrCurve:
     """Measure the generic dual-weighted estimator, and price the linearisation it rests on.
 
-    Result 55 shipped an *exact* error quotient for the LQ mean-field game and recorded that the
-    exactness belonged to the affine reduced problem. This replaces the hand-written affine adjoint
-    with :func:`jax.vjp` of whatever field is handed over, and measures the four statements that
-    makes, on a manufactured error ``yhat = y + eta p`` whose true value is known exactly.
+    :func:`dual_weighted_error_estimate` is an *exact* error quotient for the LQ mean-field game,
+    and its exactness belongs to the affine reduced problem. This replaces the hand-written affine
+    adjoint with :func:`jax.vjp` of whatever field is handed over, and measures the four statements
+    that makes, on a manufactured error ``yhat = y + eta p`` whose true value is known exactly.
 
     The perturbation is manufactured rather than taken from a trained network deliberately: a
     network's error is not known, so it could not separate "the estimate is first-order" from "the
@@ -1529,7 +1532,8 @@ def nonlinear_dwr_certificate(
     refined = affine_relative(2 * n_time - 1)
     quadrature_ratio = float(np.mean(affine_errors) / np.mean(refined))
 
-    # STEP 3e: at congestion 0 the adjoint's free component at t = 0 IS Result 55's den(T). Shoot
+    # STEP 3e: at congestion 0 the adjoint's free component at t = 0 IS the LQ obstruction
+    # denominator den(T) of dual_weighted_error_estimate. Shoot
     # from S(0) + eta instead of perturbing the trajectory: the result still solves the ODE, so the
     # interior defect drops out and the estimate is exactly eps/z(0)[1]. On an affine field eps is
     # den(T) * eta exactly, so the estimate over eta measures den(T)/z(0)[1] and nothing else --
@@ -1583,8 +1587,8 @@ def nonlinear_dwr_certificate(
                 - truth
             )
         )
-        # And the affine field for both, which is what the Result 55 estimator does if pointed at
-        # a congested game: its transition matrix is the LQ one and cannot be told otherwise.
+        # And the affine field for both, which is what dual_weighted_error_estimate does if pointed
+        # at a congested game: its transition matrix is the LQ one and cannot be told otherwise.
         wrong_model.append(
             abs(
                 adjoint_weighted_error(

@@ -61,7 +61,7 @@ def costate_norms(dyn: Dynamics, x0: Array, us: Array, dt: float, cost: Quadrati
     ``dJ/dx_{k+1}`` along this trajectory, so ``||lambda_{k+1}||`` is exactly the first-order
     sensitivity of the objective to a perturbation of the state at step ``k+1`` -- which is what
     turns a bound on a per-step *transition* error into a bound on the *objective*
-    (:class:`chc.uncertainty.ConfoundingRobustPenalty`, Result 38 (b)).
+    (:class:`chc.uncertainty.ConfoundingRobustPenalty`).
 
     Local by construction, and that is the honest reading: these are derivatives at one trajectory,
     so the bound they license is a first-order one about a neighbourhood of it, not a global
@@ -125,7 +125,8 @@ def perturbation_cost_weights(
 ) -> Array:
     """Weights ``w_k`` with ``sum_k w_k * radius * ||u_k|| >= |J(perturbed) - J(reference)|``.
 
-    The object Result 38 (b) asks for. A support model licenses a bound on the *field*:
+    The multiplier :meth:`chc.uncertainty.ConfoundingRobustPenalty.certified` needs. A support
+    model licenses a bound on the *field*:
     ``||f_true(x, u) - f_hat(x, u)|| <= radius * ||u||``. This turns that into a bound on the
     *objective*, at the actions it is handed, in three pieces:
 

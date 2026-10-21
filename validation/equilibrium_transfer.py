@@ -1,4 +1,4 @@
-"""Numeric cross-check of validation/equilibrium_transfer.mac (Result 39), in NumPy not JAX.
+"""Numeric cross-check of validation/equilibrium_transfer.mac, in NumPy not JAX.
 
 Independent of the shipped solver, so it checks the mathematics rather than the implementation:
 

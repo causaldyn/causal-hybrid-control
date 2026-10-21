@@ -14,9 +14,10 @@ state-dependent matrix. With nuisances ``g(x,z) = E[y | x,z]`` and ``m(x,z) = E[
 
 so the estimator regresses the **residualised state rate on the residualised action**, with
 K-fold cross-fitting of both nuisances. Neyman orthogonality is what buys the guarantee: the
-channel error is *second* order in nuisance error, which is exactly Results 18 (order transfer
-``p -> 2p``) and 19 (debias every channel via cross-fit Robinson DML). This module is those
-results' missing consumer, not a new one.
+channel error is *second* order in nuisance error, which is exactly the order transfer
+``p -> 2p`` of :func:`chc.research.regret.composition_transfer_certificate` and the per-channel
+debiasing by cross-fit Robinson DML of :func:`chc.research.regret.multichannel_control_certificate`.
+This module is those results' missing consumer, not a new one.
 
 HONEST SCOPE, four limits worth stating before the code:
 
@@ -1396,9 +1397,11 @@ def fit_causal_residual(
             says the actions are confounded.
         degree: the feature degree of the drift, and of the channel unless ``channel_degree``
             says otherwise. ``1`` fits an affine drift and, by default, a channel affine in the
-            state, which contains the constant channel §18/§19 cover without being restricted to it.
+            state, which contains the constant channel the orthogonality results cover without
+            being restricted to it.
         channel_degree: the feature degree of the channel; ``None`` is ``degree``. ``0`` fits the
-            constant channel §18/§19 cover beside a drift of degree ``degree``: ``n m``
+            constant channel the orthogonality results cover beside a drift of degree ``degree``:
+            ``n m``
             coefficients where the affine channel has ``n m (n + 1)``, and as many fewer tangents
             in the ``rk4`` fixed point. An affine channel is as accurate as a constant one only
             where the log is centred. On eight logs of :class:`chc.zones.ZoneMarketSystem`, against
@@ -3095,7 +3098,7 @@ def _interference(
     return InterferenceCheck(coefficient, t, p_value, int(np.sum(keep)), count)
 
 
-# --- Result 41 (A7): what a tracked log identifies, and what it does not ---
+# --- What a tracked log identifies, and what it does not ---
 
 
 @dataclass(frozen=True)
@@ -3118,7 +3121,7 @@ def closed_loop_gain_attribution(
 ) -> ClosedLoopAttribution:
     """Attribute a control-affine fit's coefficients to the controller and to the plant.
 
-    Result 41 left one item open: *why* the interaction coefficient ``b1`` of
+    The question is *why* the interaction coefficient ``b1`` of
     ``dx/dt = d + a*x + (b0 + b1*x)*u`` comes out large and negative on a setpoint-tracked zone.
     The answer is a property of the log, not of the plant. A proportional loop
     ``u = gain*(setpoint - x) + u0`` puts every sample on an affine manifold ``x = c + m*u`` with
@@ -3128,8 +3131,8 @@ def closed_loop_gain_attribution(
         d + a*x + (b0 + b1*x)*u  =  (d + a*c) + (a*m + b0 + b1*c)*u + (b1*m)*u^2
 
     Only ``b1`` reaches the ``u^2`` term, so **``b1`` is the identified coefficient and the pole is
-    not** -- the inverse of the usual reading, and the reason Result 41 (a) found the reported pole
-    to be a units artefact while ``lambda(u) = a + b1*u`` held. Matching against an observed
+    not** -- the inverse of the usual reading, and the reason the reported pole is a units artefact
+    while ``lambda(u) = a + b1*u`` holds. Matching against an observed
     response ``A + B*u + C*u^2`` gives
 
         ``b1 = C/m = -gain*C``,
@@ -3215,7 +3218,8 @@ def closed_loop_attribution_certificate(
     Arm B: the plant has **no** interaction, but its response carries a ``u^2`` term the fitted
     class cannot represent. The fit answers with ``b1 = -gain*curvature``: a coefficient that is
     entirely an artefact of misspecification amplified by the loop, growing linearly with the
-    controller's gain. That is the mechanism behind Result 41's large negative ``b1``, and why
+    controller's gain. That is the mechanism behind a large negative ``b1`` on a tracked log, and
+    why
     the number cannot be read as authority-falls-with-temperature without checking the budget.
 
     The exploration sweep is the remedy: variation off the manifold restores the design's rank and

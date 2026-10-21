@@ -1,4 +1,4 @@
-/* DISCOVERY / derivation (CONTRIBUTION 2, END-TO-END): compose the cluster-SAMPLING error with the two
+/* DISCOVERY / derivation (multichannel, END-TO-END): compose the cluster-SAMPLING error with the two
    nuisance channels into the downstream control regret. On a clustered network with G clusters, the
    cross-fit two-channel Robinson-DML total-effect estimate obeys
        ||B_hat - B|| <= s + e_d + e_s,

@@ -1,9 +1,9 @@
 (* Rocq: THE CONJUGATE-TIME OBSTRUCTION -- the horizon past which every chc.regret constant ceases
-   to exist. Third member of the family of Result 13 (the active-set kink, where the constrained CE
-   regret's curvature collapses) and Result 14 (the confounded turnpike gap): places where the smooth
+   to exist. Third member of the family of constrained_ce_regret.v (the active-set kink, where the constrained CE
+   regret's curvature collapses) and confounded_turnpike.v (the confounded turnpike gap): places where the smooth
    machinery the regret bounds assume quietly stops applying.
 
-   Result 14 says a long horizon is BENIGN -- the discounted confounded gap stays finite. That holds
+   confounded_turnpike.v says a long horizon is BENIGN -- the discounted confounded gap stays finite. That holds
    for a POSITIVE-DEFINITE stage cost. For an INDEFINITE one (a state that is rewarded rather than
    penalised: growth, market share, an inverted pendulum's angle) the second-order sufficient
    condition fails at a FINITE horizon. The two are the two sides of the definiteness hypothesis, and
@@ -127,7 +127,8 @@ Qed.
 
 (* Differentiating the closed form at fixed horizon turns the tangent into a sec^2, so the
    SENSITIVITY dk/db has a DOUBLE pole (mac STEP 5). This is the object every chc.regret constant is
-   built on -- L_K in Result 44, du_star/db in Results 18/20 -- so this is where the damage is. *)
+   built on -- L_K in ce_explicit_constants.v, du_star/db in composition_transfer.v and
+   adaptive_exploration.v -- so this is where the damage is. *)
 Definition l_k_pole (kappa eps : R) : R := kappa / (eps * eps).
 
 Theorem sensitivity_pole_is_double : forall kappa eps,
@@ -150,8 +151,8 @@ Proof.
   nra.
 Qed.
 
-(* Result 44 has C proportional to L_K^2, so a double pole in the sensitivity is a FOURTH-order pole
-   in the regret constant: the object the whole C1 line multiplies. *)
+(* ce_explicit_constants.v has C proportional to L_K^2, so a double pole in the sensitivity is a FOURTH-order pole
+   in the regret constant: the object every order-transfer bound multiplies. *)
 Definition c_regret_pole (kap kappa eps : R) : R := kap * (l_k_pole kappa eps) * (l_k_pole kappa eps).
 
 Theorem regret_constant_pole_is_fourth_order : forall kap kappa eps,

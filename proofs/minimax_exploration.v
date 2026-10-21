@@ -1,9 +1,10 @@
-(* Rocq (CONTRIBUTION 3, the open item closed): the FULL LOCAL-MINIMAX sequential lower bound
-   inf_pi sup_theta E R_T >= c_causal * sqrt T, with c_causal EXPLICIT in primitives.
+(* Rocq (the open item of adaptive exploration closed): the FULL LOCAL-MINIMAX sequential lower
+   bound inf_pi sup_theta E R_T >= c_causal * sqrt T, with c_causal EXPLICIT in primitives.
 
-   What result 20 proved was a SEQUENCE bound: over exploration schedules, inside an assumed per-round
-   decomposition A*v_t + K/m_t, with K an opaque "van-Trees floor numerator". Two things were open: the
-   inf over ALL policies (not schedules), and K in primitives. Both are settled here.
+   What proofs/adaptive_exploration.v proved was a SEQUENCE bound: over exploration schedules,
+   inside an assumed per-round decomposition A*v_t + K/m_t, with K an opaque "van-Trees floor
+   numerator". Two things were open: the inf over ALL policies (not schedules), and K in primitives.
+   Both are settled here.
 
    (A) is the step that upgrades schedule-class to minimax: for ANY policy, splitting the action into its
    conditional mean and conditional variance is an identity, so no template is assumed. (B) is the AM-GM
@@ -108,10 +109,11 @@ Qed.
    ATTAINED by a front-loaded design (spend the whole budget in round one), and c_causal is sharp rather
    than merely an order. The empirical side of this is the certificate's burst/floor ratio -> 1. *)
 
-(* (H) THE COST OF TAPERING. The rate-optimal 1/sqrt(t) schedule of result 20 has cumulative cost
-   sqrt T * (2*A*kappa + K*sigma2/(kappa*eta)), minimised over kappa at 2*sqrt(2*A*K*sigma2/eta), against
-   the floor 2*sqrt(A*K*sigma2/eta). Tapering is therefore rate-optimal but NOT constant-optimal, and the
-   gap is exactly sqrt 2 -- stated on squares so no square root is needed. *)
+(* (H) THE COST OF TAPERING. The rate-optimal 1/sqrt(t) schedule of adaptive_exploration.v has
+   cumulative cost sqrt T * (2*A*kappa + K*sigma2/(kappa*eta)), minimised over kappa at
+   2*sqrt(2*A*K*sigma2/eta), against the floor 2*sqrt(A*K*sigma2/eta). Tapering is therefore
+   rate-optimal but NOT constant-optimal, and the gap is exactly sqrt 2 -- stated on squares so no
+   square root is needed. *)
 Theorem taper_gap_is_sqrt_two : forall A K sigma2 eta ctaper cfloor,
   0 < eta ->
   ctaper * ctaper = 8 * A * K * sigma2 / eta ->

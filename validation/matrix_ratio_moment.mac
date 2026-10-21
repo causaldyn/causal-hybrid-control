@@ -1,20 +1,20 @@
-/* DISCOVERY / derivation: the EXACT MATRIX RATIO MOMENT (Result 54). Result 51 (l) computed
-   E[X/Y^2] for the SCALAR cross-fit estimator exactly and (j') recorded the two-channel
-   estimator as blocked: the object there is the MATRIX V = E[(X'AX)^{-1} X'A Sigma A X
+/* DISCOVERY / derivation: the EXACT MATRIX RATIO MOMENT. chc.research.regret.exact_ratio_moment
+   computes E[X/Y^2] for the SCALAR cross-fit estimator exactly; the two-channel estimator was
+   blocked there: the object is the MATRIX V = E[(X'AX)^{-1} X'A Sigma A X
    (X'AX)^{-1}] for a Gaussian n x 2 regressor block X -- the exact sampling variance of the
    two-channel (direct + spillover) DML point estimate at fixed design size. The route that
    unblocks it: (i) for q = 2, M^{-1} = adj(M)/det(M), so V = E[adj(M) N adj(M)/det(M)^2] with
    every adj entry a QUADRATIC FORM in vec(X) (STEPs 1-2); (ii) det(M)^{-2} has the
    Ingham-Siegel representation det(M)^{-2} = (2/pi) int_{T>0} det(T)^{1/2} etr(-TM) dT over the
    2x2 positive-definite cone -- the matrix generalisation of the scalar resolvent
-   1/y^2 = int t e^{-ty} dt that (l) is built on (STEPs 4-5); (iii) under the tilt etr(-TM) the
+   1/y^2 = int t e^{-ty} dt that the scalar moment is built on (STEPs 4-5); (iii) under the tilt etr(-TM) the
    law of vec(X) stays Gaussian, so each entry needs only the Gaussian moment of a PRODUCT OF
    THREE quadratic forms, derived from Isserlis' 15 pairings rather than cited (STEP 3):
        E[q1 q2 q3] = t1 t2 t3 + 2(t1 c23 + t2 c13 + t3 c12) + 4(tr(K1 S K2 S K3 S)
                      + tr(K1 S K3 S K2 S)),
-   t_i = tr(K_i S), c_ij = tr(K_i S K_j S). The numeric evaluator and its anchors (Ingham-Siegel
-   constant to 8 digits, Wishart E[M^{-1}] = I/(n-3), 1M-draw MC within 1.6 SE) live in the
-   research log. Maxima is the source of truth for the algebra. */
+   t_i = tr(K_i S), c_ij = tr(K_i S K_j S). The numeric evaluator is
+   chc.research.regret.exact_matrix_ratio_moment; tests/test_regret.py checks it against the
+   Wishart anchor E[M^{-1}] = I/(n-3). Maxima is the source of truth for the algebra. */
 display2d : false$
 
 /* STEP 1: the 2x2 adjugate cancels M exactly: adj(M) . M = det(M) I. */
@@ -63,7 +63,7 @@ rhs3 : t1*t2*t3 + 2*(t1*c23_ + t2*c13_ + t3*c12_) + 4*(d123 + d132)$
 res3 : ratsimp(lhs3 - rhs3)$
 print("STEP 3   Isserlis(15 pairings) minus trace formula =", res3, "  (0 confirms)")$
 
-/* STEP 4: the q = 1 Ingham-Siegel is the scalar resolvent of Result 51 (l). */
+/* STEP 4: the q = 1 Ingham-Siegel is the scalar resolvent of the scalar exact moment. */
 assume(y > 0)$
 res4 : ratsimp(integrate(t * exp(-t * y), t, 0, inf) - 1/y^2)$
 print("STEP 4   int t e^{-ty} dt - 1/y^2 =", res4, "  (0 confirms the (l) kernel is the q=1 case)")$

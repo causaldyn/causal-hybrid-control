@@ -1,4 +1,5 @@
-/* DISCOVERY (CONTRIBUTION 2, exposure-map generalization): the marketplace network model
+/* DISCOVERY (multi-channel network control, exposure-map generalization): the marketplace
+   network model
        x_{t+1} = A x_t + (B_d + B_s W) u_t + eps,     B_eff(W) = B_d + B_s W,
    with a zonal exposure/migration matrix W (Aronow-Samii 2017 exposure map; Bramoulle-Djebbari-Fortin
    2009 SAR / linear-in-means; Munro, Xu & Wager 2025 and Wager & Xu 2021 market equilibrium; Hays &

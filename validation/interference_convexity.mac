@@ -1,5 +1,6 @@
-/* DISCOVERY / derivation: strong convexity UNDER interference -- combines result #3 (the
-   Polyak-Lojasiewicz self-certifying regret bound) with section A (interference). Marketplace
+/* DISCOVERY / derivation: strong convexity UNDER interference -- combines the
+   Polyak-Lojasiewicz self-certifying regret bound (nonlinear_regret.mac) with interference.
+   Marketplace
    interference is congestion/cannibalisation: the benefit of incentivising saturates (concave
    benefit), which -- subtracted from a convex effort cost -- ADDS convexity. So the effective
    strong-convexity of the control objective RISES, mu_eff = mu + kappa_int (kappa_int >= 0 the

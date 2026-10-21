@@ -1,4 +1,4 @@
-/* Result 39 §B -- the contraction / uniqueness certificate for the damped logit congestion map.
+/* The contraction / uniqueness certificate for the damped logit congestion map.
 
    chc.games solves the agent equilibrium by iterating the DAMPED best-response map
 

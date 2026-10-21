@@ -1,4 +1,4 @@
-(* Rocq (Result 39): the equilibrium layer of chc.games is order-preserving and PERFECTLY
+(* Rocq: the equilibrium layer of chc.games is order-preserving and PERFECTLY
    CONDITIONED, and the contraction modulus of the damped solver is NOT its conditioning.
 
    Setting (Maxima: validation/equilibrium_transfer.mac). S is the undamped logit best response and

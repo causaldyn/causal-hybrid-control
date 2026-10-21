@@ -1,10 +1,11 @@
-/* Result 40 -- SAFETY under a partially identified control effect: the first-order/second-order
+/* SAFETY under a partially identified control effect: the first-order/second-order
    dichotomy, and the sharp confounding level at which a safety certificate dies.
 
    Setting. Control-affine plant xdot = f(x) + B u, safe set {h(x) >= 0}, class-K margin alpha*h.
    The control-effect matrix B is NOT known: it was estimated from confounded observational logs,
    so a marginal sensitivity model at level Gamma leaves it only SET-identified inside a ball of
-   radius Delta(Gamma) (that radius is §32; it is 0 at Gamma = 1 and increases in Gamma).
+   radius Delta(Gamma) (chc.uncertainty.confounding_robust_inflation, derived in
+   validation/confounding_robust_cvar.mac; it is 0 at Gamma = 1 and increases in Gamma).
 
    The robust CBF condition is standard (Jankovic 2018; Kolathaya-Ames ISSf 2019): matched
    uncertainty of size Delta subtracts Delta*||grad h||*||u|| from the barrier derivative. What is
@@ -20,8 +21,9 @@
          the drift leaves for the controller to cover -- a SHARP threshold, hence a sharp Gamma*,
          but only in the regime 0 < D <= U*|g|; blocks 8 and 9 enumerate the degenerate ones;
      (4) and the contrast that makes it a result rather than an inequality: the SAME effect error
-         costs performance regret only at SECOND order (§33: R = L_reg*e^2), because an interior
-         optimum has a vanishing gradient (envelope), while a BINDING CONSTRAINT has no envelope
+         costs performance regret only at SECOND order (R = L_reg*e^2,
+         validation/confounding_lq_regret.mac), because an interior optimum has a vanishing gradient
+         (envelope), while a BINDING CONSTRAINT has no envelope
          protection and pays at FIRST order. Objectives are protected; constraints are not.
 
    Cross-checked numerically in validation/barrier_feasibility.py, proved in
@@ -50,7 +52,7 @@ print("    => u=0 optimal exactly when g-d <= 0, i.e. the sign of the channel is
 authority(dd) := (g - dd)/g$
 print("(2) retained authority at d=0:", ratsimp(authority(0)),
       " derivative in d:", ratsimp(diff(authority(d), d)))$
-/* First order in d: the derivative is a nonzero constant -1/g, uniformly. Contrast the §33
+/* First order in d: the derivative is a nonzero constant -1/g, uniformly. Contrast the
    performance regret, whose derivative at e = 0 VANISHES. */
 regret(ee) := Lreg*ee^2$
 print("    performance regret derivative at e=0:", ratsimp(subst(0, ee, diff(regret(ee), ee))),
@@ -70,8 +72,8 @@ print("    feasibility holds with equality at d* (residual must be 0):", check_d
 print("    d* when D = 0:", ratsimp(subst(-alpha*hval, a, dstar)))$
 
 /* --------------------------------------------------- (4) inverting the threshold to a Gamma* */
-/* §32: Delta(Gamma) = (Gamma-1)/(Gamma+1)*gap, increasing, zero at Gamma = 1. With d = nh*Delta,
-   the critical Gamma solves nh*(G-1)/(G+1)*gap = dstar. */
+/* The MSM radius: Delta(Gamma) = (Gamma-1)/(Gamma+1)*gap, increasing, zero at Gamma = 1.
+   With d = nh*Delta, the critical Gamma solves nh*(G-1)/(G+1)*gap = dstar. */
 gstar : rhs(first(solve(nh*(G - 1)/(G + 1)*gap = ds, G)));
 print("(4) Gamma* =", ratsimp(gstar));
 check_gstar : ratsimp(nh*(gstar - 1)/(gstar + 1)*gap - ds);
@@ -103,8 +105,8 @@ print("(6) safety loss / performance loss =", ratsimp((U*e)/(Lreg*e^2)),
 /* M(d) = a + (g-d)_+ * U. Relative to a perfectly identified channel the loss is U*(g - (g-d)_+),
    which is U*d only on d <= g and constant U*g above it. Writing "affine in d, constant slope U"
    without that qualifier is wrong globally -- past d = g the guarantee is already gone and there is
-   nothing left to lose. The order dichotomy against §33 therefore lives on d < g, which is also the
-   only band where a controller is usable at all. */
+   nothing left to lose. The order dichotomy against the regret therefore lives on d < g, which is
+   also the only band where a controller is usable at all. */
 loss_lo : ratsimp(U*g - (g - d)*U);              /* d <= g branch: the (.)_+ is inactive */
 loss_hi : ratsimp(U*g - 0);                      /* d >= g branch: the (.)_+ has clipped */
 print("(7) loss on d <= g:", loss_lo, " (= U*d)   loss on d >= g:", loss_hi, " (= U*g, flat)")$

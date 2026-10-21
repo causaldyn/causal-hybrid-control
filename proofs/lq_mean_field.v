@@ -1,4 +1,4 @@
-(* THE LINEAR-QUADRATIC MEAN-FIELD GAME: the algebraic core of Result 49.
+(* THE LINEAR-QUADRATIC MEAN-FIELD GAME: its algebraic core.
 
    Coupling chc.research.deep_galerkin's backward HJB to chc.research.transport's forward Fokker-Planck gives a
    forward-backward system.  Under the quadratic ansatz V = P x^2/2 + S x + Z and a Gaussian
@@ -11,9 +11,9 @@
    where lam^2 = A^2 - q c b^2 / r.  This file proves what that denominator does: it never
    vanishes when k < lam, it vanishes at an EXPLICIT horizon when k > lam > 0, and on the
    oscillatory branch (lam imaginary) it changes sign inside (0, pi/w) for EVERY k, so the
-   obstruction is unavoidable there.  Same shape as Result 45's conjugate time -- a determinant
-   crossing zero and a constant blowing up like 1/(T* - T) -- but in the mean-field coupling
-   rather than the single-agent second variation.
+   obstruction is unavoidable there.  Same shape as the conjugate time of proofs/conjugate_time.v --
+   a determinant crossing zero and a constant blowing up like 1/(T* - T) -- but in the mean-field
+   coupling rather than the single-agent second variation.
 
    Stdlib Reals only.  Nothing here is about probability: the reduction to these scalars is done
    in Maxima and measured by chc.research.deep_galerkin.lq_mean_field_certificate. *)
@@ -163,7 +163,7 @@ Proof.
 Qed.
 
 (* And the crossing is at an explicit horizon: arccot(k/w)/w, written with atan since Stdlib has
-   no arccot.  This is the mean-field analogue of Result 45's t_conj. *)
+   no arccot.  This is the mean-field analogue of conjugate_time.v's t_conj. *)
 Definition obstruction_horizon_osc (w k : R) : R := (PI / 2 - atan (k / w)) / w.
 
 Theorem den_osc_vanishes_at_obstruction :

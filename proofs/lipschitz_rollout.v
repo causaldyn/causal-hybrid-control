@@ -98,11 +98,12 @@ Proof.
     + exact Hb.
 Qed.
 
-(* Result 34 (confounding-robust closed loop): the §32 MSM confounding inflation, added to the per-step
-   error budget, widens the §31 CLOSED-LOOP tube (rate a = 1 + (L_x + L_u*L_pi)*dt) monotonically. More
+(* Confounding-robust closed loop: the MSM confounding inflation, added to the per-step
+   error budget, widens the CLOSED-LOOP tube (rate a = 1 + (L_x + L_u*L_pi)*dt) monotonically. More
    assumed confounding -> a weakly larger rollout radius at every horizon, hence a shorter
-   certified-safe horizon. Reuses gronwall_monotone_error; infl1 <= infl2 is §32 msm_inflation_monotone
-   output, so this composes the confounding radius (§32) with the closed-loop replan tube (§31). *)
+   certified-safe horizon. Reuses gronwall_monotone_error; infl1 <= infl2 is msm_inflation_monotone
+   output (proofs/confounding_robust_cvar.v), so this composes the confounding radius with the
+   closed-loop replan tube. *)
 Lemma closed_loop_confounding_monotone :
   forall (Lcl dt base infl1 infl2 : R) (k : nat),
     0 <= Lcl -> 0 <= dt -> infl1 <= infl2 ->
@@ -126,7 +127,7 @@ Proof.
   assert (0 <= L * dt) by (apply Rmult_le_pos; assumption). lra.
 Qed.
 
-(* ---- TIME-VARYING extension (Result 28 upgrade): per-step L_k and eps_k. ---- *)
+(* ---- TIME-VARYING extension of the rollout bound: per-step L_k and eps_k. ---- *)
 (* The bound sequence with per-step coefficients a k = 1 + L_k*dt, b k = dt*eps_k. Shows WHICH step
    and WHICH channel dominates the accumulated uncertainty -- the basis for `certified_until_step`. *)
 Fixpoint gronwall_var (a b : nat -> R) (k : nat) : R :=
@@ -157,7 +158,7 @@ Proof.
   - simpl. apply Rplus_le_le_0_compat; [apply Rmult_le_pos; [apply Ha | exact IH] | apply Hb].
 Qed.
 
-(* ---- SAFETY-CONSTRAINT tightening (Result 28 upgrade): the error tube -> a safe plan. ---- *)
+(* ---- SAFETY-CONSTRAINT tightening of the rollout bound: the error tube -> a safe plan. ---- *)
 (* If g is L_g-Lipschitz and the NOMINAL trajectory satisfies the TIGHTENED constraint
    g(x_hat) + L_g*e <= 0 (e = the certified error radius), then the TRUE trajectory is feasible:
    g(x) <= g(x_hat) + L_g*||x - x_hat|| <= g(x_hat) + L_g*e <= 0. *)

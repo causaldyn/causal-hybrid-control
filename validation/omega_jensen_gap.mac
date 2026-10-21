@@ -1,10 +1,10 @@
-/* DISCOVERY / derivation: the JENSEN GAP in Result 51's Omega-generalisation is itself a TRACE
-   FORMULA. Result 51 records `Var(theta) ~ tr(A Sigma A Om)/tr(A Om)^2` as directionally right but
-   measurably loose, and blames E[X/Y^2] != E[X]/E[Y]^2 -- a scope note, not a law. The exact scalar
+/* DISCOVERY / derivation: the JENSEN GAP in the Omega-generalised plug-in variance law is itself a
+   TRACE FORMULA. The plug-in `Var(theta) ~ tr(A Sigma A Om)/tr(A Om)^2` is directionally right but
+   measurably loose, because E[X/Y^2] != E[X]/E[Y]^2 -- a scope note, not a law. The exact scalar
    quantity is X/Y^2 with X = R'(A'Sigma A)R and Y = R'(A'A)R, both quadratic forms in the RANDOM
    regressor R. Expanding to second order and using the Gaussian quadratic-form moments turns the
    correction into traces of the SAME matrices the law already needs, so it costs nothing extra.
-   Maxima is the source of truth; the numeric cross-check lives in the research log.
+   Maxima is the source of truth.
    References (each identity is VERIFIED below before being used, the citation is provenance only):
    Isserlis (1918) for the Gaussian fourth moments; Magnus (1986), "The exact moments of a ratio of
    quadratic forms in normal variables", for the resolvent representation in STEPs 5-7. */
@@ -103,10 +103,9 @@ print("STEP 8a  rel_elliptical - ((1+kap)*rel_gauss + kap) =",
    X/Y^2 is degree -2 in the scale, so E[X/Y^2] = E[W/nu] * E_gauss[X/Y^2] EXACTLY -- for t_nu
    E[W] = nu and the exact moment of STEP 5 is UNCHANGED at a fixed scale matrix. The kurtosis
    only enters through the Var-vs-scale parameterisation, not through the moment itself. */
-print("STEP 8b  scale-mixture transport: E[X/Y^2] = E[W/nu]*E_gauss, exact by homogeneity;",
-      "numeric t_10 check in the research log")$
+print("STEP 8b  scale-mixture transport: E[X/Y^2] = E[W/nu]*E_gauss, exact by homogeneity")$
 
-/* (9) the design consequence (Result 51 (m)). At Om = I both fold operators share the spectrum
+/* (9) the design consequence. At Om = I both fold operators share the spectrum
    {0, r^2, 1} and P_fold + P_within = I - P_mean is partition-free, so the loading differences
    obey d_r + d_1 = 0 while the plug-in crossover imposes r^4 d_r + d_1 = 0: both vanish, and the
    plug-in crossover is EXACT (no Jensen shift). The exact-vs-plug-in comparison never flips sign

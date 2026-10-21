@@ -1,7 +1,7 @@
-(* Rocq: the algebraic core of the GENERAL-q matrix ratio moment (Result 63).
+(* Rocq: the algebraic core of the GENERAL-q matrix ratio moment.
 
-   validation/general_q_ratio_moment.mac lifts Result 54 off q = 2. Three things change and
-   each is checked here:
+   validation/general_q_ratio_moment.mac lifts proofs/matrix_ratio_moment.v off q = 2. Three things
+   change and each is checked here:
 
    (A) The Isserlis expansion is replaced by a sum over the symmetric group,
          E[prod_{i=1..m} z' K_i z] = sum_{sigma in S_m} 2^(m - c(sigma)) prod_{cycles} tr(...),
@@ -279,7 +279,7 @@ Proof. intros q; unfold second_moment_denominator; lra. Qed.
 
 (* The two cells that matter are exactly those where the VALUE exists and its second moment does
    not: n = q+2 and n = q+3 clear the E[W^-1] pole at n = q+1 and fail the E[W^-2] pole at n = q+3.
-   Everything Result 63 reports on the boundary lives in this gap -- the integral is finite, so a
+   Everything reported on the boundary lives in this gap -- the integral is finite, so a
    quadrature can converge on it (the tensor rule does, at rate 1.3-1.7), while sample-and-average
    has infinite variance there. *)
 Definition inverse_moment_pole (q : R) (k : nat) : R := q + 2 * INR k - 1.

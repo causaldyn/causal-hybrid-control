@@ -133,8 +133,9 @@ print("=== STEP 6: rollout ===")$
 print("STEP 6a lambda_k(t1) lambda_k(t2) - lambda_k(t1+t2) =",
       ratsimp( exp(-%i*cc*k*t1 - nu*k^2*t1)*exp(-%i*cc*k*t2 - nu*k^2*t2)
              - exp(-%i*cc*k*(t1+t2) - nu*k^2*(t1+t2)) ), " (0) -- a genuine semigroup")$
-print("STEP 6b so the T-step gain is max_k |lambda_k|^T EXACTLY.  The Lipschitz rollout tube of")$
-print("        Results 28/30 multiplies per-step UPPER bounds; for a circulant residual the")$
+print("STEP 6b so the T-step gain is max_k |lambda_k|^T EXACTLY.  The rollout tubes of")$
+print("        lipschitz_rollout.mac and contractive_euler.mac multiply per-step UPPER bounds;")$
+print("        for a circulant residual the")$
 print("        per-step constant is the attained norm, so the tube is tight rather than merely")$
 print("        valid -- that is the guarantee this backbone adds over LipschitzResidual")$
 

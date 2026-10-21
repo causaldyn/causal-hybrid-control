@@ -269,7 +269,7 @@ def _input_curvature(plant):
     return float(np.linalg.eigvalsh(_hessian(gap, n))[-1]) / 2.0
 
 
-# ------------------------------------------------------------------- delayed network (Result 51)
+# ------------------------------------------------------------------------------- delayed network
 
 
 def _cycle_distance(m):
@@ -489,7 +489,7 @@ def test_dynamic_causal_regret_grows_at_the_offset_floor(a, b, beta_share, x_ref
     assert curve.causal_cost[-1] - curve.causal_cost[-2] <= 1e-12 * scale
 
 
-# --------------------------------------------------------------------- C2 end-to-end and exposure
+# --------------------------------------------------------- multi-channel end-to-end and exposure
 
 
 def test_c2_regret_is_the_true_plant_ce_gap():

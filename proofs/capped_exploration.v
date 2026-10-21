@@ -1,4 +1,4 @@
-(* Rocq: the algebraic core of the CAPPED EXPLORATION LAW (Result 56).
+(* Rocq: the algebraic core of the CAPPED EXPLORATION LAW.
 
    validation/capped_exploration.mac derives, for the minimax exploration objective
    F(v) = A sum_t v_t + K sum_t 1/(I0 + c S_{t-1}) with S the prefix sum: the exchange argument

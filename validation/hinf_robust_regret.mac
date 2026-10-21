@@ -51,7 +51,8 @@ print("stationarity numerator (set = 0) =", stat)$
 uCE : xt*b/(b^2 + rr)$
 print("certainty-equivalence u_CE =", uCE, " ; robust u_rob(gamma) -> u_CE as gamma -> inf, from the side (F) gives")$
 
-/* (E) PESSIMISM CORRESPONDENCE (ties to result #2, optimal pessimism = variance rho*=s^2):
+/* (E) PESSIMISM CORRESPONDENCE (ties to pessimistic_optimality.mac, optimal pessimism = variance
+   rho*=s^2):
    first-order in 1/gamma^2, V(u) ~ nominal(u) + e^2 u^2/gamma^2, an EXTRA caution term ~ 1/gamma^2.
    So gamma^-2 plays the role of the pessimism level rho: gamma->inf (rho->0) is nominal; decreasing
    gamma (rho up) moves the gain -- DOWN only when rr >= b^2, see (F). The empirical

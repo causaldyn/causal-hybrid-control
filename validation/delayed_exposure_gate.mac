@@ -1,5 +1,6 @@
-/* The delayed-exposure gate: does the C2 network result (Result 43) survive a DELAYED exposure
-   map, or does it reduce to Result 43 with lags?
+/* The delayed-exposure gate: does the static clustered cross-fit law of
+   validation/cluster_fold_leakage.mac (the "static law" below) survive a DELAYED exposure map, or
+   does it reduce to the static law with lags?
 
    Answer: two of the three parts reduce, one does not, and the obstruction is exact.
 
@@ -17,7 +18,7 @@ m : 4$ K : 2$ q : m/K$
 Id : ident(4)$
 E  : matrix([1,1,1,1],[1,1,1,1],[1,1,1,1],[1,1,1,1])/4$      /* grand-mean projector */
 F  : matrix([1,1,0,0],[1,1,0,0],[0,0,1,1],[0,0,1,1])/2$      /* fold-mean projector, folds {12}{34} */
-S  : ratsimp((m*E - q*F)/(m - q))$                            /* the cross-fold hat of Result 43 */
+S  : ratsimp((m*E - q*F)/(m - q))$                            /* the static law's cross-fold hat */
 M  : ratsimp(Id - S)$
 A  : ratsimp(transpose(M) . M)$
 J  : matrix([1,1,1,1],[1,1,1,1],[1,1,1,1],[1,1,1,1])$
@@ -57,7 +58,7 @@ print("STEP 4 (1 + (m-1)*rho_bar)/m - 1'.T.1/m^2 =",
 /* ---------------------------------------------------------------------------------------------
    STEP 5. What the open work actually needs -- and the route that does NOT work.
 
-   The tempting next move is to substitute a Toeplitz Sigma into Result 43's
+   The tempting next move is to substitute a Toeplitz Sigma into the static law's
    var_row = sig2*tr(A^2)/tr(A)^2. It is not well defined. That formula is the value of some
    statistical functional AT the exchangeable design, and the design's degeneracy (M'.Sigma.M is
    then proportional to A) collapses several distinct functionals onto it. Off that design they
@@ -76,7 +77,7 @@ print("STEP 5b on AR(1) they do not: at phi=1/2, ext1 =",
 print("STEP 5c ext1 - ext2 =", factor(ratsimp(ext1(Bar) - ext2(Bar))),
       " ; on the reals it vanishes only at phi in {0, 1}, i.e. exactly where a delay carries no",
       "information. So: derive the delayed law from the ESTIMATOR'S SANDWICH, never by",
-      "substituting Sigma into Result 43's reduced expression.")$
+      "substituting Sigma into the static law's reduced expression.")$
 
 /* ---------------------------------------------------------------------------------------------
    STEP 6. Taking the sandwich route STEP 5 prescribes. Both functionals are then forced:
@@ -84,10 +85,10 @@ print("STEP 5c ext1 - ext2 =", factor(ratsimp(ext1(Bar) - ext2(Bar))),
      var_row(Sigma)     = tr(A.Sigma.A)/tr(A)^2      -- the DML sandwich with isotropic treatment,
                                                         quadratic forms replaced by traces
      var_cluster(Sigma) = tr(Sigma)/m^2              -- the only natural candidate reproducing
-                                                        Result 43's (tau2+sig2)/m
+                                                        the static law's (tau2+sig2)/m
 
-   Neither is ext1 or ext2. STEP 6a checks var_row against Result 43 exactly; STEP 6b evaluates the
-   resulting delayed ratio.
+   Neither is ext1 or ext2. STEP 6a checks var_row against the static law exactly; STEP 6b
+   evaluates the resulting delayed ratio.
 
    LIMITATION, stated because it bounds the claim: this varies Sigma while holding the fold operator
    M fixed. A delayed exposure ALSO enlarges the nuisance span with lagged columns, which changes M
@@ -96,7 +97,7 @@ print("STEP 5c ext1 - ext2 =", factor(ratsimp(ext1(Bar) - ext2(Bar))),
 print("STEP 6a tr(A.(tau2*J + sig2*I).A)/tr(A)^2 - sig2*tr(A^2)/tr(A)^2 =",
       ratsimp(mat_trace(A . (tau2*J + sig2*Id) . A)/mat_trace(A)^2
               - sig2*mat_trace(A . A)/mat_trace(A)^2),
-      " (0: forced by A.J = 0, so the sandwich IS Result 43's var_row)")$
+      " (0: forced by A.J = 0, so the sandwich IS the static var_row)")$
 print("STEP 6b correlation-only ratio at phi = 1/2, against 1 - rho_bar at the matched average",
       "correlation:  m=4: 0.4722 vs 0.6458 ; m=6: 0.4875 vs 0.7313 ; m=8: 0.5149 vs 0.7854.",
       "The exchangeable law OVERSTATES by 27-34%, and the gap does not close as m grows",
@@ -112,11 +113,11 @@ print("STEP 6b correlation-only ratio at phi = 1/2, against 1 - rho_bar at the m
 
      tr(A.Sigma.A) = tr(A_u.Sigma_u.A_u) * tr(T),    tr(Sigma) = tr(Sigma_u) * tr(T),
 
-   so tr(T) CANCELS between var_row and var_cluster. Psi is exactly Result 43's, with dPsi/dphi = 0:
-   the delay costs NOTHING. Verified at m=4, p=3 below.
+   so tr(T) CANCELS between var_row and var_cluster. Psi is exactly the static law's, with
+   dPsi/dphi = 0: the delay costs NOTHING. Verified at m=4, p=3 below.
 
-   So the delayed law departs from Result 43 only when that structure breaks, and there are exactly
-   two ways for it to break:
+   So the delayed law departs from the static law only when that structure breaks, and there are
+   exactly two ways for it to break:
      (i)  the folds cut across time -- which is what STEP 6 priced, at 27-34%;
      (ii) Sigma is non-separable, i.e. the delay interacts with the network (the spillover kernel's
           time profile varies with neighbour distance).
@@ -138,7 +139,7 @@ Sk : kronecker_product(Sig_u, Tp)$
 psi_panel : ratsimp((mm*pp)^2*mat_trace(Ak . Sk . Ak)/(mat_trace(Ak)^2*mat_trace(Sk)))$
 psi_cross : ratsimp(mm^2*mat_trace(Au . Sig_u . Au)/(mat_trace(Au)^2*mat_trace(Sig_u)))$
 print("STEP 7a A - A_u (x) I =", ratsimp(Ak - kronecker_product(Au, Idp)), " (zero: A factors)")$
-print("STEP 7b Psi_panel =", psi_panel, " ; Psi_cross (Result 43) =", psi_cross,
+print("STEP 7b Psi_panel =", psi_panel, " ; Psi_cross (static law) =", psi_cross,
       " ; difference =", ratsimp(psi_panel - psi_cross))$
 print("STEP 7c dPsi_panel/dphi =", ratsimp(diff(psi_panel, phi)),
       " (zero: phi does not appear at all -- the delay is FREE under this structure)")$

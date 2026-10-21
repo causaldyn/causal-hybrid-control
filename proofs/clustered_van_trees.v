@@ -1,5 +1,5 @@
-(* Rocq (CONTRIBUTION 2, the LOWER bound): the clustered van-Trees lower bound making the G^{-1}
-   control-regret sampling rate IRREDUCIBLE. Result 24 (c2_end_to_end.v) proved only R <= c/G at zero
+(* Rocq (multi-channel control, the LOWER bound): the clustered van-Trees lower bound making the G^{-1}
+   control-regret sampling rate IRREDUCIBLE. c2_end_to_end.v proved only R <= c/G at zero
    nuisance error -- an UPPER bound, so "irreducible floor" was an overstatement (external review). Here
    we prove the matching LOWER bound: G*E[R] is bounded BELOW by a positive constant for every G, and
    increases toward kappa0/Ic -- so no estimator makes the sampling regret decay faster than 1/G.
@@ -15,7 +15,8 @@
    (2) a LOWER-Lipschitz regret map: the optimal action u*(b)=xt*b/(b^2+rr) is a diffeomorphism with
        |du*/db| >= L_min > 0 away from the knife-edge b^2=rr, so R = (b^2+rr)*(u*(Bhat)-u*(B))^2
        >= (b^2+rr)*L_min^2*(Bhat-B)^2 =: kappa0*(Bhat-B)^2, hence E[R] >= kappa0*mse. (SCALAR case.)
-       MULTIVARIATE (the matrix-B Result 24 setting): R = (1/2)(Bhat-B)^T M (Bhat-B) + o, M = DK*^T H_K DK*,
+       MULTIVARIATE (the matrix-B setting of c2_end_to_end.v): R = (1/2)(Bhat-B)^T M (Bhat-B) + o,
+       M = DK*^T H_K DK*,
        so the bound holds on the DECISION-SENSITIVE subspace M > 0 with kappa0 = (1/2)*lambda_min(M);
        decision-irrelevant directions of Bhat-B (singular M) contribute nothing. The composition below is
        generic in (kappa0, mse), so it covers the multivariate case on that subspace -- NOT globally.

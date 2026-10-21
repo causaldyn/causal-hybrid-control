@@ -1,4 +1,4 @@
-(* Rocq: the GENERAL orthogonal-to-control regret TRANSFER theorem -- the general form of result 0,
+(* Rocq: the GENERAL orthogonal-to-control regret TRANSFER theorem -- the general form of orthogonal_control.v,
    which only stated the p=1 (plug-in, O(eps^2)) and p=2 (Neyman-orthogonal/DML, O(eps^4)) instances
    (derived in validation/composition_transfer.mac). Claim: if the causal-effect estimator has error of
    order delta^p (p = the orthogonality order of the estimator), then the certainty-equivalence control
@@ -6,7 +6,7 @@
    a genuine composition theorem, not an arithmetic coincidence: it holds because control regret is
    quadratic in the ACTION error k*(u*(bhat)-u*(b))^2 (the exact map, not a linearisation) and the
    optimal action is Lipschitz in the effect, so the action error inherits the estimator's order p; the
-   square then doubles it to 2*p. p=1 -> 2 and p=2 -> 4 are the two instances of result 0. *)
+   square then doubles it to 2*p. p=1 -> 2 and p=2 -> 4 are the two instances of orthogonal_control.v. *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
@@ -28,7 +28,7 @@ Proof.
 Qed.
 
 (* THE TRANSFER THEOREM: an order-p estimator error (|u*(bhat)-u*(b)| <= delta^p, the Lipschitz
-   transfer of an O(delta^p) effect estimator) yields an order-2*p control regret. Recovers result 0:
+   transfer of an O(delta^p) effect estimator) yields an order-2*p control regret. Recovers orthogonal_control.v:
    p=1 plug-in -> O(delta^2), p=2 orthogonal/DML -> O(delta^4); general p -> O(delta^(2*p)). *)
 Theorem regret_order_2p : forall k du d (p : nat),
   0 <= k -> Rabs du <= d ^ p -> k * du ^ 2 <= k * d ^ (2 * p).

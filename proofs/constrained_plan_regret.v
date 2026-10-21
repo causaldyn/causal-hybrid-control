@@ -1,20 +1,21 @@
-(* Rocq: the self-certifying regret bound a plan inside a BOX actually gets (L3.2, Result 69).
+(* Rocq: the self-certifying regret bound a plan inside a BOX actually gets.
 
-   Result 6 gives the unconstrained self-certifying bound J(U) - J* <= |grad J|^2/(2 mu), computed
+   nonlinear_regret.v gives the unconstrained self-certifying bound J(U) - J* <= |grad J|^2/(2 mu), computed
    from the achieved gradient with no optimum needed.  chc.decision.DecisionCertificate ships with
    no regret_bound because that bound does not survive a box of lever bounds: at a lever the
-   gradient holds against its own bound, grad J is nonzero while the true regret is zero.  Result
-   13 read the same fact from the other side -- once the cap is active the control freezes and the
+   gradient holds against its own bound, grad J is nonzero while the true regret is zero.
+   constrained_ce_regret.v reads the same fact from the other side -- once the cap is active the
+   control freezes and the
    regret's curvature collapses.
 
    validation/constrained_plan_regret.mac derives what replaces it.  Writing q(d) = -g d - (mu/2)d^2
    for the certified gain of a feasible move d, the bound is the maximum of q over the box's local
    offsets [a, b] = [lo - U, hi - U], and what is proved here is its scalar spine:
      (A) strong convexity turns any upper bound on q over the box into a regret bound;
-     (B) the unconstrained maximum of q IS Result 6's bound, and clipping subtracts exactly a
+     (B) the unconstrained maximum of q IS the unconstrained bound, and clipping subtracts exactly a
          square -- so the box can only tighten it, never loosen it;
      (C) a lever the gradient holds against a bound contributes EXACTLY zero, at either end;
-     (D) the bound is nonnegative, and it is zero at a constrained optimum where Result 6's is not;
+     (D) the bound is nonnegative, and it is zero at a constrained optimum where the unconstrained one is not;
      (E) q is below the linear (Frank-Wolfe) gain, whose bound over the box does not mention mu at
          all -- so a modulus that collapses leaves the certificate finite;
      (F) a smaller modulus gives a larger bound, so a conservative one is never invalid;
@@ -61,7 +62,7 @@ Proof.
   intros mu g d Hmu. unfold gain. field. exact Hmu.
 Qed.
 
-(* So every feasible move is worth at most Result 6's bound: the box never loosens it. *)
+(* So every feasible move is worth at most the unconstrained bound: the box never loosens it. *)
 Lemma the_box_only_tightens_the_bound :
   forall mu g d, 0 < mu -> gain mu g d <= g * g / (2 * mu).
 Proof.
@@ -121,7 +122,7 @@ Proof.
   apply a_lever_pinned_at_its_ceiling_is_exactly_free; [lra | nra | exact Hd].
 Qed.
 
-(* ... while Result 6's bound charges strictly positive regret to the optimum itself. *)
+(* ... while the unconstrained bound charges strictly positive regret to the optimum itself. *)
 Lemma result_six_s_bound_charges_regret_at_that_optimum :
   forall mu ceiling us,
     0 < mu -> ceiling < us ->
@@ -154,7 +155,7 @@ Proof.
   - eapply Rle_trans; [| apply Rmax_l]. nra.
 Qed.
 
-(* The certificate that survives Result 13's collapsing modulus: the SAME finite number bounds the
+(* The certificate that survives the active-set kink's collapsing modulus: the SAME finite number bounds the
    gain at every positive modulus, however small. *)
 Lemma a_vanishing_modulus_leaves_a_finite_bound :
   forall g a b d,

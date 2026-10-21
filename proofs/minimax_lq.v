@@ -1,7 +1,7 @@
-(* Rocq (MINIMAX LQ over the identified effect interval): §33 proved by counterexample that
-   certainty equivalence is NOT minimax for the LQ loss, and left the robust controller unbuilt.
-   validation/minimax_lq.mac derives it in closed form; this file proves the two things the closed
-   form rests on and machine-checks §33's own instance.
+(* Rocq (MINIMAX LQ over the identified effect interval): a counterexample shows that
+   certainty equivalence is NOT minimax for the LQ loss. validation/minimax_lq.mac derives the
+   robust controller in closed form; this file proves the two things the closed form rests on and
+   machine-checks that counterexample.
 
    The stage cost is convex in the effect b, so the inner maximum sits at an endpoint and the outer
    problem minimises `Rmax (stage blo u) (stage bhi u)`. Two lemmas carry it: `stage_gap` (each
@@ -10,7 +10,7 @@
    `branch_cross` (the branches differ by 4*D*p*u*(t - bh*u), so the lower one is the worse exactly
    on 0 <= u <= t/bh). `minimax_lower_branch` combines them: when the regime condition
    p*blo*D <= r holds, the CE action for the PESSIMISTIC endpoint minimises the worst case over the
-   whole interval. `ce_not_minimax` is §33's counterexample, checked rather than asserted. *)
+   whole interval. `ce_not_minimax` is the counterexample, checked rather than asserted. *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
@@ -94,7 +94,7 @@ Proof.
   eapply Rle_trans; [ apply ce_action_minimises; exact Hpos | apply Rmax_l ].
 Qed.
 
-(* §33's counterexample, machine-checked: bh = 1, d = 1/2, t = 1, r = 1, p = 1. The CE action 1/2
+(* The counterexample, machine-checked: bh = 1, d = 1/2, t = 1, r = 1, p = 1. The CE action 1/2
    has worst case 13/16; the minimax action 2/5 has worst case 4/5 < 13/16. So certainty
    equivalence is strictly suboptimal in the minimax sense for the LQ loss. *)
 Lemma minimax_instance_value : worst 1 1 1 (1/2) 1 (2/5) = 4/5.

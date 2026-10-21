@@ -1,13 +1,14 @@
-/* DISCOVERY / derivation (CONTRIBUTION 3, publishable upgrade): the FORMAL van Trees (Bayesian
-   Cramer-Rao) inequality that result 20 ASSUMED. Van Trees: for a Bayesian model (prior pi on theta,
-   observations X ~ p(x|theta)) and ANY estimator theta_hat, the Bayes risk obeys
+/* DISCOVERY / derivation (the adaptive exploration bound, made formal): the FORMAL van Trees
+   (Bayesian Cramer-Rao) inequality that adaptive_exploration.mac ASSUMED. Van Trees: for a
+   Bayesian model (prior pi on theta, observations X ~ p(x|theta)) and ANY estimator theta_hat, the
+   Bayes risk obeys
        E[(theta_hat - theta)^2] >= 1 / (I_data + I_prior),
    where I_prior = prior Fisher information, I_data = E_theta[Fisher info of the likelihood]. Unlike
    ordinary Cramer-Rao, this applies to SEQUENTIAL/adaptive designs and to ANY (even biased) estimator.
    Proof: Cauchy-Schwarz on the Bayesian score psi = d/dtheta log(pi(theta) p(X|theta)) --
    1 = (E[psi*Delta])^2 <= E[psi^2] E[Delta^2] = (I_data+I_prior) * MSE, Delta = theta_hat - theta. This
-   is the floor C/m_t of result 20, now proved (the m_t is exactly I_prior + accumulated I_data). Maxima
-   is the source of truth. */
+   is the floor C/m_t of adaptive_exploration.mac, now proved (the m_t is exactly I_prior +
+   accumulated I_data). Maxima is the source of truth. */
 display2d : false$
 
 /* Gaussian-Gaussian conjugate instance where van Trees is TIGHT: prior theta ~ N(mu0, tau^2), n obs
@@ -31,7 +32,7 @@ print("=> 1 <= total * MSE => MSE >= 1/total  (Rocq: cauchy_schwarz + van_trees_
 
 /* CONFOUNDING reduces the per-obs IDENTIFYING information (fraction Vid<1 of the variation identifies
    the causal effect), so I_data drops to n*Vid/sigma^2 and the floor 1/(J + n*Vid/sigma^2) is HIGHER
-   -- the Bayesian/sequential analogue of results 10 and 12. */
+   -- the Bayesian/sequential analogue of the static floor of information_lower_bound.mac. */
 Iconf : Vid/sigma^2$
 print("confounded per-obs info = Vid/sigma^2 (Vid<1) => floor 1/(J + n*Vid/sigma^2) HIGHER")$
 print("floor ratio confounded/experimental =",

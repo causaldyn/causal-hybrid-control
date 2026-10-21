@@ -1,6 +1,6 @@
-(* Rocq (CONTRIBUTION 2): what row-level cross-fitting COSTS on a clustered design.
+(* Rocq (multi-channel control): what row-level cross-fitting COSTS on a clustered design.
 
-   The C2 write-up assumes A8 -- "K >= 2 folds of whole clusters" -- while the certificates split
+   The clustered cross-fit rate assumes K >= 2 folds of whole clusters, while the certificates split
    folds by ROW PARITY, so every cluster sits in both folds. The cited literature cannot price that:
    CCDDHNR assume i.i.d. rows (folds are then automatically valid), Hansen-Lee assume independent
    cluster scores as a PRIMITIVE, Chiang-Kato-Ma-Sasaki assume folds are already cluster-level. None
@@ -11,7 +11,7 @@
    ESTIMATOR, visible only in the second moment. (B)-(F) price it: the leakage ratio factors into a
    fold-geometry constant c(m,K) and an outcome-side factor, and the ICC enters ONLY the latter, so
    the NORMALISED law is exactly 1 - rho_ICC -- exact in m and K, not asymptotic. (G) records that
-   the Hansen-Lee independence hypothesis fails at order 1/G, and (H) the composition A6-rate uses.
+   the Hansen-Lee independence hypothesis fails at order 1/G, and (H) the composition the clustered cross-fit rate uses.
 
    Honest scope, as in van_trees.v and c2_end_to_end.v: Rocq proves the ALGEBRA over reals. There are
    no matrices, no independence and no conditional expectation in Stdlib; the trace identities
@@ -27,7 +27,7 @@ Open Scope R_scope.
 (* (A) NO BIAS, for any fold assignment. Scalar shadow of E[Dtil*(Ytil - beta*Dtil)] = 0: once the
    Frisch-Waugh-Lovell cancellation has removed f(Z) and beta*D, what is left is a cross moment of
    the treatment noise against the outcome noise, which orthogonality kills whatever h (the leak
-   coefficient) is -- i.e. whatever the fold assignment. This is why Result 43(a) is a no-bias
+   coefficient) is -- i.e. whatever the fold assignment. This is why the leak is a no-bias
    result and not a bias-correction. *)
 Theorem moment_unbiased_under_orthogonality : forall v va a aa e ea h,
   v * a = 0 -> v * aa = 0 -> v * e = 0 -> v * ea = 0 ->
@@ -120,7 +120,7 @@ Proof. intros tau2 sig2 Hs Ht. unfold icc. field. lra. Qed.
 (* (F) MONOTONICITY: the more intra-cluster correlation, the more the row-fold estimator understates
    the cluster-robust one. This is the direction that matters for inference -- a cluster-robust
    sandwich computed after row folds is too SMALL, so a confidence interval built from it
-   under-covers, which is the practical cost of the A8 violation. *)
+   under-covers, which is the practical cost of splitting clusters across folds. *)
 Theorem leak_ratio_antitone_in_icc : forall m t2 t4 tau1 tau2 sig2,
   0 < sig2 -> 0 <= tau1 -> tau1 <= tau2 -> 0 < m -> 0 < t2 -> 0 < t4 ->
   psi m t2 t4 tau2 sig2 <= psi m t2 t4 tau1 sig2.
@@ -163,7 +163,7 @@ Proof.
   apply Rinv_le_contravar; nra.
 Qed.
 
-(* (H) THE COMPOSITION A6-rate CONSUMES. The three-term decomposition: a clustered-CLT term at
+(* (H) THE COMPOSITION THE CLUSTERED CROSS-FIT RATE CONSUMES. The three-term decomposition: a clustered-CLT term at
    1/sqrt(G) (T1, cited), the Neyman-orthogonality remainder (T2, machine-checked in
    orthogonal_control.v and multichannel_control.v), and the cross-fit empirical process (T3,
    cited). This lemma is the arithmetic that turns the three bounds into the additive rate -- the
