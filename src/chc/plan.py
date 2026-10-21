@@ -2592,7 +2592,7 @@ def _rounds(
             hi,
             steps,
             1.0,
-            _LOOSE_TOL if loose else _DESCENT_TOL,
+            jnp.asarray(_LOOSE_TOL if loose else _DESCENT_TOL),  # weak: one program for both
             held,
             1.0,
             blocks,

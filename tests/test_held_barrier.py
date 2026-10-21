@@ -23,6 +23,7 @@ from jax import Array
 from scipy.optimize import nnls
 
 import chc.plan as plan_module
+import chc.support as support_module
 from chc import (
     BarrierConstraint,
     CausalPlan,
@@ -1035,6 +1036,45 @@ def test_the_rounds_share_one_budget_and_a_cut_one_grows_no_penalty() -> None:
         assert plan.safety is not None
         assert plan.safety.certified_steps == HORIZON
         assert plan.task_cost <= 1.1 * optimum.task_cost
+
+
+def test_the_rounds_compile_one_descent_for_both_of_their_tolerances(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A round whose last one ended short of the condition stops its descent at a looser relative
+    fall than the others. The tolerance was a Python number, which the jitted descent keys its
+    program on, so every held plan whose rounds took both compiled the whole descent twice. It is
+    a traced scalar now: one compilation serves both."""
+    tolerances: set[float] = set()
+    traces = 0
+    descent, descend = plan_module._pessimistic_loop, support_module._descend
+
+    def recorded(*args: object) -> tuple[Array, Array, Array]:
+        tolerances.add(float(args[11]))  # type: ignore[arg-type]
+        return descent(*args)
+
+    def traced(*args: object, **kwargs: object) -> tuple[Array, Array, Array]:
+        nonlocal traces
+        traces += 1
+        return descend(*args, **kwargs)
+
+    monkeypatch.setattr(plan_module, "_pessimistic_loop", recorded)
+    monkeypatch.setattr(support_module, "_descend", traced)
+    # a barrier of its own keys a program no other test compiled
+    plan = causal_plan(
+        OSCILLATOR,
+        X0,
+        COST,
+        DT,
+        HORIZON,
+        -U_MAX,
+        U_MAX,
+        steps=10_000,
+        barrier=BarrierConstraint(lambda x: x[1] + FLOOR, alpha=ALPHA),
+    )
+    assert plan.solver_status == "converged"
+    assert tolerances == {plan_module._LOOSE_TOL, plan_module._DESCENT_TOL}
+    assert traces == 1
 
 
 def test_a_held_plan_reads_converged_only_where_it_is_stationary() -> None:
