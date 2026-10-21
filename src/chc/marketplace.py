@@ -22,6 +22,12 @@ gap to the oracle is therefore the value of knowing the equilibrium, not of de-c
 default market the plan from a response of zero lands as close to the oracle as the plan from the
 de-confounded one. The SUTVA baselines get no such structure. :func:`fit_equilibrium` estimates
 the equilibrium from the logs instead, and the planner takes it as ``equilibrium=`` (ADR 0114).
+Through it the plan's value is the fitted equilibrium's too: on five markets the de-confounded
+response's tilt moved the share of the best plan's lift by -0.006 +- 0.013 on 400 blocks against
+a response of zero, and by -0.114 +- 0.028 on 50. Only where the market lies outside the fitted
+class, its attractiveness fixed while the demand moves, did the tilt carry value: 0.77 of the
+lift against 0.41, over 100 logs of 400 blocks. The fit warns on such a market, and the
+planner refuses a fit whose drivers do not tell an incentive from none (ADR 0123).
 
 Everything is differentiable and reuses the equilibrium solver in :mod:`chc.games`.
 """
