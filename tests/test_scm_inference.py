@@ -4,6 +4,7 @@ tests against diff-diff's."""
 from __future__ import annotations
 
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -115,12 +116,16 @@ def test_as_the_effect_grows_the_placebo_falls_to_its_floor_and_the_interval_mov
     assert moved.interval[0] > 0.0
 
 
-@pytest.mark.parametrize(("seed", "effect"), [(2, 0.0), (3, 1.0), (1, 3.0)])
+@pytest.mark.parametrize(("seed", "effect"), [(2, 0.0), (3, 1.0), (11, 1.0)])
 def test_the_placebo_p_value_is_diff_diffs(seed: int, effect: float) -> None:
     """diff-diff's placebo puts the treated unit in every placebo's donor pool, from exact weights,
-    as ADH's does. On these panels diff-diff 3.12, which left it out, gave another p-value."""
+    as ADH's does. On these panels leaving it out, as diff-diff 3.12 did, gives another p-value
+    (0.65, 0.1, 0.2 for 0.6, 0.15, 0.25). Each fits well before treatment: diff-diff would warn
+    of a poor fit, and an error is raised on any warning."""
     outcomes = _panel(seed, effect=effect)
-    fit = _diff_diff(outcomes)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        fit = _diff_diff(outcomes)
     fit.in_space_placebo()
     assert fit.n_failed == 0
     assert synthetic_control_inference(outcomes, 0, N_PRE).placebo_p_value == fit.placebo_p_value
