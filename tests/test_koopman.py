@@ -12,7 +12,13 @@ from chc import HybridDynamics
 from chc.dynamics import DampedOscillator
 from chc.integrate import rk4_step
 from chc.regret import dlqr
-from chc.research.koopman import KoopmanModel, _lift, koopman_controller, koopman_lqr_gain
+from chc.research.koopman import (
+    KoopmanModel,
+    _lift,
+    _lift_jacobian,
+    koopman_controller,
+    koopman_lqr_gain,
+)
 
 DT = 0.05
 
@@ -192,13 +198,15 @@ def _gaussian(n: int, seed: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndarray
     return x, u, _bilinear_plant(x, u)
 
 
-def test_the_default_form_fits_as_the_linear_lift_did_bit_for_bit() -> None:
+def test_the_default_form_fits_the_centred_lift_and_its_constant_bit_for_bit() -> None:
     xs, us, x_next = _transitions()
     model = KoopmanModel(degree=3).fit(xs, us, x_next)
-    phi = _lift(xs, 3)
+    centre = 0.5 * xs.max(axis=0) + 0.5 * xs.min(axis=0)
+    phi = _lift(xs - centre, 3)
+    assert np.all(phi[:, -1] == 1.0)
     design = np.column_stack([phi, us])
     gram = design.T @ design + 1e-6 * np.diag(np.mean(design**2, axis=0))
-    coef = np.linalg.solve(gram, design.T @ _lift(x_next, 3))
+    coef = np.linalg.solve(gram, design.T @ _lift(x_next - centre, 3))
     np.testing.assert_array_equal(model._a, coef[: phi.shape[1]].T)
     np.testing.assert_array_equal(model._b, coef[phi.shape[1] :].T)
     assert model.form == "linear"
@@ -213,12 +221,17 @@ def test_a_bilinear_lift_closes_on_a_bilinear_plant_where_a_linear_one_misses_x1
     bilinear = KoopmanModel(degree=1, ridge=0.0, form="bilinear").fit(xs, us, x_next)
     scale = float(np.max(np.abs(x_next)))
     missed = (xs[:, :1] * us) * BIL_C
+    # the last column is the constant's, which every transition predicts
     np.testing.assert_allclose(
-        linear.residuals(xs, us, x_next), missed, rtol=0.0, atol=1e-14 * scale
+        linear.residuals(xs, us, x_next),
+        np.column_stack([missed, np.zeros(len(xs))]),
+        rtol=0.0,
+        atol=1e-14 * scale,
     )
     held_out = np.sqrt(np.sum(missed**2, axis=0) / np.sum(x_next**2, axis=0))
     assert linear.closure_residuals is not None
-    np.testing.assert_allclose(linear.closure_residuals, held_out, rtol=1e-12, atol=0.0)
+    np.testing.assert_allclose(linear.closure_residuals[:2], held_out, rtol=1e-12, atol=0.0)
+    assert linear.closure_residuals[2] <= 1e-14
     assert np.max(np.abs(bilinear.residuals(xs, us, x_next))) <= 1e-14 * scale
     assert bilinear.closure_residuals is not None
     assert np.max(bilinear.closure_residuals) <= 1e-14
@@ -244,7 +257,8 @@ def test_the_closure_residuals_match_their_closed_form_on_gaussian_transitions()
     bilinear = KoopmanModel(degree=1, form="bilinear").fit(xs, us, x_next)
     assert linear.closure_residuals is not None
     assert bilinear.closure_residuals is not None
-    np.testing.assert_allclose(linear.closure_residuals, BIL_RHO, rtol=0.03, atol=0.0)
+    np.testing.assert_allclose(linear.closure_residuals[:2], BIL_RHO, rtol=0.03, atol=0.0)
+    assert linear.closure_residuals[2] <= 1e-5
     assert np.max(bilinear.closure_residuals) <= 1e-5
 
 
@@ -290,8 +304,9 @@ def test_a_bilinear_gain_is_the_lqr_of_the_plant_linearised_at_the_target() -> N
     model = KoopmanModel(degree=1, ridge=0.0, form="bilinear").fit(xs, us, x_next)
     q, r, target = np.diag([10.0, 1.0]), np.array([[0.1]]), np.array([1.5, -0.5])
     channel = (BIL_B + BIL_C * target[0])[:, None]
-    _assert_close(model.channel(target), channel, 1e-13)
-    expected = dlqr(BIL_A, channel, q, r)[0]
+    _assert_close(model.channel(target), np.vstack([channel, [[0.0]]]), 1e-13)
+    # the constant's column of the gain is zero: the controller's difference cancels it
+    expected = np.column_stack([dlqr(BIL_A, channel, q, r)[0], [0.0]])
     _assert_close(koopman_lqr_gain(model, q, r, x_target=target), expected, 1e-10)
     with pytest.raises(ValueError, match="pass x_target"):
         koopman_lqr_gain(model, q, r)
@@ -321,29 +336,35 @@ def test_an_unknown_form_is_refused() -> None:
 def test_the_closure_residuals_are_read_across_five_contiguous_blocks() -> None:
     xs, us, x_next = _transitions()
     model = KoopmanModel(degree=3).fit(xs, us, x_next)
-    target = _lift(x_next, 3)
+    target = _lift(x_next - (0.5 * xs.max(axis=0) + 0.5 * xs.min(axis=0)), 3)
     error = np.empty_like(target)
+    # each fold is fit on the other four in the lift of the whole log, centred once
+    design = np.column_stack([_lift(xs - (0.5 * xs.max(axis=0) + 0.5 * xs.min(axis=0)), 3), us])
     for block in np.array_split(np.arange(len(xs)), 5):
         train = np.setdiff1d(np.arange(len(xs)), block)
-        fold = KoopmanModel(degree=3).fit(xs[train], us[train], x_next[train])
-        error[block] = fold.residuals(xs[block], us[block], x_next[block])
+        d, t = design[train], target[train]
+        coef = np.linalg.solve(d.T @ d + 1e-6 * np.diag(np.mean(d**2, axis=0)), d.T @ t)
+        error[block] = target[block] - design[block] @ coef
     spread = np.sum((target - target.mean(axis=0)) ** 2, axis=0)
+    spread[-1] = len(xs)  # the constant has no spread, and is read over its root mean square
     expected = np.sqrt(np.sum(error**2, axis=0) / spread)
     assert model.closure_residuals is not None
     np.testing.assert_allclose(model.closure_residuals, expected, rtol=1e-12, atol=0.0)
 
 
 def test_the_closure_residuals_are_held_out_of_the_fit() -> None:
-    """Twenty transitions with no dynamics, ten coefficients per feature: the fit reads up to 0.87
-    of each feature's root mean square in-sample, and more than all of it held out."""
+    """Twenty transitions with no dynamics, eleven coefficients per feature: the fit reads up to
+    0.82 of each feature's root mean square in-sample, and 0.999 to 5.7 of its spread held out."""
     rng = np.random.default_rng(4)
     xs, us, x_next = (rng.standard_normal((20, d)) for d in (2, 1, 2))
     model = KoopmanModel(degree=3).fit(xs, us, x_next)
     in_sample = np.sqrt(
-        np.sum(model.residuals(xs, us, x_next) ** 2, axis=0) / np.sum(_lift(x_next, 3) ** 2, axis=0)
+        np.sum(model.residuals(xs, us, x_next) ** 2, axis=0)
+        / np.sum(model._features(x_next) ** 2, axis=0)
     )
     assert model.closure_residuals is not None
-    assert np.max(in_sample) < 1.0 < np.min(model.closure_residuals)
+    # every feature but the constant, which is predicted whatever the dynamics
+    assert np.max(in_sample) < np.min(model.closure_residuals[:-1])
 
 
 def test_a_bilinear_lift_closes_on_a_plant_with_two_actions() -> None:
@@ -358,7 +379,7 @@ def test_a_bilinear_lift_closes_on_a_plant_with_two_actions() -> None:
     assert np.max(model.closure_residuals) <= 1e-14
     _assert_close(
         model.channel(np.array([1.0, -2.0])),
-        b + np.column_stack([c1 @ [1.0, -2.0], c2 @ [1.0, -2.0]]),
+        np.vstack([b + np.column_stack([c1 @ [1.0, -2.0], c2 @ [1.0, -2.0]]), np.zeros((1, 2))]),
         1e-13,
     )
 
@@ -400,3 +421,65 @@ def test_a_state_the_log_holds_at_a_level_reads_a_closure_residual_near_zero(lev
     assert model.closure_residuals is not None
     assert model.closure_residuals[2] < 1e-6
     koopman_lqr_gain(model, np.eye(3), np.array([[1.0]]), max_residual=0.8)
+
+
+LEVELS = [0.0, 1.0, 5.0, 273.15]
+
+
+def test_a_cubic_lift_reads_one_verdict_at_every_level_of_the_state() -> None:
+    """``x' = 2x - x^3 + u/10`` at degree 3. Lifted uncentred and without a constant, the same
+    plant logged at levels 0, 1, 5 and 273.15 was refused, accepted, refused and refused: the
+    monomials of ``x + c`` span a different space for each ``c``."""
+    rng = np.random.default_rng(0)
+    xs, us = rng.uniform(-1.5, 1.5, (600, 1)), rng.uniform(-1.0, 1.0, (600, 1))
+    x_next = xs + (xs - xs**3) + 0.1 * us
+    residuals = []
+    for level in LEVELS:
+        model = KoopmanModel(degree=3).fit(xs + level, us, x_next + level)
+        assert model.closure_residuals is not None
+        residuals.append(model.closure_residuals)
+        with pytest.raises(ValueError, match="does not close"):
+            koopman_lqr_gain(model, np.eye(1), np.array([[0.1]]))
+    # the data's own rounding at 273.15 is 2.8e-14, which the cubic Gram turns into ~1e-7 here
+    np.testing.assert_allclose(residuals, [residuals[0]] * len(LEVELS), rtol=0.0, atol=1e-6)
+
+
+def test_an_accepted_controller_regulates_the_plant_at_every_level_of_the_state() -> None:
+    """The oscillator logged at a level and regulated to that level's origin, an equilibrium.
+    Uncentred, the gain was granted at every level, and after 200 steps the plant was 0.62 from
+    the target at level 1 and had overflowed at level 5; centred, it ends within 1e-6 at each,
+    2e-11 measured."""
+    xs, us, x_next = _transitions()
+    plant = _plant()
+    for level in LEVELS:
+        model = KoopmanModel(degree=3).fit(xs + level, us, x_next + level)
+        control = koopman_controller(model, koopman_lqr_gain(model, Q, R), np.full(2, level))
+        x = np.array([1.0, 0.0])
+        for _ in range(200):
+            u = control(x.astype(np.float64) + level)
+            x = np.asarray(rk4_step(plant, 0.0, jnp.asarray(x), jnp.asarray(u), DT))
+        assert np.linalg.norm(x) < 1e-6, level
+
+
+def test_a_controller_whose_loop_leaves_the_target_is_refused() -> None:
+    """On a linear plant the degree-1 lift is exact and the re-lifted loop is ``A - B G``: with no
+    gain it is the open loop, whose radius 1.1 is refused; the LQR gain's loop is the plant's."""
+    a, b = np.array([[1.1, 0.2], [0.0, 0.7]]), np.array([[0.0], [1.0]])
+    rng = np.random.default_rng(3)
+    xs, us = rng.standard_normal((200, 2)), rng.standard_normal((200, 1))
+    model = KoopmanModel(degree=1, ridge=0.0).fit(xs, us, xs @ a.T + us @ b.T)
+    with pytest.raises(ValueError, match=r"spectral radius 1\.1\b"):
+        koopman_controller(model, np.zeros((1, 3)), np.zeros(2))
+    gain = koopman_lqr_gain(model, np.eye(2), np.array([[1.0]]))
+    _assert_close(gain[:, :2], dlqr(a, b, np.eye(2), np.array([[1.0]]))[0], 1e-10)
+    koopman_controller(model, gain, np.zeros(2))
+
+
+@pytest.mark.parametrize("degree", [1, 2, 3, 4])
+def test_the_lift_jacobian_is_the_lift_differentiated(degree: int) -> None:
+    """Central differences of step ``h`` err by ``h^2`` times the third derivative, ~1e-10 here."""
+    x, h = np.array([0.7, -1.3, 0.4]), 1e-5
+    numeric = np.column_stack(
+        [(_lift(x + h * e, degree)[0] - _lift(x - h * e, degree)[0]) / (2 * h) for e in np.eye(3)]
+    )
+    np.testing.assert_allclose(_lift_jacobian(x, degree), numeric, rtol=0.0, atol=1e-8)
