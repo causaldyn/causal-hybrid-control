@@ -88,35 +88,40 @@ def test_an_error_model_inside_tolerance_certifies_the_whole_plan() -> None:
     assert plan.certified_actions.shape == (12, 1)
 
 
-def test_a_tube_read_against_no_tolerance_reads_no_tolerance_and_names_the_default() -> None:
-    """An infinite tolerance holds every finite tube, so it once read ``certified`` on every plan
-    with an error model: a pass no tube could fail."""
-    with pytest.warns(FutureWarning, match=r"0\.20\.0 the default tolerance is 1, one unit"):
-        plan = causal_plan(*_ARGS, lipschitz=0.8, model_error=0.05)
-    assert plan.certificate_status == "no_tolerance"
-    assert plan.certified_horizon == 12
-    assert plan.tolerance == math.inf
+def test_a_tube_is_read_against_one_unit_of_the_state_by_default() -> None:
+    """With no tolerance given the tube is read against 1.0, one unit of the state (ADR 0091), and
+    no warning is raised; an infinite tolerance holds every finite tube, so it once read
+    ``certified`` on every plan with an error model, a pass no tube could fail, and now reads
+    ``no_tolerance``."""
     with warnings.catch_warnings():
         warnings.simplefilter("error")
+        plan = causal_plan(*_ARGS, lipschitz=0.8, model_error=0.05)
         explicit = causal_plan(*_ARGS, lipschitz=0.8, model_error=0.05, tolerance=math.inf)
         chosen = causal_plan(*_ARGS, lipschitz=0.8, model_error=0.05, tolerance=1.0)
         untubed = causal_plan(*_ARGS)
+    assert plan.tolerance == 1.0
+    assert plan.certificate_status == chosen.certificate_status == "certified"
+    assert plan.certified_horizon == chosen.certified_horizon == 12
+    tight = causal_plan(*_ARGS, lipschitz=0.8, model_error=1.0)
+    assert tight.tolerance == 1.0
+    assert tight.certificate_status == "partial"
     assert explicit.certificate_status == "no_tolerance"
-    assert (chosen.certificate_status, chosen.tolerance) == ("certified", 1.0)
+    assert explicit.certified_horizon == 12
     assert untubed.certificate_status == "not_evaluated"
-    assert replace(plan, tolerance=None).certificate_status == "certified"  # built by hand
+    assert replace(explicit, tolerance=None).certificate_status == "certified"  # built by hand
 
 
-def test_a_receding_horizon_without_a_tolerance_warns_at_its_caller() -> None:
-    controller = RecedingHorizon(_MODEL, _COST, 0.1, 12, -5.0, 5.0, model_error=0.05)
-    with pytest.warns(FutureWarning, match="no_tolerance") as caught:
-        plan = controller.step(_X0)
-    assert caught[0].filename == __file__
-    assert plan.certificate_status == "no_tolerance"
-    held = RecedingHorizon(_MODEL, _COST, 0.1, 12, -5.0, 5.0, model_error=0.05, tolerance=0.5)
+def test_a_receding_horizon_reads_its_tube_against_one_unit_of_the_state_by_default() -> None:
+    controller = RecedingHorizon(_MODEL, _COST, 0.1, 12, -5.0, 5.0, model_error=1.0)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        assert held.step(_X0).certificate_status in ("partial", "certified")
+        plan = controller.step(_X0)
+    assert plan.tolerance == 1.0
+    assert plan.certificate_status == "partial"
+    endless = RecedingHorizon(
+        _MODEL, _COST, 0.1, 12, -5.0, 5.0, model_error=1.0, tolerance=math.inf
+    )
+    assert endless.step(_X0).certificate_status == "no_tolerance"
 
 
 def test_an_error_model_that_busts_tolerance_immediately_certifies_nothing() -> None:

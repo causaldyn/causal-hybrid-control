@@ -28,7 +28,7 @@ from chc.control import Bound, LinearConstraint, broadcast_box, projected_gradie
 from chc.cost import QuadraticCost
 from chc.dynamics import Dynamics
 from chc.integrate import rk4_step
-from chc.plan import BarrierConstraint, CausalPlan, _plan
+from chc.plan import _TOLERANCE_DEFAULT, BarrierConstraint, CausalPlan, _plan
 from chc.support import PenaltyModel, SupportModel
 
 _log = logging.getLogger(__name__)
@@ -246,7 +246,7 @@ class RecedingHorizon:
     model_error: float = 0.0
     noise: ArrayLike = 0.0
     noise_persistence: float | ArrayLike = 0.0
-    tolerance: float | None = None
+    tolerance: float = _TOLERANCE_DEFAULT
     steps: int = 10_000
     constraints: Sequence[LinearConstraint] = ()
     barrier: BarrierConstraint | None = None

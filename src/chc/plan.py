@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import logging
 import math
-import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
@@ -119,9 +118,9 @@ radius and so certifies nothing, and otherwise ``uncertified``, ``partial`` or `
 none, some or all of its steps keep the tube within the tolerance."""
 
 _TOLERANCE_DEFAULT = 1.0
-"""The ``tolerance`` :func:`causal_plan` and :class:`chc.mpc.RecedingHorizon` take from 0.20.0 when
-none is given: one unit of the state, the radius a caller who logs each state in units of the error
-accepted on it passes (ADR 0091)."""
+"""The ``tolerance`` :func:`causal_plan` and :class:`chc.mpc.RecedingHorizon` take when none is
+given: one unit of the state, the radius a caller who logs each state in units of the error accepted
+on it passes (ADR 0091)."""
 PriceStatus = Literal["exact", "weakly_active", "degenerate", "inactive"]
 DiagnosticStatus = Literal["within", "beyond", "not_finite", "not_evaluated"]
 """How a plan's stationarity or constraint violation reads against its tolerance: ``within`` it,
@@ -1522,7 +1521,7 @@ def causal_plan(
     model_error: float = 0.0,
     noise: ArrayLike = 0.0,
     noise_persistence: float | ArrayLike = 0.0,
-    tolerance: float | None = None,
+    tolerance: float = _TOLERANCE_DEFAULT,
     steps: int = 10_000,
     constraints: Sequence[LinearConstraint] = (),
     barrier: BarrierConstraint | None = None,
@@ -1570,12 +1569,10 @@ def causal_plan(
             leaves the tube the model error's alone, as before.
         tolerance: tube radius above which the plan stops being certified, in the state's units.
             A step whose predicted state is not a finite number, an overflow's or a nan's, is
-            certified at no tolerance. Not given, it is infinite, which holds every finite radius:
-            the plan's :attr:`~CausalPlan.certificate_status` then reads ``no_tolerance`` rather
-            than ``certified``, and where an error model gives the plan a tube a ``FutureWarning``
-            says that from 0.20.0 the default is 1.0, one unit of the state, the radius ADR 0091
-            asks of a caller who logs each state in units of the error accepted on it. Pass it to
-            choose the radius; ``inf`` keeps today's reading without the warning.
+            certified at no tolerance. The default, 1.0, is one unit of the state, the radius ADR
+            0091 asks of a caller who logs each state in units of the error accepted on it. ``inf``
+            holds every finite radius, and the plan's :attr:`~CausalPlan.certificate_status` then
+            reads ``no_tolerance`` rather than ``certified``. Up to 0.19 the default was ``inf``.
         constraints: linear rows over the whole action sequence
             (:class:`~chc.control.LinearConstraint`), held by every iterate of either solver, not
             only by the answer.
@@ -1769,7 +1766,7 @@ def _plan(
     lam_unc: float,
     lipschitz: ArrayLike,
     model_error: float,
-    tolerance: float | None,
+    tolerance: float,
     steps: int,
     constraints: Sequence[LinearConstraint],
     barrier: BarrierConstraint | None,
@@ -1783,8 +1780,7 @@ def _plan(
     What a receding horizon carries from one plan to the next besides the actions: ``multipliers``
     seed the barrier rounds in place of zeros, and the rounds' last come back -- zeros where the
     barrier was slack, ``None`` with no barrier. One row per step, two columns per barrier: its
-    condition's and its next state's. A ``tolerance`` of None is infinite, and warns where the
-    plan has a tube, at the caller of the caller's frame.
+    condition's and its next state's.
     """
     if uncertainty is not None and support is None:
         raise ValueError("uncertainty penalty requires a support model; it is unused without one")
@@ -1804,8 +1800,6 @@ def _plan(
     # In JAX's precision: a NumPy float64 start carried as it is made the float32 solve ask for
     # float64 arrays of x0's dtype, which JAX truncates with a warning.
     x0 = jnp.asarray(x0)
-    unset = tolerance is None
-    tolerance = math.inf if tolerance is None else tolerance
     _check_tolerance(tolerance)
     rate = np.asarray(lipschitz, dtype=float)
     if rate.ndim == 0 and not rate >= 0.0:
@@ -1970,15 +1964,6 @@ def _plan(
         tolerance=tolerance,
         _problem=problem,
     )
-    if unset and tube is not None:
-        warnings.warn(
-            "the plan's error tube was read against no tolerance, which holds every finite radius, "
-            "so its certificate_status reads 'no_tolerance'; from 0.20.0 the default tolerance is "
-            f"{_TOLERANCE_DEFAULT:g}, one unit of the state (ADR 0091). Pass tolerance to choose "
-            "the radius, or inf to keep this reading.",
-            FutureWarning,
-            stacklevel=3,
-        )
     if barrier is None:
         return plan, None
     audit = _audit(
