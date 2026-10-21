@@ -144,7 +144,7 @@ Qed.
 
 Definition scalar_constant (rr b xt : R) : R := xt ^ 2 * (rr - b ^ 2) ^ 2 / (rr + b ^ 2) ^ 3.
 
-Lemma the_one_by_one_floor_is_result_ten_s_constant :
+Lemma the_one_by_one_floor_is_the_cramer_rao_constant :
   forall rr b xt : R,
   rr + b ^ 2 <> 0 ->
   (b ^ 2 + rr) * (- xt * (rr - b ^ 2) / (rr + b ^ 2) ^ 2) ^ 2 = scalar_constant rr b xt.

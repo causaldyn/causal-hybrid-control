@@ -1113,7 +1113,7 @@ def test_capped_exploration_under_a_schedule_and_a_budget_moves_the_mass_not_the
         capped_exploration_policy(horizon=10, cap=0.1, budget=0.0)
 
 
-def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_result_fifty_six_dropped() -> None:
+def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_the_leading_form_drops() -> None:
     # validation/capped_exploration_schedule.mac STEP 7,
     # validation/capped_exploration_o1.gp, proofs/capped_exploration_schedule.v section (H).
     # The constant-cap sqrt(K T/(A c)) - I0/c is the root of the first-order condition with the
@@ -1134,7 +1134,7 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_result_fifty_six_
         w = (-q + np.sqrt(q * q + 4.0 * aa * (kk * cc * horizon + kk * i0 / cap))) / (2.0 * aa)
         return float((w - i0) / cc)
 
-    def result_56(horizon: float) -> float:
+    def leading_form(horizon: float) -> float:
         return float(np.sqrt(kk * horizon / (aa * cc)) - i0 / cc)
 
     constant = kk / (2.0 * aa * cc)  # the dropped term is this over the cap
@@ -1156,7 +1156,7 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_result_fifty_six_
         assert fixed == pytest.approx(exact(horizon, cap), abs=cap)
 
     # 2. the gap to the leading form converges to K/(2 A c cap) -- a CONSTANT, over 5 decades of T
-    gaps = [result_56(t) - exact(t, cap) for t in (10**4, 10**5, 10**6, 10**7, 10**8)]
+    gaps = [leading_form(t) - exact(t, cap) for t in (10**4, 10**5, 10**6, 10**7, 10**8)]
     assert gaps[-1] == pytest.approx(constant / cap, rel=1e-3)
     # ... and it is a ceiling, not just a limit: proofs/capped_exploration_schedule.v
     #     the_overstatement_never_exceeds_the_cap_term, approached strictly from below
@@ -1166,7 +1166,7 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_result_fifty_six_
     #    STEP 7g derives -- four decades, so the rate is read off a curve and not a pair
     coefficient = (kk + 4.0 * aa * i0 * cap) * np.sqrt(kk / (aa * cc)) / (8.0 * aa * cc * cap**2)
     tail = [
-        (result_56(t) - constant / cap - exact(t, cap)) * np.sqrt(t)
+        (leading_form(t) - constant / cap - exact(t, cap)) * np.sqrt(t)
         for t in (10**5, 10**6, 10**7, 10**8)
     ]
     assert tail[-1] == pytest.approx(-coefficient, rel=1e-4)
@@ -1175,7 +1175,7 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_result_fifty_six_
     # 4. the cap enters the mass ONLY through that constant, so a tighter actuator is exactly
     #    where the leading form over-states -- inversely in the cap, and unboundedly
     horizon = 4000
-    overstatement = {k: result_56(horizon) - exact(horizon, k) for k in (0.3, 0.1, 0.03, 0.01)}
+    overstatement = {k: leading_form(horizon) - exact(horizon, k) for k in (0.3, 0.1, 0.03, 0.01)}
     assert all(v <= constant / k for k, v in overstatement.items())
     assert overstatement[0.01] / overstatement[0.1] == pytest.approx(10.0, rel=0.1)
     # ... 0.5% of the mass at cap 0.3 and 17% at cap 0.01, on the same horizon
@@ -1185,7 +1185,7 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_result_fifty_six_
     # 5. the policy's own mass agrees with the quadratic, not with the leading form
     policy = capped_exploration_policy(horizon=10**5, cap=cap)
     assert policy.predicted_mass == pytest.approx(exact(10**5, cap), abs=cap)
-    assert abs(policy.predicted_mass - result_56(10**5)) > 1.9
+    assert abs(policy.predicted_mass - leading_form(10**5)) > 1.9
 
 
 def test_multivariate_van_trees_prices_an_alignment_where_the_scalar_floor_prices_a_ratio() -> None:

@@ -11,6 +11,7 @@ import pytest
 from chc.research.deep_galerkin import (
     CongestedMeanFieldGame,
     LQMeanFieldGame,
+    NonlinearDwrCurve,
     adjoint_weighted_error,
     dual_weighted_error_estimate,
     finite_population_gap_certificate,
@@ -384,7 +385,7 @@ def test_nonlinear_dwr_certificate_holds() -> None:
     assert max(curve.affine_relative_errors) / min(curve.affine_relative_errors) < 1.1
     assert curve.affine_quadrature_ratio > 3.0
     # And the adjoint it builds by autodiff agrees with the LQ closed-form denominator.
-    assert curve.denominator_against_result_55 < 1e-6
+    assert curve.denominator_against_closed_form < 1e-6
     # On the congested field the remainder is the second variation: second order in the defect,
     # first order in the relative error, on an arm where that error is percent-scale not noise.
     assert curve.congested_exponent == pytest.approx(2.0, abs=0.15)
@@ -394,6 +395,14 @@ def test_nonlinear_dwr_certificate_holds() -> None:
     assert curve.affine_adjoint_exponent == pytest.approx(1.0, abs=0.15)
     assert curve.affine_model_exponent == pytest.approx(0.0, abs=0.15)
     assert curve.affine_adjoint_errors[-1] > 100.0 * curve.congested_errors[-1]
+
+
+def test_the_denominator_gap_reads_under_its_old_name_with_a_warning() -> None:
+    fields = {field.name: 0.0 for field in dataclasses.fields(NonlinearDwrCurve)}
+    curve = NonlinearDwrCurve(**{**fields, "denominator_against_closed_form": 3.5e-9})
+    with pytest.warns(DeprecationWarning, match=r"^\S+ is renamed \S+ and leaves in 1\.0: "):
+        old = curve.denominator_against_result_55
+    assert old == curve.denominator_against_closed_form
 
 
 def test_a_shooting_miss_that_is_nan_has_not_closed() -> None:
