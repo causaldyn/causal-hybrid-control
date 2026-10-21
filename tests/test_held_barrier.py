@@ -767,6 +767,10 @@ def test_the_audit_reads_the_same_in_any_units_of_each_lever(units: tuple[float,
             HORIZON,
             -TWO_REACH * s,
             TWO_REACH * s,
+            # the tube ties each next state to every earlier action, and the rounds holding them
+            # take some 37 000 steps: rounds that stopped within 10 000 as converged left a residual
+            # 99 times the stationarity's tolerance
+            steps=40_000,
             barrier=BarrierConstraint(_velocity_floor, u_max=tuple(TWO_REACH * s), **kwargs),
         )
         for (forces, price), s in ((_two_forces(), np.ones(2)), (_two_forces(units), scale))
@@ -775,6 +779,7 @@ def test_the_audit_reads_the_same_in_any_units_of_each_lever(units: tuple[float,
         assert plan.safety is not None
         assert plan.safety.certified_steps == HORIZON
         assert plan.solver_status == "converged"
+        assert plan.stationarity_status == "within"
     assert held[1].task_cost == pytest.approx(held[0].task_cost, rel=1e-5, abs=0.0)
 
 
@@ -1114,8 +1119,10 @@ def test_rounds_no_projection_holds_keep_their_status(
     statuses: list[str] = []
     restore, rounds = plan_module._restore, plan_module._rounds
 
-    def recorded(*args: object) -> object:
-        projections.append(result := restore(*args))  # type: ignore[arg-type]
+    def recorded(*args: object, upto: int | None = None) -> object:
+        result = restore(*args, upto=upto)  # type: ignore[arg-type]
+        if upto is None:
+            projections.append(result)
         return result
 
     def stopped(*args: object, **kwargs: object) -> tuple:
