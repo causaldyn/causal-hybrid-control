@@ -16,11 +16,12 @@ it is called.
 from __future__ import annotations
 
 import itertools
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
 from math import comb, lgamma
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -800,7 +801,7 @@ class HighProbRegretCurve:
     cr_floor: float  # the Result 10 in-expectation floor C*sigma^2/(n*V_exp)
 
 
-def highprob_regret_certificate(
+def local_highprob_regret_certificate(
     *,
     b: float = 1.0,
     rr: float = 0.5,
@@ -854,6 +855,19 @@ def highprob_regret_certificate(
     for i, band in enumerate(bands):
         coverage[i] = float(np.mean(regrets <= band))
     return HighProbRegretCurve(ds, bands, coverage, conf_bands, bands / floor, float(floor))
+
+
+def highprob_regret_certificate(**kwargs: Any) -> HighProbRegretCurve:
+    """:func:`local_highprob_regret_certificate` under the name it had before 0.20.0, which
+    leaves in 1.0: the band is local, not a high-probability bound on the realised regret."""
+    warnings.warn(
+        "highprob_regret_certificate is renamed local_highprob_regret_certificate and leaves in "
+        "1.0: its band holds only where the regret's curvature is constant over the confidence "
+        "region",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return local_highprob_regret_certificate(**kwargs)
 
 
 @dataclass(frozen=True)
@@ -4982,11 +4996,22 @@ class ConfoundingRobustLQRegretCurve:
     gammas: Vector  # swept §32 sensitivity levels Gamma
     # R(Gamma) = L_reg*(eps + Delta(Gamma))^2, the regret to second order: not a bound, the exact
     # regret's worst over the effect interval exceeds it by up to 8.4 % on the defaults
-    regret_bounds: Vector
+    second_order_regrets: Vector
     statistical: float  # R(Gamma=1) = L_reg*eps^2 (no confounding penalty)
     floor_quadratic_ratio: float  # floor(2*Delta)/floor(Delta): ~4.0 => quadratic in the width
     order_doubling_ratio: float  # exact regret / (L_reg*delta^2) at small delta: ~1.0
     ok: bool
+
+    @property
+    def regret_bounds(self) -> Vector:
+        """``second_order_regrets`` under the name it had before 0.20.0, which leaves in 1.0."""
+        warnings.warn(
+            "ConfoundingRobustLQRegretCurve.regret_bounds is renamed second_order_regrets and "
+            "leaves in 1.0: each is the regret to second order, not a bound on it",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.second_order_regrets
 
 
 def confounding_robust_lq_regret_certificate(
@@ -5003,7 +5028,8 @@ def confounding_robust_lq_regret_certificate(
     ``kappa*(u*(b_hat) - u*(b))^2`` at a small perturbation (ratio -> 1 proves the coefficient),
     then maps each ``Gamma`` to its confounding half-width via the §32 inflation and checks the
     second-order regret is monotone, recovers the statistical regret at ``Gamma=1``, and floors at
-    ``Delta^2``. ``regret_bounds`` holds that second-order regret, which the exact one exceeds (see
+    ``Delta^2``. ``second_order_regrets`` holds that second-order regret, which the exact one
+    exceeds (see
     :func:`confounding_robust_lq_regret`). Only the first of ``ok``'s four gates is a measurement:
     the other three hold by the algebra of ``L_reg (eps + Delta)^2`` whatever the plant, its
     ``floor_quadratic_ratio`` being ``(2 Delta)^2 / Delta^2``.
@@ -5039,7 +5065,7 @@ def confounding_robust_lq_regret_certificate(
     )
     return ConfoundingRobustLQRegretCurve(
         gammas=np.array(gammas),
-        regret_bounds=np.array(bounds),
+        second_order_regrets=np.array(bounds),
         statistical=statistical,
         floor_quadratic_ratio=float(floor_ratio),
         order_doubling_ratio=float(order_doubling_ratio),

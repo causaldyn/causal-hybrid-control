@@ -824,16 +824,22 @@ def test_a_missing_date_is_refused_as_a_nan_is(unit: str) -> None:
     ],
     ids=["numbers", "month names", "objects", "bytes"],
 )
-def test_text_periods_warn_that_they_are_read_in_their_sorted_order(labels: np.ndarray) -> None:
+def test_undeclared_text_periods_are_refused(labels: np.ndarray) -> None:
     """Text sorts by its characters: "1", "10", "11", "12", "2", and every month name out of the
     calendar's order. Read as periods, two of the eleven transitions of the numbers ran from "1"
     to "10" and from "12" to "2", and all eleven of the month names' were wrong. Undeclared, text
-    warns; declared "observed", it is read in that order as asked."""
+    is refused, as dates off a grid are: no order a library could infer from text is the
+    calendar's for every label, month names among them. Declared "observed", it is read in its
+    sorted order as asked."""
     frame = {"unit": np.zeros(12, dtype=int), "time": labels, "y": np.arange(12.0)}
-    with pytest.warns(FutureWarning, match="holds text, whose sorted order"):
-        panel = Panel.from_frame(frame, unit="unit", time="time")
-    assert panel.periods == tuple(sorted(labels.tolist()))
+    with pytest.raises(
+        PanelError,
+        match=r"^time column 'time' holds text, whose sorted order need not be the periods' "
+        r"order: .* declare frequency='observed' to read them in their sorted order$",
+    ):
+        Panel.from_frame(frame, unit="unit", time="time")
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        Panel.from_frame(frame, unit="unit", time="time", frequency="observed")
+        panel = Panel.from_frame(frame, unit="unit", time="time", frequency="observed")
         Panel.from_frame({**frame, "time": np.arange(12)}, unit="unit", time="time")
+    assert panel.periods == tuple(sorted(labels.tolist()))

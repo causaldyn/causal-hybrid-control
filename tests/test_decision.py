@@ -184,7 +184,7 @@ def test_an_empty_set_a_graph_proves_enough_fits_an_identified_channel_and_its_t
     assert proved.certificate.adjustment.covariates == ()
     assert proved.certificate.identification == "identified"
     assert (proved.model_fit.identified, proved.model_fit.method) == (True, "orthogonal")
-    assert proved.certificate.identification_radius is not None
+    assert proved.certificate.channel_error is not None
     assert proved.certificate.certified_horizon is not None
     # the tube is evaluated and trusts a step; the plan's incentive, outside the logged range from
     # its first step, is what ends the certified horizon there
@@ -201,7 +201,7 @@ def test_an_empty_set_a_graph_proves_enough_fits_an_identified_channel_and_its_t
     with caplog.at_level(logging.WARNING, logger="chc.decision"):
         asserted = _prescribe(panel, ())
     assert asserted.model_fit.method == "observational"
-    assert asserted.certificate.identification_radius is None
+    assert asserted.certificate.channel_error is None
     assert any("the error tube is not evaluated" in record.message for record in caplog.records)
     assert "the fit is the observational one" in asserted.report()
     assert "no unit has two consecutive transitions" not in asserted.report()
@@ -922,7 +922,7 @@ def test_an_unevaluated_tube_vouches_for_no_step_whatever_the_barrier_says(
     certificate = DecisionCertificate(
         identification="asserted",
         adjustment=AdjustmentSet((), "identified", "asserted by the caller"),
-        identification_radius=None,
+        channel_error=None,
         overlap=1.0,
         certificate_status="not_evaluated" if tube is None else "certified",
         certified_horizon=tube,
@@ -1093,8 +1093,8 @@ def test_the_certificate_does_not_move_with_the_zero_of_the_state_scale() -> Non
     assert there.plan is not None
     assert np.asarray(there.plan.actions) == pytest.approx(np.asarray(here.plan.actions), abs=1e-5)
     # the ridge weighs the moved log's larger coefficients: 1.5e-4 apart
-    assert there.certificate.identification_radius == pytest.approx(
-        here.certificate.identification_radius, rel=1e-3
+    assert there.certificate.channel_error == pytest.approx(
+        here.certificate.channel_error, rel=1e-3
     )
     assert there.certificate.certified_horizon == here.certificate.certified_horizon
 
@@ -1520,6 +1520,9 @@ def test_the_report_and_the_json_carry_the_same_decision() -> None:
     assert payload["levers"] == ["incentive"]
     assert np.allclose(payload["schedule"], np.asarray(result.plan.actions))
     assert payload["certificate"]["adjusted_for"] == ["demand"]
+    assert payload["certificate"]["channel_error"] == result.certificate.channel_error
+    # the key the error had before 0.20.0, written beside it until 1.0
+    assert payload["certificate"]["identification_radius"] == result.certificate.channel_error
     assert payload["provenance"]["data_sha256"] == result.provenance.data_sha256
     start = result.start
     assert start is not None
@@ -2564,7 +2567,7 @@ def test_the_channel_s_error_sums_within_each_unit_or_declared_cluster_and_each_
     np.testing.assert_array_equal(
         by_region.model_fit.residual.channel, by_unit.model_fit.residual.channel
     )
-    assert region.identification_radius != certificate.identification_radius
+    assert region.channel_error != certificate.channel_error
 
 
 @pytest.mark.filterwarnings("error::RuntimeWarning")
@@ -2598,7 +2601,7 @@ def test_a_panel_of_one_unit_reads_its_error_across_its_periods_by_cosines(
     (event,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "fit"]
     assert (event.clustered_by, event.cosines) == (None, 21)
     certificate = result.certificate
-    assert certificate.identification_radius is not None
+    assert certificate.channel_error is not None
     grouping = (
         certificate.error_clustered_by,
         certificate.error_clusters,
@@ -2653,7 +2656,7 @@ def test_several_units_in_one_declared_cluster_read_their_period_sums_by_cosines
     (event,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "fit"]
     assert (event.clustered_by, event.clusters, event.cosines) == ("market", 1, 8)
     certificate = result.certificate
-    assert certificate.identification_radius is not None
+    assert certificate.channel_error is not None
     grouping = (
         certificate.error_clustered_by,
         certificate.error_clusters,

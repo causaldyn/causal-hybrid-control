@@ -27,9 +27,8 @@ import warnings as _warnings
 from typing import TYPE_CHECKING
 
 # Every module a top-level name came from is imported, as it was when the top level bound every
-# name, so that `import chc` followed by `chc.<module>.<name>` keeps working. For a module that
-# moved into `chc.research` in 0.19.0 that is its old path, which loads nothing from there and
-# serves each name with a DeprecationWarning until 0.20.0 (docs/adr/0117).
+# name, so that `import chc` followed by `chc.<module>.<name>` keeps working. A module that moved
+# into `chc.research` in 0.19.0 is not: its old path was deleted in 0.20.0 (docs/adr/0128).
 # isort: off
 from chc import (
     adjoint as adjoint,
@@ -38,7 +37,6 @@ from chc import (
     control as control,
     cost as cost,
     decision as decision,
-    deep_galerkin as deep_galerkin,
     delay as delay,
     did as did,
     discovery as discovery,
@@ -48,7 +46,6 @@ from chc import (
     evaluation as evaluation,
     experiment as experiment,
     frames as frames,
-    galerkin as galerkin,
     games as games,
     gate as gate,
     gmethods as gmethods,
@@ -56,14 +53,10 @@ from chc import (
     independence as independence,
     integrate as integrate,
     irf as irf,
-    koopman as koopman,
     lqr as lqr,
     marketplace as marketplace,
     matching as matching,
-    meanfield as meanfield,
     metrics as metrics,
-    mintime as mintime,
-    mmm as mmm,
     mpc as mpc,
     network_causal as network_causal,
     offpolicy as offpolicy,
@@ -77,10 +70,8 @@ from chc import (
     splitting as splitting,
     support as support,
     switchback as switchback,
-    symbolic as symbolic,
     toeplitz as toeplitz,
     train as train,
-    transport as transport,
     uncertainty as uncertainty,
 )
 

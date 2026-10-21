@@ -1127,7 +1127,7 @@ def test_confounding_lq_regret_third_order_excess_is_as_documented() -> None:
     cert = confounding_robust_lq_regret_certificate()
     l_reg = lq_regret_sensitivity(effect, effort, target)
     excess = []
-    for bound in cert.regret_bounds:
+    for bound in cert.second_order_regrets:
         width = math.sqrt(bound / l_reg)
         worst = max(_regret_at(effect, effort, target, s * width) for s in (-1.0, 1.0))
         excess.append(worst / bound - 1.0)

@@ -39,7 +39,6 @@ import datetime
 import hashlib
 import math
 import numbers
-import warnings
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -240,8 +239,7 @@ class Panel:
                 numbers and dates on a uniform grid are read on it, other numbers in their sorted
                 order, which :func:`chc.decision.prescribe` refuses, as a period some units log
                 would part the others' transitions, and dates off a grid, calendar months among
-                them, are refused; text is read in its sorted order with a ``FutureWarning``, and
-                a future release will refuse it.
+                them, are refused, and so is text, whose sorted order need not be the periods'.
                 Dates held as objects, ``datetime`` or ``date`` values, are read as dates on their
                 own wall clock, a time-zone-aware stamp in its zone: a month's first midnight in
                 Berlin is that month, though in UTC it falls in the month before. Undeclared or
@@ -263,8 +261,8 @@ class Panel:
                 object column, a missing date, a duplicated ``(unit, time)`` pair, an object column
                 whose values are not of one type (a missing value among strings, say), whose values'
                 text is their address in memory, or whose values' type a panel does not hold, a
-                frequency the time column cannot be read in, dates off a uniform grid with no
-                frequency declared, a period off the declared step, a unit with two rows in one
+                frequency the time column cannot be read in, dates off a uniform grid or text with
+                no frequency declared, a period off the declared step, a unit with two rows in one
                 declared period, or --- under ``require_balanced`` --- a hole.
                 Every message names the column and the offending entity.
             ValueError: from :func:`chc.frames.as_columns`, for two columns of one name or a
@@ -366,13 +364,11 @@ class Panel:
                     )
                 first[key] = row
         elif frequency is None and _text(times):
-            warnings.warn(
+            raise PanelError(
                 f"time column {time!r} holds text, whose sorted order need not be the periods' "
                 "order: '10' sorts before '2', and 'Apr' before 'Jan'. Convert the periods to "
                 "numbers or dates, or declare frequency='observed' to read them in their sorted "
-                "order; a future release will refuse undeclared text periods",
-                FutureWarning,
-                stacklevel=2,
+                "order"
             )
         elif frequency is None and _dates(times).dtype.kind == "M" and _grid_steps(times) is None:
             raise PanelError(

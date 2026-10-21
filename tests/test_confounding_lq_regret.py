@@ -24,12 +24,14 @@ def test_certificate_confirms_order_doubling_and_quadratic_floor() -> None:
         1.0, abs=1e-3
     )  # L_reg is the exact leading coeff
     assert cert.floor_quadratic_ratio == pytest.approx(4.0, abs=1e-9)  # floor ~ Delta^2
-    assert cert.regret_bounds[0] == pytest.approx(cert.statistical)  # Gamma=1 == statistical regret
+    assert cert.second_order_regrets[0] == pytest.approx(
+        cert.statistical
+    )  # Gamma=1 == statistical regret
 
 
 def test_regret_bound_is_monotone_nondecreasing_in_gamma() -> None:
     cert = confounding_robust_lq_regret_certificate()
-    b = cert.regret_bounds
+    b = cert.second_order_regrets
     assert all(
         b[i] <= b[i + 1] + 1e-15 for i in range(len(b) - 1)
     )  # more confounding -> larger bound

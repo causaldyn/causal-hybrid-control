@@ -24,15 +24,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
 from jax import Array
-
-from chc import _moved
 
 
 def project_simplex(v: Array, z: float) -> Array:
@@ -248,48 +246,3 @@ def stackelberg_allocation(
         if val > best_val:
             best_u, best_val = u, val
     return best_u
-
-
-# The research half of this module moved to chc.research.games in 0.19.0. Each of its names
-# is served from here with a DeprecationWarning until 0.20.0 (docs/adr/0117).
-_MOVED = frozenset(
-    {
-        "congestion_contraction_certificate",
-        "CongestionContractionCertificate",
-        "equilibrium_monotonicity_certificate",
-        "equilibrium_transfer_certificate",
-        "EquilibriumMonotonicityCertificate",
-        "EquilibriumTransferCertificate",
-    }
-)
-
-if TYPE_CHECKING:
-    # isort: off
-    from chc.research.games import (
-        congestion_contraction_certificate as congestion_contraction_certificate,
-        CongestionContractionCertificate as CongestionContractionCertificate,
-        equilibrium_monotonicity_certificate as equilibrium_monotonicity_certificate,
-        equilibrium_transfer_certificate as equilibrium_transfer_certificate,
-        EquilibriumMonotonicityCertificate as EquilibriumMonotonicityCertificate,
-        EquilibriumTransferCertificate as EquilibriumTransferCertificate,
-    )
-    # isort: on
-else:
-    __getattr__ = _moved.serve_names(__name__, "chc.research.games", _MOVED)
-
-# The names this module keeps, then the moved ones: listed, so that a star-import reads
-# each moved name through __getattr__, and warns, and dir() shows them.
-__all__ = [
-    "EquilibriumSolution",
-    "congestion_contraction_modulus",
-    "congestion_damping",
-    "fixed_point",
-    "project_simplex",
-    "softmax_congestion_equilibrium",
-    "stackelberg_allocation",
-    *sorted(_MOVED),
-]
-
-
-def __dir__() -> list[str]:
-    return sorted({*globals(), *__all__})

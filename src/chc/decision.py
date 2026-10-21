@@ -32,6 +32,7 @@ import datetime
 import logging
 import math
 import time
+import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from importlib import metadata
@@ -590,7 +591,7 @@ class DecisionCertificate:
     # unconfounded?". A graph that proves the effect identified with nothing to adjust for passes
     # that word on; an asserted empty set does not, and leaves the flag False.
     adjustment: AdjustmentSet
-    identification_radius: float | None  # channel standard error; None when not identified
+    channel_error: float | None  # the channel's standard error; None when not identified
     overlap: float  # residualised action variance: 0 means the log has no variation to learn from
     certificate_status: CertificateStatus
     # steps the tube keeps inside ``tolerance``: the radius that holds, with probability 0.95 at
@@ -661,7 +662,7 @@ class DecisionCertificate:
     # not split by state. None under ``bound``, whose covariance is a bound on the largest
     # variance alone, and where no tube was evaluated.
     tube_state_noise: tuple[tuple[float, ...], ...] | None = None
-    # The column whose groups ``identification_radius`` sums the scores within before squaring them
+    # The column whose groups ``channel_error`` sums the scores within before squaring them
     # (CR1): the panel's cluster where it declares one, else its unit, whose transitions share any
     # persistent noise; ``error_clusters`` counts the groups. ``error_periods`` counts the periods
     # the transitions start in where the error is read two ways (ADR 0061), so that a shock every
@@ -725,6 +726,17 @@ class DecisionCertificate:
     # its error, read at the log's actions, does not price that, so ``certified_horizon`` ends
     # there.
     lever_range_step: int | None = None
+
+    @property
+    def identification_radius(self) -> float | None:
+        """``channel_error`` under the name it had before 0.20.0, which leaves in 1.0."""
+        warnings.warn(
+            "DecisionCertificate.identification_radius is renamed channel_error and leaves in "
+            "1.0: it is the channel's standard error, not a radius",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.channel_error
 
     @property
     def stationarity_status(self) -> DiagnosticStatus | None:
@@ -1402,7 +1414,7 @@ class Prescription:
             f"- adjusted for: {list(certificate.adjustment.covariates) or 'nothing'}",
             *self._estimability_lines(),
             *self._driver_lines(),
-            f"- channel standard error: {_show(certificate.identification_radius)}"
+            f"- channel standard error: {_show(certificate.channel_error)}"
             + self._error_grouping(),
             f"- overlap (residualised action variance): {certificate.overlap:.4g}",
             self._logger_line(),
@@ -1442,7 +1454,9 @@ class Prescription:
         infinite ``regret_bound``, a selection step's own ``regret_status`` for its bound,
         ``gamma_star_status`` for ``gamma_star`` (:data:`GammaStarStatus`), and
         ``stationarity_status`` and ``violation_status`` for ``stationarity`` and
-        ``constraint_violation`` (:data:`chc.plan.DiagnosticStatus`).
+        ``constraint_violation`` (:data:`chc.plan.DiagnosticStatus`). The certificate's
+        ``identification_radius`` repeats ``channel_error``, the name it had before 0.20.0, until
+        1.0.
         """
         certificate = self.certificate
         record = {
@@ -1466,7 +1480,8 @@ class Prescription:
                 "identification": certificate.identification,
                 "adjusted_for": list(certificate.adjustment.covariates),
                 "reason": certificate.adjustment.reason,
-                "identification_radius": certificate.identification_radius,
+                "channel_error": certificate.channel_error,
+                "identification_radius": certificate.channel_error,
                 "overlap": certificate.overlap,
                 "certificate_status": certificate.certificate_status,
                 "certified_horizon": certificate.certified_horizon,
@@ -1618,7 +1633,7 @@ class Prescription:
 
     def _error_grouping(self) -> str:
         certificate = self.certificate
-        if certificate.identification_radius is None:
+        if certificate.channel_error is None:
             return ""
         if certificate.error_cosines is not None and certificate.error_clustered_by is None:
             return (
@@ -2362,7 +2377,7 @@ def prescribe(
             certificate=DecisionCertificate(
                 identification=identification,
                 adjustment=resolved,
-                identification_radius=None,
+                channel_error=None,
                 overlap=fit.action_residual_variance,
                 certificate_status="not_evaluated",
                 certified_horizon=None,
@@ -2731,7 +2746,7 @@ def prescribe(
     certificate = DecisionCertificate(
         identification=identification,
         adjustment=resolved,
-        identification_radius=fit.channel_error,
+        channel_error=fit.channel_error,
         overlap=fit.action_residual_variance,
         certificate_status=plan.certificate_status,
         certified_horizon=plan.certified_horizon,

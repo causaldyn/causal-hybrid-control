@@ -179,7 +179,7 @@ markers = [
 # library's own to stop using first
 filterwarnings = [
     "error:chc\\.\\w+ leaves the top level:DeprecationWarning",
-    "error:chc\\.\\w+\\.\\w+ leaves chc\\.\\w+ in 0\\.20\\.0:DeprecationWarning",
+    "error:\\S+ is renamed \\S+ and leaves in 1\\.0:DeprecationWarning",
 ]
 
 [tool.ty.environment]

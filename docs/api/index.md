@@ -2,8 +2,8 @@
 
 One page per public module, rendered from the module's docstrings. Every name is importable from
 its module, which is where it stays; the modules that each carry one research result moved into
-[`chc.research`](research/index.md) in 0.19.0, and their old paths serve them with a
-`DeprecationWarning` until 0.20.0. The top-level `chc` namespace holds the
+[`chc.research`](research/index.md) in 0.19.0, and 0.20.0 deleted their old paths. The top-level
+`chc` namespace holds the
 [lifecycle's](../lifecycle.md) names, the classes a call to one of them takes and the errors they
 raise, and its `__all__` lists them. Any other name 0.7.0 bound there still imports from it until
 1.0, with a `DeprecationWarning` that names its module.
@@ -94,8 +94,8 @@ The modules of [`chc.research`](research/index.md): each carries one research re
 certificate, a benchmark or a case study's plant — rather than a stage of a decision taken from
 logs, and the research halves of `regret`, `games` and `residual` sit beside them. They are outside
 the surface 0.20.0 freezes: any of them may change or be withdrawn in any release, and `import chc`
-imports none of them. Until 0.20.0 each name still imports from the path it had before 0.19.0, with
-a `DeprecationWarning` naming its path in `chc.research`.
+imports none of them. The paths they had before 0.19.0 were deleted in 0.20.0: import each name
+from its path in `chc.research`.
 
 The certificates that each back one research result inside modules of other tiers are on the same
 terms, and stay at their paths for now: the rollout, risk, ensemble and confounding certificates of
@@ -106,7 +106,7 @@ terms, and stay at their paths for now: the rollout, risk, ensemble and confound
 
 ## Roadmap
 
-0.20.0 deletes the paths the research modules left in 0.19.0. Next, the marketplace study, and
+0.20.0 deleted the paths the research modules left in 0.19.0. Next, the marketplace study, and
 the adaptation modules leave the experimental tier. Then 1.0.0:
 the stable tier stops moving, and the top level holds only the lifecycle's names. The 421 names that
 warn since 0.8.0 leave it then.

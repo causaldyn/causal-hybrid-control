@@ -1,7 +1,7 @@
 # ADR 0117 — The research periphery moves into `chc.research`
 
 **Status:** accepted, 2026-10-19. Supersedes the decision "Module paths do not move" of ADR 0016;
-the rest of ADR 0016 stands.
+the rest of ADR 0016 stands. Carried out by ADR 0128: 0.20.0 deleted the old paths.
 
 ## Context
 

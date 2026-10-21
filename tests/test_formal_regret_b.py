@@ -103,7 +103,7 @@ FORMAL_LINKS = {
         "cites": ("nonlinear_regret.v",),
         "tests": ("test_finite_horizon_pl_bound_holds_and_is_tight_on_the_soft_mode",),
     },
-    "chc.research.regret.highprob_regret_certificate": {
+    "chc.research.regret.local_highprob_regret_certificate": {
         "cites": ("highprob_regret.mac", "highprob_regret.v"),
         "tests": (
             "test_highprob_band_is_a_log_multiple_of_the_floor",
@@ -930,7 +930,7 @@ def test_highprob_band_is_a_log_multiple_of_the_floor(b, rr, xt, sigma, n, v_exp
     if abs(rr - b * b) < 0.05:
         return  # the knife edge C = 0 makes band/floor 0/0
     deltas = (0.5, 0.1, 0.01)
-    curve = R.highprob_regret_certificate(
+    curve = R.local_highprob_regret_certificate(
         b=b, rr=rr, xt=xt, sigma=sigma, n=n, v_exp=v_exp, v_conf=shrink * v_exp,
         deltas=deltas, n_trials=1,
     )  # fmt: skip
@@ -953,14 +953,14 @@ def test_highprob_band_is_a_log_multiple_of_the_floor(b, rr, xt, sigma, n, v_exp
 def test_highprob_band_covers_the_exact_regret_where_c_holds():
     """highprob_regret.mac: P(regret > band) <= delta, read on the exact regret at the defaults."""
     n_trials = 3000
-    curve = R.highprob_regret_certificate(n_trials=n_trials)
+    curve = R.local_highprob_regret_certificate(n_trials=n_trials)
     sd = np.sqrt(curve.deltas * (1 - curve.deltas) / n_trials)
     assert np.all(curve.empirical_coverage >= 1.0 - curve.deltas - 4.0 * sd)
 
 
 def test_highprob_band_undercovers_outside_the_local_regime():
     """highprob_regret.v covers the quadratic proxy only: off the local regime it undercovers."""
-    curve = R.highprob_regret_certificate(b=0.6, sigma=1.0, n=30, deltas=(0.01,))
+    curve = R.local_highprob_regret_certificate(b=0.6, sigma=1.0, n=30, deltas=(0.01,))
     sd = math.sqrt(0.01 * 0.99 / 4000)
     # the docstring quoted 0.916, the reading at 2000 trials; the default 4000 read 0.911
     assert curve.empirical_coverage[0] == pytest.approx(0.911, abs=0.0005)

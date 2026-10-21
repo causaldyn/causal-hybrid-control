@@ -204,8 +204,8 @@ failures, when the tests were first written (names relative to `chc`):
 | `general_q_ratio_moment.mac` | `regret._sandwich_plan`, `regret.exact_matrix_ratio_moment` | `test_formal_regret_b.py` |
 | `general_q_ratio_moment.v` | `regret.exact_matrix_ratio_moment` | `test_formal_regret_b.py` |
 | `geo_dlm.mac` | `dlm` | `test_formal_estimation.py` |
-| `highprob_regret.mac` | `regret.highprob_regret_certificate` | `test_formal_regret_b.py` |
-| `highprob_regret.v` | `regret.highprob_regret_certificate` | `test_formal_regret_b.py` |
+| `highprob_regret.mac` | `regret.local_highprob_regret_certificate` | `test_formal_regret_b.py` |
+| `highprob_regret.v` | `regret.local_highprob_regret_certificate` | `test_formal_regret_b.py` |
 | `hinf_robust_regret.mac` | `regret.hinf_robust_regret_certificate` | `test_formal_regret_b.py` |
 | `hinf_robust_regret.v` | `regret.hinf_robust_regret_certificate` | `test_formal_regret_b.py` |
 | `information_lower_bound.mac` | `regret.information_lower_bound_certificate` | `test_formal_regret_b.py` |
