@@ -1961,9 +1961,14 @@ def test_the_run_goes_to_json_as_plain_values(default_run: RunProvenance) -> Non
     }
 
 
-def test_prescribe_hands_its_nuisance_knots_to_the_fit() -> None:
+def test_prescribe_hands_its_nuisance_knots_to_the_fit(monkeypatch: pytest.MonkeyPatch) -> None:
     """``nuisance_knots`` reaches the fit and the run's record, and a count the fit refuses is
-    refused here; the default stays the polynomial's fit."""
+    refused here; the default stays the polynomial's fit. The fit reads the polynomial alone
+    where it predicts the other fold better than the spline, as on this log, so the spline is held
+    here to tell the two fits apart."""
+    monkeypatch.setattr(
+        "chc.dynamics_id._chosen_sieve", lambda *args, knots, **options: (knots, True)
+    )
     default, spline = _small(), _small(nuisance_knots="auto")
     assert default.run is not None
     assert spline.run is not None
