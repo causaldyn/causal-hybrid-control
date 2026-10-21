@@ -26,6 +26,17 @@ HONEST SCOPE, and it bounds what the numbers below mean:
   the state, so the fitted plant is a **local surrogate** of the truth. Every arm is therefore
   audited by rolling its schedule out on the true plant, as :mod:`chc.research.spine` does, and the
   reported sales are the audited ones rather than the planner's own forecast.
+* **The surrogate's error lands in the incremental return, and its standard error does not see
+  it.** With the planner not chasing the season at all (``policy_gain=0``), three seeds read
+  ``gamma_c`` at the plan's start state as ``(0.472, 0.179, 0.329)`` for ``(0.5, 0.2, 0.35)``:
+  6, 11 and 6% low, about half that averaged over the logged states. It is not noise or
+  confounding: with the noise taken down to ``1e-6`` they read ``(0.473, 0.178, 0.332)``, while
+  the fit's channel error fell from about 0.023 to 0.003. It is the saturation: with the Hill
+  response made linear over the logged range, or the carried-over return removed, the seeds'
+  mean reads within 1.1% of the truth. Within a step the spend moves the adstock and, through ``hill``, the
+  sales; a polynomial drift reads that slope wrong, and the control channel takes up the rest.
+  An interval of the channel's own error covers the truth here only while the noise makes that
+  error wide.
 * The arms are not held to a total budget. :func:`chc.prescribe` takes one (``budgets``, since
   0.10.0), but spend here is priced through ``Lever.unit_cost`` instead, and the arms are compared
   at matched total spend and by return per unit spent, which is the comparison that does not
