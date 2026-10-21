@@ -52,6 +52,7 @@ import math
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from itertools import combinations_with_replacement
 from typing import Literal
 
 import jax
@@ -426,7 +427,7 @@ def _natural_spline(column: np.ndarray, knots: np.ndarray) -> np.ndarray:
     return np.stack([cubic(k) - last for k in range(knots.size - 2)], axis=1)
 
 
-def _nuisance_sieve(covariates: Array, degree: int, knots: int) -> Array:
+def _nuisance_sieve(covariates: Array, degree: int, knots: int, powers: bool = True) -> Array:
     """The nuisances' basis at every row, ``(N, p)``: the polynomial of degree ``degree`` in the
     standardised covariates, and a natural cubic spline in each, at ``knots`` of its quantiles,
     their columns spanned by an orthonormal basis over the log and scaled to unit mean square.
@@ -435,19 +436,124 @@ def _nuisance_sieve(covariates: Array, degree: int, knots: int) -> Array:
     knots each, the raw columns' condition number was 1.4e6, past what float32 carries in a Gram.
     The basis of their span, from the full log's singular vectors, has one; full-sample statistics,
     as the standardisation's, so every fold reads one basis. A covariate with fewer than three
-    distinct knots, a flag or a constant, adds no spline: its polynomial holds what it can."""
+    distinct knots, a flag or a constant, adds no spline: its polynomial holds what it can.
+    Without ``powers`` a splined covariate keeps no power past its first, in any monomial
+    (:func:`_chosen_sieve`)."""
+    raw = _sieve_columns(covariates, degree, knots, powers)
+    return jnp.asarray(_orthonormal(raw), dtype=jnp.result_type(covariates))
+
+
+def _sieve_columns(
+    covariates: Array, degree: int, knots: int | None, powers: bool = True
+) -> np.ndarray:
+    """The raw columns :func:`_nuisance_sieve` spans, ``(N, q)``, the bias first: the polynomial
+    in the standardised covariates, without ``powers`` less a splined covariate's powers past its
+    first, and the splines; with ``knots`` None, the polynomial alone."""
     standardised = np.asarray(_units.standardised(covariates), dtype=np.float64)
-    columns = [np.asarray(_polynomial_features(jnp.asarray(standardised), degree))]
-    positions = np.linspace(0.0, 1.0, knots + 2)[1:-1]
-    for column in standardised.T:
-        at = np.unique(np.quantile(column, positions))
-        if at.size >= 3:
-            columns.append(_natural_spline(column, at))
-    raw = np.concatenate(columns, axis=1)
+    if knots is None:
+        at = [np.empty(0)] * standardised.shape[1]
+    else:
+        positions = np.linspace(0.0, 1.0, knots + 2)[1:-1]
+        at = [np.unique(np.quantile(column, positions)) for column in standardised.T]
+    splined = [knot.size >= 3 for knot in at]
+    polynomial = np.asarray(_polynomial_features(jnp.asarray(standardised), degree))
+    monomials = [
+        combo
+        for power in range(degree + 1)
+        for combo in combinations_with_replacement(range(standardised.shape[1]), power)
+    ]
+    single = [
+        powers or all(combo.count(index) <= 1 for index in combo if splined[index])
+        for combo in monomials
+    ]
+    columns = [polynomial[:, np.asarray(single)]]
+    for column, knot, spline in zip(standardised.T, at, splined, strict=True):
+        if spline:
+            columns.append(_natural_spline(np.asarray(column), knot))
+    return np.concatenate(columns, axis=1)
+
+
+def _orthonormal(raw: np.ndarray) -> np.ndarray:
+    """An orthonormal basis of ``raw``'s columns' span over its rows, from its singular vectors,
+    each column scaled to unit mean square; a direction rounding alone spans is left out."""
     left, singular, _ = np.linalg.svd(raw, full_matrices=False)
+    if singular.size == 0 or singular[0] == 0.0:
+        return np.zeros((raw.shape[0], 0))
     kept = singular > singular[0] * max(raw.shape) * np.finfo(np.float64).eps
-    basis = left[:, kept] * math.sqrt(raw.shape[0])
-    return jnp.asarray(basis, dtype=jnp.result_type(covariates))
+    return left[:, kept] * math.sqrt(raw.shape[0])
+
+
+def _chosen_sieve(
+    covariates: Array,
+    target: Array,
+    action: Array,
+    *,
+    degree: int,
+    knots: int,
+    folds: int,
+    ridge: float,
+    seed: int,
+) -> tuple[int | None, bool]:
+    """The nuisances' sieve, as the knots and whether a splined covariate keeps its powers past
+    the first: the spline with them, the spline without them, or the polynomial alone, knots
+    ``None``, whichever's cross-fitted residuals of ``target`` and ``action`` are the smaller,
+    each column's mean square over its variance, summed; the first of these on a tie.
+
+    Beside its spline a covariate's power holds its shape where the spline does, between the
+    knots, so the power's coefficient is read off the rows past the outer knots alone, where the
+    spline goes on as a line and the power does not; a row of the other fold further out reads it
+    at the power of its distance. On a linear plant with two ``t(3)`` confounders, which the
+    polynomial holds, a confounder at -18 of its scales left the action a cross-fitted residual of
+    11 where its noise is 0.5, and the channel scattered 3.0 and 4.4 times as far as the
+    polynomial's over 200 logs of 500 and 2000 rows, 2.2 times with lognormal ones at 1000.
+    Without the powers a nuisance quadratic in a normal confounder is a line past the outer knots,
+    and over 100 logs of 1000 rows the channel's bias was 2.0 of its errors, its interval
+    covering 47 %, and 2.4 and 32 % at 4000 rows. Where the confounder is ``t(5)`` or ``t(3)``
+    and the nuisance quadratic both spline sieves miss: with the powers the channel scattered 3.6
+    and 2.9 times as far as the polynomial's over 40 logs of 1000 rows, without them its bias
+    was 4.4 and 21 of its errors. No one sieve serves every log, and the log tells them apart:
+    the polynomial was chosen on 78 and 80 of 80 such fits, and the channel then scattered 0.99
+    and 1.00 times as far as the polynomial's. The choice reads the outcome, as any learner chosen
+    by cross-validation does, and the moment is orthogonal to the nuisances' error, so it enters
+    at second order."""
+    rows = target.shape[0]
+    candidates: tuple[tuple[int | None, bool], ...] = ((knots, True), (knots, False), (None, True))
+    error = []
+    for knot_count, powers in candidates:
+        features = (
+            None if knot_count is None else _nuisance_sieve(covariates, degree, knot_count, powers)
+        )
+        target_res, action_res, _, _ = _cross_fit_residuals(
+            target,
+            action,
+            covariates,
+            degree=degree,
+            folds=folds,
+            ridge=ridge,
+            seed=seed,
+            features=features,
+        )
+        error.append(
+            sum(
+                float(jnp.sum(residual**2) / jnp.maximum(rows * jnp.var(column), 1e-300))
+                for residual, column in (
+                    *zip(target_res.T, target.T, strict=True),
+                    *zip(action_res.T, action.T, strict=True),
+                )
+            )
+        )
+    return candidates[int(np.argmin(error))]
+
+
+def _held_pushes(columns: Array, degree: int, knots: int | None, powers: bool = True) -> Array:
+    """``(N, q)``: the pushes ``columns`` make on the rate in the nuisances' own basis, for the
+    drift regression under ``rk4`` -- the sieve's columns in them alone, at ``degree`` 1 at the
+    least, about their means on the log, in an orthonormal basis of their span."""
+    if columns.shape[1] == 0:
+        return columns
+    raw = _sieve_columns(columns, max(degree, 1), knots, powers)[:, 1:]
+    centred = raw - raw.mean(axis=0, keepdims=True)
+    return jnp.asarray(_orthonormal(centred), dtype=columns.dtype)
 
 
 def _knot_count(knots: int | Literal["auto"], rows: int) -> int:
@@ -575,11 +681,22 @@ def _robust_spreads(
     within a cluster first, it holds as well when the scores of one cluster's rows and states
     depend on one another in any way.
     """
-    n = score.shape[0]
+    return _score_spreads(jnp.einsum("pis,is->ip", sensitivity, score), n_coeff, clusters, periods)
+
+
+def _score_spreads(
+    scores: Array,
+    n_coeff: int,
+    clusters: np.ndarray | None = None,
+    periods: np.ndarray | None = None,
+) -> tuple[Array, ...]:
+    """:func:`_robust_spreads` of the rows' scores ``(N, p)``, each a transition's states summed:
+    the sum of their outer products, or of their sums within each cluster, or across the periods'
+    cosines."""
+    n = scores.shape[0]
     if periods is not None:
-        projected = jnp.asarray(_cosines(periods)) @ jnp.einsum("pis,is->ip", sensitivity, score)
+        projected = jnp.asarray(_cosines(periods)) @ scores
         return (_small_sample(n, n_coeff, None) * projected.T @ projected,)
-    scores = jnp.einsum("pis,is->ip", sensitivity, score)
     if clusters is None:
         # a transition's states may share its noise, so its scores are summed over them first
         return (_small_sample(n, n_coeff, None) * scores.T @ scores,)
@@ -1228,8 +1345,21 @@ def fit_causal_residual(
             drift set the channel at 0.618 over 60 logs, its 95 % interval covering 0.800 on none;
             drawn apart from the state, it scattered the channel 13 times as far as its error
             said, which covered on 10 %. Held in the drift, both read 0.800 and covered on 97 %.
-            The returned field carries no covariate: its drift is the one at their mean, and its
-            ``defect`` keeps their push.
+            The push is held in the nuisances' own basis in those covariates alone: their
+            polynomial of ``nuisance_degree``, at 1 at the least, and their spline where
+            ``nuisance_knots`` gives one. Held linearly, as up to 0.19.0, a push the nuisances
+            hold and the drift did not, ``2 z + 1.5 (z^2 - 1)`` on ``x' = -7 x + 8 u`` at
+            ``dt = 0.1``, scattered the channel 42 times as far as its error said over 100 logs of
+            1000 transitions, which covered on 3 %; held in their basis, 1.02 times over 60,
+            covering on 93 %, as the linear push does. A push that moves with the state, ``x z``,
+            is not one a step holds, and is not held. The returned field carries no covariate:
+            its drift is the one at their mean, and its ``defect`` keeps their push.
+
+            A push outside the nuisances' span, ``3 tanh(2 z)`` on that plant, is in neither, and
+            ``channel_error`` reads it in the moment's residual as if it were noise: there the
+            channel scattered 0.73 as far as its error said under ``"euler"`` and 0.75 under
+            ``"rk4"``, and its interval covered on 98 % of 60 logs. Conservative, not wrong; a
+            push the nuisances miss is a sign they miss the policy too (:func:`nuisance_shift`).
         instrument: name of an exogenous action shifter, for when the confounder is latent. It
             enters as the moment's instrument, not as the regressor, so this is real 2SLS. Expect a
             **variance premium**, not a free lunch: identification here rides on however much of
@@ -1295,26 +1425,39 @@ def fit_causal_residual(
             its quantiles, beside the polynomial of ``nuisance_degree``; ``"auto"`` takes
             ``ceil(N^(1/3))`` knots, which grow with the log; ``None``, the default, adds none.
             The spline's error at a smooth nuisance shrinks as its knots grow, so the moment's
-            second-order bias shrinks faster than its error. On the plant above, ``"auto"`` left a
-            bias of 0.0036, 0.0003 and 0.0005 at 1000, 4000 and 16000 rows, 0.18, 0.05 and 0.18
-            of the channel's error, and its 95 % interval covered on 0.955 and 0.970 of 200 logs
-            and 0.950 of 100. On a linear plant, which the polynomial holds, it covered on 0.950
-            of 200 logs of 1000 rows, where the polynomial alone covered on 0.965, its channel
-            scattering 11 % wider.
+            second-order bias shrinks faster than its error. The spline with a covariate's powers
+            past the first, the spline without them, or the polynomial alone is read, whichever
+            predicts the other fold the better (:func:`_chosen_sieve`): beside a spline the powers
+            are read off the rows past the outer knots alone, and on heavy tails a row of the
+            other fold far out read them at the power of its distance; without them a quadratic
+            nuisance is a line there. On the plant above, ``"auto"`` left a bias of 0.0021, 0.0003
+            and 0.0002 at 1000, 4000 and 16000 rows, 0.13, 0.04 and 0.08 of the channel's error,
+            and its 95 % interval covered on 0.960 and 0.965 of 200 logs and 0.967 of 30. Where
+            the polynomial holds the truth it scattered as wide as the polynomial alone, or less:
+            1.00 times on a linear plant over 200 logs of 1000 rows, both covering on 0.965; 1.01
+            and 1.00 times at 500 and 2000 rows with normal covariates, 0.67 and 1.00 with
+            ``t(3)`` ones, 0.43 and 0.76 with lognormal ones, and 1.00 with a nuisance quadratic
+            in a normal or ``t(5)`` confounder at 1000 and 4000 rows, each over 100 logs.
             The spline is additive: the covariates' joint shape beyond it is the polynomial's, so a
             confounder that enters through a nonlinear interaction of two covariates is still
-            outside the span. Read :func:`nuisance_shift` against a fit with more knots or a higher
-            degree. Left at None on an identified, unweighted fit without an instrument, the fit
-            solves its channel's moment once more on ``"auto"``'s nuisances, at its own target, and
-            warns (``FutureWarning``) where that moves the channel by more than three of its
-            errors, that 0.20.0 reads ``"auto"``; the fit returned is the default's. Under
+            outside the span. Read
+            :func:`nuisance_shift` against a fit with more knots or a higher degree. Left at None
+            on an identified, unweighted fit without an instrument, the fit solves its channel's
+            moment once more on ``"auto"``'s nuisances, at its own target, and warns
+            (``FutureWarning``) where that moves the channel by more than three errors of the
+            move, or as far into a ``t``'s tail where the error is read off few clusters or
+            periods, ``t(9)``'s 4.1, that 0.20.0 reads ``"auto"``; the fit returned is the
+            default's. Under
             ``euler`` that channel is a refit's; under ``rk4`` one Newton step through the fit's
-            own Newton matrix carries it to a refit's fixed point. It fits nothing more. On the
-            plant above, at 2000 rows, the refit moved the
-            channel by 5.8 to 10.4 errors and the fit warned on 40 of 40 logs; on 140 logs of
-            linear plants it moved it by 0.89 at most, and warned on none. Where the noise grows as
-            ``exp(x)`` it warned on 3 % of a linear plant's logs; under a weight ``exp(-x)`` the
-            shift passed three on 23 %, so a weighted fit is not checked.
+            own Newton matrix carries it to a refit's fixed point. The move's error pairs the two
+            fits' scores row by row, so it holds whichever fit is the more efficient. It fits
+            nothing more. On the plant above, at 2000 rows, the move read 31 to 44 of its errors
+            and the fit warned on 40 of 40 logs; on 200 logs of the linear plant it read 0.90 at
+            most, and 1.6 where the noise grows as ``exp(x)``, and warned on none. Read in the
+            fit's own errors, as up to 0.19.0, a spline that scatters more than the polynomial
+            moved it past three on 12.5 % of linear logs with ``t(3)`` covariates, and a log the
+            known physics solves exactly read a ratio of two roundings. Under a weight
+            ``exp(-x)`` that reading passed three on 23 %, so a weighted fit is not checked.
         folds: cross-fitting folds. ``1`` fits the nuisances on the same rows it residualises.
             That is *not* biased for the default nuisances and should not be sold as such:
             residualising ``y`` and ``u`` by the same linear projection whose span contains the
@@ -1529,20 +1672,41 @@ def fit_causal_residual(
     covariates, driver_start, driver_end, driver_read = _nuisance_inputs(
         data, adjust_for, drivers, integrator
     )
+    # the Euler reading of the log's rate less the known physics, whichever the integrator: the
+    # target the nuisances' sieve is chosen on, here and in the default fit's check
+    euler_target = (x_next - x) / dt - known_rate
+    knot_count, powers = (
+        (None, True)
+        if nuisance_knots is None
+        else _chosen_sieve(
+            covariates,
+            euler_target,
+            u,
+            degree=nuisance_degree,
+            knots=_knot_count(nuisance_knots, x.shape[0]),
+            folds=folds,
+            ridge=ridge,
+            seed=seed,
+        )
+    )
     sieve = (
         None
-        if nuisance_knots is None
-        else _nuisance_sieve(covariates, nuisance_degree, _knot_count(nuisance_knots, x.shape[0]))
+        if knot_count is None
+        else _nuisance_sieve(covariates, nuisance_degree, knot_count, powers)
     )
     # Under ``rk4`` the drift reaches the channel through RK4's growth factor, so a push the drift
-    # regression leaves out moves the channel: each covariate that is not a driver joins the drift
-    # held over the step, about its mean on the log, and leaves the returned field afterwards.
+    # regression leaves out moves the channel: the covariates that are not drivers join the drift
+    # in the nuisances' basis, held over the step, about their mean on the log, and leave the
+    # returned field afterwards.
     pushes = (
-        _units.centred(
+        _held_pushes(
             jnp.concatenate(
                 [x[:, :0], *[data[name] for name in adjust_for if name not in drivers]], axis=1
-            )
-        ).deviations
+            ),
+            nuisance_degree,
+            knot_count,
+            powers,
+        )
         if integrator == "rk4"
         else x[:, :0]
     )
@@ -1756,7 +1920,7 @@ def fit_causal_residual(
 
     def rk4_fixed_point(
         start: Array,
-    ) -> tuple[CausalDynamicsFit, Array, Callable[[Array], Array] | None]:
+    ) -> tuple[CausalDynamicsFit, Array, Callable[[Array], Array] | None, Array]:
         """The fit that is its own ``rk4`` reading of the log, by Newton's method from the fit to
         the target ``start``, the target it reads, and, where it is identified, how a move of its
         parameters ``(p, ...)`` at that target carries to the fixed point.
@@ -1839,7 +2003,7 @@ def fit_causal_residual(
         target = reading(theta)
         fit = fit_to(known_rate + target)
         if not identified:
-            return fit, target, None
+            return fit, target, None, fit_map
 
         # Only the noise is random given the log, and the channel reads it where its own sandwich
         # does, after the adjustment set has taken out what it explains. The drift regression holds
@@ -1915,10 +2079,14 @@ def fit_causal_residual(
             ),
             target,
             carry,
+            fit_map,
         )
 
+    # the fit's weight on each row's rate: the whole fixed point's under rk4, the channel's under
+    # Euler, set below where the fit is identified
+    own_map: Array | None = None
     if integrator == "rk4":
-        fit, target, to_fixed_point = rk4_fixed_point((x_next - x) / dt - known_rate)
+        fit, target, to_fixed_point, own_map = rk4_fixed_point((x_next - x) / dt - known_rate)
     else:
         target, to_fixed_point = (x_next - x) / dt - known_rate, None
         fit = fit_to((x_next - x) / dt)
@@ -1935,6 +2103,7 @@ def fit_causal_residual(
             sensitivity[: channel.size], score, regressor.shape[1], codes, steps
         )
         channel_error, lever_errors, channel_blocks = _channel_errors(spreads, channel.shape, phi_c)
+        own_map = sensitivity[: channel.size]
         least_squares = instrument_action is None and row_weight is None and split is None
         fit = dataclasses.replace(
             fit,
@@ -1980,14 +2149,117 @@ def fit_causal_residual(
         and weights is None
         and error is not None
         and error > 0.0
+        and own_map is not None
     ):
-        # The refit's moment at this fit's own target, without its errors: under Euler the refit's
-        # channel; under rk4 its first Newton step, through this fit's own Newton matrix.
-        spline = _nuisance_sieve(covariates, nuisance_degree, _knot_count("auto", x.shape[0]))
-        found = _unmoved_directions(u, x, covariates, nuisance_degree, channel_degree, spline)
-        spline_split = _split_unmoved(found, raw, design) if found.shape[1] else None
-        y_spline, u_spline, _, _ = _cross_fit_residuals(
+        moved, spread = _spline_shift(
+            fit,
+            own_map,
             target,
+            x,
+            u,
+            covariates,
+            phi_c,
+            raw,
+            design,
+            moment,
+            to_fixed_point,
+            euler_target,
+            nuisance_degree=nuisance_degree,
+            channel_degree=channel_degree,
+            folds=folds,
+            ridge=ridge,
+            seed=seed,
+            clusters=codes,
+            periods=steps,
+            channel_scale=float(
+                _units.root_mean_square(((x_next - x) / dt).ravel())
+                / _units.root_mean_square(u.ravel())
+            ),
+        )
+        shift = moved / spread
+        # the move's error is read off as many independent terms as the channel's: past a few,
+        # three of them is a t's tail, not the normal's, and a t(1)'s passes three on a fifth
+        freedom = _degrees_of_freedom(x.shape[0], codes, steps)
+        limit = float(student_t.ppf(student_t.cdf(_NUISANCE_SHIFT_WARN, math.inf), freedom))
+        if shift > limit:
+            warnings.warn(
+                f"spline nuisances (nuisance_knots='auto') move the channel by "
+                f"{shift:.3g} errors of the move, so the default polynomial nuisances miss this "
+                "log's and its channel_error does not cover the bias; 0.20.0 reads "
+                "nuisance_knots='auto' by default; pass it now to fit_causal_residual to read the "
+                "channel so",
+                FutureWarning,
+                stacklevel=2,
+            )
+    return fit
+
+
+def _spline_shift(
+    fit: CausalDynamicsFit,
+    own_map: Array,
+    target: Array,
+    x: Array,
+    u: Array,
+    covariates: Array,
+    phi_c: Array,
+    raw: Array,
+    design: Array,
+    moment: Callable[[Array, Array, _Unmoved | None], Array],
+    to_fixed_point: Callable[[Array], Array] | None,
+    euler_target: Array,
+    *,
+    nuisance_degree: int,
+    channel_degree: int,
+    folds: int,
+    ridge: float,
+    seed: int,
+    clusters: np.ndarray | None,
+    periods: np.ndarray | None,
+    channel_scale: float,
+) -> tuple[float, float]:
+    """How far spline nuisances with ``"auto"`` knots move an orthogonal fit's channel, and the
+    move's own standard error, read off the two fits' scores row by row: each the root mean square
+    over the log's rows and the channel's entries.
+
+    The refit's sieve is chosen as a refit's is, on the log's Euler reading ``euler_target``
+    (:func:`_chosen_sieve`); where that is the polynomial the move is nothing. The refit's moment
+    is solved at the fit's own
+    target: under Euler that is the refit's channel;
+    under ``rk4`` its first Newton step, through the fit's own Newton matrix. Both fits are linear
+    in the target, ``G y``, so the move is ``(G_s - G) y`` and a row's share of it
+    ``G_s,i e_s,i - G_i e_i``, each fit's weight on the row times the noise it reads there; their
+    squares, summed as the channel's error sums its own (:func:`_score_spreads`), are the move's
+    variance where both fits are right, whichever is the more efficient
+    (``validation/paired_score_shift.mac``). Read against the fit's own error instead, a refit
+    that scatters more than the fit moved by more than three of its errors on 12.5 % of linear
+    logs with ``t(3)`` covariates; the difference of the two variances (Hausman 1978) needs the
+    fit to be the efficient one, which on heavy tails it was not, and can read below nothing.
+
+    A move is not read below the square root of the working precision of ``channel_scale``, a
+    channel that moves the rate by its own size, which is where the ``rk4`` fixed point's Newton
+    steps stop: on a log the known physics solves exactly both errors are rounding, and their ratio
+    read 13."""
+    floor = math.sqrt(float(jnp.finfo(x.dtype).eps)) * channel_scale
+    knots, powers = _chosen_sieve(
+        covariates,
+        euler_target,
+        u,
+        degree=nuisance_degree,
+        knots=_knot_count("auto", x.shape[0]),
+        folds=folds,
+        ridge=ridge,
+        seed=seed,
+    )
+    if knots is None:
+        return 0.0, floor
+    spline = _nuisance_sieve(covariates, nuisance_degree, knots, powers)
+    found = _unmoved_directions(u, x, covariates, nuisance_degree, channel_degree, spline)
+    split = _split_unmoved(found, raw, design) if found.shape[1] else None
+    channel = fit.residual.channel
+
+    def solved(y: Array) -> tuple[Array, Array]:
+        y_res, u_res, _, _ = _cross_fit_residuals(
+            y,
             u,
             covariates,
             degree=nuisance_degree,
@@ -1996,29 +2268,32 @@ def fit_causal_residual(
             seed=seed,
             features=spline,
         )
-        spline_channel = moment(y_spline, u_spline, spline_split)
-        if spline_split is not None:
-            spline_channel = spline_split.hold(spline_channel, target)
-        if to_fixed_point is not None:
-            move = spline_channel - fit.residual.channel
-            pushed = jax.vmap(lambda c, ui: (move @ c) @ ui)(phi_c, u)
-            step = jnp.concatenate([move.ravel(), -_solve_ridge(design, pushed, ridge).ravel()])
-            moved = to_fixed_point(step[:, None])[: move.size, 0]
-            spline_channel = fit.residual.channel + moved.reshape(move.shape)
-        refit = dataclasses.replace(
-            fit, residual=dataclasses.replace(fit.residual, channel=spline_channel)
-        )
-        shift = nuisance_shift(fit, refit, x)
-        if shift > _NUISANCE_SHIFT_WARN:
-            warnings.warn(
-                f"spline nuisances (nuisance_knots='auto') move the channel by "
-                f"{shift:.3g} of its errors, so the default polynomial nuisances miss this log's "
-                "and its channel_error does not cover the bias; 0.20.0 reads nuisance_knots='auto' "
-                "by default; pass it now to fit_causal_residual to read the channel so",
-                FutureWarning,
-                stacklevel=2,
-            )
-    return fit
+        moved = moment(y_res, u_res, split)
+        if split is not None:
+            moved = split.hold(moved, y)
+        regressor = _channel_design(u_res, x, channel_degree)
+        return moved, y_res - regressor @ moved.reshape(x.shape[1], -1).T
+
+    def coefficients(y: Array) -> Array:
+        moved = solved(y)[0]
+        if to_fixed_point is None:
+            return moved.ravel()
+        fitted = jax.vmap(lambda c, ui: (moved @ c) @ ui)(phi_c, u)
+        return jnp.concatenate([moved.ravel(), _solve_ridge(design, y - fitted, ridge).ravel()])
+
+    spline_map = jax.jacrev(coefficients)(jnp.zeros_like(target))
+    move = jnp.einsum("pis,is->p", spline_map - own_map, target)
+    rows = jnp.einsum("pis,is->ip", spline_map, solved(target)[1]) - jnp.einsum(
+        "pis,is->ip", own_map, fit.moment_residual
+    )
+    if to_fixed_point is not None:
+        move = to_fixed_point(move[:, None])[:, 0]
+        rows = to_fixed_point(rows.T).T
+    move, rows = move[: channel.size], rows[:, : channel.size]
+    spreads = _score_spreads(rows, phi_c.shape[1] * u.shape[1], clusters, periods)
+    error = _channel_errors(spreads, channel.shape, phi_c)[0]
+    at_rows = jnp.einsum("jkl,il->ijk", move.reshape(channel.shape), phi_c)
+    return float(jnp.sqrt(jnp.mean(at_rows**2))), max(error, floor)
 
 
 def _start_times(times: ArrayLike, x: Array) -> Array:
@@ -2567,7 +2842,14 @@ def persistence_check(
     error takes, against ``t(G - 1)`` for ``G`` the clusters, two ways the smaller count. On panels
     of 4 units a cluster over 10 periods, whose noise and levers share a shock each period within
     a cluster and do not persist, the 5 % test summed within units rejected 12.5 % of 1000 at 5
-    clusters and 16.2 % at 30; within the clusters, 4.9 % and 7.0 %. Pairs of one
+    clusters and 16.2 % at 30; within the clusters, 4.9 % and 7.0 %. Two ways, the largest of
+    the three is conservative where the noise moves with neither label: on panels of 50 and 200
+    units over 12 periods, clustered by unit and period, the 5 % test rejected 3.5 % and 2.0 % of
+    200 logs, where Cameron, Gelbach and Miller's sum of the two less their intersection rejected
+    7.5 % and 6.5 %; under AR(0.2) noise at 50 units it rejected 64.5 %, theirs 72.0 %. The unit
+    clusters alone, at 5.5 % and 7.5 % there, rejected 43 % and 63 % of logs whose units shared a
+    shock each period that did not persist, and the three 5.5 % and 6.0 %: the largest of the
+    three stays, a test that undershoots its size where the units alone would hold it. Pairs of one
     unit alone, or of a fit given ``periods``, whose units share one group's noise, are read
     across their periods instead: the products summed within each period, and the total over the
     spread of their projections on ``nu`` cosines of the pairs' periods, against ``t(nu)``, as

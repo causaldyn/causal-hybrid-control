@@ -1933,8 +1933,9 @@ def prescribe(
             :func:`~chc.dynamics_id.fit_causal_residual`: ``"auto"`` adds a natural cubic spline
             in each covariate at ``ceil(N^(1/3))`` of its quantiles beside the polynomial, an
             integer that many knots, ``None``, the default, none. With ``None`` the fit warns
-            where the spline would move the channel by more than 3 of its errors; ``"auto"`` is
-            then the fit that warning names. :attr:`RunProvenance.nuisance_knots` records it.
+            where the spline would move the channel by more than 3 errors of the move, more on
+            few clusters or periods; ``"auto"`` is then the fit that warning names.
+            :attr:`RunProvenance.nuisance_knots` records it.
 
     Returns:
         A :class:`Prescription`. Read :attr:`DecisionCertificate.identification` before
