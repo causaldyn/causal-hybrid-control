@@ -909,7 +909,7 @@ class RunProvenance:
     hold_constraints: bool  # whether the solve held the constraints, or only the audit priced them
     max_levers: int | None  # the greedy selection's cap; None where every lever was planned with
     clusters: str | None = None  # the column the units were grouped by; None where not grouped
-    nuisance_knots: int | str | None = None  # the nuisances' spline knots; None, polynomial alone
+    nuisance_knots: int | str | None = "auto"  # the nuisances' spline knots; None, polynomial alone
     # the barrier's radius read, as DecisionCertificate.radius_model reads it; None where no
     # barrier was audited
     radius: Literal["absolute", "relative"] | None = None
@@ -1838,7 +1838,7 @@ def prescribe(
     drivers: Sequence[Driver] = (),
     neighbours: Mapping[Any, Iterable[Any]] | str | None = None,
     clusters: str | None = None,
-    nuisance_knots: int | Literal["auto"] | None = None,
+    nuisance_knots: int | Literal["auto"] | None = "auto",
 ) -> Prescription:
     """Fit the causal control channel from ``panel`` and plan a certified schedule on it.
 
@@ -2028,13 +2028,13 @@ def prescribe(
             errors read the groups' spread, not the units'. The panel's declared ``cluster`` is
             kept where it holds one value over each group's rows, and dropped otherwise.
             :attr:`Prescription.provenance` is the grouped panel's.
-        nuisance_knots: experimental; the cross-fitted nuisances' spline, passed to
-            :func:`~chc.dynamics_id.fit_causal_residual`: ``"auto"`` adds a natural cubic spline
-            in each covariate at ``ceil(N^(1/3))`` of its quantiles beside the polynomial, an
-            integer that many knots, ``None``, the default, none. With ``None`` the fit warns
-            where the spline would move the channel by more than 3 errors of the move, more on
-            few clusters or periods; ``"auto"`` is then the fit that warning names.
-            :attr:`RunProvenance.nuisance_knots` records it.
+        nuisance_knots: the cross-fitted nuisances' spline, passed to
+            :func:`~chc.dynamics_id.fit_causal_residual`: ``"auto"``, the default, adds a natural
+            cubic spline in each covariate at ``ceil(N^(1/3))`` of its quantiles beside the
+            polynomial, where it predicts the other fold better than the polynomial alone; an
+            integer, that many knots; ``None``, none, the default up to 0.19.0. With ``None`` the
+            fit warns where the spline would move the channel by more than 3 errors of the move,
+            more on few clusters or periods. :attr:`RunProvenance.nuisance_knots` records it.
 
     Returns:
         A :class:`Prescription`. Read :attr:`DecisionCertificate.identification` before

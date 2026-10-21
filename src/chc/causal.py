@@ -15,7 +15,6 @@ recovers the effect under *nonlinear* confounding via cross-fitted residualisati
 from __future__ import annotations
 
 import math
-import warnings
 import zlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -263,19 +262,12 @@ def _ols_with_hc3_se(features: Array, target: Array) -> tuple[Array, Array]:
     return coeffs, _hc3_errors(features, target - fitted)
 
 
-_CLASSICAL_UNTIL_020 = (
-    "sensitivity_analysis's standard error is the classical one, which takes the noise's variance "
-    "as one across rows, until 0.20.0, which reads it heteroskedasticity-robust (HC3); pass "
-    "robust=True to read HC3 now, or robust=False to keep the classical error"
-)
-
-
 def sensitivity_analysis(
     data: dict[str, Array],
     adjust_for: tuple[str, ...] = (),
     q: float = 1.0,
     *,
-    robust: bool | None = None,
+    robust: bool = True,
 ) -> dict[str, float]:
     """Effect estimate plus its Cinelli-Hazlett robustness value.
 
@@ -283,16 +275,15 @@ def sensitivity_analysis(
     ``x_next`` to reduce the estimated effect by ``q*100%`` (toward zero). High RV = robust;
     a controller can ship this bound on how much hidden confounding its decision could tolerate.
 
-    ``std_error`` is, by default until 0.20.0, the classical OLS error, which takes the noise's
-    variance as one across rows, and ``e_value_ci`` reads its 95 % limit. Where the variance moves
-    with the action the error is too small: on 4000 logs of 200 rows whose noise grew with the
-    action's own part, the 95 % interval missed the effect 22.5 % of the time. ``robust=True``
-    reads it HC3 (:class:`chc.estimators.BackdoorOLS`'s error), and ``e_value_ci`` with it: 5.6 %
-    there, and 4.8 %, 5.3 % and 4.8 % at 100, 200 and 1000 rows of noise whose variance is one,
-    where the classical error missed 5.0 %, 5.5 % and 4.9 %. Left at None, ``robust`` reads the
-    classical error and warns (``FutureWarning``) that 0.20.0 reads HC3. The robustness value
-    keeps the classical ``t`` either way: Cinelli and Hazlett's closed form is the action's partial
-    ``R^2`` with the outcome, ``t^2 / (t^2 + dof)``, which holds for the classical ``t`` alone.
+    ``std_error`` is heteroskedasticity-robust, HC3 (:class:`chc.estimators.BackdoorOLS`'s error),
+    and ``e_value_ci`` reads its 95 % limit. ``robust=False`` reads the classical OLS error, as up
+    to 0.19.0, which takes the noise's variance as one across rows. Where the variance moves with
+    the action that error is too small: on 4000 logs of 200 rows whose noise grew with the action's
+    own part, the classical 95 % interval missed the effect 22.5 % of the time, and HC3's 5.6 %.
+    Where the variance is one, HC3's missed 4.8 %, 5.3 % and 4.8 % at 100, 200 and 1000 rows, and
+    the classical one 5.0 %, 5.5 % and 4.9 %. The robustness value keeps the classical ``t``
+    either way: Cinelli and Hazlett's closed form is the action's partial ``R^2`` with the
+    outcome, ``t^2 / (t^2 + dof)``, which holds for the classical ``t`` alone.
 
     Raises:
         ValueError: if ``adjust_for`` names ``x``, ``u`` or ``x_next``, or a column twice. The
@@ -305,8 +296,6 @@ def sensitivity_analysis(
     if twice:
         raise ValueError(f"covariates named more than once: {twice}")
     data = _real_entries(data, ("x", "u", "x_next", *adjust_for))
-    if robust is None:
-        warnings.warn(_CLASSICAL_UNTIL_020, FutureWarning, stacklevel=2)
     columns = jnp.stack([data["x"], data["u"], *[data[name] for name in adjust_for]], axis=1)
     beta, se, dof = _ols_with_se(columns, data["x_next"])
     t_stat = jnp.abs(beta[1] / se[1])

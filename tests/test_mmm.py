@@ -200,7 +200,9 @@ def test_the_known_adstock_rows_lose_the_integrator_gap_under_the_planner_s_own_
     fitted right by accident: the same log read with ``integrator="euler"`` must still leave the
     *closed-form* difference between the two integrators, which is what every release up to 0.4.0
     silently shipped. The Euler read is the fit's own, on the transitions and with the settings
-    ``prescribe`` hands it.
+    ``prescribe`` hands it, but for the polynomial nuisances alone: over 40 logs the fastest row's
+    Euler coefficient scattered about its gap by 0.021 with them and 0.030 with the default's
+    spline, and this log's read 0.011 and 0.021 off.
 
     Not zero, and the residue is the log's noise, not the model class: on the same rows with the
     noise taken out, the rk4 fixed point sits at zero on every known row to 1e-6, and over 40 noise
@@ -228,6 +230,7 @@ def test_the_known_adstock_rows_lose_the_integrator_gap_under_the_planner_s_own_
         DT,
         adjust_for=covariates,
         nuisance_degree=2,
+        nuisance_knots=None,
         integrator="euler",
     )
     euler_drift = np.asarray(euler.residual.drift)

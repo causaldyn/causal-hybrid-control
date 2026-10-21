@@ -653,8 +653,9 @@ def test_the_spline_shift_reads_the_move_against_its_own_error(
     in its own errors reads as a standard normal: its mean square over 30 redraws is 1 within the
     0.26 that 30 squares leave, so the bounds sit 2.3 of those out. The sieve is held at the
     spline without the confounders' powers: chosen on each redraw's rate it reads the outcome, and
-    the fits are linear in the rate only given it. In the default fit's errors, as
-    up to 0.19.0, the spline's own scatter came on top: the move's SD read 3.32 of them over 200
+    the fits are linear in the rate only given it. The check runs on the polynomial fit,
+    ``nuisance_knots=None``. In that fit's errors, as up to 0.19.0, the spline's own scatter came on
+    top: the move's SD read 3.32 of them over 200
     logs, and the fit warned on 12.5 %."""
     rng = np.random.default_rng(64)
     rows = 500
@@ -682,7 +683,9 @@ def test_the_spline_shift_reads_the_move_against_its_own_error(
             "z0": z[:, :1],
             "z1": z[:, 1:],
         }
-        fit_causal_residual(known, data, 0.1, adjust_for=("z0", "z1"), channel_degree=0)
+        fit_causal_residual(
+            known, data, 0.1, adjust_for=("z0", "z1"), channel_degree=0, nuisance_knots=None
+        )
     assert len(read) == 30
     squares = [(moved / spread) ** 2 for moved, spread in read]
     assert 0.4 < float(np.mean(squares)) < 1.6
