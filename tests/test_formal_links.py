@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import importlib
+import inspect
 import re
 from pathlib import Path
+from types import ModuleType
 
 import chc
 
@@ -91,13 +94,78 @@ def links() -> dict[str, tuple[Path, dict]]:
     return out
 
 
-def _test_names(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text())
+def _functions(path: Path) -> dict[str, str]:
+    """Every function of a test file, by name, to its source."""
+    text = path.read_text()
     return {
-        n.name
-        for n in ast.walk(tree)
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test_")
+        n.name: ast.get_source_segment(text, n) or ""
+        for n in ast.walk(ast.parse(text))
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
+
+
+def _test_names(path: Path) -> set[str]:
+    return {name for name in _functions(path) if name.startswith("test_")}
+
+
+def _resolve(path: Path, test: str) -> tuple[Path, str]:
+    """A linked test is a name in the linking file, or ``<file>.py::<name>`` under ``tests/``."""
+    if "::" in test:
+        file, name = test.split("::")
+        return ROOT / "tests" / file, name
+    return path, test
+
+
+def _reach(path: Path, name: str) -> str:
+    """The test's source and that of the file's private helpers it calls, three calls deep."""
+    functions, seen, frontier, text = _functions(path), {name}, [name], ""
+    for _ in range(4):
+        bodies = [functions.get(f, "") for f in frontier]
+        text += "".join(bodies)
+        frontier = [
+            f
+            for f in functions
+            if f.startswith("_")
+            and f not in seen
+            and any(re.search(rf"\b{f}\b", b) for b in bodies)
+        ]
+        seen.update(frontier)
+    return text
+
+
+def _aliases(path: Path, name: str) -> set[str]:
+    """``name`` and whatever the test file imports it as."""
+    found = {name}
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.ImportFrom):
+            found |= {a.asname for a in node.names if a.name == name and a.asname}
+    return found
+
+
+def _module_of(target: str) -> ModuleType:
+    """The longest importable prefix of ``chc.<module>.<qualname>``."""
+    parts = target.split(".")
+    for end in range(len(parts), 1, -1):
+        try:
+            return importlib.import_module(".".join(parts[:end]))
+        except ImportError:
+            continue
+    raise AssertionError(f"{target}: no importable module")
+
+
+def _reaches(path: Path, test: str, names: list[str]) -> bool:
+    file, name = _resolve(path, test)
+    body = _reach(file, name.split("[")[0])
+    spelled = set().union(*(_aliases(file, n) for n in names))
+    return any(re.search(rf"\b{re.escape(n)}\b", body) for n in spelled)
+
+
+def _defined(module: ModuleType) -> list[str]:
+    return [
+        name
+        for name, value in vars(module).items()
+        if not name.startswith("_") and getattr(value, "__module__", None) == module.__name__
+    ]
 
 
 def test_every_cited_file_exists() -> None:
@@ -129,5 +197,35 @@ def test_every_link_names_tests_that_exist_or_a_reason() -> None:
         if not tests:
             assert entry.get("reason"), f"{target}: neither tests nor a reason"
             continue
-        absent = set(tests) - _test_names(path)
-        assert not absent, f"{target}: {sorted(absent)} not in {path.name}"
+        absent = [
+            test
+            for test in tests
+            if _resolve(path, test)[1] not in _test_names(_resolve(path, test)[0])
+        ]
+        assert not absent, f"{target}: {absent} not in {path.name}"
+
+
+def test_every_linked_test_reaches_its_object() -> None:
+    """A link is worth its name only where a test drives the cited code: one of the listed tests,
+    with the private helpers of its file it calls, names the object (or imports it under another
+    name). A module is reached through any name of its ``__all__``; a class or helper through
+    ``via``, a function of its module whose source names it (the function that returns the class,
+    the caller of the helper)."""
+    unreached: dict[str, tuple[str, ...]] = {}
+    for target, (path, entry) in links().items():
+        tests = entry.get("tests", ())
+        module = _module_of(target)
+        leaf = target.rsplit(".", 1)[-1]
+        if module.__name__ == target:
+            names = list(getattr(module, "__all__", None) or _defined(module))
+        else:
+            names = [leaf]
+        if "via" in entry:
+            via = getattr(module, entry["via"])
+            assert re.search(rf"\b{re.escape(leaf)}\b", inspect.getsource(via)), (
+                f"{target}: {entry['via']} does not name {leaf}"
+            )
+            names.append(entry["via"])
+        if tests and not any(_reaches(path, test, names) for test in tests):
+            unreached[target] = tests
+    assert not unreached, unreached

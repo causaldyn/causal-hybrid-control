@@ -90,6 +90,7 @@ FORMAL_LINKS = {
     },
     "chc.plan.PlanRegretBound": {
         "cites": ("constrained_plan_regret.mac",),
+        "via": "plan_regret_bound",
         "tests": (
             "test_plan_regret_bound_orders_its_three_numbers",
             "test_plan_regret_bound_vanishes_at_the_box_optimum",
@@ -125,6 +126,7 @@ FORMAL_LINKS = {
     },
     "chc.uncertainty._step_parts": {
         "cites": ("euler_tube.mac",),
+        "via": "_linear_tube",
         "tests": (
             "test_euler_linear_tube_holds_on_euler_rollouts_with_field_errors",
             "test_euler_noise_tube_is_the_double_sum_on_its_own_step_matrices",

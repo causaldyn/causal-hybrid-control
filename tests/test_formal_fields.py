@@ -118,6 +118,7 @@ FORMAL_LINKS = {
             "test_bubnov_galerkin_alternates_exactly_above_unit_peclet",
             "test_full_upwind_amplification_is_one_plus_two_peclet",
             "test_optimal_upwind_is_nodally_exact",
+            "test_galerkin.py::test_convection_diffusion_certificate_locates_the_threshold_and_prices_the_cure",
         ),
     },
     "chc.research.galerkin.convection_diffusion_exact": {
@@ -192,6 +193,7 @@ FORMAL_LINKS = {
             "test_convex_port_hamiltonian_flow_stays_in_the_invariant_ball",
             "test_mlp_port_hamiltonian_energy_is_bounded_with_no_radius",
             "test_convex_energy_has_one_critical_point",
+            "test_residual_backbones.py::test_a_convex_energy_turns_the_passivity_inequality_into_an_invariant_ball",
         ),
     },
     "chc.residual.damping_injection_certificate": {
@@ -211,6 +213,7 @@ FORMAL_LINKS = {
     },
     "chc.research.transport.advection_diffusion_symbol": {
         "cites": ("spectral_circulant.mac",),
+        "via": "advection_diffusion_field",
         "tests": (
             "test_advection_diffusion_field_differentiates_trigonometric_fields",
             "test_advection_diffusion_field_has_no_first_derivative_at_nyquist",

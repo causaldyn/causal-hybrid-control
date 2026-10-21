@@ -44,6 +44,7 @@ from chc.research.regret import (
 FORMAL_LINKS = {
     "chc.regret.CappedExplorationPolicy": {
         "cites": ("capped_exploration_schedule.mac",),
+        "via": "capped_exploration_policy",
         "tests": (
             "test_capped_block_length_beats_every_other_block",
             "test_capped_stopping_mass_is_free_of_the_cap_schedule",
