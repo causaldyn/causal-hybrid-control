@@ -275,7 +275,7 @@ pd.DataFrame(
 # The plan with the graph pays the cap for four weeks, then tapers. Each week it weighs the miss
 # against the incentive's price, so it settles short of 1.0; near the end, an incentive has too
 # little time left to move supply inside the 15 weeks. Its forecast, the dashed green line, runs
-# above the truth by up to 0.17. The logs pin the incentive's effect down well, as the small
+# above the truth by up to 0.03. The logs pin the incentive's effect down well, as the small
 # standard error in the report says. What supply does on its own is fitted less precisely: the
 # logs' demand shocks are large next to it. Here demand sits at its average, so the gap stays
 # under the error of 0.5 the plan was allowed. A real week's demand does not sit there. In the
