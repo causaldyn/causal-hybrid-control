@@ -226,7 +226,8 @@ def show_logger_check(prescription):
 # to account for, and we give it no weather forecast. This is a model fitted on the room and the
 # heater alone.
 #
-# The call prints a warning, and the warning is expected. Before it fits anything, `prescribe`
+# The call prints three warnings. The first one is expected, and section 5 comes back to the
+# other two. Before it fits anything, `prescribe`
 # runs a *logger check*. It asks whether the old thermostat's power depended only on what we told
 # it about, here the room temperature. It did not: the old thermostat also read the weather, and
 # the weather changes slowly. So the power in one hour still helps to predict the power in the
@@ -264,8 +265,9 @@ print(f"adjusted for: {list(causal.certificate.adjustment.covariates)}")
 show_logger_check(causal)
 
 # %% [markdown]
-# This time there is no warning. With the outdoor temperature accounted for, nothing from the hour
-# before predicts the power any more (every number is near 0).
+# This time the logger check passes. With the outdoor temperature accounted for, nothing from the
+# hour before predicts the power any more (every number is near 0). One warning is left: the plan
+# sets the heater outside the range the logs saw. Section 5 says what that costs.
 #
 # **What did each model learn about the heater?** Each result keeps its fitted model in
 # `model_fit`. Its `residual.control_channel(x)` is the heater's effect, in °C per hour for each
@@ -410,7 +412,8 @@ plt.show()
 # - **Trustworthy steps**: for how many hours does the plan's forecast stay within the tolerance we
 #   set? The library adds up, hour by hour, the worst error that the remaining uncertainty in the
 #   heater's effect could cause and the room's own hour-to-hour noise that the logs show, and
-#   stops trusting the plan when that error passes the tolerance.
+#   stops trusting the plan when that error passes the tolerance. It also stops at the first hour
+#   in which the plan sets the heater to a power the logs never saw.
 
 # %%
 for key, prescription in plans.items():
@@ -422,17 +425,90 @@ for key, prescription in plans.items():
 print(f"tolerance: {decision['tolerance']} °C")
 error = causal.certificate.channel_error
 print(f"standard error of the adjusted heater effect: {error:.3f} °C per hour for each kW")
+LOGGED = (float(logs["heater"].min()), float(logs["heater"].max()))
+print(f"heater power in the logs: {LOGGED[0]:.2f} to {LOGGED[1]:.2f} kW")
+print(
+    "adjusting for the weather, the first hour outside that range starts at "
+    f"{clock[causal.certificate.lever_range_step]}"
+)
+tube = np.asarray(causal.plan.uncertainty_tube)
+print(f"adjusting for the weather, the forecast's error bound at {clock[-1]}: {tube[-1]:.2f} °C")
+print(
+    "adjusting for the weather, hours the barrier keeps inside the band: "
+    f"{causal.certificate.barrier_certified_steps} of {HORIZON}"
+)
 
 # %% [markdown]
-# The plan that adjusted for the weather is identified, and the certificate trusts all 8 of its
-# hours. The certificate is cautious by design: it assumes that the effect's error adds up in the
-# worst direction every hour, and it holds the noise with probability 0.95 at every hour. Here the
-# logs pin the heater's effect down to a standard error of 0.015 °C per hour for each kW, and the
-# room moves by 0.05 °C an hour that the fitted model does not explain. The two together reach
-# 0.78 °C by 07:00, still within the 1 °C tolerance. The
-# plan that ignored the weather is only asserted. Its fit adjusted for nothing, so it reports no
-# error on the heater's effect and nothing bounds its forecast: the certificate trusts none of its
-# hours, whatever its model predicts.
+# The plan that adjusted for the weather is identified, and yet the certificate trusts none of its
+# hours. The reason is the heater's range. The old thermostat never switched the heater off and
+# never ran it above 1.65 kW: in the logs its power stays between 0.34 and 1.65 kW. The plan
+# switches the heater off in its first hour, from 23:00, and runs it at the full 3 kW before dawn.
+# The model assumes that each kilowatt adds the same heat at any power, and it learned how much
+# from powers between 0.34 and 1.65 kW. At 0 and 3 kW it extends what it learned past the data,
+# and the logs cannot tell whether that still holds there. So the certificate stops trusting the
+# plan at the first hour that leaves the logged range. Here that is the first hour.
+#
+# The error bound alone would have passed. It is cautious by design: it assumes that the effect's
+# error adds up in the worst direction every hour, and it holds the noise with probability 0.95 at
+# every hour. Here the logs pin the heater's effect down to a standard error of 0.015 °C per hour
+# for each kW, and the room moves by 0.05 °C an hour that the fitted model does not explain. The
+# two together reach 0.62 °C by 07:00, within the 1 °C tolerance. But that error is measured at
+# the powers the logs saw. It says nothing about powers they did not.
+#
+# The certificate's **barrier** answers a separate question: does the model's forecast keep the
+# room inside the comfort band? It does, for all 8 hours. That is a check on the fitted model, and at 0 and 3 kW
+# it reads the same extended model. It says that the plan keeps to the band if the model is right
+# at those powers, not that the model is right there.
+#
+# In this notebook we know the answer, because we wrote the physics: every kilowatt adds the same
+# heat at any power, and section 4 showed the plan working on the real room. A real house gives no
+# such check. There are two ways out. Collect logs that cover the powers the plan needs, for
+# example by switching the heater off and running it at full power on a few nights. Or keep the
+# plan inside the powers the logs saw. The next cell does that.
+#
+# The plan that ignored the weather is only asserted. Its fit adjusted for nothing, so it reports
+# no error on the heater's effect and nothing bounds its forecast: the certificate trusts none of
+# its hours, whatever its model predicts. Its plan also leaves the logged range in its first hour,
+# at full power.
+
+# %%
+bounded_decision = {
+    **decision,
+    "levers": [Lever("heater", lo=LOGGED[0], hi=LOGGED[1], unit_cost=PRICE)],
+}
+bounded = prescribe(
+    panel, adjustment=graph, drivers=[Driver("outdoor", forecast)], **bounded_decision
+)
+print(f"heater bounded to {LOGGED[0]:.2f} to {LOGGED[1]:.2f} kW, the range in the logs")
+print(
+    f"identification: {bounded.certificate.identification}  "
+    f"trustworthy hours: {bounded.certificate.trustworthy_steps} of {HORIZON}"
+)
+bounded_tube = np.asarray(bounded.plan.uncertainty_tube)
+print(f"the forecast's error bound at {clock[-1]}: {bounded_tube[-1]:.2f} °C")
+bounded_power, bounded_room = play(bounded)
+print(
+    pd.DataFrame(
+        {"heater kW": np.append(bounded_power, np.nan), "real room °C": bounded_room}, index=clock
+    ).T.to_string(na_rep="", float_format="{:.2f}".format)
+)
+print()
+print(
+    pd.DataFrame(
+        {
+            "full range, 0 to 3 kW": night_summary(*played["causal"]),
+            "logged range only": night_summary(bounded_power, bounded_room),
+        }
+    ).to_string()
+)
+
+# %% [markdown]
+# Inside the logged range, the certificate trusts all 8 hours, and the error bound reaches only
+# 0.29 °C by 07:00. The room stays inside the band all night, as before. The trust costs comfort:
+# without full power before dawn, the room reaches only 18.8 °C at 07:00, 2.2 degrees short of
+# the target, where the plan with the full range reached 20.6 °C. The certificate does not choose
+# between the two plans. It says which one the logs back. Whether trust or comfort matters more
+# tonight is the reader's call.
 #
 # **What if the outdoor temperature had never been logged?** Then nothing in the logs can
 # separate the weather's effect from the heater's. We say so in the graph: `outdoor` is declared
@@ -470,6 +546,8 @@ except NotIdentifiedError as error:
 #   with a `Driver`, recovers the true effect and a plan that keeps the room inside the comfort
 #   band.
 # - Read the certificate before the plan. Identification says whether the effect is pinned down;
-#   trustworthy steps say for how many hours the forecast holds.
+#   trustworthy steps say for how many hours the forecast holds. They end where the plan sets the
+#   heater to a power the logs never saw. Keeping the plan inside the logged range buys back the
+#   trust, at some cost in comfort.
 # - When the confounder was never logged, `prescribe` returns no plan rather than a confident wrong
 #   one.
