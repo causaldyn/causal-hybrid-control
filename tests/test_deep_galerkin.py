@@ -401,3 +401,60 @@ def test_a_shooting_miss_that_is_nan_has_not_closed() -> None:
     tolerance: the solve returned a path 99.9% nan."""
     with pytest.raises(ValueError, match="did not close"):
         CongestedMeanFieldGame(base=_monotone_game(), congestion=5e4).solve()
+
+
+def _monotone_game() -> LQMeanFieldGame:
+    return LQMeanFieldGame(
+        a=-0.5,
+        b=1.0,
+        q=1.0,
+        r=1.0,
+        coupling=0.5,
+        terminal_coupling=0.5,
+        sigma=0.7,
+        horizon=1.0,
+        mean_initial=1.0,
+        variance_initial=0.25,
+    )
+
+
+def test_the_residuals_read_the_stored_trajectories_not_only_their_first_rows() -> None:
+    """The residuals rebuilt ``m``, ``S`` and ``v`` from the stored first rows, so a solution whose
+    later rows and variance were noise read the closed form's 6.4e-7 and 8.5e-14."""
+    solution = _monotone_game().solve()
+    rng = np.random.default_rng(0)
+    t, x = rng.uniform(0.0, 1.0, 500), rng.uniform(-5.0, 5.0, 500)
+    k = solution.times.size
+    for field in ("mean", "value_s", "variance"):
+        stored = getattr(solution, field)
+        noisy = np.r_[stored[0], stored[1:] + rng.normal(0.0, 0.1, k - 1)]
+        garbage = dataclasses.replace(solution, **{field: noisy})
+        moved = max(
+            np.abs(garbage.hjb_residual(t, x)).max(),
+            np.abs(garbage.fokker_planck_residual(t, x)).max(),
+        )
+        assert moved > 1e-2, field
+    assert np.abs(solution.hjb_residual(t, x)).max() < 1e-5
+    assert np.abs(solution.fokker_planck_residual(t, x)).max() < 1e-10
+
+
+def test_the_terminal_condition_fixes_the_start_the_interior_equations_leave_free() -> None:
+    """Every ``S(0)`` solves the interior equations; ``S(T) + P c_T m(T) = 0`` fixes it. A
+    solution started from ``S(0) + 1``, its trajectories and ``Z`` consistent with that start,
+    reads 2.3e-5 in the HJB, inside its ``Z`` quadrature's tolerance, and 2.3 on the boundary."""
+    game = _monotone_game()
+    solution = game.solve()
+    assert solution.boundary_residual() < 1e-14
+    m, s = (game._transition(solution.times) @ [solution.mean[0], solution.value_s[0] + 1.0]).T
+    p = game.riccati_root
+    dz = game.b**2 / (2 * game.r) * s**2 - game.sigma**2 / 2 * p - game.q / 2 * (0.5 * m) ** 2
+    tail = np.concatenate([[0.0], np.cumsum(np.diff(solution.times) * 0.5 * (dz[:-1] + dz[1:]))])
+    z = 0.5 * p * 0.25 * m[-1] ** 2 - (tail[-1] - tail)
+    shifted = dataclasses.replace(solution, mean=m, value_s=s, value_z=z)
+    rng = np.random.default_rng(0)
+    t, x = rng.uniform(0.0, 1.0, 500), rng.uniform(-5.0, 5.0, 500)
+    assert np.abs(shifted.hjb_residual(t, x)).max() < 1e-4
+    assert shifted.boundary_residual() == pytest.approx(
+        abs(s[-1] + p * 0.5 * m[-1]), rel=1e-12, abs=0.0
+    )
+    assert shifted.boundary_residual() > 1.0

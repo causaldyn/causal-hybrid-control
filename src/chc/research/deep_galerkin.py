@@ -370,18 +370,51 @@ class MeanFieldSolution:
         dv = decay * (2.0 * big_a * g.variance_initial + g.sigma**2)
         return m, s, v, dm, ds, dv
 
+    def _stored(self, t: np.ndarray) -> tuple[np.ndarray, ...]:
+        """:meth:`_exact`, with ``m``, ``S`` and ``v`` moved by how far the stored trajectories
+        depart from it on the grid, interpolated to ``t``. :meth:`_exact` starts from the stored
+        first rows alone, so without the departure a residual read nothing of ``mean[1:]``,
+        ``value_s[1:]`` or ``variance``, and garbage there passed."""
+        m, s, v, dm, ds, dv = self._exact(t)
+        on_grid = self._exact(self.times)
+        stored = (self.mean, self.value_s, self.variance)
+        m, s, v = (
+            value + np.interp(np.atleast_1d(t), self.times, series - exact)
+            for value, series, exact in zip((m, s, v), stored, on_grid[:3], strict=True)
+        )
+        return m, s, v, dm, ds, dv
+
+    def boundary_residual(self) -> float:
+        """The largest miss of the stored solution on its boundary conditions: ``m(0) = m_0`` and
+        ``v(0) = v_0`` at the start, and at the horizon the terminal value
+        ``V(T, x) = P (x - c_T m(T))^2 / 2``, so ``S(T) + P c_T m(T) = 0`` and
+        ``Z(T) = P c_T^2 m(T)^2 / 2``. The interior residuals read the equations alone, which
+        every ``S(0)`` solves; the terminal row is what fixes it."""
+        g, p_bar = self.game, self.game.riccati_root
+        m_end = self.mean[-1]
+        return float(
+            max(
+                abs(self.mean[0] - g.mean_initial),
+                abs(self.variance[0] - g.variance_initial),
+                abs(self.value_s[-1] + p_bar * g.terminal_coupling * m_end),
+                abs(self.value_z[-1] - 0.5 * p_bar * g.terminal_coupling**2 * m_end**2),
+            )
+        )
+
     def hjb_residual(self, t: np.ndarray, x: np.ndarray) -> np.ndarray:
-        """Residual of the backward HJB at the closed form, each derivative the solution's own.
+        """Residual of the backward HJB at the stored solution, each derivative the solution's own.
 
         ``S`` and ``m`` and their derivatives are the closed form's (:meth:`_exact`), so the terms
-        in ``x`` are zero to rounding exactly where the transition is ``exp(M t)``. ``Z`` has no
-        closed form: its derivative is read off the stored trapezoid sum by central differences,
-        so the term free of ``x`` is zero only to that quadrature's ``O(dt^2)``. Read as the
-        right-hand side of its own equation, a derivative would make the residual zero whatever
-        the solution.
+        in ``x`` are zero to rounding exactly where the transition is ``exp(M t)``; ``S`` and ``m``
+        are moved by the stored trajectories' departure from it (:meth:`_stored`), so they are
+        zero only where those are the closed form. ``Z`` has no closed form: its derivative is
+        read off the stored trapezoid sum by central differences, so the term free of ``x`` is
+        zero only to that quadrature's ``O(dt^2)``. Read as the right-hand side of its own
+        equation, a derivative would make the residual zero whatever the solution. The boundary
+        conditions are :meth:`boundary_residual`'s.
         """
         g, p_bar = self.game, self.game.riccati_root
-        m, s, _, _, ds, _ = self._exact(t)
+        m, s, _, _, ds, _ = self._stored(t)
         dz = np.interp(t, self.times, np.gradient(self.value_z, self.times, edge_order=2))
         v_x = p_bar * x + s
         return (
@@ -397,11 +430,12 @@ class MeanFieldSolution:
         """Residual of the forward Fokker-Planck at the Gaussian, in log form (divided by rho).
 
         The mean, the variance and the feedback's ``S`` and their derivatives are the closed
-        form's (:meth:`_exact`), not the right-hand sides of their ODEs, so the residual is zero to
-        rounding exactly where the closed form solves the equation.
+        form's (:meth:`_exact`), not the right-hand sides of their ODEs, moved by the stored
+        trajectories' departure from it (:meth:`_stored`), so the residual is zero to rounding
+        exactly where the closed form solves the equation and the stored solution is it.
         """
         g, p_bar = self.game, self.game.riccati_root
-        m, s, v, dm, _, dv = self._exact(t)
+        m, s, v, dm, _, dv = self._stored(t)
         z = x - m
         # d/dt log rho for a Gaussian, then the transport and diffusion terms.
         log_rho_t = -0.5 * dv / v + z * dm / v + 0.5 * z**2 * dv / v**2
@@ -648,6 +682,7 @@ class MeanFieldCurve:
 
     closed_form_hjb_residual: float
     closed_form_fp_residual: float
+    closed_form_boundary_residual: float  # the stored solution's miss on m(0), v(0), V(T, .)
     bisected_obstruction_horizon: float
     predicted_obstruction_horizon: float
     horizon_relative_error: float
@@ -899,6 +934,7 @@ def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurv
     probe_x = rng.uniform(-5.0, 5.0, 3000)
     hjb_residual = float(np.abs(reference.hjb_residual(probe_t, probe_x)).max())
     fp_residual = float(np.abs(reference.fokker_planck_residual(probe_t, probe_x)).max())
+    boundary_residual = reference.boundary_residual()
 
     predicted = oscillatory.obstruction_horizon()
     low, high = 0.1, 1.2
@@ -953,6 +989,7 @@ def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurv
     ok = bool(
         hjb_residual < 1e-5  # Z is a trapezoid sum on the grid: 6.4e-7 at 401 points
         and fp_residual < 1e-10
+        and boundary_residual < 1e-12
         and abs(bisected - predicted) / predicted < 1e-9
         and -1.05 < pole_exponent < -0.90
         and safe.lambda_squared > 0.0
@@ -975,6 +1012,7 @@ def lq_mean_field_certificate(steps: int = 2500, seed: int = 0) -> MeanFieldCurv
     return MeanFieldCurve(
         closed_form_hjb_residual=hjb_residual,
         closed_form_fp_residual=fp_residual,
+        closed_form_boundary_residual=boundary_residual,
         bisected_obstruction_horizon=bisected,
         predicted_obstruction_horizon=predicted,
         horizon_relative_error=abs(bisected - predicted) / predicted,
