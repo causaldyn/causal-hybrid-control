@@ -1791,7 +1791,12 @@ def _plan(
     if not 0.0 < dt < math.inf:
         raise ValueError(f"dt={dt} is not a step, which is finite and positive")
     if not np.all(np.isfinite(np.asarray(x0))):
-        raise ValueError(f"x0={np.asarray(x0).tolist()} is not a state: every entry is a number")
+        raise ValueError(
+            f"x0={np.asarray(x0).tolist()} is not a state: every entry must be a number"
+        )
+    # In JAX's precision: a NumPy float64 start carried as it is made the float32 solve ask for
+    # float64 arrays of x0's dtype, which JAX truncates with a warning.
+    x0 = jnp.asarray(x0)
     unset = tolerance is None
     tolerance = math.inf if tolerance is None else tolerance
     _check_tolerance(tolerance)
