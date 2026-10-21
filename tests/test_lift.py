@@ -76,11 +76,11 @@ START = _channel(0.5, 100.0, 1.0)
 
 @pytest.fixture(scope="module")
 def fit():
-    return fit_lift(_world(0), START)
+    return fit_lift(_world(0), START, serial="independent")
 
 
 def test_the_fit_recovers_the_channel_from_near_noiseless_gaps() -> None:
-    fit = fit_lift(_world(1, noise=1e-6), START)
+    fit = fit_lift(_world(1, noise=1e-6), START, serial="independent")
     np.testing.assert_allclose(fit.estimate, list(TRUE.values()), rtol=1e-6)
     assert fit.parameters == tuple(TRUE)
 
@@ -134,7 +134,7 @@ def test_the_retention_interval_is_where_an_independent_profile_crosses_the_cuto
 
 
 def test_a_channel_that_loses_sales_is_fitted_with_its_sign() -> None:
-    fit = fit_lift(_world(2, truth=_channel(0.2, 250.0, -600.0)), START)
+    fit = fit_lift(_world(2, truth=_channel(0.2, 250.0, -600.0)), START, serial="independent")
     low, high = fit.interval("coefficient")
     assert high < 0.0
     assert low <= -600.0 <= high
@@ -143,7 +143,7 @@ def test_a_channel_that_loses_sales_is_fitted_with_its_sign() -> None:
 def test_a_channel_that_does_nothing_leaves_its_shape_open() -> None:
     """With no effect the kernel and the curve are not in the gap: the retention's interval is its
     whole box and the coefficient's holds zero."""
-    fit = fit_lift(_world(3, truth=_channel(0.2, 250.0, 0.0)), START)
+    fit = fit_lift(_world(3, truth=_channel(0.2, 250.0, 0.0)), START, serial="independent")
     assert fit.interval("kernel.retention") == (0.0, 1.0)
     low, high = fit.interval("coefficient")
     assert low < 0.0 < high
@@ -153,7 +153,7 @@ def test_a_curve_the_tests_never_bent_has_no_upper_scale() -> None:
     """Tests at a tenth of the spend read the line the curve starts on: its scale and coefficient
     trade along a ridge to infinity, while the carryover, read at a tenth of the noise, is
     pinned."""
-    fit = fit_lift(_world(4, noise=5.5, levels=(0.1, 0.1, 0.1, 0.1)), START)
+    fit = fit_lift(_world(4, noise=5.5, levels=(0.1, 0.1, 0.1, 0.1)), START, serial="independent")
     assert fit.interval("curve.scale")[1] == math.inf
     assert fit.interval("coefficient")[1] == math.inf
     low, high = fit.interval("kernel.retention")
@@ -164,7 +164,7 @@ def test_noise_ten_times_the_gap_s_still_settles_on_a_least_cost() -> None:
     """At that noise the least cost lies far along a ridge the solver must follow to its end: the
     fit settles there, and costs no more than the true channel's shape with its best coefficient."""
     tests = _world(5, noise=550.0)
-    fit = fit_lift(tests, START)
+    fit = fit_lift(tests, START, serial="independent")
     retention, scale, _ = fit.estimate
     cost = fit.noise_sd**2 * fit.dof
     assert cost == pytest.approx(_oracle_cost(tests, retention, scale), rel=1e-9)
@@ -174,18 +174,18 @@ def test_noise_ten_times_the_gap_s_still_settles_on_a_least_cost() -> None:
 def test_a_solve_that_cannot_converge_within_its_budget_raises(monkeypatch) -> None:
     monkeypatch.setattr("chc.lift._EVALUATIONS", 2)
     with pytest.raises(RuntimeError, match="spent 10 evaluations without converging"):
-        fit_lift(_world(0), START)
+        fit_lift(_world(0), START, serial="independent")
 
 
 def test_a_group_s_share_scales_it_to_the_market() -> None:
-    whole = fit_lift(_world(5), START)
-    part = fit_lift(_world(5, share=0.4), START)
+    whole = fit_lift(_world(5), START, serial="independent")
+    part = fit_lift(_world(5, share=0.4), START, serial="independent")
     np.testing.assert_allclose(part.estimate, whole.estimate, rtol=1e-7)
     np.testing.assert_allclose(part.lower, whole.lower, rtol=1e-6)
 
 
 def test_the_template_s_coefficient_does_not_move_the_fit(fit) -> None:
-    again = fit_lift(_world(0), _channel(0.5, 100.0, -5e4))
+    again = fit_lift(_world(0), _channel(0.5, 100.0, -5e4), serial="independent")
     np.testing.assert_allclose(again.estimate, fit.estimate, rtol=1e-7)
 
 
@@ -208,7 +208,7 @@ def test_a_readout_without_the_spend_before_it_is_refused() -> None:
         control=GeoArm(test.control.spend[-18:], test.control.outcome),
     )
     with pytest.raises(ValueError, match="test 1 carries 2 periods of spend before its readout"):
-        fit_lift((test, short), START)
+        fit_lift((test, short), START, serial="independent")
 
 
 @pytest.mark.parametrize(
@@ -235,20 +235,20 @@ def test_groups_over_different_periods_are_refused() -> None:
 def test_what_cannot_be_fitted_is_refused() -> None:
     tests = _world(0)
     with pytest.raises(ValueError, match="at least one test"):
-        fit_lift((), START)
+        fit_lift((), START, serial="independent")
     with pytest.raises(ValueError, match="level"):
-        fit_lift(tests, START, level=1.0)
+        fit_lift(tests, START, level=1.0, serial="independent")
     with pytest.raises(TypeError, match=r"chc\.response\.Channel"):
-        fit_lift(tests, Tanh(100.0))  # type: ignore[arg-type]
+        fit_lift(tests, Tanh(100.0), serial="independent")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match=r"kernel\.retention is 0\.0; it is fitted as its log"):
-        fit_lift(tests, _channel(0.0, 100.0, 1.0))
+        fit_lift(tests, _channel(0.0, 100.0, 1.0), serial="independent")
     one = tests[0]
     few = LiftTest(
         treated=GeoArm(one.treated.spend[:-13], one.treated.outcome[:3]),
         control=GeoArm(one.control.spend[:-13], one.control.outcome[:3]),
     )
     with pytest.raises(ValueError, match="cannot fit 3 parameters"):
-        fit_lift((few,), START)
+        fit_lift((few,), START, serial="independent")
     with pytest.raises(ValueError, match="serial"):
         fit_lift(tests, START, serial="ar2")  # type: ignore[arg-type]
 
@@ -355,8 +355,8 @@ def test_a_channel_that_predicts_no_gap_has_no_factor(fit) -> None:
 
 def test_the_check_reads_a_group_at_the_market_s_scale() -> None:
     truth = _channel(*TRUE.values())
-    whole = check_observational(fit_lift(_world(5), START), truth)
-    part = check_observational(fit_lift(_world(5, share=0.4), START), truth)
+    whole = check_observational(fit_lift(_world(5), START, serial="independent"), truth)
+    part = check_observational(fit_lift(_world(5, share=0.4), START, serial="independent"), truth)
     assert part.statistic == pytest.approx(whole.statistic, rel=1e-6)
     assert part.factor == pytest.approx(whole.factor, rel=1e-9)
 
@@ -456,7 +456,9 @@ def test_serial_ar1_keeps_the_check_s_level_where_the_noise_persists() -> None:
     independent, ar1 = [], []
     for seed in range(8):
         tests = _world(seed, persistence=0.8)
-        independent.append(check_observational(fit_lift(tests, START), truth).statistic)
+        independent.append(
+            check_observational(fit_lift(tests, START, serial="independent"), truth).statistic
+        )
         ar1.append(check_observational(fit_lift(tests, START, serial="ar1"), truth).statistic)
     assert np.mean(independent) > 2.0
     assert np.mean(ar1) < 2.0
@@ -495,12 +497,12 @@ def test_an_independent_fit_warns_where_its_residuals_persist(caplog) -> None:
     channel too often; the fit's own residuals say so, and the warning names the reading that
     holds. Independent noise draws no warning."""
     with caplog.at_level("WARNING", logger="chc.lift"):
-        quiet = fit_lift(_world(0), START)
+        quiet = fit_lift(_world(0), START, serial="independent")
     assert quiet.serial_p_value is not None
     assert quiet.serial_p_value > 0.05
     assert not caplog.records
     with caplog.at_level("WARNING", logger="chc.lift"):
-        persistent = fit_lift(_world(0, persistence=0.8), START)
+        persistent = fit_lift(_world(0, persistence=0.8), START, serial="independent")
     assert persistent.serial_p_value is not None
     assert persistent.serial_p_value < 1e-3
     (record,) = caplog.records
