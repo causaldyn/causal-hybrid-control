@@ -137,6 +137,13 @@ still change).
   refuses fewer than 10 draws or 40 bootstrap samples (a `nan` interval), the deep-Galerkin
   residuals read the stored trajectories and a boundary residual checks both ends, and the
   mean-field oracle also searches by projected gradient (its regrets read 2.88 low).
+- **Two research floors and a plan diagnostic lost digits to subtraction.**
+  `ensemble_control_certificate`'s floor at `rr = b0²` kept 1e-4 of its digits at a spread of
+  1e-4, `causal_vs_predictive_certificate`'s predictive floor 2.7e-5 at a bias of 3.8e-6; both
+  now read each action's shift from the reference directly (1.3e-13 and 3e-16 against exact
+  rationals). A plan's stationarity reading overflowed and warned on a gradient past 1e154, and
+  `adaptive_exploration_certificate` took the log of a zero regret at `rr = b²`, where its slopes
+  are now `nan`.
 - **Docstrings narrowed to what holds**: the Van Trees regret floor and the high-probability band
   are local (0.80 of the floor for a Bayes estimator; coverage 0.725 near the knife edge),
   `penalty_trajectory`'s second-order bound holds while the curvature times the radius is below
