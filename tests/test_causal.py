@@ -446,22 +446,39 @@ def test_the_dml_error_reads_each_row_through_the_nuisances_it_trained() -> None
     y_res = m @ np.asarray(data["x_next"])
     theta = weight @ np.asarray(data["x_next"])
     eps = y_res - theta * u_res
-    effect, se = dml_point_and_se(data)
+    effect, se = dml_point_and_se(data, folds=2)
     assert effect == pytest.approx(theta, rel=1e-12, abs=0.0)
     assert se == pytest.approx(np.sqrt(np.sum(weight**2 * eps**2)), rel=1e-10, abs=0.0)
 
 
 def test_the_dml_interval_covers_the_effect_on_a_short_log() -> None:
-    """At the defaults on 200 rows the out-of-fold nuisances fit few rows, and the error their
+    """At two folds on 200 rows the out-of-fold nuisances fit few rows, and the error their
     predictions carry into every row they predict is shared: the moment's sandwich, which reads
     each row as on its own, missed the effect with its 95% interval in 28 of 200 logs; read
     through the nuisances, 2."""
     rng = np.random.default_rng(11)
     misses = 0
     for draw in range(200):
-        effect, se = dml_point_and_se(_linear_plant(rng, 200), seed=draw)
+        effect, se = dml_point_and_se(_linear_plant(rng, 200), folds=2, seed=draw)
         misses += abs(effect - 0.8) > 1.96 * se
     assert misses <= 16
+
+
+def test_five_folds_scatter_the_dml_effect_less_than_two_and_still_cover() -> None:
+    """Two folds, the default up to 0.19.0, fit each degree-3 nuisance on half the log, and on 200
+    rows their own error scattered the effect 1.3 times as far as five folds do over 400 logs; the
+    intervals covered on 0.978 and 0.968. The default reads five."""
+    rng = np.random.default_rng(12)
+    two, default = [], []
+    misses = 0
+    for draw in range(100):
+        data = _linear_plant(rng, 200)
+        two.append(dml_point_and_se(data, folds=2, seed=draw)[0])
+        effect, se = dml_point_and_se(data, seed=draw)
+        default.append(effect)
+        misses += abs(effect - 0.8) > 1.96 * se
+    assert np.std(default, ddof=1) / np.std(two, ddof=1) < 0.9
+    assert misses <= 10
 
 
 def _rounded(value: float, n: int) -> jax.Array:

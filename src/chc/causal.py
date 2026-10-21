@@ -459,7 +459,7 @@ def estimate_effect_dml(
     data: dict[str, Array],
     covariates: tuple[str, ...] = ("x", "z"),
     degree: int = 3,
-    folds: int = 2,
+    folds: int = 5,
     ridge: float = 1e-2,
     seed: int = 0,
 ) -> Array:
@@ -470,7 +470,8 @@ def estimate_effect_dml(
     *nonlinear* confounding, where the linear :func:`estimate_control_effect` adjustment is biased.
     The covariates are centred and scaled before the polynomial basis is built, and the intercept
     takes no ridge, so ``ridge`` reads the same in any units of the covariates and at any level of
-    them, of the action and of the outcome.
+    them, of the action and of the outcome. The defaults are :func:`dml_point_and_se`'s, whose
+    estimate this is.
 
     Raises:
         ValueError: if ``covariates`` names ``u`` or ``x_next``, the action and the outcome.
@@ -483,7 +484,7 @@ def dml_point_and_se(
     data: dict[str, Array],
     covariates: tuple[str, ...] = ("x", "z"),
     degree: int = 3,
-    folds: int = 2,
+    folds: int = 5,
     ridge: float = 1e-2,
     seed: int = 0,
 ) -> tuple[float, float]:
@@ -495,10 +496,19 @@ def dml_point_and_se(
     each row's weight on ``theta``: through its own residual, ``u_res / sum u_res^2``, and through
     the out-of-fold predictions of the nuisance it was a training row of. The moment's sandwich,
     ``sqrt(sum u_res^2 * eps^2) / sum u_res^2``, reads the first alone, and a fold's prediction
-    error, shared by every row it predicts, went uncounted: at the defaults on 200 rows of a
-    linear plant its 95% interval missed the effect in 13.0% of 1000 logs, where this one misses
-    2.8%, and on 500 rows of a plant confounded through ``z^2`` and ``x z`` 8.0% where this one
-    misses 4.2%. A 95% CI is ``theta +/- 1.96*se``.
+    error, shared by every row it predicts, went uncounted: at degree 3 and two folds on 200 rows
+    of a linear plant its 95% interval missed the effect in 13.0% of 1000 logs, where this one
+    misses 2.8%, and on 500 rows of a plant confounded through ``z^2`` and ``x z`` 8.0% where this
+    one misses 4.2%. A 95% CI is ``theta +/- 1.96*se``.
+
+    Five folds by default, each nuisance fitted on four fifths of the log. Two, the default up to
+    0.19.0, fitted each on half, and the degree-3 nuisances' own error scattered the effect: over
+    400 logs of 200 rows of a linear plant it scattered 0.0751 against 0.0579 at five folds, 1.68
+    times the variance, and 0.382 against 0.240 at 50 rows; on 200 rows confounded through
+    ``z^2`` and ``x z``, 0.0707 against 0.0560. The intervals covered on 0.95 to 0.98 at five folds.
+    Degree 3 stays: :class:`chc.estimators.DoubleML` reads degree 2, five folds and a ridge of 1,
+    which scattered 0.0532 on the linear plant, and on 500 rows confounded through ``z^3`` missed
+    the effect by 0.69, where degree 3 holds it.
     The nuisances are those of :func:`estimate_effect_dml`, so ``ridge`` reads the same in any
     units of the covariates and at any level of them, of the action and of the outcome.
 
