@@ -556,6 +556,33 @@ def _held_pushes(columns: Array, degree: int, knots: int | None, powers: bool = 
     return jnp.asarray(_orthonormal(centred), dtype=columns.dtype)
 
 
+def _first_stage(
+    states: Array, shifter: Array, degree: int, knots: int | None, powers: bool = True
+) -> Array:
+    """The instrument's first stage, ``(N, q)``, the bias first: the nuisances' own sieve in the
+    states, and the monomials of the polynomial of ``degree`` in the standardised states and
+    ``shifter`` that read the shifter; with ``knots`` None, that polynomial whole.
+
+    The state's part is in the nuisances' basis, so a shifter that moves nothing pushes the
+    actions only along directions the nuisances take out, and the moment has no rank from it. Read
+    through the polynomial beside a sieve without a splined state's powers past its first, the
+    first stage's push held those powers, which the nuisances leave in the action's residual:
+    an instrument of zeros on 200 rows at ``nuisance_degree=3`` read relevances of 0.15, 0.10 and
+    0.055, and an identified channel, set by the functional form alone."""
+    joined = _units.standardised(jnp.concatenate([states, shifter], axis=1))
+    polynomial = _polynomial_features(joined, degree)
+    if knots is None:
+        return polynomial
+    monomials = [
+        combo
+        for power in range(degree + 1)
+        for combo in combinations_with_replacement(range(joined.shape[1]), power)
+    ]
+    reads = np.asarray([any(index >= states.shape[1] for index in combo) for combo in monomials])
+    own = jnp.asarray(_sieve_columns(states, degree, knots, powers), dtype=states.dtype)
+    return jnp.concatenate([own, polynomial[:, reads]], axis=1)
+
+
 def _knot_count(knots: int | Literal["auto"], rows: int) -> int:
     """``knots``, or for ``"auto"`` ``ceil(N^(1/3))``, at least 3: it grows with the log, so the
     spline's error at a smooth nuisance shrinks faster than the moment's ``N^(-1/2)``."""
@@ -957,6 +984,7 @@ def _instrument_relevance(
     free: Array | None,
     weights: Array | None,
     sieve: Array | None = None,
+    first: Array | None = None,
 ) -> Array:
     """How far the instrument ``shifter`` moves each direction of the channel: ``(p,)``, along
     ``free``'s ``p`` columns, or every coefficient where it is None. They are the canonical
@@ -966,7 +994,8 @@ def _instrument_relevance(
     whitened, so the count of those above 0 is its rank.
 
     The push is the actions' least-squares fit on the first stage's features of the state and the
-    instrument, without the ridge. A push of at most ``chc._units.ROUNDING`` eps of the raw
+    instrument, ``first`` (:func:`_first_stage`; the polynomial of the two where None), without
+    the ridge. A push of at most ``chc._units.ROUNDING`` eps of the raw
     actions' size along a direction is none, and so is a correlation of at most
     ``chc._units.ROUNDING`` eps: both read 0. Scaled to the raw actions, on features standardised
     as the nuisance's are, and whitened, the reading is the same in any units of the instrument,
@@ -982,9 +1011,8 @@ def _instrument_relevance(
         if sieve is None
         else sieve
     )
-    first = _polynomial_features(
-        _units.standardised(jnp.concatenate([states, shifter], axis=1)), nuisance_degree
-    )
+    if first is None:
+        first = _first_stage(states, shifter, nuisance_degree, None)
     root = jnp.ones(raw.shape[0], dtype=raw.dtype) if weights is None else jnp.sqrt(weights)
 
     def span(columns: Array) -> Array:
@@ -1725,7 +1753,11 @@ def fit_causal_residual(
         # the moment's instrument -- not the regressor -- so the confounder's contribution drops out
         # of E[z (x) eps] even though z is never observed. u_res stays the regressor.
         w = data[instrument]
-        design_w = _polynomial_features(jnp.concatenate([x, w], axis=1), nuisance_degree)
+        design_w = (
+            _polynomial_features(jnp.concatenate([x, w], axis=1), nuisance_degree)
+            if knot_count is None
+            else _first_stage(x, w, nuisance_degree, knot_count, powers)
+        )
         projected = design_w @ _solve_ridge(design_w, u, ridge)
         instrument_action = _units.centred(projected).deviations
         method = "iv"
@@ -1773,6 +1805,7 @@ def fit_causal_residual(
             None if split is None else split.free,
             row_weight,
             sieve,
+            _first_stage(x, data[instrument], nuisance_degree, knot_count, powers),
         )
         rank = int(jnp.sum(relevance > 0.0))
         if rank == 0 or rank < relevance.shape[0]:

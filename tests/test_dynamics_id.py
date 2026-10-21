@@ -2738,6 +2738,28 @@ def test_a_zero_instrument_leaves_the_fit_unidentified(rows: int, keywords: dict
     np.testing.assert_array_equal(np.asarray(fit.instrument_relevance), 0.0)
 
 
+def test_a_zero_instrument_identifies_nothing_beside_a_sieve_without_the_powers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first stage reads the state in the nuisances' own basis. Read through the polynomial
+    beside a spline sieve without the state's powers past its first, its push of zeros held those
+    powers, which the nuisances leave in the action's residual: on 200 rows at degree 3 the
+    relevances read 0.15, 0.10 and 0.055, and the channel identified by the functional form
+    alone."""
+    monkeypatch.setattr(
+        "chc.dynamics_id._chosen_sieve", lambda *args, knots, **options: (knots, False)
+    )
+    data = {**_iv_log(200), "w": jnp.zeros((200, 1))}
+    keywords = {"nuisance_degree": 3, "nuisance_knots": "auto"}
+    fit = fit_causal_residual(_known, data, IV_SYSTEM.dt, instrument="w", **keywords)
+    _assert_not_identified(fit, fit_causal_residual(_known, data, IV_SYSTEM.dt, **keywords))
+    np.testing.assert_array_equal(np.asarray(fit.instrument_relevance), 0.0)
+    shifted = {**data, "w": data["u"] + jnp.asarray(np.random.default_rng(3).normal(size=(200, 1)))}
+    moved = fit_causal_residual(_known, shifted, IV_SYSTEM.dt, instrument="w", **keywords)
+    assert moved.identified
+    assert moved.instrument_rank == 3
+
+
 def test_an_instrument_orthogonal_to_the_action_identifies_nothing() -> None:
     """A column of noise less its least-squares projection on the state and the action, under a
     first stage linear in the state and the instrument, so the action moves with no part of it."""
