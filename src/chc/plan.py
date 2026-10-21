@@ -129,7 +129,7 @@ DiagnosticStatus = Literal["within", "beyond", "not_finite", "not_evaluated"]
 float range, and ``not_evaluated`` where it was not read: a plan built by hand."""
 
 _BARRIER_BACKOFF = 1e-6  # how far inside the condition the solve aims, relative to its terms
-_BARRIER_ROUNDS = 30  # augmented-Lagrangian rounds, each one descent of at most ``steps``
+_BARRIER_ROUNDS = 30  # augmented-Lagrangian rounds, whose descents share one budget of ``steps``
 _PENALTY_GROWTH = 10.0  # applied when a round fails to halve the shortfall
 _PENALTY_RANGE = 1e8  # how far the penalty may grow past its start before the rounds give up
 _DESCENT_TOL = 1e-14  # the share of the cost at the guess a step must buy: the descents' default
@@ -144,6 +144,7 @@ _log = logging.getLogger(__name__)
 _trajectory = eqx.filter_jit(rollout)
 _descent_units = eqx.filter_jit(_action_units)
 _objective = eqx.filter_jit(_augmented)
+_task_cost = eqx.filter_jit(total_cost)
 
 
 @dataclass(frozen=True)
@@ -1582,9 +1583,12 @@ def causal_plan(
             take, the budget :func:`chc.prescribe` uses, drawn back to the box where the best
             action of that size leaves it. A barrier the unconstrained plan already
             clears changes no action, even when that solve stopped on its budget. ``steps`` then
-            caps each descent, of which there are at most ``1 + _BARRIER_ROUNDS``. The solver
-            status reads ``infeasible`` where the rounds' penalty reached its ceiling with some
-            step still short of the condition.
+            caps the descent before the rounds, and the rounds' descents together, so a held plan
+            takes at most twice ``steps``, besides the plan on the concave envelope it may start
+            from; it used to cap each of up to 31 descents. The solver status reads ``converged``
+            only where the rounds hold the condition and the plan's
+            :attr:`~CausalPlan.stationarity_status` reads ``within``; ``infeasible`` where the
+            rounds' penalty reached its ceiling with some step still short of the condition.
         warm_start: the ``(horizon, m)`` actions the descent starts from, zeros when omitted --
             typically the last plan shifted one step, which :class:`chc.mpc.RecedingHorizon` passes
             along with the barrier's multipliers. It is projected onto the box and the rows before
@@ -1609,8 +1613,12 @@ def causal_plan(
             if ``tolerance`` is
             negative or nan, or ``dt`` is not a finite positive step; if ``x0`` has an entry that
             is not a finite number, from which no step is predicted; if a barrier is given with
-            a box that admits no action but zero, which leaves nothing to price it with; or if
-            ``warm_start`` is not a finite ``(horizon, m)`` array.
+            a box that admits no action but zero, which leaves nothing to price it with; if a
+            barrier is given and the path from the descent's start or from the rounds' start is
+            not a finite number at some state, or the model is not affine in the action there or
+            at a finite side of the box, which :func:`certify_safety` refuses of the finished plan
+            and is now refused before the solve; or if ``warm_start`` is not a finite
+            ``(horizon, m)`` array.
     """
     plan, _ = _plan(
         model,
@@ -1859,6 +1867,12 @@ def _plan(
         if not np.isfinite(start).all():
             raise ValueError("warm_start has a non-finite entry, and the descent would start there")
         guess = jax.device_put(start.astype(guess.dtype))  # converted on the host: no compilation
+    if barrier is not None:  # before the descent, as well as before the rounds
+        box = (
+            broadcast_box(u_lo, guess.shape, "u_lo", guess.dtype),
+            broadcast_box(u_hi, guess.shape, "u_hi", guess.dtype),
+        )
+        _refuse_unheldable(model, x0, dt, barrier.barrier, guess, box)
     if support is None:
         solve = projected_gradient_solve(
             model, x0, guess, dt, cost, u_lo, u_hi, steps=steps, constraints=constraints
@@ -2113,11 +2127,17 @@ def _hold_barrier(
     ``max |max(c, -lam/rho)|``, the measure of infeasibility and complementarity together. The
     scheme is Birgin & Martinez's (2014), and so is the starting penalty, ten times the cost at
     ``start`` over half the squared shortfall, less their floors of 1, which read the units of the
-    cost and of the condition. Rounds stop once the measure is within half the back-off and the
-    round's descent stopped on its own rule, ``converged``; or, where ``rho`` would pass
-    ``_PENALTY_RANGE`` times its start, ``infeasible`` if some step still falls short of the
-    condition itself, the back-off aside, and ``max_iterations`` otherwise or once
-    ``_BARRIER_ROUNDS`` are spent.
+    cost and of the condition. Rounds stop once the measure is within half the back-off, the
+    round's descent stopped on its own rule and the plan's stationarity, read with the multipliers
+    the round ends with, is within its tolerance, ``converged``: the descent stopping short of a
+    stationary point read ``converged`` with a residual 28 times its tolerance on a SIR plant.
+    They stop as well where ``rho`` would pass ``_PENALTY_RANGE`` times its start,
+    ``infeasible`` if some step still falls short of the condition itself, the back-off aside, and
+    ``max_iterations`` otherwise, once ``_BARRIER_ROUNDS`` are spent, or once their descents have
+    taken ``steps`` between them. ``rho`` grows only on a round whose descent stopped on its own
+    rule and whose measure is beyond half the back-off: grown on rounds the budget cut, it reached
+    3e6 on a feasible oscillator, where a round's descent stepped to a plan 134% above the
+    optimum.
 
     ``c`` carries a back-off of ``_BARRIER_BACKOFF`` times the condition's largest term at
     ``start``, so the rounds settle inside the condition: an active step solved exactly sits on it,
@@ -2153,7 +2173,11 @@ def _hold_barrier(
     such end fell short of the condition by 5e-5 at a step, so the audit certified 1 step of 12.
     Where the rounds end with a held column short of the audit's condition itself, the plan is
     projected onto the held columns at the back-off (:func:`_restore`), and its status reads
-    ``max_iterations``; ``infeasible`` where no projection holds them.
+    ``max_iterations``. Where no projection holds them, the plan is the rounds' last and keeps
+    their status, ``max_iterations`` or ``infeasible``: a projection that fails from a far point of
+    a curved condition proves nothing of the condition, and :attr:`CausalPlan.safety` reports the
+    steps it fails. A plan the rounds did not end as ``converged`` is the cheapest of the rounds'
+    iterates and the projection that meet the audit's condition at every step, where one does.
 
     ``multipliers`` seed the rounds in place of zeros -- a receding horizon's last, shifted. The
     penalty is chosen afresh all the same: one grown for the last state left the first round
@@ -2168,6 +2192,7 @@ def _hold_barrier(
     lo = broadcast_box(u_lo, actions.shape, "u_lo", actions.dtype)
     hi = broadcast_box(u_hi, actions.shape, "u_hi", actions.dtype)
     check_box(lo, hi)
+    _refuse_unheldable(model, x0, dt, barrier.barrier, actions, (lo, hi))
     blocks = _constraint_blocks(constraints, lo, hi, actions.dtype, disjoint=True)
     several = isinstance(barrier.barrier, tuple)
     columns = (2 * len(barrier.barrier),) if several else (2,)
@@ -2240,14 +2265,45 @@ def _hold_barrier(
     iterations, rounds, weight = start.iterations, 0, math.nan
     measure = math.inf
     multipliers = np.zeros_like(excess) if multipliers is None else multipliers
+    problem = _PlanProblem(
+        model=model,
+        x0=x0,
+        cost=cost,
+        dt=dt,
+        u_lo=u_lo,
+        u_hi=u_hi,
+        constraints=tuple(constraints),
+        support=support,
+        lam_supp=lam_supp,
+        uncertainty=uncertainty,
+        lam_unc=lam_unc,
+        barrier=True,
+    )
+    best: tuple[float, Array] | None = None
+
+    def keep(at: Array) -> None:
+        """Remember ``at`` where it meets the audit's condition at every step and costs least."""
+        nonlocal best
+        every = eqx.tree_at(lambda term: term.paths, held, jnp.ones_like(held.multipliers[:, 1::2]))
+        _, shortfall = _barrier_state(model, x0, at, dt, every)
+        if float(np.max(shortfall)) <= 0.0:
+            value = float(_task_cost(model, x0, at, dt, cost))
+            if best is None or value < best[0]:
+                best = (value, at)
+
+    cleared = False
     while True:
         if float(np.max(excess)) <= 0.0:
             left = _left_set(model, x0, actions, dt, held, backoff)
             if not left.any():
+                cleared = True
                 break
             held = _held_paths(held, left)
             _, shortfall = _barrier_state(model, x0, actions, dt, held)
             excess = np.asarray(shortfall, dtype=np.float64) + backoff
+        if iterations - start.iterations >= steps:  # the rounds' descents share one budget
+            status = "max_iterations"
+            break
         if math.isnan(weight):
             # Birgin & Martinez's start, the penalty term as large as the cost, without their
             # floors of 1 on the cost and on the shortfall: a floor reads their units, and set the
@@ -2273,8 +2329,11 @@ def _hold_barrier(
             ceiling,
             backoff,
             steps=steps,
+            budget=steps - (iterations - start.iterations),
             support=support,
             lam_supp=lam_supp,
+            problem=problem,
+            keep=keep,
         )
         iterations += taken
         left = _left_set(model, x0, actions, dt, held, backoff)
@@ -2283,7 +2342,7 @@ def _hold_barrier(
         held = _held_paths(held, left)
         _, shortfall = _barrier_state(model, x0, actions, dt, held)
         excess = np.asarray(shortfall, dtype=np.float64) + backoff
-    if math.isnan(weight):
+    if cleared and math.isnan(weight):
         return actions, start.status, start.iterations, np.zeros_like(excess), held
     _, shortfall = _barrier_state(model, x0, actions, dt, held)
     restored = False
@@ -2299,6 +2358,10 @@ def _hold_barrier(
         _, shortfall = _barrier_state(model, x0, actions, dt, held)
         if restored and float(np.max(shortfall)) <= 0.0:
             status = "max_iterations"
+    if status != "converged" and best is not None:
+        keep(actions)
+        if best[1] is not actions:
+            actions, status = best[1], "max_iterations"
     _log.info(
         "barrier held" if status == "converged" else "barrier rounds stopped short",
         extra={
@@ -2410,8 +2473,11 @@ def _rounds(
     backoff: float,
     *,
     steps: int,
+    budget: int,
     support: SupportModel | None,
     lam_supp: float,
+    problem: _PlanProblem,
+    keep: Callable[[Array], None],
 ) -> tuple[
     Array,
     SolverStatus,
@@ -2425,11 +2491,24 @@ def _rounds(
 ]:
     """:func:`_hold_barrier`'s augmented-Lagrangian rounds on the columns ``held`` holds: the
     actions, the status, the descent steps taken, the rounds, the penalty, the measure, the
-    excess, the multipliers and the condition they end with."""
+    excess, the multipliers and the condition they end with.
+
+    The rounds' descents take at most ``budget`` steps between them, each one compiled for
+    ``steps`` and given half of what is left, so one stalled round leaves the next ones a share: a
+    first round on the oscillator under a ``gamma = 2`` floor took all 10 000 steps it was given,
+    where the nine after it took 238. A round its share cut neither stops the rounds nor grows the
+    penalty: it says nothing of whether the condition can be met, and the penalty grown on such
+    rounds stiffened the next one, which then stepped to a far point of the condition. They stop
+    as ``converged`` only where the plan's stationarity (:attr:`CausalPlan.stationarity_status`)
+    is within its tolerance as well, read on ``problem`` with the multipliers they end with."""
     status: SolverStatus = "max_iterations"
     iterations, rounds = 0, 0
     measure, previous = math.inf, math.inf
     for rounds in range(1, _BARRIER_ROUNDS + 1):
+        if iterations >= budget:
+            rounds -= 1
+            break
+        cap = max(1, (budget - iterations) // 2)
         held = eqx.tree_at(
             lambda term: (term.multipliers, term.weight, term.backoff),
             held,
@@ -2458,8 +2537,11 @@ def _rounds(
             blocks,
             False,
             _round_metric(model, x0, actions, dt, cost, lo, hi, held, excess),
+            jnp.asarray(cap),
         )
         iterations += int(taken)
+        exhausted = int(taken) >= cap
+        keep(actions)
         _, shortfall = _barrier_state(model, x0, actions, dt, held)
         excess = np.asarray(shortfall, dtype=np.float64) + backoff
         measure = float(np.max(np.abs(np.maximum(excess, -multipliers / weight))))
@@ -2475,10 +2557,13 @@ def _rounds(
                 "descent_steps": int(taken),
             },
         )
-        if measure <= 0.5 * backoff and int(taken) < steps and not loose:
+        within = measure <= 0.5 * backoff
+        if exhausted:  # neither a solve nor a sign of the condition: no stop, no growth
+            pass
+        elif within and not loose and _stationary(problem, held, actions, multipliers):
             status = "converged"
             break
-        if measure > 0.5 * previous:
+        elif measure > 0.5 * previous and not within:
             if weight * _PENALTY_GROWTH > ceiling:
                 if float(np.max(excess)) > backoff:  # short of the audit's condition, not the aim
                     status = "infeasible"
@@ -2486,6 +2571,42 @@ def _rounds(
             weight *= _PENALTY_GROWTH
         previous = measure
     return actions, status, iterations, rounds, weight, measure, excess, multipliers, held
+
+
+def _stationary(
+    problem: _PlanProblem, held: _HeldBarrier, actions: Array, multipliers: NDArray[np.float64]
+) -> bool:
+    """Whether the plan's stationarity at ``actions``, under the condition ``held`` holds with
+    ``multipliers``, is within its tolerance, as the finished plan reports it."""
+    held = eqx.tree_at(lambda term: term.multipliers, held, jnp.asarray(multipliers, actions.dtype))
+    stationarity, tolerance, _, _ = _diagnostics(replace(problem, held=held), actions)
+    return _diagnostic_status(stationarity, tolerance) == "within"
+
+
+def _refuse_unheldable(
+    model: Dynamics,
+    x0: Array,
+    dt: float,
+    barrier: Barrier,
+    actions: Array,
+    box: tuple[Array, Array],
+) -> None:
+    """Refuse, before the rounds spend a descent on it, what :func:`certify_safety` refuses of
+    the finished plan: a path from ``actions``, where the rounds start, that leaves the float
+    range, which leaves the condition nothing to read; and a model whose field is not affine in
+    the action at ``actions`` or at either side of the ``box`` where it is finite
+    (:func:`_refuse_curved`). The audit raised both only after the rounds: 20 s of them on a Hill
+    curve, and on a path that overflows, rounds whose every shortfall was nan."""
+    trajectory = _trajectory(model, x0, actions, dt)
+    finite = np.all(np.isfinite(np.asarray(trajectory)), axis=-1)
+    if not finite.all():
+        raise ValueError(
+            f"the plan's predicted state {int(np.argmin(finite))} is not a finite number, and no "
+            "barrier condition reads there"
+        )
+    probes = [actions] + [jnp.where(jnp.isfinite(side), side, 0.0) for side in box]
+    for one in barrier if isinstance(barrier, tuple) else (barrier,):
+        _refuse_curved(model, one, trajectory[:-1], probes, dt)
 
 
 @dataclass(frozen=True)

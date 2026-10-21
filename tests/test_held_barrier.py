@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import logging
 import math
+import warnings
 from collections.abc import Callable
 from dataclasses import replace
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -31,7 +33,7 @@ from chc import (
 )
 from chc.control import LinearConstraint
 from chc.cost import total_cost
-from chc.dynamics import DampedOscillator, HybridDynamics, LinearDynamics
+from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics, LinearDynamics
 from chc.integrate import rollout
 from chc.plan import _diagnostics
 from chc.research.epidemic import SIRDynamics
@@ -383,7 +385,10 @@ def test_a_capacity_barrier_holds_on_a_nonlinear_epidemic() -> None:
     assert (
         certify_safety(free, model, capacity, 1.0, alpha=0.5, u_max=0.9).certified_steps < horizon
     )
-    assert plan.solver_status == "converged"
+    # The rounds hold the condition, but their descent stalls short of a stationary point here:
+    # the plan read ``converged`` at a residual 3.6 times its tolerance, and now reads it only
+    # where it is within.
+    assert (plan.solver_status == "converged") == (plan.stationarity_status == "within")
     assert plan.safety.certified_steps == horizon
     assert float(jnp.max(plan.trajectory[:, 1])) <= 0.1
 
@@ -408,7 +413,7 @@ def test_an_unreachable_barrier_is_reported_by_the_audit_rather_than_raised() ->
         12,
         -5.0,
         5.0,
-        steps=400,
+        steps=2_000,  # the rounds share it; the penalty reaches its ceiling at 1237 steps in all
         barrier=BarrierConstraint(lambda x: x[0], alpha=0.2),
     )
     assert plan.safety is not None
@@ -922,3 +927,151 @@ def test_rounds_that_stop_short_of_the_condition_are_projected_onto_it() -> None
     margin = plan.safety.guaranteed_derivative - plan.safety.required
     assert float(jnp.min(margin)) >= 0.0
     assert plan.solver_status == "max_iterations"
+
+
+# ---- the rounds' budget, their stopping rule and what they refuse up front ----
+
+
+def _floor_plan(steps: int) -> CausalPlan:
+    return causal_plan(
+        OSCILLATOR,
+        X0,
+        COST,
+        DT,
+        HORIZON,
+        -U_MAX,
+        U_MAX,
+        steps=steps,
+        barrier=BarrierConstraint(_velocity_floor, alpha=ALPHA),
+    )
+
+
+def test_the_rounds_share_one_budget_and_a_cut_one_grows_no_penalty() -> None:
+    """``steps`` capped each of up to 31 descents, and the penalty grew tenfold on every round the
+    budget cut, which says nothing of the condition: at ``steps = 10`` it reached 3e6, the round
+    there stepped to a far point of the condition, and the plan cost 134% above the optimum, where
+    three steps a round cost 1.2% above it. The rounds now share ``steps``, and a round the budget
+    cuts ends them: the plan takes at most twice ``steps`` and, at ten, costs 3.6% above the
+    optimum. Ten percent leaves that room and is far below the old excess."""
+    optimum = _floor_plan(10_000)
+    assert optimum.solver_status == "converged"
+    for steps in (3, 10, 30):
+        plan = _floor_plan(steps)
+        assert plan.solver_iterations <= 2 * steps
+        assert plan.solver_status == "max_iterations"
+        assert plan.safety is not None
+        assert plan.safety.certified_steps == HORIZON
+        assert plan.task_cost <= 1.1 * optimum.task_cost
+
+
+def test_a_held_plan_reads_converged_only_where_it_is_stationary() -> None:
+    """The rounds stopped as ``converged`` where the condition held and the round's descent
+    stopped on its own rule, which a descent short of a stationary point does: on this epidemic
+    the plan's stationarity read 3.9e-5 against a tolerance of 1.4e-6. ``converged`` now asks the
+    plan's own first-order check as well, read with the multipliers the rounds end with."""
+    model = SIRDynamics(beta=0.6, gamma=0.1)
+    cost = QuadraticCost(
+        Q=jnp.zeros((2, 2)), R=jnp.array([[1.0]]), Qf=jnp.zeros((2, 2)), x_target=jnp.zeros(2)
+    )
+    plan = causal_plan(
+        model,
+        jnp.array([0.99, 0.01]),
+        cost,
+        1.0,
+        60,
+        0.0,
+        0.9,
+        constraints=(LinearConstraint.rate_limit(60, [0.05]),),
+        barrier=BarrierConstraint(lambda x: 0.1 - x[1], alpha=0.5),
+    )
+    assert plan.solver_status != "converged" or plan.stationarity_status == "within"
+    assert plan.solver_iterations <= 2 * 10_000
+
+
+class _Hill(eqx.Module):
+    """``x' = -0.1 x + 2 u^2 / (1 + u^2)``: a Hill curve of slope 2, no slope at zero action."""
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return -0.1 * x + 2.0 * u**2 / (1.0 + u**2)
+
+
+@pytest.mark.parametrize("which", ["hill", "overflow"])
+def test_what_the_audit_refuses_is_refused_before_any_descent(
+    which: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A field not affine in the action, and a path that overflows, are what
+    :func:`certify_safety` refuses of a finished plan, and it refused them only after the
+    rounds: 20 s of them on a Hill curve, and rounds whose every shortfall was nan, with a
+    divide warning, on the overflow. Both are refused before the first descent step now."""
+    calls: list[int] = []
+    solve = plan_module.projected_gradient_solve
+
+    def counted(*args: object, **kwargs: object) -> object:
+        calls.append(1)
+        return solve(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(plan_module, "projected_gradient_solve", counted)
+    model: Dynamics
+    if which == "hill":
+        model, start, box, message = _Hill(), jnp.array([0.0]), (0.0, 3.0), "not affine"
+    else:
+        model = LinearDynamics(jnp.array([[800.0]]), jnp.array([[1.0]]))
+        start, box, message = jnp.array([1.0]), (-1.0, 1.0), "state 50 is not a finite number"
+    cost = QuadraticCost(
+        Q=jnp.eye(1), R=0.01 * jnp.eye(1), Qf=jnp.eye(1), x_target=jnp.array([1.0])
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(ValueError, match=message):
+            causal_plan(
+                model,
+                start,
+                cost,
+                0.1,
+                120,
+                *box,
+                barrier=BarrierConstraint(lambda x: 2.0 - x[0], alpha=1.0),
+            )
+    assert not calls
+
+
+@pytest.mark.parametrize("steps", [1, 400])
+def test_rounds_no_projection_holds_keep_their_status(
+    steps: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A velocity floor the spring breaks at the first step whatever the box's force does: at
+    ``x = 1`` the condition asks ``u >= 0.9`` of a box of ``0.1``. The rounds stop short of it, on
+    their budget at one step and on the penalty's ceiling at 400, and the projection finds no
+    point of the linearised condition, which on a linear plant is the condition. The plan is the
+    rounds' last and keeps their status, and the audit reports the steps it fails."""
+    projections: list[object] = []
+    statuses: list[str] = []
+    restore, rounds = plan_module._restore, plan_module._rounds
+
+    def recorded(*args: object) -> object:
+        projections.append(result := restore(*args))  # type: ignore[arg-type]
+        return result
+
+    def stopped(*args: object, **kwargs: object) -> tuple:
+        result = rounds(*args, **kwargs)  # type: ignore[arg-type]
+        statuses.append(result[1])
+        return result
+
+    monkeypatch.setattr(plan_module, "_restore", recorded)
+    monkeypatch.setattr(plan_module, "_rounds", stopped)
+    plan = causal_plan(
+        OSCILLATOR,
+        X0,
+        COST,
+        DT,
+        HORIZON,
+        -0.1,
+        0.1,
+        steps=steps,
+        barrier=BarrierConstraint(lambda x: x[1] + 0.05, alpha=ALPHA),
+    )
+    assert projections == [None]
+    assert plan.solver_status == statuses[-1]
+    assert plan.solver_status == ("max_iterations" if steps == 1 else "infeasible")
+    assert plan.safety is not None
+    assert plan.safety.certified_steps == 0
