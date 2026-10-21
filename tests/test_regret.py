@@ -55,12 +55,12 @@ from chc.research.regret import (
     exact_ratio_moment,
     exposure_map_certificate,
     finite_horizon_pl_certificate,
-    highprob_regret_certificate,
     hinf_robust_regret_certificate,
     information_lower_bound_certificate,
     interference_convexity_certificate,
     interference_orthogonal_certificate,
     interference_regret_certificate,
+    local_highprob_regret_certificate,
     matrix_ratio_certificate,
     multichannel_control_certificate,
     multivariate_action_floor,
@@ -665,7 +665,7 @@ def test_regret_band_holds_with_high_probability() -> None:
     # high-prob regret bound (proofs/highprob_regret.v): the sub-Gaussian upgrade of Result 10 (in
     # expectation). With prob >= 1-delta, regret <= 2*log(2/delta) * the CR floor; confounding
     # (smaller V_id) widens the band. Concentration checked by Monte-Carlo coverage.
-    curve = highprob_regret_certificate()
+    curve = local_highprob_regret_certificate()
     assert (curve.empirical_coverage >= 1 - curve.deltas).all()  # coverage >= 1-delta
     assert np.allclose(curve.band_over_floor, 2 * np.log(2 / curve.deltas))  # band = 2*log(2/delta)
     assert (np.diff(curve.band_over_floor) > 0).all()  # smaller delta (more confidence) => wider
@@ -678,7 +678,7 @@ def test_highprob_coverage_reads_the_exact_regret_not_its_quadratic_proxy() -> N
     regret ``(b^2+rr)(u*(b_hat)-u*(b))^2``. The coverage was read on the proxy ``C*(b_hat-b)^2``
     and so read 0.996 at ``delta = 0.01`` here; on the exact regret it is 0.916, a Monte Carlo SD
     of 0.006 over 2,000 trials."""
-    curve = highprob_regret_certificate(b=0.6, sigma=1.0, n=30, n_trials=2000)
+    curve = local_highprob_regret_certificate(b=0.6, sigma=1.0, n=30, n_trials=2000)
     assert curve.empirical_coverage[-1] == pytest.approx(0.916, abs=0.025)
     assert curve.empirical_coverage[-1] < 1.0 - curve.deltas[-1]
 
@@ -2067,8 +2067,8 @@ def test_highprob_band_is_local_and_fails_near_the_knife_edge() -> None:
     """The band is second order in the effect error, so it is not an upper bound on the realised
     regret: near ``rr = b^2``, where the curvature it scales vanishes, it covers 0.725 at
     ``delta = 0.01`` (``rr = 0.98``) and 0.967 (``rr = 0.9``), a Monte Carlo SD under 0.007."""
-    deep = highprob_regret_certificate(rr=0.98, n=50, deltas=(0.01,))
-    near = highprob_regret_certificate(rr=0.9, n=50, deltas=(0.01,))
+    deep = local_highprob_regret_certificate(rr=0.98, n=50, deltas=(0.01,))
+    near = local_highprob_regret_certificate(rr=0.9, n=50, deltas=(0.01,))
     assert deep.empirical_coverage[0] == pytest.approx(0.725, abs=0.02)
     assert near.empirical_coverage[0] == pytest.approx(0.967, abs=0.01)
     assert near.empirical_coverage[0] < 0.99

@@ -420,8 +420,8 @@ for key, prescription in plans.items():
         f"trustworthy hours: {certificate.trustworthy_steps} of {HORIZON}"
     )
 print(f"tolerance: {decision['tolerance']} °C")
-radius = causal.certificate.identification_radius
-print(f"standard error of the adjusted heater effect: {radius:.3f} °C per hour for each kW")
+error = causal.certificate.channel_error
+print(f"standard error of the adjusted heater effect: {error:.3f} °C per hour for each kW")
 
 # %% [markdown]
 # The plan that adjusted for the weather is identified, and the certificate trusts all 8 of its
