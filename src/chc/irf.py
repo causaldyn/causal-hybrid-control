@@ -11,6 +11,7 @@ This is a causal-effect estimator, not a sequence model.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -18,10 +19,15 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from numpy.typing import ArrayLike
+from scipy.stats import chi2
 
 from chc.causal import _ols_with_intercept
 from chc.frames import _real_entries, _real_numbers
 from chc.toeplitz import levinson_durbin, sample_autocorrelation, solve_toeplitz
+
+_log = logging.getLogger(__name__)
+
+_PERSISTENCE_ALPHA = 1e-3
 
 
 def _projection_design(
@@ -65,6 +71,43 @@ def _projection_design(
     return features, responses
 
 
+def _warn_on_a_persistent_treatment(features: Array, horizon: int) -> None:
+    """Log a warning where the treatment's own past predicts it beyond the projection's controls.
+
+    The treatment is regressed on the other columns (``adjust_for`` and the lags) and an intercept,
+    and its residual tested for autocorrelation at lags ``1..max(horizon, 1)`` by Ljung and Box
+    (1978), at level 0.001. A residual that is autocorrelated means a parent of ``treatment_t`` --
+    its own past -- is outside the controls, and on a plant with dead time or carryover the
+    projections then read that pipeline as the effect.
+    """
+    rows = np.asarray(features, dtype=np.float64)
+    controls = np.column_stack([np.ones(rows.shape[0]), rows[:, 1:]])
+    coefficients, *_ = np.linalg.lstsq(controls, rows[:, 0], rcond=None)
+    residual = rows[:, 0] - controls @ coefficients
+    n, lags = residual.shape[0], min(max(horizon, 1), residual.shape[0] - 1)
+    autocovariance = sample_autocorrelation(residual, lags)
+    if not autocovariance[0] > 0.0:
+        return
+    r = autocovariance[1:] / autocovariance[0]
+    statistic = n * (n + 2) * float(np.sum(r**2 / (n - np.arange(1, lags + 1))))
+    p_value = float(chi2.sf(statistic, lags))
+    if p_value < _PERSISTENCE_ALPHA:
+        _log.warning(
+            "the treatment's own past predicts it beyond adjust_for and the lags (Ljung-Box "
+            "p = %.2g at %d lags, first autocorrelation %.2f): if the outcome responds to that "
+            "past, through dead time or carryover, the projections read it as the effect; pass "
+            "lags of at least the treatment's autoregressive order",
+            p_value,
+            lags,
+            r[0],
+            extra={
+                "chc_event": "persistent_treatment",
+                "p_value": p_value,
+                "autocorrelation": float(r[0]),
+            },
+        )
+
+
 def _irf_from_design(features: Array, responses: Array) -> Array:
     """Treatment coefficient at every horizon -- column 0 of each projection."""
     return jnp.stack(
@@ -102,16 +145,19 @@ def local_projection_irf(
     ``u_t``, which counts the treatment's own response to it, since ``u_{t+1}`` follows ``u_t``:
     1.0, 1.41, 1.51 at ``h = 5, 6, 7``, where an impulse with the later treatment held is 1.0, 0.5,
     0.25. So on a persistent treatment pass ``lags`` of at least its autoregressive order. The
-    default stays ``0`` so existing callers get the estimates they had.
+    default stays ``0`` so existing callers get the estimates they had, and a warning is logged
+    (``chc_event="persistent_treatment"``) where the treatment's residual on the projection's
+    controls is autocorrelated, a Ljung-Box test at level 0.001 over lags ``1..horizon``: on that
+    plant with ``lags=0`` it fires, with ``lags=1`` it does not.
 
     Raises:
         ValueError: on negative ``lags``, a series too short for the horizon, or a ``treatment``
             that ``adjust_for`` names too. The outcome may be adjusted for, as by default: its level
             at ``t`` is a control for its level at ``t + h``.
     """
-    return _irf_from_design(
-        *_projection_design(data, horizon, treatment, outcome, adjust_for, lags)
-    )
+    features, responses = _projection_design(data, horizon, treatment, outcome, adjust_for, lags)
+    _warn_on_a_persistent_treatment(features, horizon)
+    return _irf_from_design(features, responses)
 
 
 @dataclass(frozen=True)
@@ -258,6 +304,7 @@ def delay_estimate(
         raise ValueError(f"n_resamples must be at least 2; got {n_resamples}")
 
     features, responses = _projection_design(data, horizon, treatment, outcome, adjust_for, lags)
+    _warn_on_a_persistent_treatment(features, horizon)
     irf = np.asarray(_irf_from_design(features, responses))
     lag, censored = peak_lag(irf, refine)
 
