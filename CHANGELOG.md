@@ -7,6 +7,134 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- **`SafetyCertificate.deviation`, the plant's deviation tube** (ADR 0119), and
+  **`DecisionCertificate.radius_model` and `lever_range_step`**, in `to_json` and the report, which
+  had used the relative radius's wording for an absolute one too.
+- **`CausalGraph.adjustment_set(given=)`** for nodes every set holds, valid exactly when some
+  observed superset of them is (checked by brute force on 5,243 random DAGs), and
+  **`CausalGraph.lags`**, recorded by `unrolled`.
+- **`ZoneDecision.bayes_action(prior)`**, the action that minimises the expected cost under the
+  prior: the certainty-equivalent solve with its action weight raised by `(C'QC)∘S`.
+- **`FittedEquilibrium.lack_of_fit` and `incentive_z`.** A pooled F test of each zone's residuals
+  on a quadratic in demand and incentive, and a Vuong z of the fit against one with no incentive
+  response. `fit_equilibrium` warns below 0.01; the planner refuses an `incentive_z` below 1.645.
+- **A `persistent_treatment` warning** from `local_projection_irf` and `delay_estimate` where the
+  treatment's own past predicts it beyond the controls (Ljung–Box at 1e-3): on 200 seeds it fired
+  on every AR(0.9) and AR(0.2) treatment and on 0.5 % of white ones.
+- **A `transitions` warning** where most units give no transition on the panel's step.
+
+### Changed
+
+- **`DynamicLinearModel` and `GeoDLM` default to `form="directional"`** (ADR 0121): they discount
+  only the directions the last `p` steps of `F` read. Component discounting inflated each block's
+  variance apart from the blocks' correlation, so where the data resolve a sum better than its
+  parts the intervals were wrong with no warning: 90 % intervals covered 1.000, 0.999 and 0.994
+  beside a constant, prices held 26 weeks and a trend, and 0.82–0.87 beside a seasonal. Over the
+  23 static worlds of the same grid the default covers 0.891–0.902. A truth that moves in a
+  direction the data do not read is not widened for (0.823 against additive's 0.999). `"additive"`
+  and `"multiplicative"` remain; `constrained_sample` needs `"additive"`.
+- **`nuisance_knots` cross-fits three sieves** (a spline with the covariates' powers, one without,
+  the polynomial alone) and keeps the best out of fold (ADR 0120). On heavy-tailed covariates a
+  row past the outer knots read the powers at the power of its distance: at 500 rows `"auto"`
+  scattered 14.8 times the polynomial on one t(3) log. It now scatters at most 1.01 times the
+  polynomial wherever the polynomial is right, and 0.43–0.67 times on lognormal and t(3) logs.
+- **`dml_point_and_se` and `estimate_effect_dml` cross-fit on five folds by default** (were two):
+  the estimate's standard deviation falls from 0.0751 to 0.0579 at 200 rows, coverage 0.95–0.98.
+- **`design_experiment` judges an experiment against the Bayes action**, not the
+  certainty-equivalent one, in both arms (ADR 0124). Where the local regret model misses Monte
+  Carlo by more than 25 %, or its own experiment does not pay, Monte Carlo chooses the
+  allocation among none and the model's best at halving spends. At a unit cost of 0.07 it
+  abstained, saying no experiment pays, where one unit was worth 0.59; it now runs that unit.
+  A verdict's reason says what was scored.
+- **The Koopman lift is centred and carries a constant** (ADR 0093 amended): its closure verdict
+  and its controller no longer move with the state's offset (one verdict at levels 0, 1, 5 and
+  273.15, which read refused, accepted, refused, refused), and `koopman_controller` refuses a law
+  whose closed loop leaves the target. Gains, `channel` and `residuals` gain a row or column.
+- **A held barrier's rounds share one budget of `steps`** (a held plan takes at most twice
+  `steps`), each round gets half of what is left, and a round its budget cut no longer grows the
+  penalty. Each of up to 31 rounds had its own `steps`, and a cut round grew the penalty tenfold:
+  on an oscillator at `steps=10` the plan cost 134 % above the optimum; over steps 3–100 the worst
+  is now 14.9 %. A plan that does not converge is the cheapest iterate that meets the audit.
+- **`prescribe` ends the certified horizon at the first step that sets a lever outside its logged
+  range**, recorded as `lever_range_step`; it had only warned.
+- **A panel's undeclared numbered periods off every uniform grid are refused**, naming the row:
+  one period at 3.3 or 3.0000001 silently removed a transition from every other unit (902 of 950
+  left). `frequency="observed"` still ranks them.
+- **Time-zone-aware stamps at more than one time of day are held as UTC instants** unless a
+  calendar is declared: hourly stamps were refused across the autumn change ("appears twice") and
+  lost a transition in spring. `panel["time"]` holds UTC for such columns.
+
+### Fixed
+
+- **`certify_safety` certifies a barrier step only where the plant's deviation tube keeps it in
+  the set** (ADR 0119): `h - ||grad h|| e >= 0` at the step and the next state, `e` the tube of a
+  plant whose channel is within the radius, read off the map the plan is rolled out by. The
+  condition was read at the model's open-loop states alone, so a plan certified on every step let
+  such a plant leave the set: worst `h` -0.13 to -0.50 on stable and integrating drifts with an
+  exact absolute radius, and on 18 of 20 calibrated unstable logs (now none). The tube is a bound
+  where the model is affine in the state and `h` affine, to first order elsewhere, and covers the
+  channel's error only. The held solve holds the same condition.
+- **`prescribe` under a declared calendar read `known` physics on steps counted from 1970**: a
+  weekly season on a daily panel gave a channel of 3.48 where it is 1. Steps count from the
+  panel's first period under every frequency.
+- **`prescribe` reads a graph over the period a transition spans** (ADR 0122), the states at its
+  start held. A logger that reads a constrained state (`c -> u`) was refused, which 0.18.0 had
+  identified; it is identified again, the channel 0.828 and -0.008 for 0.8 and 0. A logger that
+  reads the state its lever moves raised `CyclicGraphError`; draw it with
+  `CausalGraph.unrolled(..., lags=1)`.
+- **Under `integrator="rk4"` a covariate's push is held in the nuisances' basis**, not only its
+  linear part: a curved push left the channel scattering 30.7 times its error, covered on 2.5 % of
+  logs (now 0.98 and 97.5 %).
+- **The nuisance check reads the move in its own paired-score error**, with a rounding floor and a
+  t(ν) limit on few clusters or periods. It fired on heavy-tailed, exactly solved and few-period
+  logs where the polynomial holds (5.7 to 49.5 on exact logs); now on none of them, and on 40 of
+  40 logs of a curved plant.
+- **A held plan read `converged` where its stationarity was beyond its tolerance** (3.9e-5 against
+  1.4e-6 on an epidemic); `converged` now requires it within.
+- **A model not affine in the action, or a path that overflows, is refused before a held solve**,
+  not after it, and without the divide warning.
+- **`finite_horizon_dlqr` returned a saddle's gains for a negative action weight**; it refuses
+  where `r + b'Pb` is not positive definite at some step.
+- **A float32 plan from NumPy float64 inputs raised JAX's truncation warning**; the start is read
+  in JAX's precision.
+- **The gate's carryover check is read within each mode.** A deterministic candidate with no
+  carryover was warned of on 26 of 200 paths at base 0.4 and 123 at 0.6 (now 9 and 4); costs at
+  lags 1, 3 and 5 are still warned of on every path.
+- **`GateConfig` refuses a non-whole or boolean `horizon`, `block_length`, `burn_in` or
+  `carryover_lags`** instead of failing later.
+- **Channels and adstock kernels refuse negative or non-finite spend**: Hill read 0.1 and
+  Michaelis–Menten -0.0002 on `[1, -1, 2]`. `roi` and `marginal_roi` accept `tail=np.bool_`, and
+  their tail warning fires only where the tail moves the number, quoting both readings.
+- **`fit_equilibrium` refuses malformed logs, fewer blocks than its parameters and non-positive
+  demand**; the planner refuses a response or an equilibrium of another zone count (a JAX
+  `TypeError` before). It warned of nothing on a market whose attractiveness does not move with
+  demand (incentive error +0.53 on 2.5) and planned through incentives shuffled across blocks;
+  the new fields flag 20 of 20 such logs and refuse 40 of 40.
+- **`AllocationWeight.margin_sds` and `expected_regret` refuse a covariance that is not one**
+  (NaN or `-I` read as an infinite margin).
+- **An unresolved DLM direction raises `FloatingPointError` naming it** once the posterior
+  correlations' eigenvalues span 1e13; the filter ran 1500 steps with `Q` at 1e25. `smooth` and
+  `backward_sample` refuse an evolution variance that is not one (negative smoothed variances
+  under the multiplicative form), an observation past the float range is refused without a
+  `RuntimeWarning` first, and a boolean, text or subnormal discount, period, scale or dof is
+  refused.
+- **The old module paths serve only moved public names**, and `from chc.<old path> import *`
+  imports them: `chc.mmm.np` was served with a warning, and a star import gave nothing.
+- **`refute_effect` refuses a `subset_fraction` outside (0, 1) or too small to fit.**
+- **The research certificates' edges**: the information certificate reads its knife edge
+  `rr = b²` by a tolerance (it read a slope of -0.964 for `nan` there),
+  `confounded_turnpike_certificate` refuses a horizon below 2, `panel_estimator_certificate`
+  refuses fewer than 10 draws or 40 bootstrap samples (a `nan` interval), the deep-Galerkin
+  residuals read the stored trajectories and a boundary residual checks both ends, and the
+  mean-field oracle also searches by projected gradient (its regrets read 2.88 low).
+- **Docstrings narrowed to what holds**: the Van Trees regret floor and the high-probability band
+  are local (0.80 of the floor for a Bayes estimator; coverage 0.725 near the knife edge),
+  `penalty_trajectory`'s second-order bound holds while the curvature times the radius is below
+  0.8, a channel's error is conservative where a push lies outside the nuisances' span, and the
+  marketplace's headline share is `fit_equilibrium`'s.
+
 ## [0.19.0] — 2026-10-19
 
 ### Added
