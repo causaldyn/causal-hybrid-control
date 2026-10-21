@@ -98,6 +98,37 @@ def test_certified_steps_keep_the_plant_safe_where_its_channel_is_in_the_set() -
         assert _safe(path, certified), (seed, path[:, 0].max())
 
 
+def test_the_default_absolute_radius_keeps_the_plant_safe_where_its_channel_is_in_it() -> None:
+    """The same unrecorded confounder, the log read by Euler, its one-step map: ``prescribe``
+    reads the fit's own sensitivity model by default, and at ``gamma = 2`` its radius at the start,
+    0.52 to 0.55, holds the plant's channel, 0.39 to 0.41 from the fitted one. The plan held there
+    is certified on every step and keeps the plant 0.37 or more below the ceiling. The relative
+    radius at the same level, a third of the fitted channel's size, certified every step of a plan
+    the plant left the set on, by 0.19 on the first log."""
+    gamma = 2.0
+    for seed in range(3):
+        result = ask(
+            World(hidden=0.4),
+            seed,
+            constraints=(Constraint("supply", hi=CEILING), Constraint("wait", hi=WAIT)),
+            hold_constraints=True,
+            gamma=gamma,
+            integrator="euler",
+        )
+        assert result.plan is not None
+        assert result.certificate.radius_model == "absolute"
+        sensitivity = ChannelSensitivity.from_fit(result.model_fit)
+        channel = np.asarray(result.model_fit.residual.channel, dtype=float)[:, 0, 0]
+        width = sensitivity.radius(jnp.zeros(2), gamma, u_max=[2.0])
+        assert np.linalg.norm(TRUE_CHANNEL - channel) < width, (seed, width)
+        certified = result.certificate.barrier_certified_steps
+        assert certified is not None
+        assert certified > 0
+        planned = np.asarray(result.plan.trajectory, dtype=float)
+        path = World(hidden=0.4).mean_path(np.asarray(result.plan.actions)[:, 0], planned[0])
+        assert _safe(path, certified), (seed, path[:, 0].max())
+
+
 def _confounded_fit(seed: int, drift: float = -1.0, dt: float = DT) -> CausalDynamicsFit:
     """``xdot = drift x + u - 3 Z``, ``Z = +-1`` unlogged, 2000 transitions of length ``dt``: the
     logged lever's sign follows ``Z`` with probability ``(1 + t)/2``, ``t = 1 - 1/LOGGED``, so its

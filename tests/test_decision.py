@@ -2002,6 +2002,7 @@ def test_the_run_goes_to_json_as_plain_values(default_run: RunProvenance) -> Non
         "max_levers": None,
         "clusters": None,
         "nuisance_knots": None,
+        "radius": "absolute",
     }
 
 
@@ -2415,6 +2416,7 @@ def test_every_decision_point_leaves_a_structured_record(caplog: pytest.LogCaptu
         "adjustment",
         "logger_check",
         "fit",
+        "radius",  # an rk4 fit gives no absolute radius, and the barrier reads the relative one
         "plan",
         "estimability",
         "certificate",

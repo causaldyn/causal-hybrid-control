@@ -1455,7 +1455,8 @@ class BarrierConstraint:
 
     ``sensitivity`` (:class:`ChannelSensitivity`) replaces the radius's share of the channel by an
     absolute radius at each step's predicted state, as :func:`certify_safety` reads it, held in the
-    solve at the same steps; ``gamma`` must then be below ``(3 + sqrt 5)/2``.
+    solve at the same steps; ``gamma`` must then be below ``(3 + sqrt 5)/2``. :func:`chc.prescribe`
+    passes its fit's own where the fit gives one (ADR 0125).
 
     ``u_box``, ``(u_lo, u_hi)`` with one number per lever, is the box the audit after the solve
     reads ``gamma_star`` on; ``None`` reads it on the box the plan is solved in. A solve in a
@@ -3001,7 +3002,8 @@ def certify_safety(
             certified steps on 20 logs of 20, on a stable drift and on an unstable one (ADR 0111,
             ADR 0119). ``gamma`` must be below ``(3 + sqrt 5)/2``. The certificate's
             ``radius_model`` reads ``"absolute"`` with a ``sensitivity`` and ``"relative"``
-            without one.
+            without one. :func:`chc.prescribe` passes its fit's own by default, where the fit
+            gives one (ADR 0125).
 
     Assumes the plant is control-affine, and checks it: the condition reads the drift and the
     channel at zero action, so a model whose field, seen through ``grad h``, is not affine in the

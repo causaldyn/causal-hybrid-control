@@ -3,6 +3,7 @@
 **Status:** accepted, 2026-10-19. Amends ADR 0085: its share is a relative margin, and a
 `ChannelSensitivity` gives an absolute radius, read at each step's predicted state, in its place.
 Amends ADR 0101: with a sensitivity, each step's `Γ*` reads the radius at that step's state.
+Amended by ADR 0125: `prescribe` reads the fit's absolute radius by default, where the fit gives one.
 
 ## Context
 
