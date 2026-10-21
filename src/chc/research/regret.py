@@ -252,7 +252,8 @@ class InformationLowerBoundCurve:
     confounded_floor: Vector  # the (higher) CR floor under confounding, C*sigma^2/(n*V_conf)
     rate_slope: float  # log-log slope of experimental_regret vs n (~ -1: the optimal 1/n rate)
     floor_ratio: float  # confounded / experimental floor (> 1: confounding costs information)
-    van_trees_action_floor: float  # (E_lambda psi')^2/(n I1 + I(lambda)): holds for ANY estimator
+    # (E_lambda psi')^2/(n I1 + I(lambda)): floors ANY estimator's Bayes ACTION error, not regret
+    van_trees_action_floor: float
     hodges_pointwise_ratio: float  # superefficient estimator vs the UNBIASED CR floor at b: << 1
     hodges_bayes_ratio: float  # the same estimator against the van Trees floor: >> 1
     plugin_bayes_ratio: float  # the efficient plug-in against it: > 1, and far below Hodges
@@ -280,14 +281,19 @@ def information_lower_bound_certificate(
 
     RESULT 57 -- the van Trees arm, which removes two of the three scope caveats. The one-step LQ
     regret is EXACTLY ``(b^2+rr)(u - u*(b))^2``, a squared error in the ACTION with no
-    linearisation (``validation/action_van_trees.mac`` STEP 1), so applying van Trees to the
-    estimand ``psi(b) = u*(b)`` -- an inequality that holds for EVERY estimator, biased or not --
-    and multiplying by that exact curvature gives
+    linearisation (``validation/action_van_trees.mac`` STEP 1). Van Trees on the estimand
+    ``psi(b) = u*(b)`` bounds the Bayes ACTION error of EVERY estimator, biased or not,
 
-        ``n E[regret] >= n (b^2+rr) (E_lambda psi')^2 / (n V_id/sigma^2 + I(lambda))``
+        ``E[(u - psi(b))^2] >= (E_lambda psi')^2 / (n V_id/sigma^2 + I(lambda))``,
 
-    whose limit is ``C sigma^2/V_id``: the SAME constant, with the unbiasedness hypothesis and the
-    delta method both deleted. The arm that can fail uses a HODGES estimator, which snaps to ``b``
+    and ``van_trees_action_floor`` is that floor. On the REGRET it is a floor only once multiplied
+    by a curvature no draw of ``b`` falls below: the prior's least, ``rr`` on a prior over the
+    whole line. Multiplied by the curvature at one point, ``(b^2+rr)``, it is a LOCAL floor, whose
+    limit is ``C sigma^2/V_id``: the SAME constant, with the unbiasedness hypothesis and the delta
+    method both deleted, but not a bound at a finite prior width. There a Bayes estimator, which
+    weighs its error by the curvature at each draw, beats it: at a prior ``N(3, 1)``, ``rr = 0.5``
+    and one unit of information, its regret is 0.80 of the local floor. The arm that can fail uses
+    a HODGES estimator, which snaps to ``b``
     whenever the fit lands within ``n^(-1/4)``. It drives the regret at ``b`` to exactly zero --
     ``hodges_pointwise_ratio = 0``, infinitely below the unbiased Cramer-Rao floor, which is the
     concrete reason that floor was never a minimax statement -- while its Bayes action error sits
@@ -300,7 +306,11 @@ def information_lower_bound_certificate(
     not of the inequality used. There the floors and the linearised regret are exactly zero, so
     ``rate_slope`` and ``hodges_pointwise_ratio`` have nothing to measure and read ``nan``.
     """
-    coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
+    # At the knife edge rr = b^2 the coefficient is 0: no rate to fit, no floor to compare with.
+    # b = sqrt(rr) and b*b each round once, so there |rr - b^2| <= 1.5 eps rr, and an exact test
+    # missed it: b = sqrt(0.5) left 1.1e-16 and a coefficient of 1e-33 to fit a rate to.
+    knife_edge = abs(rr - b * b) <= 4.0 * np.finfo(np.float64).eps * (rr + b * b)
+    coeff = 0.0 if knife_edge else xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     v_exp = alpha**2 + 1.0  # total action variance (Var(alpha*z + nu), Vz = Vnu = 1)
     v_conf = 1.0  # residual identifying variance Var(u|z) = Var(nu) under confounding
     ns = np.asarray(sample_sizes, dtype=np.float64)
@@ -316,8 +326,6 @@ def information_lower_bound_certificate(
         exp_regret[i] = coeff * float(np.mean(biases**2))
     cr_floor = coeff * sigma**2 / (ns * v_exp)
     conf_floor = coeff * sigma**2 / (ns * v_conf)
-    # at the knife edge rr = b^2 the coefficient is 0: no rate to fit, no floor to compare with
-    knife_edge = coeff == 0.0
     slope = float("nan") if knife_edge else float(np.polyfit(np.log(ns), np.log(exp_regret), 1)[0])
 
     # Result 57's arm, in ACTION space, where the regret identity is exact.
@@ -781,7 +789,8 @@ def multivariate_van_trees_certificate(
 
 @dataclass(frozen=True)
 class HighProbRegretCurve:
-    """Finite-sample high-probability UPPER bound on scalar CE regret (w.p. >= 1-delta)."""
+    """A finite-sample high-probability band on scalar CE regret, LOCAL (second order): it holds
+    w.p. >= 1-delta only where the regret's curvature is constant across the confidence region."""
 
     deltas: Vector  # confidence levels delta (band holds with probability >= 1-delta)
     highprob_bands: Vector  # C*2*sigma^2*log(2/delta)/(n*V_exp): the finite-sample band
@@ -803,13 +812,13 @@ def highprob_regret_certificate(
     deltas: Sequence[float] = (0.5, 0.25, 0.1, 0.05, 0.01),
     n_trials: int = 4000,
 ) -> HighProbRegretCurve:
-    """Finite-sample high-probability UPPER bound on scalar CE regret (derived in
+    """A finite-sample high-probability band on scalar CE regret, LOCAL: second order in the effect
+    error, so not an upper bound on the realised regret (derived in
     ``validation/highprob_regret.mac``; ``proofs/highprob_regret.v`` proves the deterministic step
     only: with the regret taken as ``C*e^2``, ``|e| <= r`` gives ``C*e^2 <= C*r^2``). NOTE: this is
-    NOT a
-    "high-probability version" of the Result-10 Cramer-Rao bound -- CR is an *expected LOWER* bound
-    on estimator variance (hence a regret floor), this is a *high-probability UPPER* bound on
-    realised regret; the two point in opposite directions and are complementary. The effect
+    NOT a "high-probability version" of the Result-10 Cramer-Rao bound -- CR is an *expected LOWER*
+    bound on estimator variance (hence a regret floor), this band bounds the realised regret from
+    above, to second order; the two point in opposite directions and are complementary. The effect
     estimator concentrates (sub-Gaussian): ``|b_hat-b| <= r(delta)`` w.p. ``>= 1-delta``,
     ``r(delta)^2 = 2*sigma^2*log(2/delta)/(n*V_id)``. Composing with the LOCAL quadratic
     ``regret = C*(b_hat-b)^2`` gives, w.p. ``>= 1-delta``, ``regret <= 2*log(2/delta) * band-scale``
@@ -823,7 +832,10 @@ def highprob_regret_certificate(
     ``(b^2+rr)(u*(b_hat)-u*(b))^2`` against it; read on the quadratic proxy ``C*(b_hat-b)^2`` it
     would only check the concentration. At the defaults the two agree; at ``b = 0.6``,
     ``sigma = 1``, ``n = 30`` the band at ``delta = 0.01`` covers the exact regret in 0.911 of the
-    4000 default trials (Monte Carlo SD 0.0045), where the proxy reads 0.996.
+    4000 default trials (Monte Carlo SD 0.0045), where the proxy reads 0.996. Near the knife edge
+    ``rr = b^2``, where ``C`` vanishes and the regret is fourth order, the band fails outright: at
+    ``rr = 0.98``, ``n = 50`` it covers 0.725 at ``delta = 0.01``, and at ``rr = 0.9``, ``n = 50``
+    0.967.
     """
     coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     ds = np.asarray(deltas, dtype=np.float64)
@@ -4271,7 +4283,12 @@ def confounded_turnpike_certificate(
     That "a long horizon is benign" holds because ``q > 0``. Under an INDEFINITE stage cost the
     horizon is bounded outright and no constant survives past the first conjugate point -- see
     ``conjugate_time_certificate``, the other side of the same definiteness hypothesis.
+
+    Raises:
+        ValueError: on a ``horizon`` below 2, which leaves one point to fit a slope through.
     """
+    if horizon < 2:
+        raise ValueError(f"horizon must be at least 2 to fit a slope, got {horizon}")
     b_obs = b + beta
     u_conf = xref / b_obs  # confounded control (believes the effect is b_obs)
     x_conf = b * u_conf  # the biased turnpike the loop settles at
@@ -5917,7 +5934,18 @@ def panel_estimator_certificate(
     the panel DRAWN AT A GIVEN SEED DIFFERS between ``jax_enable_x64`` settings -- ``randint`` on
     the same key returns 1563838340 at x32 and 358276949 at x64 -- which is why the x64 run above
     is a third stream and not a check on rounding.
+
+    Raises:
+        ValueError: on fewer than 10 ``draws`` or 40 ``bootstrap`` resamples. A resample that
+            repeats one draw has no variance and a ratio of ``0/0``; it comes up with probability
+            ``draws^(1 - draws)``, a ninth at 3 draws and 1e-9 at 10. The interval's 2.5% tails
+            each need a resample beyond them, so 40. At 2 and 2 the interval read ``nan`` and
+            ``covered`` False, as if the prediction had been refuted.
     """
+    if draws < 10 or bootstrap < 40:
+        raise ValueError(
+            f"draws must be at least 10 and bootstrap at least 40, got {draws} and {bootstrap}"
+        )
     # chc.regret is NumPy/SciPy by design; the panel and its estimator are the JAX half of the
     # library, so they are imported here rather than at module scope.
     import jax

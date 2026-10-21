@@ -1299,7 +1299,7 @@ def test_panel_estimator_prediction_is_the_explicit_sandwich_ratio() -> None:
     """panel_estimator_gate.mac (2)-(5): the predicted parity/block ratio is the explicit Psi ratio,
     below 1 and rising toward 1 with the number of independent clusters."""
     counts, m, p = (2, 6), 12, 12
-    gate = panel_estimator_certificate(cluster_counts=counts, draws=2, bootstrap=2)
+    gate = panel_estimator_certificate(cluster_counts=counts, draws=10, bootstrap=40)
     sigma = _panel_sigma(m, (1.0, 0.7, 0.4), 0.9, 1, p)
     unit = np.repeat(np.arange(m), p)
     parity, block = unit % 2, unit * 2 // m
