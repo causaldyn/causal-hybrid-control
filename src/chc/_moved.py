@@ -8,7 +8,10 @@ the warning go in 0.20.0 (docs/adr/0117).
 
 from __future__ import annotations
 
+import ast
+import functools
 import importlib
+import inspect
 import warnings
 from collections.abc import Callable, Collection
 
@@ -45,12 +48,30 @@ def _served(old: str, new: str, name: str) -> object:
     return getattr(importlib.import_module(new), name)
 
 
+@functools.cache
+def _public(new: str) -> frozenset[str]:
+    """The public names of ``new``: its ``__all__``, or else the names its own top level defines.
+    A name it imports, a module such as ``np`` or a helper such as ``dataclass``, is not one."""
+    module = importlib.import_module(new)
+    names = getattr(module, "__all__", None)
+    if names is None:
+        names = set()
+        for node in ast.parse(inspect.getsource(module)).body:
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                names.add(node.name)
+            elif isinstance(node, ast.Assign):
+                names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names.add(node.target.id)
+    return frozenset(name for name in names if not name.startswith("_"))
+
+
 def serve_module(old: str) -> Callable[[str], object]:
     """The module ``__getattr__`` of ``old``, a module that moved whole: its public names."""
     new = MODULES[old]
 
     def __getattr__(name: str) -> object:
-        if name.startswith("_") or not hasattr(importlib.import_module(new), name):
+        if name not in _public(new):
             raise AttributeError(f"module {old!r} has no attribute {name!r}")
         return _served(old, new, name)
 
