@@ -35,6 +35,7 @@ from chc.integrate import rollout
 from chc.plan import (
     CausalPlan,
     ChannelSensitivity,
+    _deviation_tube,
     _row_bound,
     _sensitivity_gamma_star,
     certify_safety,
@@ -483,6 +484,14 @@ def test_deviation_tube_is_the_gap_to_the_plant_at_the_radius_s_edge(
     deviation = np.asarray(audit.deviation)
     assert deviation[0] == 0.0
     np.testing.assert_allclose(deviation, gap, rtol=1e-12, atol=1e-14)
+    direct = _deviation_tube(
+        model,  # type: ignore[arg-type]
+        jnp.asarray(nominal[:-1, None]),
+        jnp.asarray(actions),
+        dt,
+        delta,
+    )
+    np.testing.assert_allclose(np.asarray(direct), deviation, rtol=1e-12, atol=1e-14)
 
 
 @settings(max_examples=40, deadline=None)
