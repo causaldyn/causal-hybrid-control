@@ -27,6 +27,7 @@ proved in ``proofs/lq_mean_field.v``.
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import partial
@@ -1447,12 +1448,12 @@ def adjoint_weighted_error(
 
 @dataclass(frozen=True)
 class NonlinearDwrCurve:
-    """Evidence for A16: the adjoint built by autodiff, and what the linearisation costs."""
+    """Evidence for the autodiff adjoint, and for what the linearisation costs."""
 
     perturbations: tuple[float, ...]
     affine_relative_errors: tuple[float, ...]  # flat: exact up to quadrature, at every size
     affine_quadrature_ratio: float  # halving the step divides the floor by ~4
-    denominator_against_result_55: float  # |z(0)[1] - den(T)| at congestion 0
+    denominator_against_closed_form: float  # |z(0)[1] - den(T)| at congestion 0
     congested_errors: tuple[float, ...]
     congested_exponent: float  # -> 2: the remainder is the second variation
     congested_relative_error: float  # at the largest perturbation, so it is not trivially small
@@ -1461,6 +1462,20 @@ class NonlinearDwrCurve:
     affine_model_error: float  # affine field for BOTH defect and adjoint: stops tracking
     affine_model_exponent: float  # -> 0
     ok: bool
+
+    @property
+    def denominator_against_result_55(self) -> float:
+        """``denominator_against_closed_form`` under the name it had before 0.20.0, which leaves
+        in 1.0."""
+        warnings.warn(
+            "NonlinearDwrCurve.denominator_against_result_55 is renamed "
+            "denominator_against_closed_form and leaves in 1.0: it is the gap to the LQ "
+            "closed-form denominator, and the number in its old name pointed nowhere a reader can "
+            "follow",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.denominator_against_closed_form
 
 
 def _perturbation(times: np.ndarray, horizon: float) -> tuple[np.ndarray, np.ndarray]:
@@ -1622,7 +1637,7 @@ def nonlinear_dwr_certificate(
         perturbations=sizes,
         affine_relative_errors=tuple(affine_errors),
         affine_quadrature_ratio=quadrature_ratio,
-        denominator_against_result_55=denominator_gap,
+        denominator_against_closed_form=denominator_gap,
         congested_errors=tuple(right),
         congested_exponent=congested_exponent,
         congested_relative_error=congested_relative,

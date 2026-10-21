@@ -1394,8 +1394,8 @@ def test_plan_regret_bound_over_rows_holds_against_their_optimum(seed) -> None:
 @pytest.mark.parametrize("seed", range(3))
 def test_plan_regret_bound_vanishes_at_the_box_optimum(seed) -> None:
     """constrained_plan_regret.v the_constrained_gap_vanishes_at_a_clipped_optimum,
-    result_six_s_bound_charges_regret_at_that_optimum: at the box's optimum the bound is 0 where
-    |g|^2 / (2 mu) is not."""
+    the_unconstrained_bound_charges_regret_at_that_optimum: at the box's optimum the bound is 0
+    where |g|^2 / (2 mu) is not."""
     problem = _linear_problem(seed)
     best, _ = _box_optimum(problem, -0.3, 0.3)
     plan, model, cost = _library_plan(problem, best, -0.3, 0.3)

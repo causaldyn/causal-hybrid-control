@@ -48,7 +48,7 @@ Qed.
 
 (* ---- (B) the unconstrained maximum, and what clipping costs ---- *)
 
-Lemma the_unconstrained_maximum_is_result_six_s_bound :
+Lemma the_unconstrained_maximum_is_the_pl_bound :
   forall mu g, mu <> 0 -> gain mu g (- g / mu) = g * g / (2 * mu).
 Proof.
   intros mu g Hmu. unfold gain. field. exact Hmu.
@@ -71,7 +71,7 @@ Proof.
   assert (Hsquare : forall x : R, 0 <= x * x) by (intros; nra).
   assert (Hsq : 0 <= (mu / 2) * ((d + g / mu) * (d + g / mu))).
   { apply Rmult_le_pos; [lra | apply Hsquare]. }
-  rewrite <- (the_unconstrained_maximum_is_result_six_s_bound mu g Hne).
+  rewrite <- (the_unconstrained_maximum_is_the_pl_bound mu g Hne).
   pose proof (clipping_costs_exactly_a_square mu g d Hne) as Hc. lra.
 Qed.
 
@@ -123,7 +123,7 @@ Proof.
 Qed.
 
 (* ... while the unconstrained bound charges strictly positive regret to the optimum itself. *)
-Lemma result_six_s_bound_charges_regret_at_that_optimum :
+Lemma the_unconstrained_bound_charges_regret_at_that_optimum :
   forall mu ceiling us,
     0 < mu -> ceiling < us ->
     0 < (mu * (ceiling - us)) * (mu * (ceiling - us)) / (2 * mu).

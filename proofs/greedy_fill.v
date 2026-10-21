@@ -252,7 +252,7 @@ Proof.
   apply Rinv_lt_contravar; [nra | nra].
 Qed.
 
-Corollary results_56_and_66_follow_at_every_horizon :
+Corollary the_greedy_fill_is_optimal_for_the_van_trees_term :
   forall a k i0 c cap v horizon,
   0 < k -> 0 < i0 -> 0 < c -> (forall t, 0 <= cap t) -> feasible cap v ->
   cost a (fun _ s => k / (i0 + c * s)) (greedy cap (psum v horizon)) horizon

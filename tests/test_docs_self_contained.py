@@ -63,9 +63,15 @@ def test_no_proof_derivation_script_or_test_points_into_the_research_repository(
 
 # A result's number, an item's label and a task's number in the research log. A capital `L` or `P`
 # label carries a dot, so the laws `(L1)`-`(L3)` a docstring defines for itself do not match, and
-# `D(A1)` is a function of a variable, not a label.
+# `D(A1)` is a function of a variable, not a label. A name carries the number as well, in digits or
+# in words: `result_55`, `result_six_s_bound`.
+NUMBER_WORD = (
+    "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|"
+    "sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety"
+)
 PRIVATE_LABEL = re.compile(
     r"(?i:\b(?:results?|contributions?) #?[0-9]+[a-z]?\b(?!\.[0-9]))"
+    rf"|(?i:(?<![a-z0-9])results?_(?:[0-9]+|{NUMBER_WORD})(?![a-z0-9]))"
     r"|(?<!\w)\((?:A[0-9]+|L[0-9]+\.[0-9]+)\)"
     r"|\bP[0-9]+\.[0-9]+\b"
     r"|§[0-9]"
@@ -74,10 +80,14 @@ PRIVATE_LABEL = re.compile(
 # it, or a page right after it, as in `Kendall (1954) §3` or `(§3.4, p. 501)`.
 DATED_SOURCE = re.compile(r"(?:19|20)[0-9]{2}|arXiv")
 PAGE = re.compile(r"§[0-9.]+,\s+pp?\. [0-9]")
+# Old names that still serve their value under a DeprecationWarning until 1.0.
+RENAMED = ("denominator_against_result_55",)
 
 
 def _labels_in(text: str) -> list[tuple[int, str]]:
     """``(offset, label)`` of every private label in ``text``, less the cited published sections."""
+    for name in RENAMED:
+        text = text.replace(name, " " * len(name))
     return [
         (m.start(), m.group())
         for m in PRIVATE_LABEL.finditer(text)
@@ -134,6 +144,9 @@ def test_the_label_pattern_tells_a_research_log_result_from_a_published_section(
         "the safety analogue of §11's sign threshold",
         "a bound inside a box (L3.2)",
         "Plan 24's P2.6",
+        "def result_56(horizon):",
+        "Lemma the_one_by_one_floor_is_result_ten_s_constant :",
+        "Corollary results_56_and_66_follow_at_every_horizon :",
     )
     public = (
         "Kendall (1954) §3 gives the variance",
@@ -142,6 +155,7 @@ def test_the_label_pattern_tells_a_research_log_result_from_a_published_section(
         "a near-zero link caps a path (weakest-link, L3), and the truncation loses little (L2).",
         "loses ``q (A1 - A1*)^2 / D(A1)`` of it",
         "the result 0.5 is returned",
+        "result_bounds = solve(results_by_seed)",
     )
     assert [text for text in private if not _labels_in(text)] == []
     assert [text for text in public if _labels_in(text)] == []
