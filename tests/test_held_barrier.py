@@ -470,7 +470,9 @@ def test_an_unreachable_barrier_is_reported_by_the_audit_rather_than_raised() ->
         12,
         -5.0,
         5.0,
-        steps=2_000,  # the rounds share it; the penalty reaches its ceiling at 1237 steps in all
+        # the default budget, which the rounds share: the penalty reaches its ceiling at 1237 steps
+        # in all here and at 8089 under jax 0.4.30, whose rounds each run to their share
+        steps=10_000,
         barrier=BarrierConstraint(lambda x: x[0], alpha=0.2),
     )
     assert plan.safety is not None

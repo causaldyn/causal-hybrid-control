@@ -636,8 +636,10 @@ def test_ensemble_two_context_floor_is_the_closed_form(b0, rr, xt):
     for s, floor in zip(curve.spreads, curve.ensemble_floor, strict=True):
         b1, b2 = b0 - s, b0 + s
         w1, w2 = (b1**2 + rr) / 2, (b2**2 + rr) / 2
-        u1, u2 = b1 * xt / (b1**2 + rr), b2 * xt / (b2**2 + rr)
-        assert floor == pytest.approx(w1 * w2 * (u1 - u2) ** 2 / (w1 + w2), rel=1e-9, abs=0.0)
+        # u1 - u2 = xt (b2 - b1)(b1 b2 - rr)/(k1 k2), with b1 b2 - rr = (b0^2 - rr) - s^2: a
+        # difference of the two actions cancels at rr = b0^2, where they agree to O(s^2)
+        gap = xt * 2 * s * ((b0 * b0 - rr) - s * s) / ((b1**2 + rr) * (b2**2 + rr))
+        assert floor == pytest.approx(w1 * w2 * gap**2 / (w1 + w2), rel=1e-9, abs=0.0)
     assert curve.homogeneous_floor <= 1e-7 * xt**2
 
 

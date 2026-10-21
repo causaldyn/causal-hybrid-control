@@ -980,14 +980,15 @@ def ensemble_control_certificate(
     floor = np.zeros(n_spread)
     naive = np.zeros(n_spread)
     for i, s in enumerate(spreads):
-        bs = np.linspace(b0 - s, b0 + s, n_ctx)  # heterogeneous effects across the population
-        ks = bs**2 + rr  # per-context curvature
-        us = bs * xt / ks  # per-context optimal action
+        offsets = np.linspace(-s, s, n_ctx)  # heterogeneous effects b0 + d across the population
+        ks = (b0 + offsets) ** 2 + rr  # per-context curvature
+        # u*(b0 + d) - u*(b0) = xt d ((rr - b0^2) - d b0) / (k k0), not a difference of two actions:
+        # at rr = b0^2 the actions agree to O(s^2), and their difference kept 1e-4 of its digits
+        shifts = xt * offsets * ((rr - b0 * b0) - offsets * b0) / (ks * (b0 * b0 + rr))
         w = ks / n_ctx  # curvature weight (uniform population weight 1/n)
-        u_ens = float(np.sum(w * us) / np.sum(w))  # ensemble-optimal: curvature-weighted mean
-        floor[i] = float(np.sum(w * (u_ens - us) ** 2))
-        u_naive = b0 * xt / (b0**2 + rr)  # naive: optimal for the mean effect b0
-        naive[i] = float(np.sum(w * (u_naive - us) ** 2))
+        shift_ens = float(np.sum(w * shifts) / np.sum(w))  # ensemble-optimal: weighted mean
+        floor[i] = float(np.sum(w * (shifts - shift_ens) ** 2))
+        naive[i] = float(np.sum(w * shifts**2))  # naive: optimal for the mean effect b0
     slope = float(np.polyfit(np.log(spreads), np.log(floor), 1)[0])
     return EnsembleControlCurve(
         spreads,
@@ -4821,19 +4822,18 @@ def causal_vs_predictive_certificate(
     its regret ``-> 0``. Only causal identification closes the gap.
     """
 
-    def u_star(b: float) -> float:
-        return target * b / (b**2 + effort)
+    curvature = b_true**2 + effort
 
-    def cost(u: float, b: float) -> float:
-        return (b * u - target) ** 2 + effort * u**2
-
-    u_opt = u_star(b_true)
-
-    def regret(b_hat: float) -> float:
-        return cost(u_star(b_hat), b_true) - cost(u_opt, b_true)
+    def regret(error: float) -> float:
+        # J(u*(b + e)) - J(u*(b)) = (b^2 + rr)(u*(b + e) - u*(b))^2, the action gap written as
+        # target e (rr - b (b + e))/(((b + e)^2 + rr)(b^2 + rr)): a difference of two costs, or of
+        # two actions, cancels where the error is small (2.7e-5 of the floor at e = 3.8e-6)
+        shifted = (b_true + error) ** 2 + effort
+        gap = target * error * (effort - b_true * (b_true + error)) / (shifted * curvature)
+        return curvature * gap**2
 
     beta = gamma * alpha / (alpha**2 + 1.0)  # population OVB with Var(z)=Var(noise_u)=1
-    floor = regret(b_true + beta)
+    floor = regret(beta)
 
     sizes = np.asarray(sample_sizes)
     pred = np.zeros((n_seeds, sizes.size))
@@ -4849,7 +4849,7 @@ def causal_vs_predictive_certificate(
             u_res = u - (np.dot(u, zc) / np.dot(zc, zc)) * zc  # partial z out of u (backdoor)
             y_res = y - (np.dot(y, zc) / np.dot(zc, zc)) * zc
             b_caus = float(np.dot(u_res, y_res) / np.dot(u_res, u_res))
-            pred[s, j], caus[s, j] = regret(b_pred), regret(b_caus)
+            pred[s, j], caus[s, j] = regret(b_pred - b_true), regret(b_caus - b_true)
     return CausalControlCurve(sizes, np.median(pred, axis=0), np.median(caus, axis=0), float(floor))
 
 
