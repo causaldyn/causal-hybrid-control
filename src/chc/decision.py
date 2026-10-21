@@ -597,12 +597,17 @@ class DecisionCertificate:
     # each step, the plan's one-step error on the log (``tube_noise``) and the field's error, the
     # channel's at each lever's largest distance from the log's mean action and the drift's, read
     # at each planned state, both carried by the plan's steps, the field's read at its studentised
-    # quantile (:data:`TubeMode`)
+    # quantile (:data:`TubeMode`); and before ``lever_range_step``, past which the channel's error
+    # is not read
     certified_horizon: int | None
     barrier_certified_steps: int | None  # leading prefix clearing the barrier; None if no bound
     # The weakest step's confounding ceiling; None if unconstrained. With several bounds a step's
     # is the weakest bound's ceiling, an upper bound on the joint one: each bound's is reached by
-    # its own best action, and no one action need reach them all.
+    # its own best action, and no one action need reach them all. It asks whether some admissible
+    # action clears each step's condition, not whether this plan does: ``inf``, where the drift
+    # alone holds every step or no level widens the radius, can stand beside no certified step,
+    # which counts the plan's own actions and its path with the deviation a plant in the radius
+    # can reach.
     gamma_star: float | None
     # None when the effect is not identified: no solve was attempted, which is a third answer and
     # not one of the solver's three. Same convention as the certified-horizon fields above.
@@ -710,6 +715,16 @@ class DecisionCertificate:
     stationarity_tolerance: float | None = None
     constraint_violation: float | None = None
     violation_tolerance: float | None = None
+    # What the barrier's radius is (:attr:`chc.plan.SafetyCertificate.radius_model`): ``relative``,
+    # a share of the fitted channel's own size, so ``gamma`` and ``gamma_star`` are a margin on the
+    # estimate; ``absolute``, a sensitivity model's bound on the channel's error. None where no
+    # bound was audited.
+    radius_model: Literal["relative", "absolute"] | None = None
+    # The first step at which the plan sets a lever outside the range the panel logged it in,
+    # counted from 0; None where it never does. The fitted channel is extrapolated from there, and
+    # its error, read at the log's actions, does not price that, so ``certified_horizon`` ends
+    # there.
+    lever_range_step: int | None = None
 
     @property
     def stationarity_status(self) -> DiagnosticStatus | None:
@@ -1398,10 +1413,8 @@ class Prescription:
             + f"certified horizon {_show(certificate.certified_horizon)}"
             + ("" if certificate.tube_rate is None else f", {certificate.tube_rate} rate"),
             *self._noise_lines(),
-            f"- barrier: certified steps {_show(certificate.barrier_certified_steps)}"
-            + ("" if certificate.gamma is None else f" at gamma {certificate.gamma:.4g}")
-            + f", gamma* {_show(certificate.gamma_star)} (a relative margin on a share of the "
-            "fitted channel, not a level of confounding)",
+            *self._lever_range_lines(),
+            *self._barrier_lines(),
             "- solver: not run"
             if certificate.solver_status is None
             else f"- solver: {certificate.solver_status} after "
@@ -1469,6 +1482,8 @@ class Prescription:
                 "constraint_violation": certificate.constraint_violation,
                 "violation_tolerance": certificate.violation_tolerance,
                 "violation_status": certificate.violation_status,
+                "radius_model": certificate.radius_model,
+                "lever_range_step": certificate.lever_range_step,
                 "trustworthy_steps": certificate.trustworthy_steps,
                 "regret_bound": certificate.regret_bound,
                 "regret_status": certificate.regret_status,
@@ -1533,6 +1548,44 @@ class Prescription:
             "run": None if self.run is None else self.run.to_json(),
         }
         return _strict(record)
+
+    def _lever_range_lines(self) -> list[str]:
+        step = self.certificate.lever_range_step
+        if step is None:
+            return []
+        return [
+            f"- logged range: from step {step} the plan sets a lever outside the range the panel "
+            "logged it in, where the fitted channel is extrapolated and its error not read; the "
+            "certified horizon ends there"
+        ]
+
+    def _barrier_lines(self) -> list[str]:
+        certificate = self.certificate
+        line = (
+            f"- barrier: certified steps {_show(certificate.barrier_certified_steps)}"
+            + ("" if certificate.gamma is None else f" at gamma {certificate.gamma:.4g}")
+            + f", gamma* {_show(certificate.gamma_star)}"
+        )
+        if certificate.radius_model == "absolute":
+            line += " (a level of the channel's sensitivity model)"
+        else:
+            line += (
+                " (a relative margin on a share of the fitted channel, not a level of confounding)"
+            )
+        steps = certificate.barrier_certified_steps
+        if (
+            certificate.gamma_star is not None
+            and math.isinf(certificate.gamma_star)
+            and steps is not None
+            and self.plan is not None
+            and steps < self.plan.actions.shape[0]
+        ):
+            line += (
+                "; gamma* = inf says some admissible action clears each step's condition at every "
+                "level, while a certified step needs this plan's own actions to clear it and its "
+                "path, widened by the deviation a plant in the radius can reach, to stay in the set"
+            )
+        return [line]
 
     def _first_order_lines(self) -> list[str]:
         certificate = self.certificate
@@ -2630,9 +2683,11 @@ def prescribe(
         },
     )
 
-    _warn_actions_outside_logged_range(
+    lever_range_step = _warn_actions_outside_logged_range(
         panel, lever_names, np.asarray(plan.actions, dtype=np.float64), skip=rule_levers
     )
+    if lever_range_step is not None and plan.certified_horizon is not None:
+        plan = replace(plan, certified_horizon=min(plan.certified_horizon, lever_range_step))
     if held is not None:
         safety = plan.safety  # solve() already audited it at the whole box's largest actions
     elif margins:
@@ -2727,6 +2782,8 @@ def prescribe(
         stationarity_tolerance=plan.stationarity_tolerance,
         constraint_violation=plan.constraint_violation,
         violation_tolerance=plan.violation_tolerance,
+        radius_model=None if safety is None else safety.radius_model,
+        lever_range_step=lever_range_step,
     )
     _log.info(
         "decision certified",
@@ -3831,10 +3888,15 @@ def _warn_outside_logged_range(panel: Panel, drivers: Sequence[Driver]) -> None:
 
 def _warn_actions_outside_logged_range(
     panel: Panel, levers: tuple[str, ...], actions: NDArray[np.float64], *, skip: tuple[str, ...]
-) -> None:
+) -> int | None:
     """Warn of each lever the plan sets outside the range the panel logged it in: the fitted
     channel is extrapolated there, and its standard error, read at the log's actions, does not
-    price that. A lever on its logged rule (``skip``) is set by the state, not by the plan."""
+    price that. A lever on its logged rule (``skip``) is set by the state, not by the plan.
+
+    Returns:
+        The first step at which some lever is outside its range, None where none is.
+    """
+    first: int | None = None
     for index, name in enumerate(levers):
         if name in skip:
             continue
@@ -3843,10 +3905,11 @@ def _warn_actions_outside_logged_range(
         planned = actions[:, index]
         outside = np.flatnonzero((planned < low) | (planned > high))
         if outside.size:
+            first = int(outside[0]) if first is None else min(first, int(outside[0]))
             _log.warning(
                 "the plan sets %r outside the range the panel logged, [%.4g, %.4g], first at step "
                 "%d of %d; the fitted channel is extrapolated there, and the tube's error, read at "
-                "the log's actions, does not price that",
+                "the log's actions, does not price that, so the certified horizon ends there",
                 name,
                 low,
                 high,
@@ -3860,6 +3923,7 @@ def _warn_actions_outside_logged_range(
                     "steps": outside.tolist(),
                 },
             )
+    return first
 
 
 def _cost(

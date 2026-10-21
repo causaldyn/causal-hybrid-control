@@ -1,0 +1,106 @@
+/* The barrier certificate's deviation tube: how far a plant whose channel is within Delta of the
+   model's can be from the model's path under the same open-loop actions.
+
+   Setting (chc.plan._deviation_tube, _audit, _HeldBarrier.shortfall). Model x' = f(x) + B u,
+   plant x' = f(x) + (B + E) u with ||E D||_2 <= Delta, the same drift, both stepped by the same
+   one-step map F (Euler, or RK4 with the action held over the step), from one start. With the
+   field affine in the state, f(x) = A x + c, a channel error E u constant over the step is an
+   additive field error at every stage, so the gap obeys
+
+       y_{k+1} - x_{k+1} = J (y_k - x_k) + S E u_k,   J = dF/dx,   S = dF/dc,
+
+   c an additive constant on the field, and the norm recursion
+
+       e_{k+1} = ||J_k|| e_k + ||S_k|| Delta ||D^+ u_k||,   e_0 = 0,
+
+   bounds ||y_k - x_k||. On an affine barrier h(x) = h0 + g' x, h(y_k) >= h(x_k) - ||g|| e_k, so a
+   step whose model state and next state keep h - ||grad h|| e >= 0 keeps every such plant in the
+   set. Euler: J = I + dt A, S = dt I. RK4: J = R(dt A), S = dt phi(dt A) (rk4_rollout.mac (2)).
+   On one state and one lever, actions of one sign and J, S >= 0, the plant at the radius's edge
+   attains the recursion: it is the least bound of this form. */
+display2d : false$
+
+/* (1) the one-step gap of the two maps, 2 states, 2 levers, symbolic everything */
+A : matrix([a11, a12], [a21, a22])$
+c : matrix([c1], [c2])$
+B : matrix([b11, b12], [b21, b22])$
+E : matrix([p11, p12], [p21, p22])$
+u : matrix([u1], [u2])$
+x : matrix([x1], [x2])$
+d : matrix([d1], [d2])$
+field(y, chan, shift) := A . y + c + chan . u + shift$
+eulerstep(y, chan, shift) := y + h * field(y, chan, shift)$
+rk4step(y, chan, shift) := block([k1, k2, k3, k4],
+  k1 : field(y, chan, shift),
+  k2 : field(y + h/2 * k1, chan, shift),
+  k3 : field(y + h/2 * k2, chan, shift),
+  k4 : field(y + h * k3, chan, shift),
+  y + h/6 * (k1 + 2*k2 + 2*k3 + k4))$
+zero : matrix([0], [0])$
+s : matrix([s1], [s2])$
+/* J and S read off the model's map by differentiation, as the code reads them with jacfwd */
+jac(mapf, wrt) := block([out : mapf(x, B, s)],
+  genmatrix(lambda([i, j], diff(out[i, 1], wrt[j, 1])), 2, 2))$
+for mapf in [eulerstep, rk4step] do block([J, S, gap],
+  J : subst([s1 = 0, s2 = 0], jac(mapf, x)),
+  S : subst([s1 = 0, s2 = 0], jac(mapf, s)),
+  gap : mapf(x + d, B + E, zero) - mapf(x, B, zero),
+  print("(1)", mapf, ": gap - (J d + S E u) =", ratsimp(gap - (J . d + S . (E . u))), " (= 0)"),
+  print("    J and S read no u, no B, no E and no x:",
+        sublist(listofvars([J, S]), lambda([v], member(v, [u1, u2, b11, b12, b21, b22,
+          p11, p12, p21, p22, x1, x2]))), " (= [])"))$
+
+/* the closed forms: Euler J = I + hA, S = h I; RK4 J = R(hA), S = h phi(hA) */
+I2 : ident(2)$
+M : h * A$
+Rm : I2 + M + M . M/2 + M . M . M/6 + M . M . M . M/24$
+Phim : I2 + M/2 + M . M/6 + M . M . M/24$
+print("(1') Euler J - (I + hA), S - hI:",
+      ratsimp(subst([s1 = 0, s2 = 0], jac(eulerstep, x)) - (I2 + M)),
+      ratsimp(subst([s1 = 0, s2 = 0], jac(eulerstep, s)) - h * I2), " (= 0)")$
+print("     RK4 J - R(hA), S - h phi(hA):",
+      ratsimp(subst([s1 = 0, s2 = 0], jac(rk4step, x)) - Rm),
+      ratsimp(subst([s1 = 0, s2 = 0], jac(rk4step, s)) - h * Phim), " (= 0)")$
+
+/* (2) one state, one lever, three steps: the plant at b_hat + Delta against the recursion, RK4,
+   for actions of one sign (u_k >= 0) and z = h a with R(z), phi(z) >= 0 (z > -2.78 for R). The
+   gap is exactly Delta times sum_j R^{k-1-j} h phi u_j, the recursion's value */
+R(z) := 1 + z + z^2/2 + z^3/6 + z^4/24$
+phi(z) := 1 + z/2 + z^2/6 + z^3/24$
+rk4s(y, b, v) := block([k1, k2, k3, k4],
+  k1 : a*y + b*v, k2 : a*(y + h/2*k1) + b*v, k3 : a*(y + h/2*k2) + b*v, k4 : a*(y + h*k3) + b*v,
+  y + h/6 * (k1 + 2*k2 + 2*k3 + k4))$
+xm : 0$ yp : 0$ e : 0$ out : []$
+for v in [v0, v1, v2] do (
+  xm : rk4s(xm, bh, v), yp : rk4s(yp, bh + Dl, v),
+  e : R(h*a) * e + h * phi(h*a) * Dl * v,
+  out : endcons(ratsimp(yp - xm - e), out))$
+print("(2) plant at the edge less the recursion, steps 1..3:", out, " (= [0, 0, 0])")$
+
+/* (3) why the condition at the model's states is not enough: integrator x' = b u, dt = 1,
+   h = 1 - x, alpha = 1, b_hat = 1, Delta = 1/2. The worst case condition at the model's state,
+   -(b_hat + Delta) u >= -h(x_k), is met with equality by u_k = h(x_k)/(b_hat + Delta); the
+   model's path keeps h > 0, the plant at b = 3/2 leaves the set at step 2 */
+xm : 0$ yp : 0$ hs : []$
+for k : 1 thru 3 do block([v : (1 - xm) / (3/2)],
+  xm : xm + v, yp : yp + 3/2 * v, hs : endcons([1 - xm, 1 - yp], hs))$
+print("(3) [h model, h plant], steps 1..3:", hs, " (the plant's h is 0, -1/3, -4/9)")$
+/* the recursion there: e_k = Delta sum |u_j|, h(x_k) - e_k */
+xm : 0$ e : 0$ rooms : []$
+for k : 1 thru 3 do block([v : (1 - xm) / (3/2)],
+  xm : xm + v, e : e + 1/2 * v, rooms : endcons(1 - xm - e, rooms))$
+print("    h(x_k) - e_k, steps 1..3:", rooms,
+      " (the plant's h exactly: the tube cuts the certificate after step 1)")$
+
+/* (4) the stable drift of the counterexample, a = 3/10, dt = 1/10, b_hat = 0.5021,
+   Delta = 0.1004, ten steps of u = 5: RK4 rollouts of the plants b_hat - Delta and
+   b_hat + Delta against the recursion, in bfloat */
+fpprec : 40$
+a : 3/10$ h : 1/10$ bh : 5021/10000$ Dl : 1004/10000$
+xm : 0$ ylo : 0$ yhi : 0$ e : 0$ worst : 0$
+for k : 1 thru 10 do (
+  xm : rk4s(xm, bh, 5), ylo : rk4s(ylo, bh - Dl, 5), yhi : rk4s(yhi, bh + Dl, 5),
+  e : R(h*a) * e + h * phi(h*a) * Dl * 5,
+  worst : max(worst, abs(bfloat(max(abs(yhi - xm), abs(ylo - xm)) - e))))$
+print("(4) max over 10 steps of | max plant gap - e_k | =", worst, " (= 0b0)")$
+print("    e_10 =", bfloat(e))$

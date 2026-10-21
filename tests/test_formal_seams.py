@@ -28,9 +28,17 @@ from scipy.stats import norm, t
 
 from chc import QuadraticCost
 from chc.decision import _field_scale
+from chc.dynamics import LinearDynamics, _EulerStep
 from chc.dynamics_id import CausalDynamicsFit
 from chc.evaluation import AffinePolicy, EvaluationMethod, LinearGaussianPlant, evaluate_plan
-from chc.plan import ChannelSensitivity, _row_bound, _sensitivity_gamma_star
+from chc.integrate import rollout
+from chc.plan import (
+    CausalPlan,
+    ChannelSensitivity,
+    _row_bound,
+    _sensitivity_gamma_star,
+    certify_safety,
+)
 from chc.residual import ControlAffineResidual
 from chc.switchback import Horizon, read_switchback
 
@@ -53,6 +61,20 @@ FORMAL_LINKS = {
             "test_channel_factor_is_the_bhatia_davis_share",
             "test_channel_factor_inverts_and_ends_at_the_limit",
             "test_channel_radius_bounds_the_bias_of_a_discrete_confounded_law",
+        ),
+    },
+    "chc.plan._deviation_tube": {
+        "cites": ("barrier_deviation_tube.mac",),
+        "tests": (
+            "test_deviation_tube_is_the_gap_to_the_plant_at_the_radius_s_edge",
+            "test_deviation_tube_bounds_the_gap_on_two_states_and_two_levers",
+        ),
+    },
+    "chc.plan.certify_safety": {
+        "cites": ("barrier_deviation_tube.mac",),
+        "tests": (
+            "test_a_step_whose_plant_can_leave_the_set_is_not_certified",
+            "test_deviation_tube_is_the_gap_to_the_plant_at_the_radius_s_edge",
         ),
     },
     "chc.plan._row_bound": {
@@ -408,6 +430,117 @@ def test_gamma_star_reads_the_edge_cases() -> None:
     assert _sensitivity_gamma_star(5.0, 2.0, _sensitivity(0.5, 0.0)) == math.inf
     assert _sensitivity_gamma_star(0.0, 0.0, model) == math.inf
     assert math.isnan(_sensitivity_gamma_star(-1.0, 0.0, model))
+
+
+# ---- the barrier's deviation tube: barrier_deviation_tube.mac ----
+
+
+def _hand_plan(model: object, actions: np.ndarray, dt: float, states: int = 1) -> CausalPlan:
+    """A plan of ``actions`` from 0, its trajectory the model's own rollout."""
+    us = jnp.asarray(actions)
+    return CausalPlan(
+        actions=us,
+        trajectory=rollout(model, jnp.zeros(states), us, dt),  # type: ignore[arg-type]
+        task_cost=0.0,
+        uncertainty_tube=None,
+        certified_horizon=None,
+        solver_status="converged",
+        solver_iterations=0,
+    )
+
+
+def _ceiling(x: jnp.ndarray) -> jnp.ndarray:
+    return 1.0 - x[0]
+
+
+@pytest.mark.parametrize("euler", [False, True])
+@pytest.mark.parametrize(("drift", "dt"), [(-1.0, 0.1), (0.0, 1.0), (0.3, 0.1), (0.3, 1.0)])
+def test_deviation_tube_is_the_gap_to_the_plant_at_the_radius_s_edge(
+    drift: float, dt: float, euler: bool
+) -> None:
+    """barrier_deviation_tube.mac (1), (2), (4): on one state, one lever and actions of one sign,
+    the RK4 or Euler rollout of the plant at ``b_hat + Delta`` less the model's is the tube at
+    every step, to rounding; on the stable, the integrating and the unstable drift."""
+    b_hat, delta = 0.5021, 0.1004
+    actions = np.linspace(0.3, 2.0, 12)[:, None]
+
+    def stepped(channel: float) -> object:
+        field = LinearDynamics(jnp.array([[drift]]), jnp.array([[channel]]))
+        return _EulerStep(field) if euler else field
+
+    model = stepped(b_hat)
+    audit = certify_safety(
+        _hand_plan(model, actions, dt),
+        model,  # type: ignore[arg-type]
+        _ceiling,
+        dt,
+        u_max=5.0,
+        sensitivity=_sensitivity(delta, 0.0),
+    )
+    nominal = np.asarray(rollout(model, jnp.zeros(1), jnp.asarray(actions), dt))[:, 0]  # type: ignore[arg-type]
+    edge = np.asarray(rollout(stepped(b_hat + delta), jnp.zeros(1), jnp.asarray(actions), dt))  # type: ignore[arg-type]
+    gap = np.abs(edge[:, 0] - nominal)
+    deviation = np.asarray(audit.deviation)
+    assert deviation[0] == 0.0
+    np.testing.assert_allclose(deviation, gap, rtol=1e-12, atol=1e-14)
+
+
+@settings(max_examples=40, deadline=None)
+@given(seed=st.integers(0, 2**31 - 1), dt=st.sampled_from([0.1, 0.5, 1.0]))
+def test_deviation_tube_bounds_the_gap_on_two_states_and_two_levers(seed: int, dt: float) -> None:
+    """barrier_deviation_tube.mac (1): a 2-state, 2-lever field affine in the state, a channel
+    error ``E`` with ``||E D||_2`` at the radius, the levers' largest actions 1 and 4, actions of
+    either sign: the plant's RK4 rollout stays within the tube of the model's at every step."""
+    rng = np.random.default_rng(seed)
+    a = rng.normal(0.0, 0.6, (2, 2))
+    b = rng.normal(0.0, 1.0, (2, 2))
+    reach = np.array([1.0, 4.0])
+    shape = reach / reach.max()
+    error = rng.normal(size=(2, 2))
+    delta = 0.3
+    error = error / np.linalg.norm(error * shape[None, :], 2) * delta
+    actions = rng.uniform(-1.0, 1.0, (8, 2)) * reach
+    gram = np.eye(2)
+    sensitivity = ChannelSensitivity(
+        gram=gram, channel_degree=0, sampling=delta, confounding=0.0, level=0.95
+    )
+    model = LinearDynamics(jnp.asarray(a), jnp.asarray(b))
+    plant = LinearDynamics(jnp.asarray(a), jnp.asarray(b + error))
+    audit = certify_safety(
+        _hand_plan(model, actions, dt, states=2),
+        model,
+        lambda x: 100.0 - x[0],
+        dt,
+        u_max=reach,
+        sensitivity=sensitivity,
+    )
+    xs = np.asarray(rollout(model, jnp.zeros(2), jnp.asarray(actions), dt))
+    ys = np.asarray(rollout(plant, jnp.zeros(2), jnp.asarray(actions), dt))
+    gap = np.linalg.norm(ys - xs, axis=1)
+    deviation = np.asarray(audit.deviation)
+    assert np.all(gap <= deviation * (1.0 + 1e-12) + 1e-14), (gap, deviation)
+
+
+def test_a_step_whose_plant_can_leave_the_set_is_not_certified() -> None:
+    """barrier_deviation_tube.mac (3): an integrator at ``dt = 1``, ``h = 1 - x``, ``b_hat = 1`` and
+    an exact radius of 1/2, each action ``h(x_k) / 1.5`` meeting the worst case condition with
+    equality. The model's path keeps ``h`` at 1/3, 1/9, 1/27, and the condition held at every
+    step, so all three were certified; the plant at ``b = 3/2`` reads 0, -1/3, -4/9. The tube's
+    room ``h(x_k) - e_k`` is that, so one step is certified, the one whose next state the plant
+    reaches with ``h = 0``."""
+    model = LinearDynamics(jnp.zeros((1, 1)), jnp.ones((1, 1)))
+    x, actions = 0.0, []
+    for _ in range(3):
+        actions.append((1.0 - x) / 1.5)
+        x += actions[-1]
+    plan = _hand_plan(model, np.asarray(actions)[:, None], 1.0)
+    audit = certify_safety(
+        plan, model, _ceiling, 1.0, u_max=5.0, sensitivity=_sensitivity(0.5, 0.0)
+    )
+    assert np.all(np.asarray(audit.guaranteed_derivative - audit.required) >= -1e-15)
+    room = 1.0 - np.asarray(plan.trajectory)[:, 0] - np.asarray(audit.deviation)
+    np.testing.assert_allclose(room, [1.0, 0.0, -1.0 / 3.0, -4.0 / 9.0], rtol=0.0, atol=1e-15)
+    assert audit.certified_steps == 1
 
 
 # ---- the regret bound over a box and rows: regret_bound_rows.mac ----
