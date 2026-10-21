@@ -58,12 +58,15 @@ def _ask(**options: object) -> Prescription:
         _panel(),
         levers=[Lever("incentive", lo=-REACH, hi=REACH, unit_cost=0.05)],
         target=Target("supply", value=1.0),
-        constraints=[Constraint("supply", hi=0.8), Constraint("wait", hi=0.5)],
         adjustment=CausalGraph.from_edges(EDGES),
         horizon=15,
         dt=DT,
-        x0=np.zeros(2),
-        **{"integrator": "euler", **options},  # type: ignore[arg-type]
+        **{  # type: ignore[arg-type]
+            "integrator": "euler",
+            "x0": np.zeros(2),
+            "constraints": [Constraint("supply", hi=0.8), Constraint("wait", hi=0.5)],
+            **options,
+        },
     )
 
 
@@ -75,10 +78,11 @@ def _radius_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]
 def test_the_barrier_reads_the_fit_s_absolute_radius_at_each_step_by_default(
     held: bool, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """On an Euler fit by adjustment the audit reads the fit's own sensitivity model at each
-    planned step's predicted state, held or not; ``gamma = 1`` is then the channel's sampling
-    error, a radius the plant's deviation is carried by, not the zero the share read there."""
-    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+    """On an Euler fit by adjustment the default audit reads the fit's own sensitivity model at
+    each planned step's predicted state, held or not, as ``radius="absolute"`` does; ``gamma = 1``
+    is then the channel's sampling error, a radius the plant's deviation is carried by, not the
+    zero the share read there."""
+    with caplog.at_level(logging.INFO, logger="chc.decision"):
         result = _ask(hold_constraints=held)
     assert not _radius_records(caplog)
     assert result.plan is not None
@@ -98,28 +102,50 @@ def test_the_barrier_reads_the_fit_s_absolute_radius_at_each_step_by_default(
         assert safety.radius == pytest.approx(widest, rel=1e-9, abs=0.0)
         assert float(np.max(np.asarray(safety.deviation))) > 0.0
         assert certificate.barrier_certified_steps == safety.certified_steps
+    asked = _ask(hold_constraints=held, radius="absolute")
+    assert (asked.certificate.radius_model, asked.certificate.barrier_certified_steps) == (
+        "absolute",
+        certificate.barrier_certified_steps,
+    )
+    assert asked.certificate.gamma_star == certificate.gamma_star
     relative = _ask(hold_constraints=held, radius="relative")
     assert relative.certificate.radius_model == "relative"
     assert relative.run is not None
     assert relative.run.radius == "relative"
 
 
-def test_a_fit_with_no_absolute_radius_reads_the_relative_one_and_says_why(
+def test_a_fit_with_no_absolute_radius_reads_the_relative_one_and_says_so_quietly(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """An ``rk4`` fit is a fixed point of its own step, whose error no bound on the levers' density
-    limits: the barrier reads the share of the fitted channel, and a ``WARNING`` record names the
-    fit's refusal. Asked for, the relative radius is read with no such record."""
-    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+    limits: the default barrier reads the share of the fitted channel, and an ``INFO`` record, not
+    a ``WARNING``, names the fit's refusal, so a default run prints nothing. Asked for, the
+    relative radius is read with no record; with no constraint no radius is read at all."""
+    with caplog.at_level(logging.INFO, logger="chc.decision"):
         result = _ask(integrator="rk4")
     assert result.certificate.radius_model == "relative"
+    assert result.run is not None
+    assert result.run.radius == "relative"
     (record,) = _radius_records(caplog)
+    assert record.levelno == logging.INFO
     assert "rk4" in record.reason  # type: ignore[attr-defined]
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+    with caplog.at_level(logging.INFO, logger="chc.decision"):
         asked = _ask(radius="relative")
+        free = _ask(integrator="rk4", constraints=(), x0=np.zeros(1))
     assert asked.certificate.radius_model == "relative"
     assert not _radius_records(caplog)
+    assert free.certificate.radius_model is None
+    assert free.run is not None
+    assert free.run.radius is None
+
+
+def test_an_absolute_radius_asked_of_a_fit_that_gives_none_is_refused() -> None:
+    """``radius="absolute"`` on an ``rk4`` fit names the fit's refusal and the two ways out."""
+    with pytest.raises(DecisionError, match="rk4") as refused:
+        _ask(integrator="rk4", radius="absolute")
+    assert "integrator='euler'" in str(refused.value)
+    assert "radius='relative'" in str(refused.value)
 
 
 def test_a_level_the_absolute_radius_does_not_bound_is_refused() -> None:
@@ -129,5 +155,5 @@ def test_a_level_the_absolute_radius_does_not_bound_is_refused() -> None:
         _ask(gamma=3.0)
     assert _ask(gamma=3.0, radius="relative").certificate.radius_model == "relative"
     assert _ask(gamma=3.0, integrator="rk4").certificate.radius_model == "relative"
-    with pytest.raises(DecisionError, match="neither 'absolute'"):
+    with pytest.raises(DecisionError, match="none of 'auto'"):
         _ask(radius="share")

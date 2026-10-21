@@ -33,19 +33,27 @@ that the default would become one unit of the state.
 
 ## Decision
 
-- **`prescribe(radius="absolute")` is the default.** Where constraints give a barrier,
-  `prescribe` reads `ChannelSensitivity.from_fit(fit)` at 0.95 and passes it to the held solve
-  (`BarrierConstraint(sensitivity=)`) and to the audit, so both read one radius at each step's
-  predicted state. `gamma = 1` is then the channel's sampling error.
-- **Where the fit gives no absolute radius**, the barrier reads the relative one and a `WARNING`
+- **`prescribe(radius="auto")` is the default: the absolute radius where the fit gives one.**
+  Where constraints give a barrier, `prescribe` reads `ChannelSensitivity.from_fit(fit)` at 0.95
+  and passes it to the held solve (`BarrierConstraint(sensitivity=)`) and to the audit, so both
+  read one radius at each step's predicted state. `gamma = 1` is then the channel's sampling
+  error.
+- **Where the fit gives no absolute radius**, `"auto"` reads the relative one, and an `INFO`
   record says why (`chc_event="radius"`, its `reason` the fit's refusal). That is an `rk4` fit,
   the default integrator's, whose fixed point carries the drift's confounding into the channel
-  (ADR 0111); an instrument's fit; and a log that leaves a direction of the channel unmoved.
+  (ADR 0111); an instrument's fit; and a log that leaves a direction of the channel unmoved. The
+  record is not a `WARNING`: the fallback is the default's own reading, and a default run prints
+  nothing.
+- **`radius="absolute"`** asks for the absolute radius, and on a fit that gives none raises a
+  `DecisionError` that names the fit's refusal and the two ways out, `integrator="euler"` and
+  `radius="relative"`.
 - **`radius="relative"`** keeps the share explicitly, with no record. Any other value is refused.
 - **Under the absolute radius**, a `gamma` at or past `(3 + sqrt 5)/2` is refused: the sensitivity
   model bounds no error there. The relative radius still reads it.
-- `DecisionCertificate.radius_model` says which radius the audit read; `RunProvenance.radius`,
-  and its JSON, which one was asked for.
+- `DecisionCertificate.radius_model` and `RunProvenance.radius`, with its JSON, say which radius
+  the audit read, `"absolute"` or `"relative"`, never `"auto"`; None where no barrier was audited.
+- **`"rk4"` stays `prescribe`'s default integrator** (ADR 0118). So the default run on a
+  continuous-time log reads the relative radius; an absolute one needs `integrator="euler"`.
 - **`causal_plan(tolerance=1.0)` and `RecedingHorizon(tolerance=1.0)`** are the defaults, and the
   `FutureWarning` is gone. `inf` still reads `no_tolerance`. `prescribe`'s `tolerance` is
   unchanged: omitted, it evaluates no tube.
@@ -54,11 +62,11 @@ that the default would become one unit of the state.
 
 - An Euler fit's certificate now reads an absolute radius, and the held plan pays for it: on the
   logs above, the task cost at `gamma = 2` rose from 5.43, 4.94, 5.26, 4.68 to 6.70, 5.92, 6.32,
-  5.78, and the
-  rounds more often ended on their budget (`max_iterations`), with every step still certified.
+  5.78, and the rounds more often ended on their budget (`max_iterations`), with every step still certified.
 - An `rk4` fit reads the relative radius as before: no number of the quickstart, the README, the
   pendulum case study, the BOPTEST case study or the misspecification suite's `rk4` cases moves.
-  Each such run with a constraint now logs one `WARNING` record more.
+  Each such run with a constraint logs one `INFO` record more, which prints nothing unless the
+  caller configures logging.
 - `certify_safety` and `BarrierConstraint` keep the relative radius by default: they take a model,
   not the fit a sensitivity is read from (ADR 0111).
 - A plan from `causal_plan` with an error model and no `tolerance` now reads `certified`,
@@ -66,8 +74,11 @@ that the default would become one unit of the state.
 
 ## Alternatives
 
-- **Refuse a fit that gives no absolute radius.** Every default `prescribe` with a constraint
-  would raise, since the default fit is `rk4`.
+- **Refuse a fit that gives no absolute radius by default.** Every default `prescribe` with a
+  constraint would raise, since the default fit is `rk4`. Only an explicit `radius="absolute"`
+  raises.
+- **Fall back with a `WARNING`.** Every default run with a constraint would print to stderr about
+  a choice the caller did not make.
 - **Make `"euler"` the default integrator.** It reads a continuous-time log with Euler's
   discretisation bias (ADR 0118); that is a decision of its own.
 - **A per-step share, `||B_hat(x_k) D||`.** Still relative: it reads no error (ADR 0111).

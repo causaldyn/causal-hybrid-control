@@ -100,7 +100,8 @@ design record is
   them, the absolute radius on none ([ADR 0111](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0111-gamma-star-from-a-sensitivity-model-of-the-channel.md)).
   `prescribe` reads its fit's own absolute radius by default, in the held solve and in the audit,
   and the relative margin where the fit gives none, an `rk4` fit's among them, or where
-  `radius="relative"` asks for it; the certificate's `radius_model` says which
+  `radius="relative"` asks for it; `radius="absolute"` refuses a fit that gives none. The
+  certificate's `radius_model` says which
   ([ADR 0125](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0125-prescribe-reads-the-fit-s-absolute-radius-by-default.md)).
   The radius is `(Γ-1)/(Γ+1)·cvar_gap` times the channel's operator norm at the plan's first
   state: `cvar_gap` is a share of the channel, 1 by default, so `Γ*` and the certified steps read

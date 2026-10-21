@@ -898,8 +898,9 @@ class RunProvenance:
     max_levers: int | None  # the greedy selection's cap; None where every lever was planned with
     clusters: str | None = None  # the column the units were grouped by; None where not grouped
     nuisance_knots: int | str | None = None  # the nuisances' spline knots; None, polynomial alone
-    # the barrier's radius asked for; DecisionCertificate.radius_model says which one was read
-    radius: Literal["absolute", "relative"] = "absolute"
+    # the barrier's radius read, as DecisionCertificate.radius_model reads it; None where no
+    # barrier was audited
+    radius: Literal["absolute", "relative"] | None = None
 
     def to_json(self) -> dict[str, Any]:
         """A plain dict, ready for ``json.dumps(..., allow_nan=False)``: the versions an object
@@ -1813,7 +1814,7 @@ def prescribe(
     known: Dynamics | None = None,
     dt: float = 1.0,
     gamma: float = 1.0,
-    radius: Literal["absolute", "relative"] = "absolute",
+    radius: Literal["auto", "absolute", "relative"] = "auto",
     tolerance: float | None = None,
     x0: ArrayLike | None = None,
     folds: int = 2,
@@ -1917,16 +1918,18 @@ def prescribe(
             units of the state or of each lever (ADR 0085, ADR 0091), and the levers' box, which
             may be asymmetric. It prices the plan, and changes it only under ``hold_constraints``.
         radius: what the barrier's radius on the channel is; the certificate's ``radius_model``
-            reads which one the audit used (ADR 0125). ``"absolute"``, the default: the fit's
-            own sensitivity model, :meth:`chc.plan.ChannelSensitivity.from_fit` at 0.95, a bound
-            on the channel's error read at each planned step's predicted state, its sampling error
-            at ``gamma = 1`` and its bias besides at a hidden confounder that moves the levers'
-            density by a factor within ``[1/gamma, gamma]``. The held solve and the audit read the
-            same one, and ``gamma`` must then be below ``(3 + sqrt 5)/2``. It needs a
-            least-squares channel on the Euler rates (ADR 0111): an ``"euler"`` fit by adjustment,
-            not an instrument's, whose log moves every direction of the channel. Where the fit
-            gives none, an ``"rk4"`` fit's among them, the radius is the relative one, and a
-            ``WARNING`` record says why (``chc_event="radius"``). ``"relative"``: a share of the
+            and :attr:`RunProvenance.radius` read which one the audit used (ADR 0125).
+            ``"absolute"``: the fit's own sensitivity model,
+            :meth:`chc.plan.ChannelSensitivity.from_fit` at 0.95, a bound on the channel's error
+            read at each planned step's predicted state, its sampling error at ``gamma = 1`` and
+            its bias besides at a hidden confounder that moves the levers' density by a factor
+            within ``[1/gamma, gamma]``. The held solve and the audit read the same one, and
+            ``gamma`` must then be below ``(3 + sqrt 5)/2``. It needs a least-squares channel on
+            the Euler rates (ADR 0111): an ``"euler"`` fit by adjustment, not an instrument's,
+            whose log moves every direction of the channel; asked of a fit that gives none, an
+            ``"rk4"`` fit's among them, it raises. ``"auto"``, the default: the absolute radius
+            where the fit gives one, and the relative one otherwise, an ``INFO`` record naming the
+            fit's refusal (``chc_event="radius"``). ``"relative"``: a share of the
             fitted channel's size at the plan's start, ``(gamma-1)/(gamma+1)`` of it, so at every
             level the set stays within the channel's own size of the estimate, and ``gamma`` and
             ``gamma_star`` are a margin on the estimate, not a level of confounding; ``gamma = 1``
@@ -2035,8 +2038,9 @@ def prescribe(
             neither ``"rk4"`` nor ``"euler"``, a ``tolerance`` that is
             negative or nan, a ``gamma`` below 1 or not finite, which is not a sensitivity level,
             or, under the absolute radius a fit gives, at or past ``(3 + sqrt 5)/2``, where that
-            radius is unbounded, a ``radius`` neither ``"absolute"`` nor ``"relative"``, a panel
-            with no consecutive pair of periods to fit a transition on, a ``cap_per_step``
+            radius is unbounded, a ``radius`` other than ``"auto"``, ``"absolute"`` and
+            ``"relative"``, or ``"absolute"`` on a fit that gives no absolute radius, a panel with
+            no consecutive pair of periods to fit a transition on, a ``cap_per_step``
             on a lever that follows its logged rule or a budget that prices one,
             ``max_levers`` where the log kept a combination of the levers away from zero, an
             ``x0`` that is not one finite value per state, an asserted adjustment set that names
@@ -2108,10 +2112,11 @@ def prescribe(
             f"gamma={gamma} is not a sensitivity level, which is finite and at least 1; a plan "
             "that keeps its barrier at every level reads gamma* = inf"
         )
-    if radius not in ("absolute", "relative"):
+    if radius not in ("auto", "absolute", "relative"):
         raise DecisionError(
-            f"radius={radius!r} is neither 'absolute', the fit's sensitivity model of its channel, "
-            "nor 'relative', a share of the fitted channel's size"
+            f"radius={radius!r} is none of 'auto', the absolute radius where the fit gives one, "
+            "'absolute', the fit's sensitivity model of its channel, and 'relative', a share of "
+            "the fitted channel's size"
         )
     if np.shape(target.value) not in ((), (horizon,)):
         raise DecisionError(
@@ -2310,7 +2315,6 @@ def prescribe(
         max_levers=None if max_levers is None else int(max_levers),
         clusters=clusters,
         nuisance_knots=nuisance_knots,
-        radius=radius,
     )
     persistence = (
         None
@@ -2529,7 +2533,9 @@ def prescribe(
     )
 
     margins = _margins(states, constraints)
-    sensitivity = _sensitivity(fit, gamma) if margins and radius == "absolute" else None
+    sensitivity = (
+        _sensitivity(fit, gamma, radius == "absolute") if margins and radius != "relative" else None
+    )
     held = (
         BarrierConstraint(
             margins,
@@ -2690,6 +2696,7 @@ def prescribe(
         solve_dtype=str(plan.actions.dtype),
         solver_status=plan.solver_status,
         solver_iterations=plan.solver_iterations,
+        radius=None if not margins else "relative" if sensitivity is None else "absolute",
     )
 
     _log.info(
@@ -3985,17 +3992,24 @@ def _cost(
     return _RuledCost(Q=q, R=r, Qf=q, x_target=goal, rule=rule)
 
 
-def _sensitivity(fit: CausalDynamicsFit, gamma: float) -> ChannelSensitivity | None:
-    """The fit's absolute radius on its channel at 0.95, or None where the fit gives none, which a
-    ``WARNING`` record names: the barrier then reads the relative radius.
+def _sensitivity(fit: CausalDynamicsFit, gamma: float, required: bool) -> ChannelSensitivity | None:
+    """The fit's absolute radius on its channel at 0.95, or None where the fit gives none and none
+    is ``required``, which an ``INFO`` record names: the barrier then reads the relative radius.
 
     Raises:
-        DecisionError: on a ``gamma`` at or past ``(3 + sqrt 5)/2``, where the radius is unbounded.
+        DecisionError: on a ``gamma`` at or past ``(3 + sqrt 5)/2``, where the radius is unbounded;
+            or where one is ``required`` and the fit gives none.
     """
     try:
         sensitivity = ChannelSensitivity.from_fit(fit)
     except ValueError as refusal:  # channel_region's premises, which only it reads
-        _log.warning(
+        if required:
+            raise DecisionError(
+                f"radius='absolute', but the fit gives no absolute radius on its channel: "
+                f"{refusal}. Fit with integrator='euler', or pass radius='relative' for a margin "
+                "on a share of the fitted channel"
+            ) from refusal
+        _log.info(
             "the barrier's radius is relative, a share of the fitted channel: the fit gives no "
             "absolute radius on its channel (%s)",
             refusal,
