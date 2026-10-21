@@ -16,7 +16,7 @@ from dataclasses import replace
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import assume, given, settings
+from hypothesis import assume, example, given, settings
 from hypothesis import strategies as st
 from scipy import integrate
 from scipy.optimize import linprog, minimize
@@ -313,6 +313,8 @@ def test_lipschitz_bound_covers_the_gap_at_a_tiny_rate() -> None:
     eps=st.floats(1e-3, 1.0),
     horizon=st.integers(1, 200),
 )
+@example(rate=1.5, spin=5.960464477539063e-08, share=0.5, eps=1.0, horizon=2)
+@example(rate=1.0, spin=7.662922143936157e-06, share=0.5, eps=1.0, horizon=3)
 def test_contractive_bound_is_attained_on_a_rotating_contraction(
     rate, spin, share, eps, horizon
 ) -> None:
@@ -320,6 +322,9 @@ def test_contractive_bound_is_attained_on_a_rotating_contraction(
     x' = [[-c, w], [-w, -c]] x, log-norm -c and Lipschitz sqrt(c^2 + w^2), an Euler rollout pushed
     by eps along its own gap reaches eps dt (1 - q^H) / (1 - q), below eps dt / (1 - q)."""
     lipschitz = math.hypot(rate, spin)
+    # the rounded L carries an error of half an ulp of c, which swamps L^2 - c^2 = w^2 when w << c
+    # (20 % at c = 1.5, w = 6e-8): spin the field at the w that L states exactly
+    spin = math.sqrt((lipschitz - rate) * (lipschitz + rate))
     dt = share * 2.0 * rate / lipschitz**2
     step = np.eye(2) + dt * np.array([[-rate, spin], [-spin, -rate]])
     gap = np.zeros(2)
