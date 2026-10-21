@@ -1,5 +1,6 @@
 """The measurements behind docs/adr/0011-designing-an-experiment.md. Regret and coverage only, no
-wall time.
+wall time. Every action realised is the Bayes one, under the prior now and the posterior after, as
+in the design.
 
 The market is the one in ``tests/test_experiment.py``: four zones on a ring, each lever pulling 15%
 of its effect from each neighbour, levers boxed to ``[0, 1.2]``. Every experiment is realised here
@@ -108,16 +109,23 @@ def _worlds(prior: ChannelPrior, replicates: int, rng: np.random.Generator) -> n
     )
 
 
+def _posterior(prior: ChannelPrior, units: np.ndarray, estimate: np.ndarray) -> ChannelPrior:
+    information = np.diag(units * EXPERIMENT.information)
+    covariance = np.linalg.inv(np.linalg.inv(prior.covariance) + information)
+    return ChannelPrior(_posterior_mean(prior, units, estimate), 0.5 * (covariance + covariance.T))
+
+
 def _realised(decision, prior, units, uses, truths, rng) -> dict:
-    """Regret of acting on the prior mean, and on the posterior mean after ``units``, on ``truths``;
-    ``rng`` draws only the units, so rules realised on the same truths share their worlds."""
-    acting = decision.solve(prior.mean)
+    """Regret of the Bayes action under the prior, and under the posterior after ``units``, on
+    ``truths``; ``rng`` draws only the units, so rules realised on the same truths share their
+    worlds."""
+    acting = decision.bayes_action(prior)
     now, after = [], []
     for truth in truths:
         now.append(uses * decision.regret(acting, truth))
         if units.sum():
-            posterior = _posterior_mean(prior, units, _estimate(truth, units, rng))
-            after.append(uses * decision.regret(decision.solve(posterior), truth))
+            posterior = _posterior(prior, units, _estimate(truth, units, rng))
+            after.append(uses * decision.regret(decision.bayes_action(posterior), truth))
         else:
             after.append(now[-1])
     return {"now": _mean_and_half_width(now), "after": _mean_and_half_width(after)}
@@ -225,7 +233,7 @@ def _gate(replicates: int) -> dict:
         design = design_experiment(
             decision, ChannelPrior(B_TRUE, variance), EXPERIMENT, 0.0, draws=20_000, seed=1
         )
-        acting = decision.solve(B_TRUE)
+        acting = decision.bayes_action(ChannelPrior(B_TRUE, variance))
         truths = B_TRUE + sd * rng.standard_normal((replicates, K))
         prior_hits = sum(decision.regret(acting, t) <= design.regret_bound for t in truths)
         # a fixed truth: the estimate is drawn around it and the prior is centred on the estimate
@@ -244,7 +252,9 @@ def _gate(replicates: int) -> dict:
             if design.verdict != "deploy":
                 continue
             scored += 1
-            regret = decision.regret(decision.solve(estimate), B_TRUE)
+            regret = decision.regret(
+                decision.bayes_action(ChannelPrior(estimate, variance)), B_TRUE
+            )
             fixed_hits += regret <= design.regret_bound
         out[f"sd {sd}"] = {
             "drawn_from_prior": {

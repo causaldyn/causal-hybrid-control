@@ -7,7 +7,7 @@
            zones with every entry a symbol; the Bayes action is the certainty-equivalent one with
            R raised by (C' Q C) o S, positive semidefinite by Schur's product theorem.
 
-   Run: timeout 120 maxima --very-quiet -b validation/experiment_bayes_action.mac */
+   Run: timeout 120 maxima --very-quiet -Q -b validation/experiment_bayes_action.mac */
 
 display2d : false$
 
@@ -30,3 +30,33 @@ step1 : ratsimp(expected(expand(J(b1, b2)))
                 - (J(m1, m2) + (transpose(u) . matrix([H[1, 1] * s11, H[1, 2] * s12],
                                                       [H[2, 1] * s12, H[2, 2] * s22]) . u) / 2))$
 print("STEP 1 E J less J(u; m) + u'((C'QC) o S) u / 2 (expect 0):", step1)$
+
+/* STEP 2  The regret now at a knife edge, one zone, x = b u - e, J = q x^2 / 2 + r u^2 / 2, where
+           the prior mean m = sqrt(r / q) makes u*(b) = q e b / (q b^2 + r) stationary: to
+           fourth order in the prior sd s the certainty-equivalent action loses
+           3 e^2 q^3 s^4 / (16 r^2), and the Bayes action q e m / (q (m^2 + s^2) + r) two thirds
+           of it, e^2 q^3 s^4 / (8 r^2). The regret of u at b is (q b^2 + r) (u - u*(b))^2 / 2,
+           exactly; b = m + s z, z standard normal, and E z^(2k) = (2k)! / (2^k k!). */
+
+kill(m, z)$
+assume(q > 0, r > 0, e > 0, s > 0)$
+edge : sqrt(r / q)$
+ustar(b) := q * e * b / (q * b^2 + r)$
+regret(u, b) := (q * b^2 + r) / 2 * (u - ustar(b))^2$
+gauss(p) := block([t : expand(p)], sum(coeff(t, z, 2 * k) * (2 * k)! / (2^k * k!), k, 0, 4))$
+fourth(u) := ratsimp(gauss(expand(ratsimp(taylor(regret(u, edge + s * z), s, 0, 4)))))$
+ce : fourth(ustar(edge))$
+bayes : fourth(q * e * edge / (q * (edge^2 + s^2) + r))$
+print("STEP 2 CE regret less 3 e^2 q^3 s^4 / (16 r^2) (expect 0):",
+      ratsimp(ce - 3 * e^2 * q^3 * s^4 / (16 * r^2)))$
+print("STEP 2 Bayes regret less e^2 q^3 s^4 / (8 r^2) (expect 0):",
+      ratsimp(bayes - e^2 * q^3 * s^4 / (8 * r^2)))$
+
+/* and the series against the exact expectation, by quadrature at q = 1, r = 1/2, e = 1, s = 1/20:
+   the relative gap is of order 10 q s^2 / r = 0.05 */
+point : [q = 1, r = 1/2, e = 1, s = 1/20]$
+integrand : subst(point, regret(q * e * edge / (q * (edge^2 + s^2) + r), edge + s * z))
+            * exp(-z^2 / 2) / sqrt(2 * %pi)$
+bayes_exact : first(quad_qagi(integrand, z, minf, inf))$
+gap : float(bayes_exact / subst(point, e^2 * q^3 * s^4 / (8 * r^2)) - 1)$
+print("STEP 2 exact over the s^4 law, less 1 (expect |.| < 0.05):", gap)$
