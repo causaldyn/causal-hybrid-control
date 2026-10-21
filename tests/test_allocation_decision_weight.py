@@ -267,6 +267,23 @@ def test_the_margin_in_standard_deviations_reads_the_covariance() -> None:
         )
         with pytest.raises(ValueError, match="covariance has shape"):
             weight.margin_sds([[1.0]])
+        # a nan or a negative variance read as an infinite margin, with a warning from the root
+        size = len(weight.parameters)
+        for bad, why in [
+            (np.full((size, size), np.nan), "not finite"),
+            (-np.eye(size), "not positive semidefinite"),
+            (np.eye(size) + np.triu(np.ones((size, size)), 1), "not symmetric"),
+        ]:
+            for reading in (weight.margin_sds, weight.expected_regret):
+                with pytest.raises(ValueError, match=why):
+                    reading(bad)
+        # a semidefinite covariance that the errors leave in one direction is read as given
+        direction = gradient / np.linalg.norm(gradient)
+        np.testing.assert_allclose(
+            weight.margin_sds(np.outer(direction, direction)),
+            weight.margin / np.linalg.norm(gradient),
+            rtol=1e-12,
+        )
         point = decision_weight(
             CHANNELS, BUDGET, PERIODS, lower=[30.0, 20.0, 25.0], upper=box["upper"], history=HISTORY
         )
