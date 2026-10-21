@@ -37,12 +37,17 @@ What the guarantee needs, and the gate cannot check:
   :func:`chc.evaluation.evaluate_plan`. Without blocks the gate tests for carryover of order up to
   ``GateConfig.carryover_lags``, 5 by default: the logged actions are randomised, so a reward that
   correlates with the score ``(candidate - baseline) / logged`` of a decision ``k`` back reads that
-  decision. It logs one warning per zone, ``gate_carryover``, naming the lag and the block design,
-  and moves no verdict. Over 200 paths of 6000 decisions, an action that pays 0.4 now and costs
-  0.6 one, three or five decisions on was warned of on every path, at a median of 150 decisions,
-  and deployed on every path as before; with no late cost, or none at all, or a reward common to
-  both actions that persists as an AR(0.95), it warned on 0.020 to 0.050 of them. A carryover
-  past the lags read is not seen: at seven decisions on, 0.040.
+  decision. The check reads within each of the zone's modes, shadow, experiment and deployed, and
+  not across a switch between them. It logs one warning per zone, ``gate_carryover``, naming the
+  lag and the block design, and moves no verdict. Over 200 paths of 6000 decisions, an action that
+  pays 0.4 now and costs 0.6 one, three or five decisions on was warned of on every path, at a
+  median of 150 decisions, and deployed on every path as before; with no late cost, or none at
+  all, or a reward common to both actions that persists as an AR(0.95), it warned on 0.040 to
+  0.055 of them, and on 0.020 with a candidate that always takes the action and is deployed. A
+  carryover past the lags read is not seen: at seven decisions on, 0.035. A candidate that
+  takes one action for certain logs no randomised action once deployed, so the check reads only
+  the decisions before: a cost of 0.3 one or three decisions on was warned of on 0.67 and 0.70 of
+  100 paths.
 * **Rewards in** ``[0, 1]``.
 * **A contrast that holds still.** A DEPLOY rejects the null that every decision's contrast, given
   the past, is at most ``delta``: it says the candidate beat the baseline over the decisions read,
@@ -194,6 +199,8 @@ class GateConfig:
             in ``[0, 1]`` can beat, a ``block_length`` below 1, a ``burn_in`` that is negative,
             leaves no period of a block to read, or is set without a ``block_length``, or a
             negative ``carryover_lags``.
+        TypeError: on a ``horizon``, ``block_length``, ``burn_in`` or ``carryover_lags`` that is
+            not a whole number: a float, or a bool.
     """
 
     delta: float
@@ -210,6 +217,12 @@ class GateConfig:
     carryover_lags: int = 5
 
     def __post_init__(self) -> None:
+        for name in ("horizon", "burn_in", "carryover_lags") + (
+            ("block_length",) if self.block_length is not None else ()
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int | np.integer):
+                raise TypeError(f"{name} must be a whole number, got {value!r}")
         for name in ("delta", "delta_harm"):
             value = getattr(self, name)
             if not 0.0 <= value < 1.0:
@@ -1345,48 +1358,79 @@ class _Evidence:
 class _Carryover:
     """A score test of a reward on the actions ``1 .. lags`` decisions back.
 
-    A decision's score ``s = (candidate - baseline) / logged`` has mean zero given the past, since
-    the action is drawn from the logged law. Where no reward depends on an earlier action, the
-    score of decision ``t - k`` is uncorrelated with the reward at ``t``, so each lag's sum of
-    ``s_(t-k) (r_t - r_bar)``, over its square root of summed squares, is near a standard normal.
-    The test reads after ``_CARRYOVER_FIRST`` decisions and at every doubling after, the ``m``-th
-    read at level ``_CARRYOVER_LEVEL / (m (m + 1))`` split over the lags, so a zone's false warnings
-    over its whole run stay within ``_CARRYOVER_LEVEL`` as far as the normal law holds. It warns
-    once."""
+    A decision's score ``s = (candidate - baseline) / logged`` is fixed by the logged law of its
+    mode: given the past, it does not depend on any later reward unless that reward reads the
+    action. Where no reward depends on an earlier action, the score of decision ``t - k`` is
+    uncorrelated with the reward at ``t``. The test reads that covariance within each mode, with
+    the score and the reward centred on the mode's own means, and drops a pair whose two decisions
+    were logged in different modes: a mode's scores need not have mean zero (a deterministic
+    candidate, once deployed, scores ``1 - baseline`` on every decision), and its rewards have their
+    own mean, so a covariance pooled across modes reads the switch as carryover. Each lag's sum of
+    ``(s_(t-k) - s_bar) (r_t - r_bar)`` over the modes, over the square root of the summed squares,
+    is near a standard normal. The test reads after ``_CARRYOVER_FIRST`` pairs and at every
+    doubling after, the ``m``-th read at level ``_CARRYOVER_LEVEL / (m (m + 1))`` split over the
+    lags, so a zone's false warnings over its whole run stay within ``_CARRYOVER_LEVEL`` as far as
+    the normal law holds. It warns once."""
+
+    _MODES: ClassVar[tuple[GateMode, ...]] = ("shadow", "experiment", "deployed")
 
     def __init__(self, lags: int) -> None:
         self.lags = lags
         self.scores = np.zeros(0)  # the last ``lags`` scores, oldest first
-        # per lag: pairs, sum r, sum s, sum s r, sum s^2, sum s^2 r, sum s^2 r^2
-        self.sums = np.zeros((7, lags))
+        self.modes = np.zeros(0, dtype=np.int64)  # and the modes they were logged in
+        # per mode and lag, sum s^i r^j at [i, j], s and r taken from the mode's first decision so
+        # that a constant score sums to zero exactly
+        self.sums = np.zeros((len(self._MODES), 3, 3, lags))
+        self.origin = np.full((len(self._MODES), 2), np.nan)
         self.next_read = _CARRYOVER_FIRST
         self.reads = 0
         self.warned = False
 
-    def add(self, scores: _Array, rewards: _Array) -> tuple[int, float, float] | None:
-        """Add a batch, and return the lag, the statistic and the p-value of the most significant
-        lag where this read rejects; ``None`` otherwise."""
+    def add(
+        self, scores: _Array, rewards: _Array, mode: GateMode
+    ) -> tuple[int, float, float] | None:
+        """Add a batch logged in ``mode``, and return the lag, the statistic and the p-value of the
+        most significant lag where this read rejects; ``None`` otherwise."""
+        code = self._MODES.index(mode)
+        if rewards.size and np.isnan(self.origin[code, 0]):
+            self.origin[code] = scores[0], rewards[0]
         joined = np.concatenate([self.scores, scores])
+        modes = np.concatenate([self.modes, np.full(scores.size, code)])
         held = self.scores.size
+        powers = np.arange(3)
         for k in range(1, self.lags + 1):
             first = max(0, k - held)
             if first >= rewards.size:
                 continue
-            s, r = joined[held + first - k : held + rewards.size - k], rewards[first:]
-            ss = s * s
-            self.sums[:, k - 1] += (r.size, r.sum(), s.sum(), s @ r, ss.sum(), ss @ r, ss @ (r * r))
+            ends = slice(held + first - k, held + rewards.size - k)
+            same = modes[ends] == code
+            s = joined[ends][same] - self.origin[code, 0]
+            r = rewards[first:][same] - self.origin[code, 1]
+            self.sums[code, :, :, k - 1] += np.power.outer(s, powers).T @ np.power.outer(r, powers)
         self.scores = joined[-self.lags :]
-        pairs = self.sums[0, 0]
+        self.modes = modes[-self.lags :]
+        pairs = self.sums[:, 0, 0, 0].sum()
         if self.warned or pairs < self.next_read:
             return None
         while self.next_read <= pairs:
             self.next_read *= 2
         self.reads += 1
-        count, total, s_sum, sr, ss_sum, ssr, ssrr = self.sums
-        mean = total / count
-        variance = ssrr - 2.0 * mean * ssr + mean * mean * ss_sum
+        m = self.sums
+        count = m[:, 0, 0]
         with np.errstate(divide="ignore", invalid="ignore"):
-            z = np.where(variance > 0.0, (sr - mean * s_sum) / np.sqrt(variance), 0.0)
+            s_bar = np.where(count > 0, m[:, 1, 0] / count, 0.0)
+            r_bar = np.where(count > 0, m[:, 0, 1] / count, 0.0)
+        covariance = (m[:, 1, 1] - count * s_bar * r_bar).sum(axis=0)
+        # sum (s - s_bar)^2 (r - r_bar)^2, expanded in the raw sums
+        weights = np.array([1.0, -2.0, 1.0])
+        s_terms = weights[:, None, None] * s_bar[None] ** np.array([0, 1, 2])[:, None, None]
+        r_terms = weights[:, None, None] * r_bar[None] ** np.array([0, 1, 2])[:, None, None]
+        variance = np.zeros(self.lags)
+        for i in range(3):
+            for j in range(3):
+                variance += (s_terms[i] * r_terms[j] * m[:, 2 - i, 2 - j]).sum(axis=0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            z = np.where(variance > 0.0, covariance / np.sqrt(variance), 0.0)
         p = 2.0 * special.ndtr(-np.abs(z))
         lag = int(np.argmin(p))
         if p[lag] >= _CARRYOVER_LEVEL / (self.reads * (self.reads + 1) * self.lags):
@@ -1508,7 +1552,7 @@ class DeploymentGate:
             zone.decisions += given[z].reward.size
             w_new, w_base, r = b.candidate / b.logged, b.baseline / b.logged, b.reward
             if zone.carryover is not None:
-                self._check_carryover(z, zone, zone.carryover.add(w_new - w_base, r))
+                self._check_carryover(z, zone, zone.carryover.add(w_new - w_base, r, zone.mode))
             if zone.mode == "deployed":
                 zone.rollback.add(((w_base - w_new) * r - cfg.delta_harm) / (1 + cfg.delta_harm))
                 continue
