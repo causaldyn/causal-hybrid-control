@@ -1046,6 +1046,37 @@ def test_invalid_specifications_raise(build, match):
         build()
 
 
+@pytest.mark.parametrize(
+    ("build", "match"),
+    [
+        (lambda: Polynomial(1, True), "discount must be a real number, got True"),
+        (lambda: Regression(1, np.True_), "discount must be a real number, got np.True_"),
+        (lambda: Polynomial(1, "0.9"), "discount must be a real number, got '0.9'"),
+        (lambda: Polynomial(1, 5e-324), r"discount must be in \(0, 1\] with \(1 - discount\)"),
+        (lambda: Seasonal(True, (1,), 0.9), "period must be a real number"),
+        (lambda: Prior(np.zeros(1), np.eye(1), True, 1.0), "scale must be a real number"),
+        (lambda: Prior(np.zeros(1), np.eye(1), 1.0, np.True_), "dof must be a real number"),
+        (
+            lambda: DynamicLinearModel(
+                (Polynomial(1, 0.9),), _prior(1, dof=3.0), variance_discount=True
+            ),
+            "variance_discount must be a real number",
+        ),
+    ],
+)
+def test_a_boolean_text_or_subnormal_discount_or_scale_is_refused(build, match):
+    """``True`` read as 1.0, a discount of 1 or a scale of 1, and a discount of ``5e-324`` passed
+    the range check while its rate ``(1 - delta) / delta`` overflowed to ``inf``, which the
+    evolution multiplied by a zero covariance entry."""
+    with pytest.raises(ValueError, match=match):
+        build()
+
+
+@pytest.mark.parametrize("value", [np.float32(0.9), np.array(0.9), np.int64(1), 1, 0.9])
+def test_a_numpy_real_or_a_python_number_is_a_discount(value):
+    assert Polynomial(1, value).discount == float(value)
+
+
 @pytest.mark.parametrize("units", [1e-300, 1e-14, 1e-12, 1e-6, 1.0, 1e6])
 def test_a_covariance_that_is_not_symmetric_is_refused_in_any_units(units):
     """The tolerance on the asymmetry was 1e-12 of the largest entry, or 1e-12 itself where that

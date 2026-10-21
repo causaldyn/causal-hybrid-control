@@ -144,6 +144,7 @@ from __future__ import annotations
 
 import logging
 import math
+import numbers
 import operator
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -191,10 +192,24 @@ def _count(value: object, name: str, least: int = 1, why: str = "") -> int:
     return number
 
 
-def _discount(value: float, name: str = "discount") -> float:
-    delta = float(value)
-    if not 0.0 < delta <= 1.0:
-        raise ValueError(f"{name} must be in (0, 1], got {value}")
+def _real(value: object, name: str) -> float:
+    """``value`` as a ``float`` where it is a real number, a NumPy one or a 0-d array of one too,
+    and not a boolean or text."""
+    kind = getattr(getattr(value, "dtype", None), "kind", None)
+    real = isinstance(value, numbers.Real) or (
+        kind in ("i", "u", "f") and getattr(value, "ndim", None) == 0
+    )
+    if isinstance(value, bool) or kind == "b" or not real:
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    return float(value)  # ty: ignore[invalid-argument-type]
+
+
+def _discount(value: object, name: str = "discount") -> float:
+    """A discount in ``(0, 1]`` whose rate ``(1 - delta) / delta`` is finite: below about
+    ``5.6e-309`` the rate overflows and the evolution reads ``inf * 0``."""
+    delta = _real(value, name)
+    if not (0.0 < delta <= 1.0 and math.isfinite((1.0 - delta) / delta)):
+        raise ValueError(f"{name} must be in (0, 1] with (1 - {name}) / {name} finite, got {value}")
     return delta
 
 
@@ -245,7 +260,7 @@ class Seasonal:
     discount: float
 
     def __post_init__(self) -> None:
-        period = float(self.period)
+        period = _real(self.period, "period")
         if not (math.isfinite(period) and period > 1.0):
             raise ValueError(f"period must be finite and above 1, got {self.period}")
         given = tuple(self.harmonics)
@@ -365,7 +380,7 @@ class Prior:
             np.linalg.cholesky(_sym(cov))
         except np.linalg.LinAlgError:
             raise ValueError("covariance is not positive definite") from None
-        scale, dof = float(self.scale), float(self.dof)
+        scale, dof = _real(self.scale, "scale"), _real(self.dof, "dof")
         if not (math.isfinite(scale) and scale > 0.0):
             raise ValueError(f"scale must be positive and finite, got {self.scale}")
         if not dof > 0.0:
