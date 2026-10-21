@@ -1,6 +1,8 @@
 # ADR 0011 — The experiment a decision needs
 
-**Status:** proposed, 2026-09-28.
+**Status:** proposed, 2026-09-28. Amended by ADR 0124, 2026-10-21: both arms act on the Bayes
+action, and Monte Carlo chooses the allocation where the local model is flagged or its experiment
+does not pay.
 
 ## Context
 

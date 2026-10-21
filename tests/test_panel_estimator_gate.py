@@ -98,3 +98,11 @@ def test_the_gate_against_a_real_estimator() -> None:
     # the finding, recorded rather than gated: Psi understates the design gain
     assert gate.functional_is_conservative
     assert gate.worst_shortfall > 0.0
+
+
+@pytest.mark.parametrize(("draws", "bootstrap"), [(2, 2000), (9, 2000), (300, 2), (300, 39)])
+def test_too_few_draws_or_resamples_are_refused(draws: int, bootstrap: int) -> None:
+    """At 2 draws a resample repeats one draw with probability 1/2, its variance ratio is 0/0, and
+    the interval read nan and ``covered`` False, as if the prediction had been refuted."""
+    with pytest.raises(ValueError, match="draws must be at least 10 and bootstrap at least 40"):
+        panel_estimator_certificate(cluster_counts=(2,), draws=draws, bootstrap=bootstrap)

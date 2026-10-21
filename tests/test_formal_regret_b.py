@@ -1700,3 +1700,57 @@ def test_minimax_exploration_burst_attains_and_taper_pays_sqrt_two():
     assert curve.burst_over_floor == pytest.approx(1.0, abs=1e-4)
     assert curve.taper_over_floor == pytest.approx(math.sqrt(2.0), abs=5e-3)
     assert curve.eta_slope == pytest.approx(-0.5, rel=1e-12, abs=0.0)
+
+
+@pytest.mark.parametrize("rr", [0.5, 0.7, 3.0])
+def test_information_certificate_reads_the_knife_edge_at_the_root_of_rr(rr):
+    """``b = sqrt(rr)`` squares back to ``rr`` only up to rounding: at ``rr = 0.5`` the exact
+    test missed the edge by 1.1e-16 and read a rate of -0.964 and a Hodges ratio of 0.0 off a
+    coefficient of 1e-33, where the documented reading is nan."""
+    b = math.sqrt(rr)
+    assert b * b != rr
+    curve = R.information_lower_bound_certificate(b=b, rr=rr, sample_sizes=(50, 100), n_seeds=2)
+    assert np.all(curve.cramer_rao_floor == 0.0)
+    assert math.isnan(curve.rate_slope)
+    assert math.isnan(curve.hodges_pointwise_ratio)
+
+
+def _bayes_regret(b0, sd, info, rr, nodes=80):
+    """The regret of the Bayes action for the weighted loss ``(b^2+rr)(u - u*(b))^2``, prior
+    ``N(b0, sd^2)``, one Gaussian reading of ``b`` of precision ``info``: by Gauss-Hermite
+    quadrature over the truth, the reading and the conjugate posterior."""
+    x, w = np.polynomial.hermite_e.hermegauss(nodes)
+    w = w / w.sum()
+    post_var = 1.0 / (1.0 / sd**2 + info)
+    total = 0.0
+    for xi, wi in zip(x, w, strict=True):
+        b = b0 + sd * xi
+        reading = b + x / math.sqrt(info)
+        post = post_var * (b0 / sd**2 + info * reading)[:, None] + math.sqrt(post_var) * x
+        action = -(post @ w) / ((post**2 + rr) @ w)
+        total += wi * float(w @ ((b * b + rr) * (action + b / (b * b + rr)) ** 2))
+    return total
+
+
+def test_the_van_trees_floor_on_regret_is_local_at_the_curvature_of_one_point():
+    """The action floor times ``(b^2+rr)`` at one point is not a bound on the regret: a Bayes
+    estimator, which weighs each draw's error by that draw's curvature, beats it -- by 0.80 at a
+    prior ``N(3, 1)``, ``rr = 0.5`` and one unit of information, and by 0.96 at the certificate's
+    own prior width 0.25. Times the least curvature, ``rr``, it is one."""
+    x, w = np.polynomial.hermite_e.hermegauss(80)
+    w = w / w.sum()
+
+    def floor(b0, sd, info, rr):
+        b = b0 + sd * x
+        return float(w @ ((b * b - rr) / (rr + b * b) ** 2)) ** 2 / (info + 1.0 / sd**2)
+
+    rr = 0.5
+    wide = _bayes_regret(3.0, 1.0, 1.0, rr) / floor(3.0, 1.0, 1.0, rr)
+    assert wide == pytest.approx(0.80 * (9.0 + rr), abs=0.01 * (9.0 + rr))
+    # the certificate's own floor: prior sd 0.25, information n V_exp / sigma^2 = 4 * 1 / 4 = 1
+    curve = R.information_lower_bound_certificate(
+        b=3.0, rr=rr, sigma=2.0, alpha=0.0, sample_sizes=(2, 4), n_seeds=200
+    )
+    assert curve.van_trees_action_floor == pytest.approx(floor(3.0, 0.25, 1.0, rr), rel=1e-2)
+    bayes = _bayes_regret(3.0, 0.25, 1.0, rr)
+    assert rr * curve.van_trees_action_floor <= bayes < (9.0 + rr) * curve.van_trees_action_floor

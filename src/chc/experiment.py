@@ -6,8 +6,9 @@ the zones' states through its own channel ``b_k``, and a known coupling spreads 
 
     x = x0 + coupling diag(b) u,   J(u; b) = (x - x*)' Q (x - x*) / 2 + u' R u / 2,   lo <= u <= hi.
 
-The channels are known up to a Gaussian posterior (:class:`ChannelPrior`), and acting now on its
-mean costs regret: what the action loses against the one that knew ``b``. An experiment
+The channels are known up to a Gaussian posterior (:class:`ChannelPrior`), and acting now costs
+regret: what the best action under it, :meth:`ZoneDecision.bayes_action`, loses against the one
+that knew ``b``. An experiment
 (:class:`ZoneExperiment`) sets zone ``k``'s lever to ``+probe_k`` or ``-probe_k`` at random on
 ``n_k`` units, each costing ``unit_cost_k`` and each adding ``probe_k^2 / noise_sd_k^2`` to the
 precision of ``b_k``. :func:`design_experiment` chooses the ``n_k`` that minimise the regret left
@@ -34,23 +35,29 @@ The local model it optimises (the lab's value-of-information thread, independent
   ``noise_sd_k sqrt(W_kk / unit_cost_k) / probe_k``; on the lab's four-zone market classical Neyman,
   which ignores ``W``, left 1.5 times its regret.
 
-The action, before the experiment and after it, is the certainty-equivalent one: the best action
-for the mean channel. It is not the best action under the posterior. The expected cost under
-``b ~ N(m, S)`` is ``J(u; m) + u' ((coupling' Q coupling) o S) u / 2``, ``o`` the elementwise
-product (``validation/experiment_bayes_action.mac``), so the Bayes action is the
-certainty-equivalent one with the action weight raised by ``(coupling' Q coupling) o S``, and it
-holds back where the channel is uncertain. Where the prior is wide it can beat both: on one zone,
-``Q = 1``, ``R = 0.05``, a target 1 from a baseline 0 and ``b ~ N(1, 0.6^2)``, acting now on the
-mean lost 0.12 and the Bayes action 0.079, less than the 0.100 that the recommended experiment's
-regret after and spend came to. So ``"experiment"`` says experimenting beats acting on the mean,
-not that it beats acting well now.
+The action, before the experiment and after it, is the Bayes one: the best action under the prior
+now and under the posterior after. The expected cost under ``b ~ N(m, S)`` is
+``J(u; m) + u' ((coupling' Q coupling) o S) u / 2``, ``o`` the elementwise product
+(``validation/experiment_bayes_action.mac``), so the Bayes action is the certainty-equivalent one
+with the action weight raised by ``(coupling' Q coupling) o S``, and it holds back where the
+channel is uncertain. The posterior's covariance does not depend on what the experiment reads, so
+neither does the raise after it. Against the certainty-equivalent action an experiment was
+credited with what acting well now would have saved without it: on one zone, ``Q = 1``,
+``R = 0.1``, a target 1 from a baseline 0 and ``b ~ N(0.5, 1)``, acting on the mean lost 1.01 and
+the Bayes action 0.27; at a unit cost of 0.03 the experiment recommended against the first, worth
+0.63 there, left 0.35 of regret and spent 0.03, and so lost 0.11 against the second. So
+``"experiment"`` says experimenting beats acting well now.
 
 What the local model gets wrong, and what is done about it:
 
 * **A wide prior.** At a prior sd of 37-50% of ``b`` the lab's local model put the regret after the
   experiment 32% low. The numbers reported are Monte Carlo's whatever the model says;
-  ``model_gap`` is how far the model was from them, and a gap above 25% is logged as a warning,
-  because the allocation was optimised on the model.
+  ``model_gap`` is how far the model was from them, and a gap above 25% is logged as a warning.
+  The model then only proposes: at every spend from the budget down by halves to one unit's, its
+  best experiment that spends it, and none; Monte Carlo scores each on draws of its own and the
+  best is reported on the main draws. The same search runs where the model's experiment does not
+  pay, which the model read at that one allocation only: on one zone, ``R = 0.1``,
+  ``b ~ N(0.5, 1)`` and a unit costing 0.07, it chose none, and one unit was worth 0.033.
 * **A channel whose sign is unknown.** When a zone that matters stays within two posterior standard
   deviations of zero after the experiment the budget buys, and the experiment does not pay, the
   verdict is ``"abstain"``: the sign decides which way to act.
@@ -65,6 +72,7 @@ how many units in which zones identifying it is worth, or ``"abstain"`` when not
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 from collections.abc import Callable
@@ -86,6 +94,7 @@ _SIGNED = 2.0  # a channel's sign is known once its mean is this many posterior 
 _RELEVANT = 1e-3  # a zone matters when its decision weight is this share of the largest
 _GAP_WARNING = 0.25
 _MIN_DRAWS = 100
+_SEARCH_DRAWS = 1000  # draws per allocation when Monte Carlo searches the allocations
 _Z95 = 1.959963984540054
 
 
@@ -207,6 +216,26 @@ class ZoneDecision:
         b = _vector(b, "b", self.zones)
         _finite(b, "b")
         return self.cost(u, b) - _cost(self, _solve(self, b).action, b)
+
+    def bayes_action(self, prior: ChannelPrior) -> _Array:
+        """The best action, on the box, for channels known only as ``prior``: the action that
+        minimises the expected cost ``J(u; m) + u' ((coupling' Q coupling) o S) u / 2``
+        (``validation/experiment_bayes_action.mac``), the certainty-equivalent one with the action
+        weight raised by ``(coupling' Q coupling) o S``.
+
+        Raises:
+            ValueError: on a prior whose length is not the decision's zones.
+        """
+        if prior.mean.size != self.zones:
+            raise ValueError(f"the decision has {self.zones} zones, the prior {prior.mean.size}")
+        return _solve(_cautious(self, prior.covariance), prior.mean).action
+
+
+def _cautious(d: ZoneDecision, covariance: _Array) -> ZoneDecision:
+    """``d`` with its action weight raised by ``(coupling' Q coupling) o covariance``: its
+    certainty-equivalent action at the mean of ``b ~ N(mean, covariance)`` is the Bayes action."""
+    raised = d.action_weight + (d.coupling.T @ d.state_weight @ d.coupling) * covariance
+    return dataclasses.replace(d, action_weight=0.5 * (raised + raised.T))
 
 
 def _cost(d: ZoneDecision, u: _Array, b: _Array) -> float:
@@ -363,9 +392,9 @@ class PinnedZone:
 class ExperimentDesign:
     """What :func:`design_experiment` recommends, and the numbers behind it.
 
-    The regrets are expectations over the prior, times ``uses``: ``regret_now`` of acting on the
-    prior mean, ``regret_after`` of acting on the posterior mean once ``sample_sizes`` units have
-    run, each the certainty-equivalent action and not the Bayes one (see :mod:`chc.experiment`).
+    The regrets are expectations over the prior, times ``uses``: ``regret_now`` of the Bayes
+    action under the prior, :meth:`ZoneDecision.bayes_action`, and ``regret_after`` of the Bayes
+    action under the posterior once ``sample_sizes`` units have run (see :mod:`chc.experiment`).
     Both are Monte Carlo's, over draws of the channels with the decision re-solved on every draw,
     and ``error`` is a half-width that holds their expected difference with probability at least
     0.95: the larger side of Hall's (1992) skewness-corrected interval, since the difference is
@@ -375,9 +404,10 @@ class ExperimentDesign:
     rank ``ceil(level (draws + 1))``, which a fresh draw stays at or below with probability at
     least ``level`` at any number of draws, and ``inf`` where ``draws`` is below
     ``level / (1 - level)``, too few to show it.
-    ``model_gap`` is the local model's largest relative miss against the two Monte Carlo regrets,
-    and the allocation was optimised on that model. ``weights`` is the prior-averaged decision
-    weight ``W``.
+    ``model_gap`` is the local model's largest relative miss against the two Monte Carlo regrets;
+    above 25%, or where its experiment does not pay, the allocation is the best Monte Carlo
+    scored of the model's proposals, and ``reason`` says which. ``weights`` is the prior-averaged
+    decision weight ``W``.
     """
 
     verdict: DesignVerdict
@@ -478,15 +508,18 @@ def _allocate(
     start: _Array,
     unit_cost: _Array,
     budget: float,
+    *,
+    price: float = 1.0,
 ) -> _Array:
-    """Minimise ``risk(n) + unit_cost . n`` over ``n >= 0`` with ``unit_cost . n <= budget``, from
-    the water-filling start and from an even split, in spend shares so every variable is O(1)."""
+    """Minimise ``risk(n) + price unit_cost . n`` over ``n >= 0`` with ``unit_cost . n <= budget``,
+    from the water-filling start and from an even split, in spend shares so every variable is O(1).
+    At ``price = 0`` it is the model's best experiment that spends ``budget``, paid or not."""
     k = unit_cost.size
     scale = max(risk(np.zeros(k)), np.finfo(float).tiny)
 
     def objective(share: _Array) -> float:
         n = np.clip(share, 0.0, None) * budget / unit_cost
-        return (risk(n) + float(unit_cost @ n)) / scale
+        return (risk(n) + price * float(unit_cost @ n)) / scale
 
     candidates = [np.clip(start * unit_cost / budget, 0.0, 1.0), np.full(k, 0.5 / k)]
     best = candidates[0]
@@ -513,39 +546,72 @@ def _whole_units(n: _Array, unit_cost: _Array, budget: float) -> NDArray[np.int6
 
 
 @dataclass(frozen=True)
-class _MonteCarlo:
-    now: _Array  # per draw, the regret of acting on the prior mean
-    after: _Array  # per draw, the regret of acting on the posterior mean after the experiment
+class _Worlds:
+    """Channels drawn from the prior, with what an experiment would read in each and the regret of
+    acting now; shared by every allocation scored on them."""
+
+    b: _Array  # (draws, K)
+    shocks: _Array  # (draws, K) standard normal, one reading error per zone, scaled per allocation
+    best: _Array  # per draw, the cost of the action that knows b
+    now: _Array  # per draw, the regret of the Bayes action under the prior
 
 
-def _monte_carlo(
-    d: ZoneDecision,
-    prior: ChannelPrior,
-    action: _Array,
-    units: NDArray[np.int64],
-    information: _Array,
-    draws: int,
-    seed: int,
-) -> _MonteCarlo:
+def _worlds(
+    d: ZoneDecision, prior: ChannelPrior, action: _Array, draws: int, seed: int | tuple[int, int]
+) -> _Worlds:
     rng = np.random.default_rng(seed)
     b = prior.mean + rng.standard_normal((draws, d.zones)) @ prior._root.T
+    shocks = rng.standard_normal((draws, d.zones))
+    best = np.array([_cost(d, _solve(d, row).action, row) for row in b])
+    now = np.array([_cost(d, action, row) for row in b]) - best
+    return _Worlds(b, shocks, best, now)
+
+
+def _regret_after(
+    d: ZoneDecision,
+    prior: ChannelPrior,
+    worlds: _Worlds,
+    units: NDArray[np.int64],
+    information: _Array,
+) -> _Array:
+    """Per draw, the regret of the Bayes action under the posterior that ``units`` leave."""
     observed = np.flatnonzero(units > 0)
+    if not observed.size:
+        return worlds.now
     noise = 1.0 / np.sqrt(units[observed] * information[observed])
-    shocks = rng.standard_normal((draws, observed.size)) * noise
-    gain = np.zeros((d.zones, observed.size))
-    if observed.size:
-        innovation = prior.covariance[np.ix_(observed, observed)] + np.diag(noise**2)
-        gain = np.linalg.solve(innovation, prior.covariance[observed]).T
-    now, after = np.empty(draws), np.empty(draws)
-    for i in range(draws):
-        best = _cost(d, _solve(d, b[i]).action, b[i])
-        now[i] = _cost(d, action, b[i]) - best
-        if observed.size:
-            mean = prior.mean + gain @ (b[i, observed] + shocks[i] - prior.mean[observed])
-            after[i] = _cost(d, _solve(d, mean).action, b[i]) - best
-        else:
-            after[i] = now[i]
-    return _MonteCarlo(now, after)
+    innovation = prior.covariance[np.ix_(observed, observed)] + np.diag(noise**2)
+    gain = np.linalg.solve(innovation, prior.covariance[observed]).T
+    # The posterior covariance does not depend on the reading, so neither does the raised weight.
+    cautious = _cautious(d, _posterior_covariance(prior, units * information))
+    readings = worlds.b[:, observed] + worlds.shocks[:, observed] * noise
+    means = prior.mean + (readings - prior.mean[observed]) @ gain.T
+    after = np.empty(worlds.b.shape[0])
+    for i in range(after.size):
+        after[i] = _cost(d, _solve(cautious, means[i]).action, worlds.b[i]) - worlds.best[i]
+    return after
+
+
+def _candidates(
+    risk: Callable[[_Array], float],
+    weight: _Array,
+    prior: ChannelPrior,
+    experiment: ZoneExperiment,
+    budget: float,
+    uses: float,
+) -> list[NDArray[np.int64]]:
+    """No experiment, and at each spend from the budget down by halves to one unit's, the local
+    model's best experiment that spends it, in whole units: the model's shape, Monte Carlo's
+    scale."""
+    unit_cost = experiment.unit_cost
+    found = [np.zeros(unit_cost.size, dtype=np.int64)]
+    spend = budget
+    while spend >= float(unit_cost.min()):
+        start = _water_filling(weight, prior, experiment, spend, uses)
+        units = _whole_units(_allocate(risk, start, unit_cost, spend, price=0.0), unit_cost, spend)
+        if not any(np.array_equal(units, seen) for seen in found):
+            found.append(units)
+        spend *= 0.5
+    return found
 
 
 def _pinned_zone(pin: _Pin, prior: ChannelPrior, uses: float) -> PinnedZone:
@@ -608,11 +674,13 @@ def design_experiment(
     ``uses`` is how many times the decision will be taken on what is known after the experiment,
     so the regret it leaves counts ``uses`` times and the spend once. The verdict:
 
-    * ``"experiment"``: the regret the experiment removes exceeds its spend by more than the Monte
-      Carlo error;
-    * ``"abstain"``: it does not, and a zone that matters stays within two posterior standard
-      deviations of zero, so the sign of its channel -- which way to act there -- is still unknown;
-    * ``"deploy"``: it does not, and acting now costs ``regret_now`` on average and at most
+    * ``"experiment"``: the regret the experiment removes, against the Bayes action now, exceeds
+      its spend by more than the Monte Carlo error;
+    * ``"abstain"``: no experiment scored does, and a zone that matters stays within two posterior
+      standard deviations of zero, so the sign of its channel -- which way to act there -- is still
+      unknown;
+    * ``"deploy"``: no experiment scored does, and acting now, on
+      :meth:`ZoneDecision.bayes_action`, costs ``regret_now`` on average and at most
       ``regret_bound`` with probability ``level``.
 
     Raises:
@@ -638,9 +706,16 @@ def design_experiment(
     information = experiment.information
     local = _local(decision, prior.mean)
     weight = _sigma_weight(decision, prior)
+    action = decision.bayes_action(prior)
 
     def risk(n: _Array) -> float:
         return uses * _expected_regret(weight, local.pins, prior, n * information)
+
+    def gap(units: NDArray[np.int64], now: float, after: float) -> float:
+        return max(
+            _relative_gap(risk(np.zeros(k)), now),
+            _relative_gap(risk(units.astype(np.float64)), after),
+        )
 
     units = np.zeros(k, dtype=np.int64)
     if budget > 0.0:
@@ -648,23 +723,47 @@ def design_experiment(
         units = _whole_units(
             _allocate(risk, start, experiment.unit_cost, budget), experiment.unit_cost, budget
         )
+    worlds = _worlds(decision, prior, action, draws, seed)
+    regret_now = uses * float(worlds.now.mean())
+    after = _regret_after(decision, prior, worlds, units, information)
+    model_gap = gap(units, regret_now, uses * float(after.mean()))
+    pays = units.sum() > 0 and regret_now - uses * float(after.mean()) - float(
+        experiment.unit_cost @ units
+    ) > uses * _half_width(worlds.now - after)
+    searched = 0
+    affordable = budget >= float(experiment.unit_cost.min())
+    if affordable and (model_gap > _GAP_WARNING or not pays):
+        # The model is too far off to allocate on, or what it chose does not pay, which it read
+        # only at that one allocation: score the model's shapes at every scale by Monte Carlo, on
+        # draws of their own, so the allocation chosen is not the one its own draws flatter, and
+        # report on the main draws.
+        candidates = _candidates(risk, weight, prior, experiment, budget, uses)
+        search = _worlds(decision, prior, action, min(draws, _SEARCH_DRAWS), (seed, 1))
+        scores = [
+            uses * float(_regret_after(decision, prior, search, n, information).mean())
+            + float(experiment.unit_cost @ n)
+            for n in candidates
+        ]
+        searched = len(candidates)
+        chosen = candidates[int(np.argmin(scores))]
+        if not np.array_equal(chosen, units):
+            units = chosen
+            after = _regret_after(decision, prior, worlds, units, information)
+            model_gap = gap(units, regret_now, uses * float(after.mean()))
     spend = float(experiment.unit_cost @ units)
-    measured = _monte_carlo(decision, prior, local.action, units, information, draws, seed)
-    regret_now = uses * float(measured.now.mean())
-    regret_after = uses * float(measured.after.mean())
-    error = uses * _half_width(measured.now - measured.after)
-    regret_bound = uses * _upper_quantile(measured.now, level)
+    regret_after = uses * float(after.mean())
+    error = uses * _half_width(worlds.now - after)
+    regret_bound = uses * _upper_quantile(worlds.now, level)
     value = regret_now - regret_after - spend
-    model_gap = max(
-        _relative_gap(risk(np.zeros(k)), regret_now),
-        _relative_gap(risk(units.astype(np.float64)), regret_after),
-    )
     if model_gap > _GAP_WARNING:
         _log.warning(
             "the local regret model misses Monte Carlo by %.0f%%; the numbers reported are Monte "
-            "Carlo's, and the allocation was optimised on the model",
+            "Carlo's, and %s",
             100.0 * model_gap,
-            extra={"chc_event": "design_gap", "model_gap": model_gap},
+            f"the allocation is the best of {searched} that Monte Carlo scored"
+            if searched
+            else "the allocation was optimised on the model",
+            extra={"chc_event": "design_gap", "model_gap": model_gap, "searched": searched},
         )
 
     diagonal = np.diag(weight)
@@ -674,6 +773,19 @@ def design_experiment(
     sd_after = np.sqrt(np.diag(_posterior_covariance(prior, units * information)))
     unsigned = relevant & (np.abs(prior.mean) < _SIGNED * sd_after)
     plan = ", ".join(f"{n} in zone {z}" for z, n in enumerate(units.tolist()) if n > 0)
+    if not affordable:
+        found = "the budget buys not one unit"
+    elif searched:
+        found = (
+            f"of the {searched} experiments Monte Carlo scored, from none through one unit's spend "
+            "to the whole budget, the best does not pay more than its Monte Carlo error"
+        )
+    else:
+        chose = f"runs {plan}" if plan else "runs none"
+        found = (
+            f"the experiment the local model chose, within {100.0 * model_gap:.0f}% of Monte "
+            f"Carlo, {chose} and does not pay more than its Monte Carlo error"
+        )
     verdict: DesignVerdict
     if units.sum() > 0 and value > error:
         verdict = "experiment"
@@ -685,13 +797,13 @@ def design_experiment(
         verdict = "abstain"
         reason = (
             f"zones {np.flatnonzero(unsigned).tolist()} matter and the sign of their channel is "
-            "unknown, and no experiment the budget buys both identifies it and pays"
+            f"unknown, and {found}"
         )
     else:
         verdict = "deploy"
         reason = (
-            f"no experiment the budget buys pays: acting now costs {regret_now:.3g} of regret on "
-            f"average, and at most {regret_bound:.3g} with probability {level:g}"
+            f"{found}: acting now costs {regret_now:.3g} of regret on average, and at most "
+            f"{regret_bound:.3g} with probability {level:g}"
         )
     pinned = tuple(_pinned_zone(pin, prior, uses) for pin in local.pins)
     _log.info(

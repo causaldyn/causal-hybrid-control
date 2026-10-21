@@ -1,6 +1,7 @@
 """chc.irf: local projections recover the analytic impulse response; dropping z biases it."""
 
 import importlib
+import logging
 
 import jax
 import numpy as np
@@ -325,3 +326,49 @@ def test_a_series_too_short_for_an_honest_interval_is_rejected() -> None:
         delay_estimate(_delayed_arx(800, seed=0), horizon=12, n_resamples=1)
     with pytest.raises(ValueError, match="irf is empty"):
         peak_lag(np.array([]))
+
+
+def _persistent_world(seed: int, rho: float, n: int = 2000) -> dict[str, np.ndarray]:
+    """``x_{t+1} = 0.5 x_t + u_{t-4} + e`` under an AR(``rho``) treatment."""
+    rng = np.random.default_rng(seed)
+    shocks = rng.standard_normal((n, 2))
+    u, x = np.zeros(n), np.zeros(n)
+    for t in range(1, n):
+        u[t] = rho * u[t - 1] + shocks[t, 0]
+    for t in range(4, n - 1):
+        x[t + 1] = 0.5 * x[t] + u[t - 4] + shocks[t, 1]
+    return {"x": x, "u": u}
+
+
+def _persistence_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if getattr(r, "chc_event", None) == "persistent_treatment"]
+
+
+def test_a_persistent_treatment_without_its_lag_is_warned_of(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Under an AR(0.9) treatment and ``lags=0`` the projections before the dead time read 0.21 to
+    1.01 where the effect is 0, and nothing said so. The treatment's residual on the controls is
+    tested at level 0.001: over 200 seeds it fired on every AR(0.9) and AR(0.2) world, on 1 white
+    one and on none with ``lags=1``."""
+    with caplog.at_level(logging.WARNING, logger="chc.irf"):
+        local_projection_irf(_persistent_world(0, 0.9), 8)
+        delay_estimate(_persistent_world(0, 0.9), 8, n_resamples=2)
+    assert len(_persistence_warnings(caplog)) == 2
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="chc.irf"):
+        for seed in range(5):
+            local_projection_irf(_persistent_world(seed, 0.9), 8, lags=1)
+            local_projection_irf(_persistent_world(seed, 0.0), 8)
+    assert _persistence_warnings(caplog) == []
+
+
+def test_a_traced_design_is_not_tested_for_persistence(caplog: pytest.LogCaptureFixture) -> None:
+    """Under ``jax.jit`` the design holds no numbers, so the projections run and nothing is
+    logged."""
+    world = _persistent_world(0, 0.9)
+    response = jax.jit(lambda data: local_projection_irf(data, 8))
+    with caplog.at_level(logging.WARNING, logger="chc.irf"):
+        traced = response(world)
+    assert _persistence_warnings(caplog) == []
+    np.testing.assert_allclose(traced, local_projection_irf(world, 8), rtol=1e-12, atol=0.0)

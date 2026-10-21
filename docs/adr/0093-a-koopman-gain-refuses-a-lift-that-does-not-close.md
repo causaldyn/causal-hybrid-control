@@ -2,6 +2,8 @@
 
 **Status:** accepted, 2026-10-13.
 Amended by ADR 0103, 2026-10-19: each feature's residual is read against its spread about its mean.
+Amended by ADR 0124, 2026-10-21: the lift is of the centred state and ends in a constant, and the
+controller is refused where its re-lifted loop leaves the target.
 
 ## Context
 

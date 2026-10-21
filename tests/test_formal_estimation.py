@@ -31,7 +31,7 @@ from chc.dynamics_id import (
     fit_causal_residual,
     omitted_confounder_bound,
 )
-from chc.experiment import ZoneDecision
+from chc.experiment import ChannelPrior, ZoneDecision
 from chc.gate import (
     BlockBatch,
     ChannelMove,
@@ -109,6 +109,10 @@ FORMAL_LINKS = {
             "test_bayes_action_is_the_certainty_equivalent_one_with_a_raised_action_weight",
             "test_one_zone_example_regrets_match_the_module_docstring",
         ),
+    },
+    "chc.experiment.ZoneDecision.bayes_action": {
+        "cites": ("experiment_bayes_action.mac",),
+        "tests": ("test_the_published_bayes_action_minimises_the_expected_cost",),
     },
     "chc.gate": {
         "cites": ("gate_block_contrast.mac",),
@@ -599,6 +603,30 @@ def test_bayes_action_is_the_certainty_equivalent_one_with_a_raised_action_weigh
         decision, action_weight=decision.action_weight + weight * (root @ root.T)
     )
     bayes = raised.solve(mean)
+    found = optimize.minimize(
+        lambda v: _expected_cost(decision, v, mean, root),
+        np.zeros(zones),
+        method="L-BFGS-B",
+        bounds=[(lo, hi)] * zones if bounded else None,
+        options={"ftol": 1e-15, "gtol": 1e-12, "maxiter": 10_000},
+    )
+    best = _expected_cost(decision, bayes, mean, root)
+    assert best <= found.fun + 1e-10 * max(1.0, abs(found.fun))
+    np.testing.assert_allclose(bayes, found.x, atol=1e-5)
+
+
+@settings(max_examples=20, deadline=None)
+@given(seed=SEEDS, zones=st.integers(1, 3), bounded=st.booleans())
+def test_the_published_bayes_action_minimises_the_expected_cost(
+    seed: int, zones: int, bounded: bool
+) -> None:
+    """experiment_bayes_action.mac STEP 1, through ``ZoneDecision.bayes_action``: no action on the
+    box has a lower expected cost under the prior."""
+    rng = np.random.default_rng(seed)
+    lo, hi = (-0.5, 0.7) if bounded else (-np.inf, np.inf)
+    decision = _decision(rng, zones, lo, hi)
+    mean, root = _channel_law(rng, zones)
+    bayes = np.asarray(decision.bayes_action(ChannelPrior(mean, root @ root.T)))
     found = optimize.minimize(
         lambda v: _expected_cost(decision, v, mean, root),
         np.zeros(zones),

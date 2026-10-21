@@ -22,10 +22,11 @@ from chc.experiment import (
     ZoneExperiment,
     _half_width,
     _local,
-    _monte_carlo,
+    _regret_after,
     _second_partial_moment,
     _sigma_weight,
     _water_filling,
+    _worlds,
     design_experiment,
 )
 
@@ -181,8 +182,10 @@ def test_the_knife_edge_keeps_a_weight_the_plug_in_loses():
         draws=100_000,
         seed=2,
     )
-    # fourth order at the edge, 3 e^2 q^3 s^4 / (16 r^2), up to a relative 10 q s^2 / r
-    assert design.regret_now == pytest.approx(3 * s**4 / (16 * 0.25), rel=0.08)
+    # fourth order at the edge: the Bayes action loses e^2 q^3 s^4 / (8 r^2), two thirds of the
+    # certainty-equivalent one's (validation/experiment_bayes_action.mac STEP 2), and exactly
+    # 1.020 times the law at s = 0.05
+    assert design.regret_now == pytest.approx(s**4 / (8 * 0.25), rel=0.08)
 
 
 def test_the_local_regret_is_the_monte_carlo_regret_on_the_market():
@@ -415,15 +418,7 @@ def test_the_regret_bound_is_the_order_statistic_that_holds_its_level(draws, lev
     design = design_experiment(
         decision, prior, DEMO_EXPERIMENT, 0.0, uses=3.0, level=level, draws=draws, seed=5
     )
-    now = _monte_carlo(
-        decision,
-        prior,
-        _local(decision, prior.mean).action,
-        np.zeros(K, dtype=np.int64),
-        DEMO_EXPERIMENT.information,
-        draws,
-        5,
-    ).now
+    now = _worlds(decision, prior, decision.bayes_action(prior), draws, 5).now
     assert rank / (draws + 1) >= level > (rank - 1) / (draws + 1)
     assert design.regret_bound == 3.0 * np.sort(now)[rank - 1]
 
@@ -465,16 +460,15 @@ def test_the_error_is_the_larger_side_of_halls_interval(draws):
         decision, prior, DEMO_EXPERIMENT, 5e-5, uses=3.0, draws=draws, seed=11
     )
     assert sum(design.sample_sizes) > 0
-    measured = _monte_carlo(
+    worlds = _worlds(decision, prior, decision.bayes_action(prior), draws, 11)
+    after = _regret_after(
         decision,
         prior,
-        _local(decision, prior.mean).action,
+        worlds,
         np.array(design.sample_sizes, dtype=np.int64),
         DEMO_EXPERIMENT.information,
-        draws,
-        11,
     )
-    difference = measured.now - measured.after
+    difference = worlds.now - after
     normal = 1.96 * np.std(difference, ddof=1) / math.sqrt(draws)
     assert stats.skew(difference) > 1.0
     assert design.error == pytest.approx(3.0 * _hall_larger_side(difference), rel=1e-9, abs=0.0)
@@ -551,26 +545,65 @@ def test_an_experiment_needs_positive_costs_and_a_prior_its_size():
         )
 
 
-def test_the_bayes_action_can_beat_an_experiment_judged_against_acting_on_the_mean():
-    """The documented premise: both arms act on the mean. The Bayes action is the CE one with the
-    action weight raised by (C'QC) o S; on a wide prior it beats the experiment recommended."""
+def test_the_regret_now_is_the_bayes_actions():
+    """Both arms act on the Bayes action, the CE one with the action weight raised by (C'QC) o S.
+    Judged against acting on the mean, which lost 0.119 here, an experiment was credited with
+    what acting well now saves without one: the Bayes action loses 0.079."""
     decision = ZoneDecision(
         np.eye(1), np.zeros(1), np.ones(1), np.eye(1), 0.05 * np.eye(1), [-10.0], [10.0]
     )
     prior = ChannelPrior(np.ones(1), np.array([[0.6**2]]))
-    experiment = ZoneExperiment(unit_cost=np.array([0.004]), noise_sd=np.ones(1), probe=np.ones(1))
-    design = design_experiment(decision, prior, experiment, 1.0, draws=20_000, seed=0)
-    assert design.verdict == "experiment"
-
     c, q = decision.coupling, decision.state_weight
     raised = decision.action_weight + (c.T @ q @ c) * prior.covariance
     cautious = dataclasses.replace(decision, action_weight=raised).solve(prior.mean)
+    np.testing.assert_allclose(decision.bayes_action(prior), cautious, rtol=1e-12, atol=0.0)
+
     b = 1.0 + 0.6 * np.random.default_rng(1).standard_normal(200_000)
 
     def regret(u: float) -> float:
         best = 0.5 * (1.0 - b**2 / (b**2 + 0.05))  # J at the action that knows b
         return float(np.mean(0.5 * ((b * u - 1.0) ** 2 + 0.05 * u**2) - best))
 
+    experiment = ZoneExperiment(unit_cost=np.array([0.004]), noise_sd=np.ones(1), probe=np.ones(1))
+    design = design_experiment(decision, prior, experiment, 1.0, draws=20_000, seed=0)
     # 0.079 against the mean's 0.119; the Monte Carlo sd of each is under 0.001
     assert regret(float(cautious[0])) < regret(float(decision.solve(prior.mean)[0])) - 0.03
-    assert regret(float(cautious[0])) < design.regret_after + design.spend - 0.01
+    assert design.regret_now == pytest.approx(regret(float(cautious[0])), abs=0.003)
+    if design.verdict == "experiment":
+        assert design.regret_after + design.spend < design.regret_now - design.error
+
+
+def _wide_scalar() -> ZoneDecision:
+    return ZoneDecision(
+        np.eye(1), np.zeros(1), np.ones(1), np.eye(1), 0.1 * np.eye(1), [-np.inf], [np.inf]
+    )
+
+
+def test_an_experiment_the_local_model_passes_over_is_found_by_monte_carlo():
+    """``R = 0.1``, ``b ~ N(0.5, 1)``, a unit at 0.07: the local model, read at the allocation it
+    chose alone, chose none, and the verdict was to abstain because "no experiment the budget buys
+    pays", where one unit removes 0.10 of regret for 0.07. Monte Carlo scores the model's
+    proposals at every spend, and finds it."""
+    prior = ChannelPrior(np.array([0.5]), np.array([[1.0]]))
+    experiment = ZoneExperiment(unit_cost=np.array([0.07]), noise_sd=np.ones(1), probe=np.ones(1))
+    design = design_experiment(_wide_scalar(), prior, experiment, 100.0, draws=20_000, seed=1)
+    assert design.verdict == "experiment"
+    assert design.sample_sizes == (1,)
+    # the Bayes action's regret after one unit, by its own Monte Carlo: posterior variance 1/2
+    rng = np.random.default_rng(3)
+    b = 0.5 + rng.standard_normal(400_000)
+    mean = 0.5 + 0.5 * (b + rng.standard_normal(b.size) - 0.5)
+    u = mean / (mean**2 + 0.5 + 0.1)
+    after = float(np.mean(0.5 * (b * u - 1.0) ** 2 + 0.05 * u**2 - 0.05 / (b**2 + 0.1)))
+    assert design.regret_after == pytest.approx(after, abs=0.01)
+    assert design.value > design.error > 0.0
+
+
+def test_a_verdict_against_experimenting_says_what_was_scored():
+    prior = ChannelPrior(np.array([0.5]), np.array([[1.0]]))
+    dear = ZoneExperiment(unit_cost=np.array([5.0]), noise_sd=np.ones(1), probe=np.ones(1))
+    design = design_experiment(_wide_scalar(), prior, dear, 100.0, draws=2000, seed=1)
+    assert design.verdict == "abstain"
+    assert "of the 6 experiments Monte Carlo scored" in design.reason
+    poor = design_experiment(_wide_scalar(), prior, dear, 1.0, draws=2000, seed=1)
+    assert "the budget buys not one unit" in poor.reason

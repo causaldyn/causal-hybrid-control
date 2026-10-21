@@ -8,8 +8,9 @@ nonlinear dictionary the input of even a control-affine plant can enter the lift
 state-dependent gain, so a linear lift is misspecified there in general, and LQR or MPC on it
 carries no closed-loop guarantee for the plant (Strässer et al. 2026, Annual Reviews in Control
 61). This mirrors the CHC hybrid philosophy (a structured global model plus a correction); the
-modern, Residual-Koopman-MPC-lineage control backend. The dictionary is polynomial; the first
-``state_dim`` features are the raw state, decoding is a slice.
+modern, Residual-Koopman-MPC-lineage control backend. The dictionary is polynomial in the state
+less its centre, the midpoint of the states the fit read, and ends in a constant; the first
+``state_dim`` features are the centred state, so decoding is a slice and the centre added back.
 """
 
 from __future__ import annotations
@@ -25,16 +26,34 @@ from chc.regret import dlqr
 
 
 def _lift(x: np.ndarray, degree: int) -> np.ndarray:
-    """Polynomial dictionary ``phi(x)``: raw state first, then higher-order monomials (no bias)."""
+    """Polynomial dictionary ``phi(x)``: the state first, then higher-order monomials, then 1."""
     x = np.atleast_2d(np.asarray(x, float))
-    _, d = x.shape
+    n, d = x.shape
     feats = [x[:, j] for j in range(d)]  # raw state components first -> decoding is a slice
     feats.extend(
         np.prod([x[:, j] for j in combo], axis=0)
         for deg in range(2, degree + 1)
         for combo in combinations_with_replacement(range(d), deg)
     )
+    feats.append(np.ones(n))
     return np.column_stack(feats)
+
+
+def _lift_jacobian(x: np.ndarray, degree: int) -> np.ndarray:
+    """``d phi / d x`` at one state, one row per feature of :func:`_lift`."""
+    x = np.asarray(x, float)
+    d = x.size
+    rows = [np.eye(d)]
+    for deg in range(2, degree + 1):
+        for combo in combinations_with_replacement(range(d), deg):
+            row = np.zeros((1, d))
+            for i in set(combo):
+                rest = list(combo)
+                rest.remove(i)
+                row[0, i] = combo.count(i) * np.prod(x[rest])
+            rows.append(row)
+    rows.append(np.zeros((1, d)))
+    return np.vstack(rows)
 
 
 _FORMS = ("linear", "bilinear")
@@ -42,10 +61,11 @@ _FOLDS = 5
 
 
 def _design(phi: np.ndarray, u: np.ndarray, form: str) -> np.ndarray:
-    """``[phi(x), u]``, and for the bilinear form each action's products ``u_j phi(x)`` after."""
+    """``[phi(x), u]``, and for the bilinear form each action's products ``u_j phi(x)`` after,
+    less the constant's, which is ``u_j`` itself."""
     if form == "linear":
         return np.column_stack([phi, u])
-    return np.column_stack([phi, u, *(u[:, [j]] * phi for j in range(u.shape[1]))])
+    return np.column_stack([phi, u, *(u[:, [j]] * phi[:, :-1] for j in range(u.shape[1]))])
 
 
 def _solve(design: np.ndarray, target: np.ndarray, ridge: float) -> np.ndarray:
@@ -78,6 +98,14 @@ class KoopmanModel:
     from zero would pass for prediction: a state read 273.15 higher, as in kelvin, takes the
     degree-one lift of ``x' = 2x - x^3 + u/10`` from 0.71, refused, to 0.0024, accepted. A feature
     the log never moves has no spread, and is read over its root mean square.
+
+    The lift is of the state less its centre, the midpoint of the logged states, and it holds a
+    constant. Without them a level was read as dynamics: the monomials of ``x + c`` span a
+    different space for every ``c``, and none held the constant that an affine map of the state
+    needs. At degree 3 the same plant logged at levels 0, 1, 5 and 273.15 was refused, accepted,
+    refused and refused, and controllers accepted on a level diverged on the plant. Centred, the
+    model and its verdict read the same at every level, and with the constant the span of a
+    degree-``d`` lift is every polynomial of degree ``d``, which no shift of the state leaves.
     """
 
     degree: int = 3
@@ -88,6 +116,7 @@ class KoopmanModel:
     _a: np.ndarray | None = field(default=None, init=False, repr=False)
     _b: np.ndarray | None = field(default=None, init=False, repr=False)
     _h: np.ndarray | None = field(default=None, init=False, repr=False)
+    _centre: np.ndarray | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.form not in _FORMS:
@@ -99,16 +128,25 @@ class KoopmanModel:
             for v, name in ((x, "x"), (u, "u"), (x_next, "x_next"))
         )
         object.__setattr__(self, "state_dim", x.shape[1])
-        phi, phi_next, u2 = _lift(x, self.degree), _lift(x_next, self.degree), np.atleast_2d(u)
+        # the midpoint, not the mean: a state the log holds at one value centres to exactly zero
+        self._centre = 0.5 * np.max(x, axis=0) + 0.5 * np.min(x, axis=0)
+        phi, phi_next, u2 = self._features(x), self._features(x_next), np.atleast_2d(u)
         design = _design(phi, u2, self.form)  # [phi(x), u (, u_j phi(x))] -> phi(x')
         self._set(_solve(design, phi_next, self.ridge), phi.shape[1], u2.shape[1])
         self.closure_residuals = self._held_out(design, phi_next)
         return self
 
+    def _features(self, x: np.ndarray) -> np.ndarray:
+        if self._centre is None:
+            raise RuntimeError("call fit() before using the model")
+        return _lift(np.atleast_2d(np.asarray(x, float)) - self._centre, self.degree)
+
     def _set(self, coef: np.ndarray, n_feat: int, d_u: int) -> None:
         self._a, self._b = coef[:n_feat].T, coef[n_feat : n_feat + d_u].T
         if self.form == "bilinear":
-            self._h = coef[n_feat + d_u :].T.reshape(n_feat, d_u, n_feat).transpose(1, 0, 2)
+            # the constant's column of each H_j is u_j's own, already in B: zero
+            h = coef[n_feat + d_u :].T.reshape(n_feat, d_u, n_feat - 1).transpose(1, 0, 2)
+            self._h = np.concatenate([h, np.zeros((d_u, n_feat, 1))], axis=2)
 
     def _held_out(self, design: np.ndarray, phi_next: np.ndarray) -> np.ndarray:
         """Each feature's held-out root mean square error over its own, read across the folds."""
@@ -146,8 +184,7 @@ class KoopmanModel:
             np.asarray(_real_numbers(v, name), float)
             for v, name in ((x, "x"), (u, "u"), (x_next, "x_next"))
         )
-        phi = _lift(x, self.degree)
-        return _lift(x_next, self.degree) - self._step(phi, np.atleast_2d(u))
+        return self._features(x_next) - self._step(self._features(x), np.atleast_2d(u))
 
     def channel(self, x: np.ndarray) -> np.ndarray:
         """The lifted model's derivative in the action at state ``x``: ``B + [H_j phi(x)]_j``."""
@@ -155,11 +192,12 @@ class KoopmanModel:
             raise RuntimeError("call fit() before channel()")
         if self._h is None:
             return self._b
-        return self._b + np.einsum("jkf,f->kj", self._h, _lift(x, self.degree)[0])
+        return self._b + np.einsum("jkf,f->kj", self._h, self._features(x)[0])
 
     def predict(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
-        phi_next = self._step(_lift(x, self.degree), np.atleast_2d(u))
-        return phi_next[:, : self.state_dim]  # decode: raw state is the leading block
+        phi_next = self._step(self._features(x), np.atleast_2d(u))
+        # decode: the centred state is the leading block
+        return phi_next[:, : self.state_dim] + self._centre
 
     def rollout(self, x0: np.ndarray, us: np.ndarray) -> np.ndarray:
         x = np.asarray(x0, float)
@@ -188,6 +226,10 @@ def koopman_lqr_gain(
     the LQR of the model linearised at ``x_target``, which it then requires. A linear model's gain
     does not depend on ``x_target``.
 
+    The lift's constant moves with no action and costs nothing, so the LQR is solved on the other
+    features and the constant's column of the gain is zero: the controller reads the lift's
+    difference from the target's, where the constant cancels.
+
     Raises:
         RuntimeError: before the model is fit.
         ValueError: where the lift does not close, or a bilinear model is given no ``x_target``.
@@ -206,19 +248,43 @@ def koopman_lqr_gain(
         if x_target is None:
             raise ValueError("a bilinear model's channel depends on the state: pass x_target")
         b = model.channel(np.asarray(x_target, float))
-    n_feat = a.shape[0]
-    lift_q = np.zeros((n_feat, n_feat))
+    moving = a.shape[0] - 1  # every feature but the constant, which is last
+    lift_q = np.zeros((moving, moving))
     lift_q[: model.state_dim, : model.state_dim] = np.asarray(
         q_state, float
     )  # cost only on raw state
-    return dlqr(a, b, lift_q, np.asarray(r, float))[0]  # gain G
+    gain = dlqr(a[:moving, :moving], b[:moving], lift_q, np.asarray(r, float))[0]
+    return np.column_stack([gain, np.zeros(gain.shape[0])])  # gain G
 
 
 def koopman_controller(model: KoopmanModel, gain: np.ndarray, x_target: np.ndarray):
-    """Feedback law ``u = -G (phi(x) - phi(x_target))`` regulating the system to ``x_target``."""
-    phi_target = _lift(x_target, model.degree)[0]
+    """Feedback law ``u = -G (phi(x) - phi(x_target))`` regulating the system to ``x_target``.
+
+    The law lifts the measured state afresh at every step, so the loop it closes is the model's
+    prediction re-lifted, not the lifted model, whose own loop the LQR makes stable whatever the
+    lift. Near the target that loop moves a deviation by ``J = [(A - B_t G) dphi/dx]``, the state's
+    rows, ``B_t`` the model's channel at the target; the law is refused where ``J``'s spectral
+    radius is not below 1, since then the loop leaves the target even in the model.
+
+    Raises:
+        ValueError: where the model's closed loop is not stable at ``x_target``.
+    """
+    x_target = np.asarray(x_target, float)
+    phi_target = model._features(x_target)[0]
+    a = model._a
+    assert a is not None  # _features has checked the model is fit
+    centred = x_target - model._centre
+    loop = (a - model.channel(x_target) @ gain)[: model.state_dim] @ _lift_jacobian(
+        centred, model.degree
+    )
+    radius = float(np.max(np.abs(np.linalg.eigvals(loop))))
+    if not radius < 1.0:
+        raise ValueError(
+            f"the model's closed loop is not stable at x_target: the controller, re-lifting the "
+            f"state at each step, moves a deviation by a map of spectral radius {radius:.3g}"
+        )
 
     def control(x: np.ndarray) -> np.ndarray:
-        return -gain @ (_lift(x, model.degree)[0] - phi_target)
+        return -gain @ (model._features(x)[0] - phi_target)
 
     return control

@@ -276,3 +276,20 @@ if TYPE_CHECKING:
     # isort: on
 else:
     __getattr__ = _moved.serve_names(__name__, "chc.research.games", _MOVED)
+
+# The names this module keeps, then the moved ones: listed, so that a star-import reads
+# each moved name through __getattr__, and warns, and dir() shows them.
+__all__ = [
+    "EquilibriumSolution",
+    "congestion_contraction_modulus",
+    "congestion_damping",
+    "fixed_point",
+    "project_simplex",
+    "softmax_congestion_equilibrium",
+    "stackelberg_allocation",
+    *sorted(_MOVED),
+]
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *__all__})

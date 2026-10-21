@@ -2048,3 +2048,24 @@ def test_the_linearised_certificate_reads_the_deviation_from_the_operating_point
     )
     assert offset == pytest.approx(origin, rel=1e-12, abs=0.0)
     assert offset > 0.0
+
+
+def test_highprob_band_is_local_and_fails_near_the_knife_edge() -> None:
+    """The band is second order in the effect error, so it is not an upper bound on the realised
+    regret: near ``rr = b^2``, where the curvature it scales vanishes, it covers 0.725 at
+    ``delta = 0.01`` (``rr = 0.98``) and 0.967 (``rr = 0.9``), a Monte Carlo SD under 0.007."""
+    deep = highprob_regret_certificate(rr=0.98, n=50, deltas=(0.01,))
+    near = highprob_regret_certificate(rr=0.9, n=50, deltas=(0.01,))
+    assert deep.empirical_coverage[0] == pytest.approx(0.725, abs=0.02)
+    assert near.empirical_coverage[0] == pytest.approx(0.967, abs=0.01)
+    assert near.empirical_coverage[0] < 0.99
+
+
+def test_a_turnpike_horizon_of_one_step_is_refused() -> None:
+    """One step leaves one point to fit the cumulative regret's slope through."""
+    with pytest.raises(ValueError, match="horizon must be at least 2"):
+        confounded_turnpike_certificate(horizon=1)
+    shortest = confounded_turnpike_certificate(horizon=2)
+    assert shortest.undiscounted_slope == pytest.approx(
+        shortest.per_step_regret, rel=1e-12, abs=0.0
+    )

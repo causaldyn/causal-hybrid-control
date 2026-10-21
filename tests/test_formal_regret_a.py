@@ -1045,7 +1045,7 @@ def test_confounded_turnpike_offset_is_the_settled_tracking_error(
     beta=st.floats(0.0, 3.0),
     q=st.floats(0.01, 5.0),
     g=st.floats(0.0, 0.99),
-    horizon=st.integers(1, 400),
+    horizon=st.integers(2, 400),
 )
 def test_confounded_turnpike_discounted_regret_is_a_bounded_geometric_sum(
     b: float, beta: float, q: float, g: float, horizon: int

@@ -1520,3 +1520,37 @@ if TYPE_CHECKING:
     # isort: on
 else:
     __getattr__ = _moved.serve_names(__name__, "chc.research.regret", _MOVED)
+
+# The names this module keeps, then the moved ones: listed, so that a star-import reads
+# each moved name through __getattr__, and warns, and dir() shows them.
+__all__ = [
+    "AdaptiveExplorationCurve",
+    "CappedExplorationPolicy",
+    "Matrix",
+    "MinimaxAction",
+    "MinimaxBranch",
+    "MinimaxCriterion",
+    "MinimaxExplorationCurve",
+    "MinimaxLQCertificate",
+    "MinimaxLQPolicy",
+    "MinimaxRegretMove",
+    "MoveRule",
+    "OptimalExplorationCurve",
+    "Vector",
+    "adaptive_exploration_certificate",
+    "capped_exploration_policy",
+    "certainty_equivalence_gap",
+    "closed_loop_cost",
+    "dlqr",
+    "minimax_action",
+    "minimax_exploration_certificate",
+    "minimax_lq_certificate",
+    "minimax_lq_policy",
+    "minimax_regret_move",
+    "optimal_exploration_certificate",
+    *sorted(_MOVED),
+]
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *__all__})
