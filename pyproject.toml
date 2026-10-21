@@ -1,6 +1,6 @@
 [project]
 name = "causal-hybrid-control"
-version = "0.19.0"
+version = "0.20.0"
 description = "Physics-structured dynamics with a learned causal residual, controlled by constrained optimal control / MPC."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -175,7 +175,7 @@ addopts = "-q -m 'not misspecification'"
 markers = [
     "misspecification: a certificate read on a plant its model gets wrong; holds, or says so",
 ]
-# a name the top level, or a module's path from before 0.19.0, only serves with a warning is the
+# a name the top level only serves with a warning, or an old name a rename keeps until 1.0, is the
 # library's own to stop using first
 filterwarnings = [
     "error:chc\\.\\w+ leaves the top level:DeprecationWarning",

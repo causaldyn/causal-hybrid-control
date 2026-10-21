@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-10-22
+
 ### Added
 
 - **`SafetyCertificate.deviation`, the plant's deviation tube** (ADR 0119), and
@@ -7538,6 +7540,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.20.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.20.0
 [0.19.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.19.0
 [0.18.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.18.0
 [0.17.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.17.0
