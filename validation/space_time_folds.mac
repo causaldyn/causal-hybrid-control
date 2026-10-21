@@ -1,6 +1,6 @@
-/* DISCOVERY (space-time folds): Result 51 showed the delayed-network covariance is separable only
-   at delta = 0, and Result 52 designed folds on the SPACE axis alone. Plan 24's P2.5 asks what the
-   two-axis problem costs. It is not intractable: the covariance is a sum of KRONECKER terms whose
+/* DISCOVERY (space-time folds): delayed_network_exposure.mac showed the delayed-network covariance
+   is separable only at delta = 0, and fold_spectrum_law.mac designed folds on the SPACE axis alone.
+   This file asks what the two-axis problem costs. It is not intractable: the covariance is a sum of KRONECKER terms whose
    count is bounded by the SPILLOVER TRUNCATION -- never by the graph diameter or the panel length --
    and the count drops further on a graph whose shell operators commute. Everything below is exact.
    proofs/space_time_folds.v machine-checks the fold-sandwich algebra and the weight comparison. */
@@ -43,7 +43,8 @@ print("    bound  (D+1) + (D-1) - 2*D =", ratsimp( (D + 1) + (D - 1) - 2*D ), " 
    symmetric, because P_q^T = sum_{d-e=q} g_d g_e S_e S_d = P_q. Then the rank is D+1.
    MEASURED, cycle m=14: 2, 3, 4, 5 at D = 1, 2, 3, 4.  Path / Erdos-Renyi: 2, 4, 6, 8 = 2D. */
 
-/* (4) SEPARABILITY IS EXACTLY delta = 0, recovering Result 51's STEP 7 from the Kronecker side.
+/* (4) SEPARABILITY IS EXACTLY delta = 0, recovering delayed_network_exposure.mac STEP 5 from the
+   Kronecker side.
    All the shifts collapse onto T_0, so Sigma = (sum_q P_q) (x) T_0 and the rank is 1. */
 print("(4) shift at delta=0 :  subst(delta=0, |(t-s) - delta*q|) - |t-s| =",
       ratsimp( subst(delta = 0, abs((t - s) - delta*q)) - abs(t - s) ), "  (=0)")$
@@ -66,8 +67,8 @@ print("    partition weight  (r^4-1) at r=K/(K-1) =", factor( ratsimp( subst(r =
       "  (>0 for K>=2)")$
 
 /* (6) THE TIME AXIS RE-WEIGHTS THE SPACE PROBLEM. A fold held CONSTANT in time scores
-   sum_{t,s} [T_q]_{ts} = w_q, not the single-slice value [T_q]_{tt} = ph^(delta*|q|) that Result 52
-   uses. The two are NOT proportional, so the panel's one-axis design is not the cross-section's. */
+   sum_{t,s} [T_q]_{ts} = w_q, not the single-slice value [T_q]_{tt} = ph^(delta*|q|) that
+   fold_spectrum_law.mac uses. The two are NOT proportional, so the panel's one-axis design is not the cross-section's. */
 w(q, ph, delta, p) := sum( sum( ph^abs((t - s) - delta*q), s, 0, p - 1), t, 0, p - 1)$
 print("(6) w_0 at p=3 =", ratsimp( w(0, ph, delta, 3) ))$
 print("    w_1 at p=3, delta=1 =", ratsimp( w(1, ph, 1, 3) ))$

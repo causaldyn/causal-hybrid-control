@@ -1,4 +1,4 @@
-"""Sensitivity-aware robust control under HIDDEN CONFOUNDING -- a facade over the §32-§40 line.
+"""Sensitivity-aware robust control under HIDDEN CONFOUNDING -- a facade over its primitives.
 
 Offline pessimism (``chc.support``, ``chc.uncertainty``) assumes the observed transitions identify
 the causal effect. Under hidden confounding they do not: the effect is only *partially* identified
@@ -8,7 +8,7 @@ NumPy/SciPy, ``chc.uncertainty`` is JAX). Nothing is moved -- this is a discover
 
 The pipeline, estimate -> sensitivity radius -> robust control -> validation:
 
-0. **Calibrating ``Gamma`` before spending it (§32 (b)).** ``Gamma`` cannot be tested against the
+0. **Calibrating ``Gamma`` before spending it.** ``Gamma`` cannot be tested against the
    data, but it can be priced. :func:`benchmark_gamma` expresses it in units of the confounding the
    OBSERVED covariates carry -- dropping covariate ``j`` from the propensity produces exactly the
    pair of propensities the MSM bounds -- and reports the EXPONENT
@@ -17,21 +17,21 @@ The pipeline, estimate -> sensitivity radius -> robust control -> validation:
    reconciles it, a point estimate of a *lower bound* on the confounding present; with ``level`` it
    is a lower confidence bound, and assuming less than that is refuted by the data at the level.
    ``inf`` says the model class is refuted instead.
-1. **Sensitivity radius (§32, bounded density-ratio / MSM).** Given a treated-outcome sample and a
+1. **Sensitivity radius (bounded density-ratio / MSM).** Given a treated-outcome sample and a
    sensitivity ``Gamma >= 1`` (the analyst's unfalsifiable input, ``[1/Gamma, Gamma]`` density-ratio
    box), the sharp worst-case effect is a CVaR mixture; :func:`confounding_robust_inflation` /
    :func:`msm_worst_case_mean` give the radius inflation, :func:`confounding_robust_radius` widens a
    pessimism radius (never optimistic, tight at ``Gamma=1``, monotone).
-2. **Regret floor (§33).** :func:`confounding_robust_lq_regret` -- the confounding effect-bias
+2. **Regret floor.** :func:`confounding_robust_lq_regret` -- the confounding effect-bias
    becomes a control-regret floor SECOND order in the bias (:func:`lq_regret_sensitivity` for the
    toy ``L_reg``; :func:`confounding_robust_lq_regret_matrix` for the multivariate Frobenius lift).
-3. **Robust controller (§35).** :func:`confounding_robust_control` -- under an ASYMMETRIC loss
+3. **Robust controller.** :func:`confounding_robust_control` -- under an ASYMMETRIC loss
    (over/under-shoot) the radius shifts the gain (sign dichotomy) and beats certainty-equivalence
    (:func:`certainty_equivalence_control`); :func:`asymmetric_control_improvement` is the piecewise
    worst-case-loss gain, :func:`worst_case_asymmetric_loss` the loss itself.
-4. **Closed loop (§34).** :func:`confounding_robust_closed_loop_bound` -- the radius feeds the
+4. **Closed loop.** :func:`confounding_robust_closed_loop_bound` -- the radius feeds the
    replan-tube (``L_x + L_u*L_pi``), the effect error scaled by the control magnitude.
-5. **Safety (§40).** The same radius, spent on a constraint instead of on the objective.
+5. **Safety.** The same radius, spent on a constraint instead of on the objective.
    :func:`robust_barrier_margin` is the best barrier derivative guaranteed against every effect in
    the identified set, :func:`robust_safe_action` its maximiser -- exactly zero once the radius
    swallows the control channel -- :func:`identification_radius_threshold` the sharp radius at which

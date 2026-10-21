@@ -1,4 +1,4 @@
-/* Result 39 -- estimation error -> equilibrium error -> leader control regret, for the logit
+/* Estimation error -> equilibrium error -> leader control regret, for the logit
    congestion game of chc.games.
 
    The claim under test (proposed externally as a new central theorem):
@@ -19,14 +19,15 @@
    (ii)  The variance term is dropped. Neyman orthogonality kills the first-order nuisance BIAS, not
          the sampling error: ||Fhat - F|| = O_p(n^(-1/2) + delta^2), so R = O_p(n^(-1) + delta^4),
          with the delta^4 regime reachable only when delta <~ n^(-1/4) (the DML rate condition).
-         Same correction already applied to C1/§18.
+         Same correction as for the order transfer of validation/composition_transfer.mac.
 
    (iii) The quadratic step needs an INTERIOR leader optimum (implicit-function-theorem regularity).
          Measured: interior -> slope 1.97; with an active budget-simplex constraint -> slope 0.9
          (the active-set curvature collapse of the constrained-CE-regret result); at a vertex the
          regret is identically 0 because the argmax is locally constant.
 
-   (iv)  What is left is therefore NOT a new central theorem but §18's order transfer composed
+   (iv)  What is left is therefore NOT a new central theorem but the order transfer of
+         validation/composition_transfer.mac composed
          through a fixed-point perturbation bound -- with the useful news that the composition costs
          NOTHING asymptotically, because the equilibrium map is perfectly conditioned.
 

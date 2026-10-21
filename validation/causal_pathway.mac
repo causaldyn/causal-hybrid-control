@@ -12,7 +12,8 @@
         q^{H+1}/(1-q) decays geometrically -- so truncating at a finite horizon H loses little.
    (L3) WEAKEST-LINK / multiplicative bottleneck. A path's contribution is the PRODUCT of its edge
         magnitudes, so a path with one weak (near-zero) edge contributes negligibly: |a*b*c| = |a||b||c|,
-        and |a|<=eps ==> |a*b*c| <= eps*|b||c|. The temporal-path analogue of the C2 channel bottleneck. */
+        and |a|<=eps ==> |a*b*c| <= eps*|b||c|. The temporal-path analogue of the
+        multichannel bottleneck of validation/multichannel_control.mac. */
 display2d : false$
 simpsum  : true$  /* let Maxima evaluate the symbolic geometric sum to its closed form (L2) */
 

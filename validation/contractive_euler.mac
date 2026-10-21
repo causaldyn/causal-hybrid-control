@@ -1,4 +1,5 @@
-/* FIX (Result 30, reviewer-7): the explicit-Euler contraction factor. A negative one-sided Lipschitz
+/* FIX (the contraction backbone's radius): the explicit-Euler contraction factor.
+   A negative one-sided Lipschitz
    (log-norm) mu = mu_2(J_r) <= -c < 0 gives the CONTINUOUS bound e(t) <= e^{-c t} e(0) + (eps/c)(1-e^{-c t}),
    radius eps/c. But for EXPLICIT EULER one CANNOT just use a = 1 + mu*dt: with d = x - y and the
    one-sided condition <d, f(x)-f(y)> <= mu |d|^2 and the full Lipschitz |f(x)-f(y)| <= L |d|,

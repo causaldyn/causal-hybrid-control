@@ -103,7 +103,9 @@ class ControlAffineResidual(eqx.Module):
     The channel's basis has its own degree, ``channel_degree``, which defaults to ``degree``. With
     one basis for both, ``degree = 1`` makes the channel affine in the state,
     ``B_θ(x) = C_0 + sum_l C_l x_l``, which contains the constant channel the orthogonality results
-    §18/§19 cover without being restricted to it. ``channel_degree = 0`` is that constant channel
+    of :func:`chc.research.regret.composition_transfer_certificate` and
+    :func:`chc.research.regret.multichannel_control_certificate` cover without being restricted to
+    it. ``channel_degree = 0`` is that constant channel
     beside a drift of any degree: ``n m`` channel coefficients where the affine one has
     ``n m (n + 1)``. Higher degrees make either polynomial in the state.
     """
@@ -255,8 +257,10 @@ class SpectralResidual(eqx.Module):
       ``sigma_max(W) <= sqrt(||W||_1 ||W||_inf)`` -- valid, but with no witness and, measured, slack
       by more than an order of magnitude. Gains multiply exactly under composition
       (Brahmagupta-Fibonacci, ``proofs/spectral_circulant.v`` ``gain_multiplies``, a one-mode
-      identity), so the constant loses no slack when maps compose; that the Result 28/30 rollout
-      tube built on it is tight is measured, not proved.
+      identity), so the constant loses no slack when maps compose; that the rollout tube of
+      :func:`chc.uncertainty.lipschitz_rollout_bound` and
+      :func:`chc.uncertainty.contractive_rollout_bound` built on it is tight is measured, not
+      proved.
 
     The parameterisation is the kernel, not the symbol, deliberately: the map kernel -> circulant is
     a bijection, whereas a free half-spectrum carries two unidentified imaginary parts (at DC and,
@@ -398,9 +402,9 @@ class PortHamiltonianResidual(eqx.Module):
     contribution. Pure autograd (one scalar gradient), no inner solve, so it composes with the
     discrete/diffrax adjoints. Prefer over plain HNN/LNN (no port or dissipation).
 
-    ``energy`` decides what ``H' <= 0`` is worth, and the difference is not cosmetic (Result 68,
-    ``validation/convex_port_hamiltonian.mac``). The inequality confines the state to
-    ``{ H <= H(x0) }``, which bounds the state only if that set is bounded:
+    ``energy`` decides what ``H' <= 0`` is worth, and the difference is not cosmetic
+    (:func:`convex_energy_certificate`, ``validation/convex_port_hamiltonian.mac``). The inequality
+    confines the state to ``{ H <= H(x0) }``, which bounds the state only if that set is bounded:
 
     * ``"mlp"`` (the default, and what every model built before this option is) reads a ``tanh``
       MLP out linearly, so ``H`` is BOUNDED in ``x``. Every sublevel set above its supremum is the
@@ -641,7 +645,7 @@ def port_hamiltonian_certificate(
 
 @dataclass(frozen=True)
 class ConvexEnergyCertificate:
-    """Result 68: a DECREASING energy is not a BOUNDED one, and only a coercive one gives a radius.
+    """A DECREASING energy is not a BOUNDED one, and only a coercive one gives a radius.
 
     ``H' <= 0`` holds for both energies -- it is an identity of the port-Hamiltonian structure, not
     a property of the network -- so the inequality cannot tell them apart. What separates them is
@@ -722,7 +726,7 @@ def convex_energy_certificate(
     dt: float = 0.05,
     n_step: int = 4000,
 ) -> ConvexEnergyCertificate:
-    """RESULT 68 (A20) -- the port-Hamiltonian residual needs a COERCIVE energy, not a falling one.
+    """The port-Hamiltonian residual needs a COERCIVE energy, not a falling one.
 
     Derived in ``validation/convex_port_hamiltonian.mac``, proved in
     ``proofs/convex_port_hamiltonian.v``. :func:`port_hamiltonian_certificate` already checks the

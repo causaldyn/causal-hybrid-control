@@ -1,5 +1,6 @@
 /* DISCOVERY / derivation: the GENERAL orthogonal-to-control regret TRANSFER theorem -- the general form
-   of result 0 (which only stated the p=1 -> O(eps^2) and p=2 -> O(eps^4) instances). Claim: if the
+   of validation/orthogonal_control.mac (which only stated the p=1 -> O(eps^2) and p=2 -> O(eps^4)
+   instances). Claim: if the
    causal-effect estimator has error of order delta^p in the nuisance error delta (p = 1 plug-in, p = 2
    Neyman-orthogonal/DML, and higher p for higher-order-orthogonal estimators), then the
    certainty-equivalence control regret is of order delta^(2*p): the control map DOUBLES the estimator's
@@ -27,7 +28,8 @@ print("=> |u*(bhat)-u*(b)| = O(|bhat-b|), so R = O((bhat-b)^2) : regret quadrati
 print("if bhat-b = O(delta^p) then (bhat-b)^2 = O(delta^(2p)) => R = O(delta^(2p)) : order DOUBLES")$
 for p:1 thru 4 do print("  p =", p, " (estimator O(delta^", p, ")) -> regret O(delta^", 2*p, ")")$
 
-/* instances recovering result 0: p=1 (plug-in) -> O(delta^2) ; p=2 (Neyman-orthogonal DML) -> O(delta^4).
+/* instances recovering orthogonal_control.mac:
+   p=1 (plug-in) -> O(delta^2) ; p=2 (Neyman-orthogonal DML) -> O(delta^4).
    the general theorem SUBSUMES both and extends to higher-order-orthogonal estimators (p>=3). */
 print("instances: p=1 plug-in -> O(delta^2) ; p=2 orthogonal/DML -> O(delta^4) ; general p -> O(delta^2p)")$
 

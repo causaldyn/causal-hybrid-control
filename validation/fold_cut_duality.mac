@@ -1,7 +1,7 @@
-/* Result 61 -- what combinatorial problem the fold design actually is.
+/* What combinatorial problem the fold design actually is.
  *
- * Result 52 reduced Psi to the same-fold weighted 2-walk mass sum_f 1_f' Q 1_f and called the
- * design problem a "minimum-weight balanced cut".  STEP 1 shows that name is inverted: the
+ * fold_spectrum_law.mac reduces Psi to the same-fold weighted 2-walk mass sum_f 1_f' Q 1_f, and
+ * the design problem was first named a "minimum-weight balanced cut".  STEP 1 shows that name is inverted: the
  * same-fold mass is 1'Q1 MINUS twice the cut, so minimising it MAXIMISES the cut.  The design is
  * a MAX-bisection of Q(x), not a min-cut -- a different problem with a different approximation
  * lineage.  STEP 2-4 give the polytope facts behind the exact algorithm, STEP 5-6 the circulant

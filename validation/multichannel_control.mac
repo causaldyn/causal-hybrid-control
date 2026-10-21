@@ -1,5 +1,6 @@
-/* DISCOVERY / derivation (CONTRIBUTION 2): MULTI-CHANNEL orthogonal control -- the serious form of
-   result 4x0, which was the arithmetic (eps^2+eps)^2 vs (eps^2+eps^2)^2. Real model: on a network the
+/* DISCOVERY / derivation: MULTI-CHANNEL orthogonal control -- the serious form of the
+   interference x orthogonality arithmetic (eps^2+eps)^2 vs (eps^2+eps^2)^2. Real model: on a
+   network the
    control-relevant TOTAL effect of a uniform action is B = b_d + b_s (direct + spillover/exposure
    effect), each an interference channel with its own causal estimand and its own Neyman-orthogonal
    moment. Claim: the control-regret order is set by the LEAST-orthogonalized channel -- orthogonalising
@@ -27,7 +28,7 @@ print("control regret R = C*(Bhat-B)^2 = C*(e_d + e_s)^2")$
 print("|e_d+e_s| <= delta^p_d + delta^p_s <= 2 delta^min => R = O(delta^{2*min(p_d,p_s)})")$
 print("=> the LEAST-orthogonalised channel caps the regret order (bottleneck)")$
 
-/* two policies, recovering result 4x0 as instances: */
+/* two policies, recovering that arithmetic as instances: */
 /* (i) HALF-orthogonal: direct debiased (p_d=2), spillover plug-in (p_s=1) => min=1 => R=O(delta^2) */
 Rhalf : subst([e_d = kd*delta^2, e_s = ks*delta^1], R)$
 print("(i) half-orth (p_d=2,p_s=1): R =", ratsimp(Rhalf), " -> O(delta^2) (spillover bottleneck)")$

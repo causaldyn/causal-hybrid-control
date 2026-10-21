@@ -23,7 +23,7 @@ closed form), the upper Hamiltonian is
 
 which is :func:`chc.barrier.robust_barrier_margin` with ``p`` in place of ``grad h``. The
 reachability solver and the barrier certificate therefore run on the *same* robust-margin algebra;
-what differs is that ``p = grad V`` is solved for rather than assumed. That also means the §40
+what differs is that ``p = grad V`` is solved for rather than assumed. That also means the barrier's
 zero-action rule reappears here as a property of the Hamiltonian: once ``Delta*||p|| >= ||B^T p||``
 the control term vanishes and the tube collapses at the drift's rate.
 
@@ -80,7 +80,7 @@ class ReachableTube:
 def robust_hamiltonian(
     p: Array, drift: Array, b_matrix: Array, u_max: float, radius: float
 ) -> Array:
-    """``p.f + U*(||B^T p|| - Delta*||p||)_+`` -- the §40 margin with a solved-for gradient.
+    """``p.f + U*(||B^T p|| - Delta*||p||)_+`` -- the robust barrier margin, gradient solved for.
 
     The inner ``min`` over ``||Delta_B||_op <= radius`` is attained by aligning ``Delta_B u`` with
     ``-p``, which costs ``radius*||p||*||u||``; the outer ``max`` over ``||u|| <= u_max`` then
@@ -118,7 +118,7 @@ def _wave_speeds(drifts: Array, b_matrix: Array, u_max: float, radius: float) ->
 
     ``dH/dp = f + U*(B B^T p/||B^T p|| - radius*p/||p||)`` wherever the control term is active. The
     textbook bound ``|f_i| + U*(||B_i.|| + radius)`` is valid but **discontinuous in the radius**:
-    past §40's zero-action threshold the control term vanishes identically, so the bound should drop
+    past the zero-action threshold the control term vanishes identically, so the bound should drop
     to ``|f_i|`` and instead keeps growing. A scheme that dissipates for authority it does not have
     smears a tube it never had to smear. The derivative is 1-homogeneous in ``p``, so maximising it
     over the unit circle is continuous in the radius and far tighter.
@@ -188,7 +188,7 @@ def backward_reachable_tube(
         drift: ``f(x)``, the uncontrolled field. Control-affine is assumed, the control entering
             through the constant ``b_matrix`` -- the assumption :mod:`chc.barrier`'s closed form
             needs anyway, and the reason this module does not accept a general ``Dynamics``.
-        radius: the §32 operator-norm identification radius on ``B``. ``0`` recovers the ordinary
+        radius: the operator-norm identification radius on ``B``. ``0`` recovers the ordinary
             (exactly identified) reachable tube.
 
     Raises:
@@ -245,7 +245,7 @@ def backward_reachable_tube(
 
 @dataclass(frozen=True)
 class BarrierReachabilityGap:
-    """What a *pointwise* §40 check does and does not tell you, measured against the true tube.
+    """What a *pointwise* barrier check does and does not tell you, measured against the true tube.
 
     The CBF theorem is a statement about a **set**: if the robust barrier condition holds at every
     point of ``{h >= 0}``, that set is forward invariant. Checking it at one state -- which is what
@@ -277,7 +277,7 @@ def barrier_reachability_gap(
     alpha: float = 1.0,
     tolerance: float = 0.02,
 ) -> BarrierReachabilityGap:
-    """Run the §40 condition and the horizon-``T`` tube on one grid and report where they part.
+    """Run the barrier condition and the horizon-``T`` tube on one grid and report where they part.
 
     The barrier condition asks ``max_u [grad h . f + <B^T grad h, u> - radius*||grad h||*||u||]
     >= -alpha*h``; the tube asks whether *any* controller holds ``h >= 0`` for ``horizon`` seconds
@@ -285,7 +285,7 @@ def barrier_reachability_gap(
     quantifier: if the condition holds at **every** point of ``{h >= 0}``, that set is invariant and
     the tube must be all of it -- which is what ``ok`` checks. Pointwise the implication is simply
     false, and ``certified_but_unreachable`` is how much of the grid it is false on: states where
-    the §40 margin is satisfied right now, yet no controller survives the horizon. Relative degree
+    the margin is satisfied right now, yet no controller survives the horizon. Relative degree
     is the usual reason -- when ``B^T grad h == 0`` the condition degenerates into a statement about
     the drift and stops seeing the actuator at all.
 
@@ -340,7 +340,7 @@ def barrier_reachability_gap(
 
 @dataclass(frozen=True)
 class HigherOrderBarrierGap:
-    """The §40 check lifted one derivative, so a relative-degree-2 barrier can see the radius.
+    """The barrier check lifted one derivative, so a relative-degree-2 barrier can see the radius.
 
     At pure relative degree 2 (``B^T grad h == 0`` on the safe set) the first-order robust
     condition degenerates: the control term -- which is where the identification radius lives --
@@ -381,8 +381,8 @@ def higher_order_barrier_gap(
 
     The condition asks ``max_u min_{Delta_B} grad psi1 . (f + (B + Delta_B) u) >= -alpha2 psi1``
     on the working set ``{h >= 0} & {psi1 >= 0}``, with ``psi1 = grad h . f + alpha1 h`` and the
-    same operator-norm identification ball as §40 -- so the margin is
-    :func:`robust_hamiltonian` with ``grad psi1`` in place of ``grad h``, and the §40 zero-action
+    same operator-norm identification ball as :mod:`chc.barrier` -- so the margin is
+    :func:`robust_hamiltonian` with ``grad psi1`` in place of ``grad h``, and the zero-action
     rule applies to the LIFTED channel: once ``radius * ||grad psi1|| >= ||B^T grad psi1||`` the
     verdict collapses to the drift's, now visibly rather than silently. If the condition holds
     everywhere on the working set, that set is forward invariant (Xiao & Belta's HOCBF argument

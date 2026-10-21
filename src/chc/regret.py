@@ -84,7 +84,7 @@ class OptimalExplorationCurve:
     exploration_grid: Vector  # injected exploration variance v
     total_cost: Vector  # A*v + C*Var(b_hat): explore cost + estimation-driven control regret
     explore_cost: Vector  # A*v, A = b^2 + rr (the control-cost curvature)
-    estimation_cost: Vector  # C*Var(b_hat) ~ B/v, B = C*sigma^2/n (the Cramer-Rao floor, Result 10)
+    estimation_cost: Vector  # C*Var(b_hat) ~ B/v, B = C*sigma^2/n (the Cramer-Rao floor)
     total_cost_confounded: Vector  # same curve when confounding steals signal (B -> B/kappa)
     vstar_theory: float  # sqrt(B/A): the AM-GM optimum
     vstar_empirical: float  # argmin of the simulated total cost
@@ -107,7 +107,7 @@ def optimal_exploration_certificate(
     n_seeds: int = 1000,
 ) -> OptimalExplorationCurve:
     """Optimal exploration for causal control -- the actionable DUAL of the Cramer-Rao lower bound
-    (Result 10; derived in ``validation/optimal_exploration.mac``, proved in
+    (derived in ``validation/optimal_exploration.mac``, proved in
     ``proofs/optimal_exploration.v``). Injecting exploration variance ``v`` buys identifying
     information (shrinking the estimation floor ``B/v``, ``B=C*sigma^2/n``) but is itself an action
     error costing ``A*v`` control (``A=b^2+rr``, by completing-the-square). The total excess
@@ -169,7 +169,7 @@ class AdaptiveExplorationCurve:
     horizons: Vector  # horizon T grid
     adaptive_regret: Vector  # cumulative regret of the tapering schedule (v_t ~ 1/sqrt(t)): sqrt(T)
     greedy_regret: Vector  # cumulative regret with no exploration: ~ T (linear)
-    static_regret: Vector  # cumulative regret of a constant-v schedule (Result 11 static): ~ T
+    static_regret: Vector  # cumulative regret of a constant-v schedule: ~ T
     # 2*sqrt(A*K*T/eta) - A*m0/eta, K = C*sigma^2: the proved sequence lower bound, which the
     # information m0 held before the first round lowers
     lower_bound: Vector
@@ -193,7 +193,7 @@ def adaptive_exploration_certificate(
     horizons: Sequence[int] = (50, 150, 500, 1500, 5000),
     schedule_horizon: int = 400,
 ) -> AdaptiveExplorationCurve:
-    """CONTRIBUTION 3 -- ADAPTIVE information-exploration duality (derived in
+    """ADAPTIVE information-exploration duality (derived in
     ``validation/adaptive_exploration.mac``, proved in ``proofs/adaptive_exploration.v``). At round
     ``t`` the controller injects ``v_t`` that raises accumulated Fisher information
     ``m_t = m0 + eta*sum_{s<t} v_s`` for FUTURE rounds, where ``eta`` in (0,1] is the identifying
@@ -216,7 +216,8 @@ def adaptive_exploration_certificate(
     this ``1/sqrt(eta)`` is identification-efficiency-specific (attenuation: noncompliance,
     dilution, partial observability, interference -- NOT necessarily confounding; ``eta=1`` for
     clean directly-observed randomisation), the causal content the generic bound lacked. Greedy is
-    ``Theta(T)``; the static ``v*`` of Result 11 over-explores. SCOPE: the ``t^{-1/2}`` schedule,
+    ``Theta(T)``; the static ``v*`` (:func:`optimal_exploration_certificate`) over-explores.
+    SCOPE: the ``t^{-1/2}`` schedule,
     ``sqrt(T)`` rate and van-Trees ``sqrt(T)`` lower bounds are KNOWN in adaptive LQR
     (Ziemann-Sandberg; Wagenmaker et al.); the FULL minimax constant is no longer open --
     :func:`minimax_exploration_certificate` proves it over ALL policies and shows this schedule pays
@@ -287,7 +288,7 @@ class MinimaxExplorationCurve:
 
 @dataclass(frozen=True)
 class CappedExplorationPolicy:
-    """The optimal exploration schedule under a per-round action cap -- Result 56, extended.
+    """The optimal exploration schedule under a per-round action cap: a clipped burst.
 
     For a constant cap the policy is three numbers: explore for ``block_rounds`` rounds, at ``cap``
     in all but the last and at ``last_round`` in that one, then stop. It is not an approximation --
@@ -374,7 +375,7 @@ def _self_consistent_mass(
     The first-order condition of ``validation/capped_exploration_schedule.mac`` STEP 2 is
     ``A (I0 + c S)^2 = K c (T - n)`` with ``n`` the round on which the greedy fill delivers ``S``
     -- so the target mass and the round that reaches it are defined together, and only the prefix
-    sums of the caps connect them. Result 56's ``sqrt(K T/(A c)) - I0/c`` is this at ``n << T``;
+    sums of the caps connect them. The cap-free ``sqrt(K T/(A c)) - I0/c`` is this at ``n << T``;
     it runs 25% high as soon as the caps open late, which a schedule is free to do. At a CONSTANT
     cap the gap to it is not asymptotic at all but the exact constant ``K/(2 A c cap)``, derived
     in :func:`capped_exploration_policy`.
@@ -404,7 +405,7 @@ def _self_consistent_mass(
 
 
 def _greedy_fill(caps: NDArray[np.float64], budget: float | None) -> NDArray[np.float64]:
-    """Saturate the caps from round 1 until the budget runs out -- Result 56's exchange argument
+    """Saturate the caps from round 1 until the budget runs out -- the exchange argument
     says an earlier round is strictly cheaper, and it never mentions what the caps are."""
     if budget is None:
         return caps
@@ -423,7 +424,7 @@ def capped_exploration_policy(
     i0: float = 1.0,
     eta: float = 0.6,
 ) -> CappedExplorationPolicy:
-    """The matching causal policy under a per-round action cap -- Result 56.
+    """The matching causal policy under a per-round action cap.
 
     :func:`minimax_exploration_certificate` showed that a front-loaded BURST attains the minimax
     floor while a ``1/sqrt(t)`` taper sits ``sqrt(2)`` above it, and conjectured that a per-round
@@ -464,7 +465,7 @@ def capped_exploration_policy(
     it as a slope rather than a level. Per decade of ``T`` at ``cap = 0.03`` it predicts ``2.32``
     against a measured ``2.20`` then ``2.29`` -- converging, which is the claim.
 
-    A VARYING cap, or a total ``budget`` on top of it, was Result 56's own open item: the exchange
+    A VARYING cap, or a total ``budget`` on top of it, is the harder case: the exchange
     argument still says "as early as feasible", but ``n*`` is then not a single number. It turns out
     ``n*`` was never the invariant. The first-order condition is
 
@@ -477,16 +478,16 @@ def capped_exploration_policy(
 
     and is free of the cap LEVEL while the round that reaches it is not. It is not free of the
     horizon: ``n`` sits inside its own condition, so ``predicted_mass`` is a fixed point rather
-    than a closed form, and Result 56's ``sqrt(K T/(A c)) - I0/c`` is the ``n << T`` limit -- 25%
+    than a closed form, and the cap-free ``sqrt(K T/(A c)) - I0/c`` is the ``n << T`` limit -- 25%
     high as soon as the caps open late.
 
-    Under a CONSTANT cap that fixed point has a closed form, and it says exactly what Result 56
+    Under a CONSTANT cap that fixed point has a closed form, and it says what the cap-free form
     drops. The stopping round is ``n = S/cap``, so the remaining horizon is itself a function of
     the mass and the condition becomes a QUADRATIC in ``w = I0 + c S``,
 
         ``A w^2 + (K/cap) w = K c T + K I0/cap``
 
-    whose Result 56 counterpart is the same balance with the horizon held at the full ``T``,
+    whose cap-free counterpart is the same balance with the horizon held at the full ``T``,
     ``A w0^2 = K c T``. Subtracting the two kills ``T`` entirely and leaves
     ``A (w0^2 - w^2) = K c S/cap``, so the cap-free form OVER-states the mass at every finite
     horizon -- never under-states it -- by ``(w0 - w)/c <= K/(2 A c cap)``, a CONSTANT rather than
@@ -557,7 +558,7 @@ def capped_exploration_policy(
     if constant:
         # The information grows by a constant step, so the harmonic sum is a difference of
         # digammas and the search costs O(1) per candidate -- which is what lets the certificate
-        # run to T = 1e7. This path is Result 56's and is left numerically untouched.
+        # run to T = 1e7. This path is the constant cap's and is left numerically untouched.
         level = float(caps[0])
 
         def cost_of(rounds: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -673,7 +674,7 @@ def minimax_exploration_certificate(
     horizons: Sequence[int] = (10**3, 10**4, 10**5, 10**6, 10**7),
     eta_grid: Sequence[float] = (0.1, 0.2, 0.4, 0.7, 1.0),
 ) -> MinimaxExplorationCurve:
-    """CONTRIBUTION 3 -- the FULL LOCAL-MINIMAX sequential lower bound with an EXPLICIT constant
+    """The FULL LOCAL-MINIMAX sequential lower bound with an EXPLICIT constant
     (derived in ``validation/minimax_exploration.mac``, proved in ``proofs/minimax_exploration.v``).
 
     :func:`adaptive_exploration_certificate` gave a *sequence* bound: over exploration schedules,
@@ -700,7 +701,7 @@ def minimax_exploration_certificate(
     its own optimal scale, sits at ``sqrt(2)`` times the floor (the two constants are Maxima's;
     Rocq ``taper_gap_is_sqrt_two`` checks that their squared ratio is 2). The
     burst is optimal *in this model*, where exploration cost is linear in the injected variance and
-    unbounded per round. A per-round action cap does NOT rescue the taper -- Result 56 shows the
+    unbounded per round. A per-round action cap does NOT rescue the taper -- the
     capped optimum is a cap-saturating BLOCK, still front-loaded, whose price over this floor is
     an additive logarithm; see :func:`capped_exploration_policy`.
 
@@ -753,7 +754,7 @@ def minimax_exploration_certificate(
     )
 
 
-# --- Result 58: the minimax LQ controller over the identified effect interval ---
+# --- The minimax LQ controller over the identified effect interval ---
 
 
 MinimaxBranch = Literal["lower", "upper", "equalise", "zero", "interior"]
@@ -789,8 +790,8 @@ def minimax_action(
 ) -> MinimaxAction:
     """Exact ``argmin_u max_{b in [b_lo, b_hi]} curvature*(b*u - target)^2 + effort*u^2``.
 
-    §33 showed by counterexample that certainty equivalence is *not* minimax for the LQ loss and
-    left the robust controller unbuilt; this is it, in closed form rather than by search
+    Certainty equivalence is *not* minimax for the LQ loss (Rocq ``ce_not_minimax`` is a
+    counterexample); this is the robust controller, in closed form rather than by search
     (``validation/minimax_lq.mac``, ``proofs/minimax_lq.v``).
 
     Two facts make it closed-form. The stage cost is convex in ``b`` with curvature
@@ -1147,7 +1148,7 @@ def minimax_lq_policy(
     containing zero. The value is the constant-effect worst case rather than an upper bound on it,
     and :func:`minimax_lq_certificate` measures that instead of assuming it.
 
-    HONEST SCOPE. Scalar state and scalar effect: the interval is the §32 sensitivity interval for
+    HONEST SCOPE. Scalar state and scalar effect: the interval is the MSM sensitivity interval for
     one control channel, and the multivariate lift is not this function.
     """
     if horizon < 1:
@@ -1239,9 +1240,9 @@ def minimax_lq_certificate(
 ) -> MinimaxLQCertificate:
     """Check the closed form against brute force, against CE, and against its own DP relaxation.
 
-    Three things, and the third is the one that could embarrass the entry. (i) On §33's own
+    Three things, and the third is the one that could embarrass the entry. (i) On the Rocq
     counterexample the closed form must return the action a fine grid search finds, and must beat
-    the CE action's worst case -- §33 reported 0.4 against 0.5 and 0.8 against 0.8125. (ii) Over a
+    the CE action's worst case: action 0.4 against 0.5, worst case 0.8 against 0.8125. (ii) Over a
     sweep of interval half-widths the robust worst case must stay at or below CE's and grow with the
     width. (iii) The robust policy is derived against an adversary that re-picks the effect every
     step, which is normally a strict relaxation; ``relaxation_ratio`` measures the price of it
@@ -1250,7 +1251,7 @@ def minimax_lq_certificate(
     """
     b_lo, b_hi = b_hat - halfwidths[-1], b_hat + halfwidths[-1]
 
-    static = minimax_action(1.0, 0.5, 1.5, 1.0)  # §33's instance, fixed: it is the published one
+    static = minimax_action(1.0, 0.5, 1.5, 1.0)  # the instance of Rocq's ce_not_minimax, fixed
     span = np.linspace(-1.0, 1.0, grid)
     worst_on_grid = np.maximum((0.5 * span - 1.0) ** 2, (1.5 * span - 1.0) ** 2) + span**2
     grid_action = float(span[int(np.argmin(worst_on_grid))])

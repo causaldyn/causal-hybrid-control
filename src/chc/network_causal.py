@@ -33,7 +33,8 @@ def cycle_shells(m: int, dmax: int) -> list[NDArray[np.float64]]:
 
     ``S_d[i,j] = 1`` iff ``j`` is exactly ``d`` hops from ``i``. The shells partition the graph, so
     ``tr(S_d S_e) = 0`` for ``d != e`` -- a vertex cannot sit at two distinct distances from ``i``.
-    That is the structural lemma Result 51 rests on.
+    That is the structural lemma the delayed-network variance law of
+    :func:`chc.research.regret.delayed_network_certificate` rests on.
     """
     i = np.arange(m)
     gap = np.abs(i[:, None] - i[None, :])
@@ -44,8 +45,8 @@ def cycle_shells(m: int, dmax: int) -> list[NDArray[np.float64]]:
 def graph_shells(adjacency: NDArray[np.float64], dmax: int) -> list[NDArray[np.float64]]:
     """0/1 distance-``d`` indicator matrices of an arbitrary undirected graph, ``d = 0..dmax``.
 
-    The generalisation of :func:`cycle_shells` off the vertex-transitive case, and the piece
-    Result 52 needs before its design law can be *applied* to a real topology: the law itself is
+    The generalisation of :func:`cycle_shells` off the vertex-transitive case, and the piece the
+    fold design law needs before it can be *applied* to a real topology: the law itself is
     closed-form only on vertex-transitive graphs, but the objective it minimises --
     ``sum_f 1_f' Q(x) 1_f`` -- is defined for any shell decomposition, so
     :func:`chc.research.regret.optimal_fold_partition` runs on whatever this returns.
@@ -57,8 +58,8 @@ def graph_shells(adjacency: NDArray[np.float64], dmax: int) -> list[NDArray[np.f
     ``dmax`` says nothing about them.
 
     The shells partition the reachable set, so ``tr(S_d S_e) = 0`` for ``d != e`` -- the structural
-    lemma Result 51 rests on -- and that holds here for the same reason it does on a cycle: a
-    vertex sits at exactly one distance from ``i``.
+    lemma the delayed-network variance law rests on -- and that holds here for the same reason it
+    does on a cycle: a vertex sits at exactly one distance from ``i``.
 
     Raises:
         ValueError: if ``adjacency`` is not square, not symmetric, or carries a self-loop. Each
@@ -90,11 +91,11 @@ def torus_adjacency(rows: int, cols: int) -> tuple[tuple[int, ...], ...]:
     The immutable form is deliberate: it is what :class:`DelayedNetworkPanel` stores, and a frozen
     dataclass carrying a NumPy array compares elementwise and stops being usable as a value.
 
-    The torus is the second topology Result 52's design law is tested on and the first one where
+    The torus is the second topology the fold design law is tested on and the first one where
     the law has no closed form: it is vertex-transitive, so every unit sees the same neighbourhood,
     but ``Q(x)`` is NOT circulant for ``rows, cols > 1``, so
     :func:`chc.research.regret.optimal_fold_partition` cannot take the exact banded route and falls
-    back to the search whose price Result 61 measured.
+    back to the search whose price :func:`chc.research.regret.fold_exactness_certificate` measures.
 
     Raises:
         ValueError: if either side is below 3, where the wrap would create a double edge and the
@@ -161,8 +162,10 @@ def panel_covariance(
         Cov(x_i(t), x_k(s)) = sum_{d,e} g_d g_e [S_d S_e]_{ik} phi**|(t-s) - lag*(d-e)|
 
     so ``Sigma = sum_q P_q (x) T_q`` over shifts ``q = d-e``, with ``P_q = sum_{d-e=q} g_d g_e
-    S_d S_e`` and ``[T_q]_{ts} = phi**|(t-s) - lag*q|``. Result 51 says this is separable only at
-    ``lag = 0``; Result 59 bounds how far from separable it gets. Since ``P_{-q} = P_q^T`` and
+    S_d S_e`` and ``[T_q]_{ts} = phi**|(t-s) - lag*q|``. This is separable only at ``lag = 0``
+    (:func:`chc.research.regret.delayed_network_certificate`), and
+    :func:`chc.research.regret.space_time_fold_certificate` bounds how far from separable it gets.
+    Since ``P_{-q} = P_q^T`` and
     ``T_{-q} = T_q^T``, each ``+-q`` pair splits into a symmetric and an antisymmetric channel, so
     the KRONECKER RANK is at most ``2*dmax`` -- set by the spillover truncation, never by the graph
     diameter or by ``n_times`` -- and exactly ``dmax+1`` when the shell operators commute, which
@@ -275,11 +278,13 @@ class DelayedNetworkPanel:
         e_i(t) = sum_d gamma_d * sum_{j : dist(i,j) = d} u_j(t - lag*d)
 
     so a shell-``d`` neighbour's treatment arrives ``lag*d`` steps late. That is exactly the
-    generative model Result 51 is stated for, which is the point: it makes ``lag`` and the serial
+    generative model the delayed-network variance law of
+    :func:`chc.research.regret.delayed_network_certificate` is stated for, which is the point: it
+    makes ``lag`` and the serial
     correlation ``phi`` ESTIMABLE from a log instead of assumed.
 
     ``disturbance_scale`` adds an INDEPENDENT draw of the same propagated process to the outcome,
-    and it is what decides whether Result 51 says anything about an estimator rather than only
+    and it is what decides whether that law says anything about an estimator rather than only
     about a process. The delayed-network covariance the law is a functional of is the one the
     SCORE's noise carries; with the default i.i.d. outcome noise the score is white, the fold
     operator cannot move the estimator's variance at all, and the two fold schemes measure equal
@@ -289,7 +294,7 @@ class DelayedNetworkPanel:
 
     Construction detail that decides whether the law applies. The exogenous part of the treatment,
     ``eta``, is i.i.d. ACROSS UNITS and AR(1) in time, while the confounder ``z`` carries the
-    spatial smoothness. Result 51's covariance is the one the RESIDUALISED score has, and
+    spatial smoothness. The law's covariance is the one the RESIDUALISED score has, and
     residualising on a nuisance that sees ``z`` leaves the ``eta``-driven part -- so putting the
     spatial correlation in
     ``z`` and not in ``eta`` is what makes the law's premise hold after cross-fitting rather than
@@ -301,9 +306,10 @@ class DelayedNetworkPanel:
     frozen dataclass stays a value (:func:`torus_adjacency` builds one). Regularity is required and
     checked, because the ``neighbours`` column is rectangular and a varying degree would have to be
     padded with a sentinel that every consumer would then have to know about. ``None`` keeps the
-    cycle and the byte-identical draw. The topology matters to the *design*, not to the law: Result
-    52's closed form needs vertex transitivity, and on a torus ``Q(x)`` is not even circulant, so
-    :func:`chc.research.regret.optimal_fold_partition` takes the search route Result 61 priced.
+    cycle and the byte-identical draw. The topology matters to the *design*, not to the law: the
+    fold design law's closed form needs vertex transitivity, and on a torus ``Q(x)`` is not even
+    circulant, so :func:`chc.research.regret.optimal_fold_partition` takes the search route
+    :func:`chc.research.regret.fold_exactness_certificate` prices.
 
     ``sample`` takes a JAX key like its cross-sectional sibling and returns the same column-dict, so
     ``estimate_network_effects`` accepts a panel with no adapter. Internally the propagation runs
@@ -351,7 +357,7 @@ class DelayedNetworkPanel:
         z_full = ar1_innovations(rng, (g, m), span, self.phi)
         z_full = 0.5 * z_full + 0.5 * np.einsum("ij,gjt->git", ring, z_full)
 
-        # eta: i.i.d. across units by default, so the RESIDUALISED score matches Result 51 exactly.
+        # eta: i.i.d. across units by default, so the RESIDUALISED score matches the law exactly.
         eta_full = ar1_innovations(rng, (g, m), span, self.phi)
         if self.eta_smoothing > 0.0:
             eta_full = (1.0 - self.eta_smoothing) * eta_full + self.eta_smoothing * np.einsum(
@@ -395,7 +401,7 @@ class DelayedNetworkPanel:
 
 @dataclass(frozen=True)
 class PropagationEstimate:
-    """The two parameters Result 51's polynomial needs, read off a panel rather than assumed.
+    """The two parameters the delayed-network variance law needs, read off a panel, not assumed.
 
     ``delay`` is the per-shell propagation lag ``delta`` in steps: a shell-``d`` neighbour's
     treatment reaches the unit at lag ``delta * d``. ``phi`` is the treatment's own AR(1)
@@ -464,7 +470,8 @@ def within_ar1(series: NDArray[np.float64], corrections: int = 3) -> float:
     Sweeping out unit and time means to isolate the serial dependence also correlates the
     demeaned regressor with the demeaned innovation, biasing the lag-1 autocorrelation down by
     ``(1 + phi) / (n_times - 1)`` (Nickell 1981). The raw number is not reported: it is a
-    prediction of a quantity smaller than the one Result 51 needs. Inverting that relation by
+    prediction of a quantity smaller than the one the delayed-network variance law needs.
+    Inverting that relation by
     fixed-point iteration recovered ``phi`` to within 0.007 for ``phi <= 0.6`` over
     ``n_times`` in 20-160, and to 0.022 in the worst corner measured (``phi = 0.85``,
     ``n_times = 20``), where the bias being removed is itself 0.097.
@@ -637,8 +644,9 @@ def estimate_network_effects(
     ``fold_groups`` labels each row with a unit that must not be split across folds; whole labels
     are permuted and chunked instead of rows. The default of ``None`` permutes rows, which is
     graph-blind: a unit's neighbour then usually lands in the training fold that predicts it, so
-    the same-fold edge fraction sits near ``1 / folds``. Result 51 shows the delayed cross-fit
-    variance ratio is affine in that fraction at spillover truncation ``D = 1``, with a root at
+    the same-fold edge fraction sits near ``1 / folds``.
+    :func:`chc.research.regret.delayed_network_certificate` shows the delayed cross-fit variance
+    ratio is affine in that fraction at spillover truncation ``D = 1``, with a root at
     ``theta* = K^3 / (4K^3 - 6K^2 + 4K - 1)``, which exceeds ``1 / K`` for every ``K`` -- so random
     rows always sit on the side where a propagation delay drives the ratio down. Passing the unit
     index recovers the graph structure the permutation destroys; passing a graph-aware grouping
@@ -807,7 +815,8 @@ def estimate_network_effects_gnn(
     representation is better learned than crafted, not as a free accuracy win.
 
     ``fold_groups`` behaves as in :func:`estimate_network_effects`, but its payoff here is
-    CHANNEL-SPECIFIC and smaller than Result 51's scalar law predicts. Measured on
+    CHANNEL-SPECIFIC and smaller than the scalar law of
+    :func:`chc.research.regret.delayed_network_certificate` predicts. Measured on
     :class:`DelayedNetworkPanel` at ``m=6, G=15, p=12, delta=1, phi=0.6``, 400 paired replications
     (both designs share each draw, so the ratio is bootstrapped over seeds; arm correlation 0.88 and
     0.97): parity-vs-block unit folds move the DIRECT effect's variance to ``0.887`` [0.803, 0.976]

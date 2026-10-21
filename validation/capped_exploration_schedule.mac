@@ -1,10 +1,10 @@
-/* A CAP THAT VARIES, AND A BUDGET ON TOP OF IT: what Result 56's n* becomes when the feasible set
-   stops being a single number.
+/* A CAP THAT VARIES, AND A BUDGET ON TOP OF IT: what the constant-cap n* becomes when the feasible
+   set stops being a single number.
 
-   Result 56 settled the constant-cap case -- explore at the cap for n* = sqrt(KT/(Ac))/cap rounds,
-   then stop -- and recorded in its own honest scope (3) that "a cap that VARIES over rounds, or a
-   budget constraint in addition to the cap, changes the feasible set; the exchange argument still
-   says 'as early as feasible', but n* is then not a single number."  That is A17.
+   validation/capped_exploration.mac settled the constant-cap case -- explore at the cap for
+   n* = sqrt(KT/(Ac))/cap rounds, then stop -- and left open a cap that VARIES over rounds, or a
+   budget constraint in addition to the cap: either changes the feasible set; the exchange argument
+   still says 'as early as feasible', but n* is then not a single number.
 
    The answer is that n* was never the invariant.  The first-order condition depends on the cap
    schedule ONLY through the exploration MASS already delivered, so what is cap-independent is
@@ -16,9 +16,9 @@
        n* = min{ n : sum_{t<=n} cap_t >= min(B, S*) }
 
    A budget B therefore does not interact with the cap at all: it truncates the same mass.  Two
-   constraints collapse to one number, and Result 56's n* is the constant-cap special case
+   constraints collapse to one number, and the constant-cap n* is the special case
    S* / cap.  The COST still depends on the shape -- delivering the same mass earlier is strictly
-   cheaper, which is Result 56's exchange argument, unchanged and still never mentioning the cap.
+   cheaper, which is the same exchange argument, unchanged and still never mentioning the cap.
 
    Certificate: chc.regret.capped_exploration_policy(cap=<schedule>, budget=);
    proofs/capped_exploration.v carries the exchange argument this builds on. */
@@ -58,7 +58,7 @@ print("        round that starts exploiting, so the level of the cost is continu
 print("        only the SLOPE decides.  What is left contains the cap as an overall factor and")$
 print("        NOWHERE else: the bracket sees only the mass S(n) and the rounds left")$
 
-/* ===== STEP 3: the optimal mass, and Result 56 as its constant-cap corollary ===== */
+/* ===== STEP 3: the optimal mass, and the constant-cap law as its corollary ===== */
 
 print("=== STEP 3: solve the bracket for the mass ===")$
 remove([S, cap], dependency)$
@@ -69,11 +69,11 @@ Sstar : sqrt(K*T/(A*c)) - I0/c$
 print("STEP 3b the positive one, written for a certificate:  S* =", Sstar)$
 print("STEP 3c residual of A (I0 + c S*)^2 - K c T =",
       ratsimp( A*(I0 + c*Sstar)^2 - K*c*T ), " (0)")$
-print("STEP 3d Result 56 used n << T to replace (T - n) by T; the correction is second order")$
+print("STEP 3d the n << T form replaced (T - n) by T; the correction is second order")$
 print("STEP 3e at a CONSTANT cap, n* = S*/cap =", ratsimp(Sstar/cp),
-      " and Result 56's sqrt(KT/(Ac))/cap is this with I0 = 0:",
+      " and the constant-cap sqrt(KT/(Ac))/cap is this with I0 = 0:",
       ratsimp( subst(I0 = 0, Sstar/cp) ))$
-print("STEP 3f so the I0 term is exactly the O(1) Result 56 declined to model, now explicit")$
+print("STEP 3f so the I0 term is exactly the O(1) the closed form declined to model, now explicit")$
 
 /* ===== STEP 4: the second-order condition, and why a budget only truncates ===== */
 
@@ -87,7 +87,7 @@ print("        budget B < S* is attained at the boundary: spend all of B, as ear
 print("        allow.  A budget B >= S* is slack and changes nothing")$
 print("STEP 4c the two constraints therefore collapse:  deliver mass min(B, S*), greedily.")$
 print("        n* = min{ n : sum_{t<=n} cap_t >= min(B, S*) } -- a stopping INDEX read off a")$
-print("        prefix sum, not a formula, which is exactly why Result 56 could not name it")$
+print("        prefix sum, not a formula, which is exactly why a closed form could not name it")$
 
 /* ===== STEP 5: what does NOT survive ===== */
 
@@ -128,9 +128,9 @@ print("STEP 6e the certificate measures the reduction at (T, m) = (400,133), (40
 print("        (4000,1333), (4000,500), (10000,2000): residual at most 3.1e-12 on the cost and")$
 print("        1.8e-15 on the mass, with the active block length equal on the nose")$
 
-/* ===== STEP 7: the O(1) term Result 56 dropped (P3.2) ===== */
+/* ===== STEP 7: the O(1) term the closed form dropped ===== */
 
-print("=== STEP 7: the O(1) term Result 56 dropped, and where the cap enters the MASS ===")$
+print("=== STEP 7: the O(1) term the closed form dropped, and where the cap enters the MASS ===")$
 
 /* Under a CONSTANT cap kap the stopping round is n = S/kap, so the remaining horizon in STEP 2's
    bracket is itself a function of the mass and the root stops being a square root. */
@@ -145,11 +145,11 @@ print("STEP 7c the quadratic at that root =",
       ratsimp( radcan( subst(w = wpos, quad) ) ), " (0)")$
 
 Sex : ratsimp( (wpos - I0)/c )$
-S56 : sqrt(K*T/(A*c)) - I0/c$                 /* Result 56's closed form */
+S56 : sqrt(K*T/(A*c)) - I0/c$                 /* the constant-cap closed form */
 So1 : S56 - K/(2*A*c*kap)$                    /* ... with the missing O(1) term put back */
 
 print("STEP 7d taylor(S56 - Sexact, T, inf, 1) =", taylor(S56 - Sex, T, inf, 1))$
-print("        the leading entry is a CONSTANT, not a vanishing remainder: Result 56 over-states")$
+print("        the leading entry is a CONSTANT, not a vanishing remainder: S56 over-states")$
 print("        the mass by K/(2 A c kap) at EVERY horizon, however long")$
 print("STEP 7e residual of that constant against K/(2 A c kap) =",
       ratsimp( radcan( limit( S56 - Sex, T, inf ) - K/(2*A*c*kap) ) ), " (0)")$
@@ -163,10 +163,10 @@ print("        and that coefficient rewritten is", ratsimp(radcan(coef)))$
 
 print("STEP 7h so the MASS is cap-free only to LEADING order.  The cap enters at O(1) as")$
 print("        -K/(2 A c kap) and again at O(1/sqrt(T)) as 1/kap^2, and nowhere else.  A tighter")$
-print("        cap stops at a SMALLER mass, and the error Result 56 makes is the whole of that")$
+print("        cap stops at a SMALLER mass, and the error S56 makes is the whole of that")$
 print("        O(1) term -- which is why the certificate ships the fixed point rather than the")$
 print("        closed form: at T = 4000 with caps that open late the closed form runs 25% high")$
-print("STEP 7i the three terms also say WHEN Result 56 is safe: the O(1) correction is small")$
+print("STEP 7i the three terms also say WHEN S56 is safe: the O(1) correction is small")$
 print("        against the leading term exactly when kap >> K/(2 A c) / sqrt(K T/(A c)) =")$
 print("        sqrt(K/(4 A c T)), i.e. when one round's cap already moves the information by more")$
 print("        than the whole block does per unit horizon")$

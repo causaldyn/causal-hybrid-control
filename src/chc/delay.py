@@ -328,9 +328,11 @@ class DelayBall:
     field is named for what it is rather than paired with an absent ``ratio_ceiling``. In absolute
     terms the admissible estimates are ``(shortest_safe_estimate, inf)``.
 
-    Contrast the ball in dynamics error that Result 44 gives, which is symmetric and pairs with a
-    regret quadratic in its radius. Neither property survives the move to delay space, and both fail
-    for the same reason: the decay-optimal design sits at a *defective* characteristic root.
+    Contrast the ball in dynamics error of
+    :func:`chc.research.regret.ce_explicit_constant_certificate`, which is symmetric and pairs
+    with a regret quadratic in its radius. Neither property survives the move to delay space, and
+    both fail for the same reason: the decay-optimal design sits at a *defective* characteristic
+    root.
     """
 
     tau: float
@@ -490,9 +492,10 @@ class DelayBallCertificate:
 
     ``largest_unstable`` and ``smallest_stable`` are multiples of the derived floor, so they bracket
     where the loop *actually* changes behaviour: the derivation is confirmed when the bracket
-    straddles 1. Result 44's ball came from a Lyapunov *sufficient* condition and ran 15.5x
-    conservative; this one comes from the exact characteristic equation, so the bracket is tight to
-    the sweep grid and there is no slack to report.
+    straddles 1. The dynamics-error ball of
+    :func:`chc.research.regret.ce_explicit_constant_certificate` came from a Lyapunov *sufficient*
+    condition and ran 15.5x conservative; this one comes from the exact characteristic equation,
+    so the bracket is tight to the sweep grid and there is no slack to report.
     """
 
     tau: float

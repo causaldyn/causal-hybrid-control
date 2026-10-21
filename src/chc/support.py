@@ -437,9 +437,10 @@ def pessimistic_control(
 
     ``support`` supplies the density-distance term ``D``; the optional ``uncertainty`` scorer gives
     the calibrated predictive-uncertainty term ``U`` (a ``chc.uncertainty`` ensemble/conformal).
-    Uses autodiff for the augmented-objective gradient (validated equal to the discrete adjoint in
-    ``01 §4.1``). Returns the optimised controls and the **task**-cost history (penalties excluded,
-    so runs at different weights are comparable).
+    Uses autodiff for the augmented-objective gradient (validated equal to the discrete adjoint,
+    :func:`chc.adjoint.control_gradient_adjoint`, in ``tests/test_adjoint.py``). Returns the
+    optimised controls and the **task**-cost history (penalties excluded, so runs at different
+    weights are comparable).
 
     ``u_lo`` / ``u_hi`` take the same scalar, per-lever or full-schedule forms, and
     ``constraints`` the same linear rows, that :func:`chc.control.projected_gradient_control`

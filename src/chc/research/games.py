@@ -89,8 +89,9 @@ def congestion_contraction_certificate(
 class EquilibriumMonotonicityCertificate:
     """Global strong monotonicity of ``F = I - S``, and the finite-perturbation bound it licenses.
 
-    Result 39 (b) bounds ``||(I - S')^{-1}||`` at the equilibrium -- an implicit-function
-    derivative, so it prices *infinitesimal* perturbations and says as much. These are the global
+    :func:`equilibrium_transfer_certificate` bounds ``||(I - S')^{-1}||`` at the equilibrium -- an
+    implicit-function derivative, so it prices *infinitesimal* perturbations and says as much.
+    These are the global
     quantities: a modulus that holds at every point of a box, and a displacement measured at a
     perturbation of finite size.
     """
@@ -124,14 +125,15 @@ def equilibrium_monotonicity_certificate(
     perturbations: int = 24,
     seed: int = 0,
 ) -> EquilibriumMonotonicityCertificate:
-    """Measure the GLOBAL modulus Result 39 (b) left open, and the bound it buys.
+    """Measure the GLOBAL modulus the local conditioning bound leaves open, and what it buys.
 
     ``F'(x) = I + kappa*J(s(x))`` with ``J = diag(s) - s s^T`` a covariance matrix, so ``F' >= I``
     at *every* ``x``, not only at the equilibrium: ``F`` is 1-strongly monotone globally, and
     ``1`` cannot be improved because ``J`` annihilates the constants. The direction that saturates
     it is the one mass conservation forbids, so on the fixed-mass tangent space the modulus is
     strictly larger, bounded below by ``1 + kappa*n*s_min^2`` -- exactly attained at the two-point
-    uniform ``s``, the same configuration that makes Result 39 (a)'s Popoviciu bound sharp
+    uniform ``s``, the same configuration that makes the Popoviciu bound ``spec(J) <= 1/2`` of
+    :func:`congestion_contraction_certificate` sharp
     (``validation/equilibrium_monotonicity.mac``, ``proofs/equilibrium_monotonicity.v``; z3 and cvc5
     both return unsat on the negation at ``n = 3``).
 
@@ -145,8 +147,9 @@ def equilibrium_monotonicity_certificate(
     Reported at two scales on purpose, because the answers differ and only one of them is the
     headline. Over the whole box the tangent improvement **evaporates**: near a corner the softmax
     approaches a vertex, ``s_min`` collapses, and both the measured tangent modulus and its bound
-    fall back to 1. The strictly-better constant of Result 39 (b) is a statement about a
-    neighbourhood of an interior equilibrium, and ``local_tangent_modulus`` is where it has teeth --
+    fall back to 1. The strictly-better tangent constant of
+    :func:`equilibrium_transfer_certificate` is a statement about a neighbourhood of an interior
+    equilibrium, and ``local_tangent_modulus`` is where it has teeth --
     quoting it globally is exactly the mistake this certificate exists to prevent.
     """
     key = jax.random.key(seed)
@@ -247,7 +250,7 @@ def equilibrium_monotonicity_certificate(
 
 @dataclass(frozen=True)
 class EquilibriumTransferCertificate:
-    """Result 39: the equilibrium layer transfers the estimation-error ORDER and is non-expansive.
+    """The equilibrium layer transfers the estimation-error ORDER and is non-expansive.
 
     ``conditioning`` is the ambient ``||(I - S')^{-1}||_2`` for the UNDAMPED best response ``S`` --
     the local (implicit-function) constant relating an infinitesimal operator perturbation to the
@@ -281,8 +284,9 @@ def _simplex_leader(
 ) -> Array:
     """Projected Adam on the budget simplex -- :func:`_unconstrained_leader`'s constrained sibling.
 
-    Exists to make the regularity assumption of Result 39 (c) falsifiable: the interior arm is what
-    the order claim is about, and this is the arm where it breaks.
+    Exists to make the interior-optimum assumption of :func:`equilibrium_transfer_certificate`
+    falsifiable: the interior arm is what the order claim is about, and this is the arm where it
+    breaks.
     """
     u = project_simplex(jnp.full(n, budget / n), budget)
     optimizer = optax.adam(lr)
@@ -334,7 +338,7 @@ def equilibrium_transfer_certificate(
     errors: Sequence[float] = (0.4, 0.2, 0.1, 0.05),
     kappas: Sequence[float] = (4.0, 5.0, 5.5, 5.8, 5.96),
 ) -> EquilibriumTransferCertificate:
-    """Measure the two halves of Result 39 on the logit congestion Stackelberg game.
+    """Measure the order transfer and its conditioning on the logit congestion Stackelberg game.
 
     Half one, across ``kappas``: the local conditioning ``||(I - S')^{-1}||_2`` -- both the ambient
     norm and its restriction to the fixed-mass tangent space, which is the one an equilibrium

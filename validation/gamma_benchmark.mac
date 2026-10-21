@@ -1,4 +1,5 @@
-/* DISCOVERY (benchmarking Gamma): Result 32 ships Gamma as the analyst's unfalsifiable input.
+/* DISCOVERY (benchmarking Gamma): the bounded-density-ratio sensitivity model of
+   confounding_robust_cvar.mac ships Gamma as the analyst's unfalsifiable input.
    Unfalsifiable is not the same as uncalibrated. Two calibrations exist and both are exact algebra:
    (a) express Gamma in units of the confounding an OBSERVED covariate carries -- which forces the
    LOG scale, because odds ratios COMPOSE MULTIPLICATIVELY; and (b) the negative control, the

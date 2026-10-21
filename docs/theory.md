@@ -269,8 +269,3 @@ failures, when the tests were first written (names relative to `chc`):
 | `van_trees.v` | `regret.adaptive_exploration_certificate`, `regret.van_trees_certificate` | `test_formal_regret_a.py, test_formal_regret_c.py` |
 | `var_noise_tube.mac` | `uncertainty._noise_tube` | `test_formal_control.py` |
 | `zone_market.mac` | `zones.ZoneMarketSystem.zone_decision` | `test_formal_estimation.py` |
-
-## Result numbers in docstrings
-
-Docstrings refer to results by number — `§40`, `Result 55` — and those numbers index a research
-log that is not public. The proof and derivation files they cite are.

@@ -1,6 +1,7 @@
-/* DISCOVERY (why b1 is large and negative): §41 closes with "Not established. Why b1 is large and
-   negative on a setpoint-tracked zone ... no derivation here fixes the magnitude." This fixes it,
-   and refutes the guess that was standing in for it.
+/* DISCOVERY (why b1 is large and negative): validation/actuator_reparametrisation.mac takes the
+   fitted b1 of a setpoint-tracked zone as an input; why it is large and negative, and what fixes
+   its magnitude, it does not derive. This fixes it, and refutes the
+   guess that was standing in for it.
 
    A proportional tracking loop puts the log on an AFFINE MANIFOLD x = c + m*u with m = -1/Kp. On
    that manifold the four coefficients of the control-affine class dxdt = d + a*x + (b0 + b1*x)*u are
@@ -37,14 +38,15 @@ print("    the other two equations, d + a*c - A =", ratsimp(c0 - A),
 
 /* (4) sign and magnitude. Kp > 0, so b1 < 0 exactly when the response is CONVEX in the action, and
    |b1| grows linearly with the loop gain -- a tighter tracker reports a bigger interaction from the
-   same physics. That is the magnitude §41 asked for. */
+   same physics. That is the magnitude left open. */
 print("(4) d|b1|/dKp at fixed C =", ratsimp( diff(-Kp*C, Kp) ), "  (= -C: linear in the loop gain)")$
 
-/* (5) the numerical anchor. §41 measured b1 = -0.3779 on the hydronic case; Kp = 2.6 with curvature
-   C = 0.1454 reproduces it. Both are inputs here, not fitted -- the point is that the identity has a
-   solution in a plausible range, and chc.dynamics_id.closed_loop_gain_attribution measures it. */
+/* (5) the numerical anchor. The fit measured b1 = -0.3779 on the BOPTEST hydronic case;
+   Kp = 2.6 with curvature C = 0.1454 reproduces it. Both are inputs here, not fitted -- the point
+   is that the identity has a solution in a plausible range, and
+   chc.dynamics_id.closed_loop_gain_attribution measures it. */
 print("(5) -Kp*C at Kp=2.6, C=0.1454 =", float( subst([Kp = 2.6, C = 0.1454], -Kp*C) ),
-      "  (§41 reported -0.3779)")$
+      "  (the fit reported -0.3779)")$
 
 /* (6) REFUTATION of the standing guess, b1 = -1/Kp from the simultaneity slope.
    That is the slope of the MANIFOLD, m, not the interaction coefficient: b1 = C/m, so -1/Kp would

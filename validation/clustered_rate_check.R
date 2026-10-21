@@ -1,4 +1,4 @@
-# Independent (R, base only) cross-check of the C2 clustered cross-fit DML rate theorem (Result 26):
+# Independent (R, base only) cross-check of the clustered cross-fit DML rate theorem:
 #   ||B_hat - B|| = O_p(G^{-1/2} + nuisance products).  At tiny nuisance error the sampling term
 # dominates, so ||B_hat - B|| ~ G^{-1/2}: the log-log slope of RMSE vs G should be about -0.5.
 # This reproduces, in a separate language/stack, what chc.research.regret.clustered_lower_bound_certificate shows.
@@ -40,7 +40,7 @@ simulate_cluster <- function(G, m = 10, b_d = 1.0, b_s = 0.6,
   u <- au * z + 0.7 * rnorm(n)
   g <- ag * z + 0.7 * rnorm(n)
   y <- b_d * u + b_s * g + gamma * z + a + noise * rnorm(n)
-  list(z = z, u = u, g = g, y = y, fold = (cid %% 2))   # A8: whole clusters held out
+  list(z = z, u = u, g = g, y = y, fold = (cid %% 2))   # folds of whole clusters
 }
 
 Gs <- c(20, 40, 80, 160, 320); n_seed <- 80; b_total <- 1.6
@@ -59,7 +59,7 @@ cat(sprintf("sqrt(G)*RMSE (flat if rate is G^-1/2): %s\n",
             paste(sprintf("%.4f", sqrt(Gs) * rmse), collapse = "  ")))
 cat(sprintf("log-log slope of RMSE vs G = %.3f  (theory: -0.5)\n", slope))
 stopifnot(slope > -0.62, slope < -0.38)
-cat("PASS: clustered cross-fit DML total-effect error scales as G^{-1/2} (Result 26, T1 term).\n")
+cat("PASS: clustered cross-fit DML total-effect error scales as G^{-1/2} (the sampling term).\n")
 
 ## ---- section 2: the same slope with an error bar, as the cluster grid moves up ----------------
 ## Every exponent in this programme is a fit over a finite window, so the reading owes a window and

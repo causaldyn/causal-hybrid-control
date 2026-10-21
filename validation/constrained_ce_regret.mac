@@ -1,11 +1,12 @@
 /* DISCOVERY / derivation: CONSTRAINED certainty-equivalence regret is PIECEWISE-QUADRATIC -- from
    Gros & Diehl, "Numerical Optimal Control" (2022), Ch 16 (Parametric Nonlinear Optimization: the
    active-set / KKT sensitivity of the optimizer u*(theta)). The program's clean O(eps^2) CE regret
-   (results 0/2/5) holds only WITHIN one active-set cell. A budget / safety constraint u <= umax clips
+   holds only WITHIN one active-set cell. A budget / safety constraint u <= umax clips
    the control; the constrained optimum u_opt(b) is CONTINUOUS but its slope JUMPS at the activation
    threshold (from the interior sensitivity to 0), so the regret curvature jumps -- it is only
    piecewise-quadratic. Consequence: under partial identification (b in an interval that straddles the
-   threshold, cf. result #9) the pessimism budget must cover the active-set transition. Maxima is truth. */
+   threshold, cf. partial_id_control.mac) the pessimism budget must cover the active-set transition.
+   Maxima is truth. */
 display2d : false$
 
 /* scalar control cost c(u,b) = (b*u - xt)^2 + rr*u^2; unconstrained optimum and its sensitivity */
@@ -59,7 +60,8 @@ print("STEP 3c defaults xt=1, rr=1, umax=0.45, truth b_t+0.1, estimate b_t-0.15:
 print("clipping is non-expansive: (u_opt(bh)-u_opt(b))^2 <= (u*(bh)-u*(b))^2")$
 print("=> constrained regret <= unconstrained regret (Rocq: constrained_regret_le_unconstrained)")$
 
-/* DECISION CONSEQUENCE (ties to result #9 partial-ID and the marketplace budget): with b only known to
+/* DECISION CONSEQUENCE (ties to partial_id_control.mac and the marketplace budget): with b only
+   known to
    an interval straddling b_t, a naive controller that assumes INACTIVE applies u*(bh) and pays up to
    Rstr if the truth is active; the conservative controller that assumes ACTIVE applies umax and pays 0
    when the truth is active. The pessimism budget to prefer the safe (active) branch is that regret gap. */

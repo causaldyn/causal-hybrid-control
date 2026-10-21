@@ -2,10 +2,11 @@
    THROUGH the certainty-equivalence order-doubling to a CONTROL-REGRET floor. Scalar LQ toy (the repo's
    canonical control, cf. orthogonal_control.mac): outcome y=b*u, cost J_b(u)=(b*u-target)^2 + r*u^2.
    The controller applies the optimum for its effect estimate bhat; regret is measured on the true b.
-   Under Tan's MSM the effect estimate carries an irreducible bias half-width Delta(Gamma) = the §32
-   inflation. The point: control regret is SECOND order in the effect error, so the confounding regret
-   floor is Delta(Gamma)^2 -- downstream control is QUADRATICALLY more robust to confounding than effect
-   estimation (the same order-doubling that powers C1/C2/orthogonal, now damping confounding bias).
+   Under Tan's MSM the effect estimate carries an irreducible bias half-width Delta(Gamma), that
+   file's inflation. The point: control regret is SECOND order in the effect error, so the
+   confounding regret floor is Delta(Gamma)^2 -- downstream control is QUADRATICALLY more robust to
+   confounding than effect estimation (the same order-doubling that powers orthogonal control, now
+   damping confounding bias).
    proofs/confounding_lq_regret.v proves the control-relevant properties. */
 display2d : false$
 

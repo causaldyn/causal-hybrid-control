@@ -1,5 +1,5 @@
-/* DISCOVERY / derivation: the FOLD-SPECTRUM LAW (Result 52). Result 51 (h) compares two NAMED
-   fold partitions (alternating vs contiguous) and finds their crossover; this file solves the
+/* DISCOVERY / derivation: the FOLD-SPECTRUM LAW. Two NAMED fold partitions (alternating vs
+   contiguous) have a crossover in the delay; this file solves the
    design problem those two were sampled from. The route: the fold partition enters the sandwich
    Psi only through tr(A^2 S_d S_e); the square of the cross-fit residualiser stays inside the
    idempotent algebra <I, E, F> -- squaring promotes r^2 to r^4 and nothing else (STEP 1); what
@@ -14,8 +14,9 @@
        lambda_parity - lambda_stripes = 4 (g0 x - g1)(2 g2 x - g1),
    roots x = g1/g0 and x = g1/(2 g2), so parity is optimal exactly BETWEEN the thresholds and
    stripes outside them; g2 -> 0 leaves the single D = 1 threshold g1/g0. Enumeration of ALL
-   balanced partitions (research log, Result 52) confirms these are the global argmins on their
-   sides, and the exact resolvent moment of Result 51 (l) prices how the estimator-level
+   balanced partitions (chc.research.regret.optimal_fold_partition, exhaustive route) confirms
+   these are the global argmins on their sides, and the exact resolvent moment
+   (chc.research.regret.exact_ratio_moment) prices how the estimator-level
    thresholds move off these plug-in values. Maxima is the source of truth for the algebra. */
 display2d : false$
 

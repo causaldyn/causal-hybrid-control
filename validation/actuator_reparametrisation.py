@@ -1,4 +1,4 @@
-"""Numeric cross-check of validation/actuator_reparametrisation.mac (Result 41).
+"""Numeric cross-check of validation/actuator_reparametrisation.mac.
 
 A symbolic identity is a hypothesis until it is measured. Four claims, on a bilinear plant fitted by
 least squares in two actuator coordinate systems:

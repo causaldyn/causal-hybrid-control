@@ -276,10 +276,10 @@ def information_lower_bound_certificate(
     ``R = (b^2+rr)*(u*(bhat)-u*(b))^2`` (nonlinear in b); to first order in the effect error this is
     ``C*(bhat-b)^2``, and Cramer-Rao on the (unbiased) estimator gives the local floor
     ``E[regret] >= C*sigma^2/(n*V_id)``, ``V_id`` the identifying variance. The ``1/n`` rate
-    matches the online upper bound (Result 7) in this scalar model; confounding reduces ``V_id``
-    (``V_exp`` -> residual ``V_conf``), raising the floor.
+    matches the online upper bound (:func:`bandit_causal_certificate`) in this scalar model;
+    confounding reduces ``V_id`` (``V_exp`` -> residual ``V_conf``), raising the floor.
 
-    RESULT 57 -- the van Trees arm, which removes two of the three scope caveats. The one-step LQ
+    The van Trees arm, which removes two of the three scope caveats. The one-step LQ
     regret is EXACTLY ``(b^2+rr)(u - u*(b))^2``, a squared error in the ACTION with no
     linearisation (``validation/action_van_trees.mac`` STEP 1). Van Trees on the estimand
     ``psi(b) = u*(b)`` bounds the Bayes ACTION error of EVERY estimator, biased or not,
@@ -328,7 +328,7 @@ def information_lower_bound_certificate(
     conf_floor = coeff * sigma**2 / (ns * v_conf)
     slope = float("nan") if knife_edge else float(np.polyfit(np.log(ns), np.log(exp_regret), 1)[0])
 
-    # Result 57's arm, in ACTION space, where the regret identity is exact.
+    # The van Trees arm, in ACTION space, where the regret identity is exact.
     prior_width = 0.25
     prior_info = 1.0 / prior_width**2
     n_probe = int(sample_sizes[-1])
@@ -375,9 +375,9 @@ def information_lower_bound_certificate(
 
 @dataclass(frozen=True)
 class MultivariateActionFloor:
-    """The van Trees floor on control regret when the effect is a MATRIX -- Result 67.
+    """The van Trees floor on control regret when the effect is a MATRIX.
 
-    Result 57's scalar floor is a PRODUCT, curvature times information. This one is a TRACE,
+    The scalar van Trees floor is a PRODUCT, curvature times information. This one is a TRACE,
     ``tr(M Psi' G^-1 Psi')``, which interleaves them -- so it decomposes over the eigendirections
     of the information rather than collapsing to a single ratio, and a direction the optimal action
     does not depend on contributes exactly nothing however badly it is identified.
@@ -447,12 +447,12 @@ def multivariate_action_floor(
     information: Matrix,
     directions: Matrix | None = None,
 ) -> MultivariateActionFloor:
-    """RESULT 67 (A18) -- van Trees on the ACTION when the effect is a matrix.
+    """Van Trees on the ACTION when the effect is a matrix.
 
     Derived in ``validation/multivariate_van_trees.mac``, proved in
-    ``proofs/multivariate_van_trees.v``. Result 57 closed with "the multivariate case has the same
-    structure with ``psi'`` a Jacobian and the floor a trace"; the structure is the same and the
-    CONCLUSION is not, which is why this is a separate result rather than a generalisation.
+    ``proofs/multivariate_van_trees.v``. The scalar floor closed with "the multivariate case has
+    the same structure with ``psi'`` a Jacobian and the floor a trace"; the structure is the same
+    and the CONCLUSION is not, which is why this is a separate result rather than a generalisation.
 
     The regret is an exact quadratic form in the action at any dimension,
 
@@ -465,8 +465,8 @@ def multivariate_action_floor(
 
         ``E[regret] >= tr( M Psi' G^-1 Psi' )``,  ``G = n I_data + I(prior)``
 
-    which at ``p = q = 1`` is ``(b^2+rr) psi'(b)^2 / G`` -- Result 10's constant, unchanged
-    (STEP 4c, residual 0).
+    which at ``p = q = 1`` is ``(b^2+rr) psi'(b)^2 / G`` -- the scalar Cramer-Rao constant,
+    unchanged (STEP 4c, residual 0).
 
     The floor is LOCAL. Van Trees bounds the Bayes risk by ``E_lambda[Psi']``, the sensitivity
     averaged over the prior, and the trace step needs one ``M`` for every plant; here both are read
@@ -572,10 +572,10 @@ def multivariate_action_floor(
 
 @dataclass(frozen=True)
 class MultivariateVanTreesCurve:
-    """Result 67 -- the matrix-effect van Trees floor, and the alignment a scalar plant hides."""
+    """The matrix-effect van Trees floor, and the alignment a scalar plant hides."""
 
     floor: float  # tr(M Psi' G^-1 Psi') at the reference plant
-    scalar_agreement: float  # relative gap between the 1x1 floor and Result 10's closed form
+    scalar_agreement: float  # relative gap between the 1x1 floor and the scalar Cramer-Rao form
     channel_sum_agreement: float  # ... and between the 2x2 floor and h1 C1 + h2 C2 (STEP 7c)
     sensitivity_residual: float  # closed-form Psi' against a central finite difference
     bayes_floor: float  # tr(E_lambda[Psi'] G^-1 E_lambda[Psi']): the estimand-level floor
@@ -602,35 +602,35 @@ def multivariate_van_trees_certificate(
     draws: int = 40_000,
     seed: int = 11,
 ) -> MultivariateVanTreesCurve:
-    """RESULT 67 (A18) -- the multivariate van Trees floor, and what it says that Result 57 cannot.
+    """The multivariate van Trees floor, and what it says that the scalar floor cannot.
 
     Derived in ``validation/multivariate_van_trees.mac``, proved in
     ``proofs/multivariate_van_trees.v``. Four things are measured, each able to fail.
 
-    1. The floor REDUCES correctly. At ``p = q = 1`` it is Result 10's ``C sigma^2/(n V)``, and on
-       two decoupled channels it is ``h1 C(b1,x1) + h2 C(b2,x2)`` -- the per-channel scalar
-       constants weighted by the information in each direction (STEP 7c). Both are exact
-       identities, so the gate is at machine precision, and the hand-derived ``Psi'`` is checked
-       against a central finite difference rather than trusted.
+    1. The floor REDUCES correctly. At ``p = q = 1`` it is the scalar Cramer-Rao
+       ``C sigma^2/(n V)``, and on two decoupled channels it is ``h1 C(b1,x1) + h2 C(b2,x2)`` -- the
+       per-channel scalar constants weighted by the information in each direction (STEP 7c). Both
+       are exact identities, so the gate is at machine precision, and the hand-derived ``Psi'`` is
+       checked against a central finite difference rather than trusted.
 
     2. The bound BINDS and is not beatable. A Hodges estimator, which snaps to the prior mean
        whenever the fit lands within ``n^(-1/4)``, drives the pointwise action error to essentially
-       zero against the unbiased Cramer-Rao floor -- the same demonstration as Result 57(c), now in
-       two dimensions -- while sitting far above the van Trees floor, which assumes nothing about
-       bias. The efficient plug-in clears the same floor by a modest factor.
+       zero against the unbiased Cramer-Rao floor -- the same demonstration as the scalar Hodges
+       arm, now in two dimensions -- while sitting far above the van Trees floor, which assumes
+       nothing about bias. The efficient plug-in clears the same floor by a modest factor.
 
     3. The price of confounding is an ALIGNMENT, not a ratio. Cutting the information along ONE
        direction by ``information_loss`` raises the floor by ``1 + (k-1) a_w/sum(a)`` with
        ``a_w = (Psi' w)' M (Psi' w)``: full price only if that direction carries all the weight.
        Two arms with the SAME ``k`` bracket it -- the direction the optimal action leans on most,
        and a direction in the kernel of ``Psi'``, which costs exactly nothing. A scalar plant has
-       one direction and therefore always reports ``k``; that is the whole of Result 10's
+       one direction and therefore always reports ``k``; that is the whole of the scalar floor's
        ``V_exp/V_conf``.
 
-    4. The knife edge becomes a WEIGHT. At ``rr = b^2`` Result 57(d)'s sensitivity vanishes, so
-       that channel contributes zero to the floor -- and confounding it is free. In the scalar
-       model this is a measure-zero curiosity; here it is one entry of a vector that a real plant
-       can sit near without anything else degenerating.
+    4. The knife edge becomes a WEIGHT. At ``rr = b^2`` the action's sensitivity ``psi'``
+       vanishes, so that channel contributes zero to the floor -- and confounding it is free. In the
+       scalar model this is a measure-zero curiosity; here it is one entry of a vector that a real
+       plant can sit near without anything else degenerating.
     """
     for name, value in (("rr", rr), ("sigma", sigma)):
         if not 0.0 < value < np.inf:
@@ -666,7 +666,7 @@ def multivariate_van_trees_certificate(
     channel_sum = constant(b1, x[0]) / spectrum[0] + constant(b2, x[1]) / spectrum[1]
     channel_agreement = abs(diagonal.floor / channel_sum - 1.0)
 
-    # 1b. and the 1x1 case, against Result 10's closed form
+    # 1b. and the 1x1 case, against the scalar Cramer-Rao closed form
     scalar = multivariate_action_floor(
         effect=np.array([[b1]]),
         state_weight=np.eye(1),
@@ -797,7 +797,7 @@ class HighProbRegretCurve:
     empirical_coverage: Vector  # MC fraction of trials whose EXACT regret is <= band
     confounded_bands: Vector  # the (wider) band under confounding (residual V_conf < V_exp)
     band_over_floor: Vector  # band / CR-floor = 2*log(2/delta): the log(1/delta) confidence price
-    cr_floor: float  # the Result 10 in-expectation floor C*sigma^2/(n*V_exp)
+    cr_floor: float  # the Cramer-Rao in-expectation floor C*sigma^2/(n*V_exp)
 
 
 def highprob_regret_certificate(
@@ -1021,20 +1021,21 @@ def composition_transfer_certificate(
     delta_hi: float = 0.2,
     n_delta: int = 12,
 ) -> CompositionTransferCurve:
-    """The general orthogonal-to-control order-transfer LEMMA -- the general form of Result 0 (which
-    only stated p=1 and p=2). Derived in ``validation/composition_transfer.mac``, proved in
-    ``proofs/composition_transfer.v``. If the effect estimator has error of order ``delta^p`` (``p``
-    the orthogonality order: 1 plug-in, 2 Neyman-orthogonal/DML, higher for higher-order), the
-    certainty-equivalence control regret is order ``delta^(2p)`` -- the control map DOUBLES the
-    estimator's order for EVERY ``p``, because regret is quadratic in the ACTION error (exact map
-    ``(b^2+rr)*(u*(bhat)-u*(b))^2``, not a linearisation) and ``u*`` is Lipschitz in the effect.
-    HONEST SCOPE: an immediate COMPOSITION (Lipschitz action-map + quadratic regret), not a deep
-    theorem -- the p->2p arithmetic restates known facts (4th-order-under-orthogonality:
-    Foster-Syrgkanis Orthogonal Statistical Learning; quadratic LQR CE gap: Mania-Tu-Recht). Its
-    value is unifying them for control. The END-TO-END statement this left open -- cross-fit causal
-    estimator -> dynamics-error rate -> stabilising controller -> finite-sample control regret with
-    explicit constants -- is closed by ``ce_explicit_constant_certificate``, which computes both the
-    stabilising ball and the constant. Plug-in (``p=1 -> 2``) and DML (``p=2 -> 4``) are instances.
+    """The general orthogonal-to-control order-transfer LEMMA -- the general form of
+    :func:`orthogonal_control_certificate` (which only states p=1 and p=2). Derived in
+    ``validation/composition_transfer.mac``, proved in ``proofs/composition_transfer.v``. If the
+    effect estimator has error of order ``delta^p`` (``p`` the orthogonality order: 1 plug-in, 2
+    Neyman-orthogonal/DML, higher for higher-order), the certainty-equivalence control regret is
+    order ``delta^(2p)`` -- the control map DOUBLES the estimator's order for EVERY ``p``, because
+    regret is quadratic in the ACTION error (exact map ``(b^2+rr)*(u*(bhat)-u*(b))^2``, not a
+    linearisation) and ``u*`` is Lipschitz in the effect. HONEST SCOPE: an immediate COMPOSITION
+    (Lipschitz action-map + quadratic regret), not a deep theorem -- the p->2p arithmetic restates
+    known facts (4th-order-under-orthogonality: Foster-Syrgkanis Orthogonal Statistical Learning;
+    quadratic LQR CE gap: Mania-Tu-Recht). Its value is unifying them for control. The END-TO-END
+    statement this left open -- cross-fit causal estimator -> dynamics-error rate -> stabilising
+    controller -> finite-sample control regret with explicit constants -- is closed by
+    ``ce_explicit_constant_certificate``, which computes both the stabilising ball and the constant.
+    Plug-in (``p=1 -> 2``) and DML (``p=2 -> 4``) are instances.
 
     ``slopes`` IS NOT ``expected_slopes``, AND THE DIFFERENCE IS NOT NOISE. At the default window
     the fit returns ``2.048478 / 4.012425 / 6.002273`` against ``2 / 4 / 6``, and that excess is a
@@ -1089,14 +1090,15 @@ def multivariate_transfer_certificate(
     delta_hi: float = 0.1,
     n_delta: int = 10,
 ) -> MultivariateTransferCurve:
-    """The transfer theorem (Result 18 / Contribution 1) in the MULTIVARIATE, DYNAMIC LQ setting --
+    """The orthogonal-to-control order transfer in the MULTIVARIATE, DYNAMIC LQ setting --
     addressing the "needs multivariate/dynamic" gap. On a stable 2-state/1-input LQ plant the LOCAL
     quadratic certainty-equivalence suboptimality (Mania, Tu & Recht 2019, small-error/stabilising;
     ``certainty_equivalence_gap``) is quadratic in the effect-matrix (input matrix ``B``) error;
     composing an order-``p`` estimator (``||dB|| ~ delta^p``) gives regret ``~ delta^(2p)`` -- the
-    SAME order-doubling as scalar Result 18, now for matrices. Rocq core shared (``regret_order_2p``
-    is abstract in the error norm). This lifts the order-transfer to matrices; it is NOT the full
-    finite-sample end-to-end theorem (which additionally needs nuisance rates + a stability margin).
+    SAME order-doubling as the scalar transfer, now for matrices. Rocq core shared
+    (``regret_order_2p`` is abstract in the error norm). This lifts the order-transfer to matrices;
+    it is NOT the full finite-sample end-to-end theorem (which additionally needs nuisance rates + a
+    stability margin).
     """
     a_mat = np.array([[1.0, 0.1], [0.0, 0.95]])
     b_mat = np.array([[0.5], [1.0]])
@@ -1189,7 +1191,7 @@ def multichannel_control_certificate(
     cluster_grid: Sequence[int] = (10, 20, 40, 80, 160),
     n_seeds: int = 60,
 ) -> MultiChannelControlCurve:
-    """CONTRIBUTION 2 -- MULTI-CHANNEL orthogonal control on a network (the serious form of 4x0;
+    """MULTI-CHANNEL orthogonal control on a network (interference times orthogonality;
     derived in ``validation/multichannel_control.mac``; proved: ``multichannel_control.v``).
     The control-relevant total effect of a uniform action is ``B = b_d + b_s`` (direct + spillover):
     two interference channels, each with its own Neyman-orthogonal moment. The NOVELTY is the
@@ -1227,7 +1229,7 @@ def multichannel_control_certificate(
         u = alpha_u * z + 0.7 * rng.standard_normal(n)
         g = alpha_g * z + 0.7 * rng.standard_normal(n)  # confounded spillover exposure
         y = b_d * u + b_s * g + gamma * z + a + noise * rng.standard_normal(n)
-        return z, u, g, y, np.mod(cid, 2)  # A8: whole clusters held out, not row parity
+        return z, u, g, y, np.mod(cid, 2)  # whole clusters held out, not row parity
 
     # the same draws at every delta, each less its own error at delta = 0: the sampling error is
     # common to both and cancels, so the mean is the delta-induced bias, whose square the regret
@@ -1272,8 +1274,9 @@ def multivariate_interference_certificate(
     delta_hi: float = 0.15,
     n_delta: int = 10,
 ) -> MultivariateInterferenceCurve:
-    """Contribution 2 in the MULTIVARIATE, DYNAMIC LQ setting -- composing multi-channel bottleneck
-    (Result 19) with the multivariate LQ gap (Result 21). The total effect is an input MATRIX
+    """Multi-channel orthogonal control in the MULTIVARIATE, DYNAMIC LQ setting -- composing the
+    multi-channel bottleneck (:func:`multichannel_control_certificate`) with the multivariate LQ
+    gap (:func:`multivariate_transfer_certificate`). The total effect is an input MATRIX
     ``B = B_d + B_s`` (two interference channels, each a direction of ``B``). Using the LOCAL
     quadratic LQ suboptimality (Mania, Tu & Recht 2019, small-error + stabilising;
     ``certainty_equivalence_gap``), quadratic in the total input-matrix error: orthogonalising ONLY
@@ -1314,7 +1317,7 @@ def multivariate_interference_certificate(
 
 @dataclass(frozen=True)
 class EndToEndC2Curve:
-    """C2 END-TO-END on a clustered LQ network: regret ~ 1/G (sampling floor) + (sum delta^p)^2."""
+    """END-TO-END on a clustered LQ network: regret ~ 1/G (sampling floor) + (sum delta^p)^2."""
 
     g_grid: Vector  # cluster counts G (delta-sweep held at delta_small)
     regret_vs_g: Vector  # mean multivariate-LQ regret from REAL cross-fit DML: ~ 1/G
@@ -1342,7 +1345,7 @@ def end_to_end_c2_certificate(
     deltas: Sequence[float] = (0.02, 0.04, 0.07, 0.12, 0.2),
     n_seeds: int = 60,
 ) -> EndToEndC2Curve:
-    """CONTRIBUTION 2, END-TO-END: ``multichannel causal estimation -> bottleneck rate -> dynamic
+    """END-TO-END: ``multichannel causal estimation -> bottleneck rate -> dynamic
     control regret`` on a clustered network with a multivariate LQ plant (derived in
     ``validation/c2_end_to_end.mac``, control-side algebra proved in ``proofs/c2_end_to_end.v``,
     where the regret is defined as the cited Mania-Tu-Recht local quadratic bound).
@@ -1373,7 +1376,7 @@ def end_to_end_c2_certificate(
         u = alpha_u * z + 0.7 * rng.standard_normal(n)
         g = alpha_g * z + 0.7 * rng.standard_normal(n)
         y = b_d * u + b_s * g + gamma * z + a + noise * rng.standard_normal(n)
-        return z, u, g, y, np.mod(cid, 2)  # A8: whole clusters held out, not row parity
+        return z, u, g, y, np.mod(cid, 2)  # whole clusters held out, not row parity
 
     def lq_regret(effect_err: float) -> float:
         return certainty_equivalence_gap(
@@ -1445,9 +1448,9 @@ def clustered_lower_bound_certificate(
     g_grid: Sequence[int] = (20, 40, 80, 160, 320),
     n_seeds: int = 80,
 ) -> ClusteredLowerBoundCurve:
-    """CONTRIBUTION 2, the LOWER bound (proofs/clustered_van_trees.v): the ``1/G`` sampling regret
-    is IRREDUCIBLE, not just an upper bound. By clustered van Trees the effective Fisher info is
-    ``I0 + G*Ic``, so ``E[(Bhat-B)^2] >= 1/(I0+G*Ic)``; composing with the lower-Lipschitz regret
+    """Multi-channel control, the LOWER bound (proofs/clustered_van_trees.v): the ``1/G`` sampling
+    regret is IRREDUCIBLE, not just an upper bound. By clustered van Trees the effective Fisher info
+    is ``I0 + G*Ic``, so ``E[(Bhat-B)^2] >= 1/(I0+G*Ic)``; composing with the lower-Lipschitz regret
     map ``R >= kappa0*(Bhat-B)^2`` gives ``G*E[R] >= kappa0/(I0+Ic) > 0`` for all ``G``, increasing
     toward ``kappa0/Ic`` (Maxima limit). This certificate confirms it: with REAL cross-fit DML (tiny
     ``delta``, sampling-dominated), ``G*regret`` is roughly CONSTANT and bounded below by a positive
@@ -1476,7 +1479,7 @@ def clustered_lower_bound_certificate(
         u = alpha_u * z + 0.7 * rng.standard_normal(n)
         g = alpha_g * z + 0.7 * rng.standard_normal(n)
         y = b_d * u + b_s * g + gamma * z + a + noise * rng.standard_normal(n)
-        return z, u, g, y, np.mod(cid, 2)  # A8: whole clusters held out, not row parity
+        return z, u, g, y, np.mod(cid, 2)  # whole clusters held out, not row parity
 
     def lq_regret(err: float) -> float:
         return certainty_equivalence_gap(a_mat, b_mat, q_mat, r_mat, a_mat, b_mat + err * unit, x0)
@@ -1498,7 +1501,7 @@ def clustered_lower_bound_certificate(
 
 @dataclass(frozen=True)
 class CrossClusterMixingCurve:
-    """A3': the ``1/sqrt(G)`` rate under cross-cluster psi-dependence, and the constant it moves."""
+    """The ``1/sqrt(G)`` rate under cross-cluster psi-dependence, and the constant it moves."""
 
     g_grid: Vector  # cluster counts G
     decays: Vector  # per-arm cross-cluster decay rho of the latent fields; psi(d) = rho^(2d)
@@ -1554,19 +1557,18 @@ def cross_cluster_mixing_certificate(
     n_replicates: int = 4,
     seed: int = 0,
 ) -> CrossClusterMixingCurve:
-    """ASSUMPTION A3' -- Contribution 2's cluster rate does NOT need independent clusters.
+    """The multi-channel cluster rate does NOT need independent clusters.
 
-    A1 as stated assumes partial interference with INDEPENDENT clusters (Hudgens & Halloran 2008),
-    which is the assumption a marketplace violates: adjacent cities share drivers, weather and
-    campaigns. A3' weakens it to ``psi``-dependence in the sense of Kojevnikov, Marmer & Song
-    (2021, Definition 2.2) -- the cluster scores may correlate across clusters provided the
-    dependence coefficients ``theta_s``, defined by
-    ``|Cov(f(s_A), g(s_B) | C)| <= psi_{a,b}(f, g) * theta_s`` for cluster sets at distance
-    ``s > 0``, decay fast enough for their Condition ND -- which is the same regime as Leung's
-    (2022) approximate neighbourhood interference. Under A3' the CLT is the network-HAC one rather
-    than the i.i.d.-cluster one: the ``G^{-1/2}`` rate survives and only the variance CONSTANT
-    changes, by the HAC sum. A3' is not free -- the KMS CLT wants ``p > 4`` moments where A7 asks
-    only for ``q > 2``.
+    Partial interference with INDEPENDENT clusters (Hudgens & Halloran 2008) is the assumption a
+    marketplace violates: adjacent cities share drivers, weather and campaigns. This weakens it to
+    ``psi``-dependence in the sense of Kojevnikov, Marmer & Song (2021, Definition 2.2) -- the
+    cluster scores may correlate across clusters provided the dependence coefficients ``theta_s``,
+    defined by ``|Cov(f(s_A), g(s_B) | C)| <= psi_{a,b}(f, g) * theta_s`` for cluster sets at
+    distance ``s > 0``, decay fast enough for their Condition ND -- which is the same regime as
+    Leung's (2022) approximate neighbourhood interference. Under it the CLT is the network-HAC one
+    rather than the i.i.d.-cluster one: the ``G^{-1/2}`` rate survives and only the variance
+    CONSTANT changes, by the HAC sum. It is not free -- the KMS CLT wants ``p > 4`` moments where
+    the independent-cluster CLT asks only for ``q > 2``.
 
     Both halves are measured here, because "the rate survives" alone is not falsifiable:
 
@@ -1583,11 +1585,11 @@ def cross_cluster_mixing_certificate(
       ``G*MSE = a + b*2 rho^2/(1 - rho^2)`` with ``a, b`` free of ``rho``. ``hac_r_squared`` is
       that fit; a value below ~0.95 falsifies the HAC form rather than the rate.
     * ``blocked_arm`` is the falsification: a FIXED number of super-blocks, so ``psi(d)`` never
-      decays, ``sum_d psi(d) = Theta(G)`` and A3' fails. Its slope must be ~0 -- the effective
-      sample size is the block count, not ``G``. Without this arm a flat ``-1/2`` would be
+      decays, ``sum_d psi(d) = Theta(G)`` and psi-dependence fails. Its slope must be ~0 -- the
+      effective sample size is the block count, not ``G``. Without this arm a flat ``-1/2`` would be
       evidence of nothing, since it is also what an arm with no dependence at all reports.
 
-    ``g_grid`` starts at 80 deliberately. Result 70: a fitted exponent is a WINDOW measurement,
+    ``g_grid`` starts at 80 deliberately. A fitted exponent is a WINDOW measurement,
     and at ``rho = 0.9`` the field's correlation length is ~9 clusters, so a window opening at
     ``G = 40`` reports ~``-0.35`` -- the pre-asymptotic regime, not the rate. The replicate blocks
     are genuinely independent -- the seed stream carries a replicate index -- so ``slope_errors``
@@ -1628,10 +1630,10 @@ def cross_cluster_mixing_certificate(
             b_d * u
             + b_s * g
             + gamma * z
-            + tau * error_field[cid]  # A3': the cluster effect now CORRELATES across clusters
+            + tau * error_field[cid]  # the cluster effect now CORRELATES across clusters
             + noise * rng.standard_normal(n)
         )
-        return z, u, g, y, np.mod(cid, 2)  # A8: whole clusters held out, not row parity
+        return z, u, g, y, np.mod(cid, 2)  # whole clusters held out, not row parity
 
     mse = np.zeros((len(arms), gs.size, n_replicates))
     bias = np.zeros_like(mse)
@@ -1688,7 +1690,7 @@ def cross_cluster_mixing_certificate(
 
 @dataclass(frozen=True)
 class ExposureMapCurve:
-    """Exposure-map C2: three channels (direct, spillover, exposure-map W); r_W squared iff orth."""
+    """Exposure map: three channels (direct, spillover, exposure-map W); r_W squared iff orth."""
 
     deltas: Vector  # nuisance error delta
     full_regret: Vector  # all three channels orthogonalised (each O(delta^2)): LQ regret ~ delta^4
@@ -1705,10 +1707,10 @@ def exposure_map_certificate(
     delta_hi: float = 0.15,
     n_delta: int = 10,
 ) -> ExposureMapCurve:
-    """CONTRIBUTION 2, exposure-map generalisation (derived in ``validation/exposure_map_c2.mac``;
-    ``proofs/exposure_map_c2.v`` proves the fully orthogonal bound for the regret taken as
-    ``cc*(s+r_d+r_s+r_W)^2``; the plug-in ``W`` bottleneck is shown numerically). The marketplace
-    network plant
+    """Multi-channel control, exposure-map generalisation (derived in
+    ``validation/exposure_map_c2.mac``; ``proofs/exposure_map_c2.v`` proves the fully orthogonal
+    bound for the regret taken as ``cc*(s+r_d+r_s+r_W)^2``; the plug-in ``W`` bottleneck is shown
+    numerically). The marketplace network plant
     ``x_{t+1} = A x_t + (B_d + B_s W) u_t + eps`` has effective effect ``B_eff(W) = B_d + B_s W``;
     estimating ``(B_d, B_s, W)`` gives THREE channels ``r_d, r_s, r_W`` (the last from the exposure
     map ``W``). Through the MTR gap, ``R = O_p[G^{-1} + (r_d + r_s + r_W)^2]``. Shown
@@ -1753,18 +1755,18 @@ class ClusterFoldLeakageCurve:
 
     icc_grid: Vector  # intra-cluster correlation rho_ICC = tau^2/(tau^2+sigma^2) swept
     # ARM 1 -- the library's own LINEAR-in-z nuisance. Must show the fold scheme is asymptotically
-    # irrelevant here, which is what licenses the previously published C2 numbers.
+    # irrelevant here, which is what licenses the multi-channel certificates' numbers.
     lin_cluster_grid: Vector  # cluster counts G
     lin_bias_row: Vector  # bias under row-parity folds (~0)
     lin_bias_cluster: Vector  # bias under whole-cluster folds (~0)
     lin_sd_ratio: Vector  # sd_row/sd_cluster -> 1 as G grows (the O(1/G) leak)
-    # ARM 2 -- a CLUSTER-AWARE nuisance. This is the arm that actually tests A8.
-    aware_bias_row: Vector  # still ~0: the leak does NOT bias (Result 43(a))
+    # ARM 2 -- a CLUSTER-AWARE nuisance. This is the arm that actually tests whole-cluster folds.
+    aware_bias_row: Vector  # still ~0: the leak does NOT bias
     aware_bias_cluster: Vector
     resid_icc_row: Vector  # ~0: row folds ANNIHILATE the residual ICC
     resid_icc_cluster: Vector  # ~rho_ICC: whole-cluster folds preserve it
     psi: Vector  # Var_row/Var_cluster
-    psi_normalised: Vector  # psi / psi(rho=0) -- must equal 1 - rho_ICC (Result 43(b))
+    psi_normalised: Vector  # psi / psi(rho=0) -- must equal 1 - rho_ICC
     c_fold_measured: float  # psi at rho_ICC = 0, the fold-geometry constant
     c_fold_predicted: float  # m*(m+14)/(m+2)^2 at K=2, from the projector algebra
     law_maxdev: float  # max |psi_normalised - (1 - rho_ICC)| at n_clusters
@@ -1790,14 +1792,14 @@ def cluster_fold_leakage_certificate(
     lin_cluster_grid: Sequence[int] = (20, 80, 320),
     n_seeds: int = 240,
 ) -> ClusterFoldLeakageCurve:
-    """CONTRIBUTION 2 -- the price of violating assumption A8 (derived in
+    """The price of cross-fitting by row rather than by whole cluster (derived in
     ``validation/cluster_fold_leakage.mac``, proved in ``proofs/cluster_fold_leakage.v``).
 
-    A8 asks for ``K >= 2`` folds of WHOLE CLUSTERS. Splitting folds by row instead leaves every
-    cluster in both folds, so the nuisance is fit on rows of the very cluster it must then predict.
-    None of the cited theorems prices that: CCDDHNR assume i.i.d. rows (folds are then automatically
-    valid), Hansen-Lee assume independent cluster scores as a PRIMITIVE, Chiang-Kato-Ma-Sasaki
-    assume folds are already cluster-level.
+    The certificates assume ``K >= 2`` folds of WHOLE CLUSTERS. Splitting folds by row instead
+    leaves every cluster in both folds, so the nuisance is fit on rows of the very cluster it must
+    then predict. None of the cited theorems prices that: CCDDHNR assume i.i.d. rows (folds are then
+    automatically valid), Hansen-Lee assume independent cluster scores as a PRIMITIVE,
+    Chiang-Kato-Ma-Sasaki assume folds are already cluster-level.
 
     The finding is NOT a bias. The cross-fold hat reproduces the design it is applied to, so
     ``f(Z)`` cancels identically and the moment stays exactly orthogonal for ANY fold assignment
@@ -1809,8 +1811,8 @@ def cluster_fold_leakage_certificate(
     ``psi = c(m,K)*(1 - rho_ICC)`` with ``c(m,2) = m*(m+14)/(m+2)^2`` from the projector algebra, so
     the NORMALISED law ``psi/c = 1 - rho_ICC`` is exact in ``m`` and ``K`` rather than asymptotic.
     Everything derived from the cluster-robust variance -- interval width, the ``c0`` plateau of
-    Result 25, the regret constant -- then belongs to a different estimator, and a sandwich computed
-    after row folds is too SMALL, so intervals under-cover.
+    :func:`clustered_lower_bound_certificate`, the regret constant -- then belongs to a different
+    estimator, and a sandwich computed after row folds is too SMALL, so intervals under-cover.
 
     The one regime where it is NOT merely a variance question is a cluster-measurable regressor
     (ARM 3). A partial-interference exposure is cluster-measurable by construction, and a
@@ -1820,10 +1822,11 @@ def cluster_fold_leakage_certificate(
     unidentification, not a broken moment -- ``validation/cluster_fold_leakage.mac`` STEP 9 with
     ``h -> 1`` gives ``Dtil = 0`` -- but it is a bias in the reported number.
 
-    SCOPE: for a fixed correctly-specified linear span the leak is ``O(1/G)`` and the published C2
-    conclusions survive (ARM 1) -- what does not survive is the claim that the code implements A8.
-    The C2 certificates' own ``G_exp`` varies i.i.d. WITHIN cluster, which is not what a
-    partial-interference exposure looks like, so they sit in the benign regime by accident.
+    SCOPE: for a fixed correctly-specified linear span the leak is ``O(1/G)`` and the multi-channel
+    certificates' conclusions survive (ARM 1) -- what does not survive is the claim that the code
+    folds by whole cluster. Those certificates' own ``G_exp`` varies i.i.d. WITHIN cluster, which is
+    not what a partial-interference exposure looks like, so they sit in the benign regime by
+    accident.
 
     Raises:
         ValueError: if ``n_seeds < 2``: the variance law reads spreads over the seeds.
@@ -1899,7 +1902,7 @@ def cluster_fold_leakage_certificate(
         lin_b_row[i], lin_b_cl[i] = float(er.mean()), float(ec.mean())
         lin_ratio[i] = float(er.std() / ec.std())
 
-    # ARM 2: a cluster-aware nuisance -- the arm that actually tests A8.
+    # ARM 2: a cluster-aware nuisance -- the arm that actually tests whole-cluster folds.
     iccs = np.asarray(icc_grid, dtype=np.float64)
 
     def aware_arm(gclust: int, seeds: int) -> tuple[np.ndarray, ...]:
@@ -1973,7 +1976,7 @@ def cluster_fold_leakage_certificate(
 
 @dataclass(frozen=True)
 class DelayedNetworkCurve:
-    """Result 51: what a delay PROPAGATING THROUGH THE NETWORK does to row-level cross-fitting."""
+    """What a delay PROPAGATING THROUGH THE NETWORK does to row-level cross-fitting."""
 
     phi_grid: Vector  # serial correlation of the innovations
     psi_law_parity: Vector  # the polynomial in phi^delta, folds ALTERNATING around the cycle
@@ -1994,7 +1997,7 @@ class DelayedNetworkCurve:
     # at delta = 0, the spread over the phi grid of Psi read on the whole Sigma_u (x) T(phi): ~0
     separable_spread: float
     c_fold_measured: float  # exchangeable limit: m*tr(Au^2)/tr(Au)^2 read off the projector
-    c_fold_predicted: float  # m(m+14)/(m+2)^2 at K=2 -- the same constant Result 43 uses
+    c_fold_predicted: float  # m(m+14)/(m+2)^2 at K=2 -- the cluster-fold leakage constant
     crossover: float  # x = phi^delta where the two partitions swap ranking; nan if they never do
     trace_gap: float  # tr(Au) is partition-free, which is what makes `crossover` well defined
 
@@ -2005,7 +2008,7 @@ def _fold_sandwich(m: int, k_folds: int, fold: NDArray[np.int_]) -> NDArray[np.f
     E^2 = E, F^2 = F and EF = FE = E, so <I,E,F> is closed and A_u = I - r^2 E + (r^2-1) F with
     r = K/(K-1). Its eigenvalues are 0 on span(1), r^2 on the K-1 fold contrasts and 1 within folds:
     row-level cross-fitting over-weights the fold-contrast subspace by exactly r^2, and by r^4 once
-    squared inside the sandwich. That factor is the whole of Result 51.
+    squared inside the sandwich. That factor is the whole of the delayed-network penalty.
     """
     grand = np.full((m, m), 1.0 / m)
     within = (fold[:, None] == fold[None, :]) * (k_folds / m)
@@ -2034,16 +2037,16 @@ def exact_ratio_moment(
     denominator: NDArray[np.float64],
     regressor_cov: NDArray[np.float64],
 ) -> float:
-    """``E[(R'BR) / (R'CR)^2]`` for ``R ~ N(0, Omega)``, exactly -- Result 51 (l) and (m).
+    """``E[(R'BR) / (R'CR)^2]`` for ``R ~ N(0, Omega)``, exactly.
 
     The variance of the scalar cross-fit estimator ``theta_hat = u'A eps / u'A u`` with a
     correlated regressor ``u`` is ``E[u'(A Sigma A)u / (u'Au)^2]``: call with
     ``numerator = A Sigma A`` and ``denominator = A``. The plug-in law ``tr(B Om)/tr(C Om)^2``
     mis-prices that expectation by the expectation-of-a-ratio gap -- ``+10.7% / +6.7%`` on the
-    panel geometries of Result 51 (i), enough to move the fold-design crossover and open a
-    wrong-partition band at ``Om != I`` (Result 51 (m)). This is the exact replacement: with
-    ``1/Y^2 = int_0^inf t e^{-tY} dt`` and the tilted-Gaussian moment, the expectation is one
-    resolvent quadrature (Magnus 1986)::
+    delayed-network panel geometry (``m = 6``, ``p = 24``, ``K = 2``), enough to move the
+    fold-design crossover and open a wrong-partition band at ``Om != I``. This is the exact
+    replacement: with ``1/Y^2 = int_0^inf t e^{-tY} dt`` and the tilted-Gaussian moment, the
+    expectation is one resolvent quadrature (Magnus 1986)::
 
         E[X/Y^2] = int_0^inf t det(I + 2t Om C)^(-1/2) tr(B (I + 2t Om C)^(-1) Om) dt
 
@@ -2407,8 +2410,8 @@ def exact_matrix_ratio_moment(
       **Every anchor above also has ``regressor_cov = I``,** and there is one with correlated
       channels: for ``numerator = denominator = I`` and ``regressor_cov = kron(R, I_n)`` the
       sandwich is ``E[(X'X)^-1]`` with ``X'X ~ Wishart_q(n, R)``, so the exact answer is
-      ``R^-1/(n-q-1)`` (Result 63 (i)). Measured in one convention (max entry, relative) at
-      ``q = 3, n = 7``, correlated against exchangeable: 4.71e-1 / 2.87e-1, 2.39e-1 / 1.70e-1,
+      ``R^-1/(n-q-1)``, the inverse-Wishart mean. Measured in one convention (max entry, relative)
+      at ``q = 3, n = 7``, correlated against exchangeable: 4.71e-1 / 2.87e-1, 2.39e-1 / 1.70e-1,
       3.52e-2 / 5.59e-2, 4.29e-2 / 3.36e-2 at ``nodes = 4..7`` -- 1.6x and 1.4x worse on the two
       coarse grids, 0.63x on the third, 1.3x on the fourth, and non-monotone on both sides. A
       correlated ``Om`` is not systematically harder; it is a different cell of the same
@@ -2584,7 +2587,7 @@ and nothing the certificate evaluates measures that rate -- at ``q = 3`` or at `
 
 @dataclass(frozen=True)
 class MatrixRatioAccuracy:
-    """What :func:`exact_matrix_ratio_moment` is worth on the grid it was given -- Result 63 (d).
+    """What :func:`exact_matrix_ratio_moment` is worth on the grid it was given.
 
     At ``q = 3`` the cone is 6-dimensional and the value carries a percent-scale error that nothing
     in the returned array reveals. At ``q = 2`` it is 3-dimensional, and how close the default grid
@@ -2609,7 +2612,7 @@ class MatrixRatioAccuracy:
     below 1 in five, every one of them a cell whose rate is under 2.
 
     **Those 13 cells are all exchangeable; the first correlated one sits at the conservative end
-    and slightly past it.** On the correlated-channel anchor of Result 63 (i)
+    and slightly past it.** On the correlated-channel inverse-Wishart anchor
     (``regressor_cov = kron(R, I_n)``, exact answer ``R^-1/(n-q-1)``) at ``q = 3, n = 7``,
     residual / true error is 2.42, 5.80 and 1.44 at
     ``nodes = 5, 6, 7`` -- conservative at all three, and in fact more conservative than the
@@ -2964,7 +2967,7 @@ def _exact_banded_bisection(
 
 @dataclass(frozen=True)
 class FoldDesign:
-    """A fold partition with its Result 52 objective and an optimality certificate.
+    """A fold partition with its design-law objective and an optimality certificate.
 
     ``objective`` is the partition-dependent part of the sandwich, the same-fold weighted 2-walk
     count ``sum_f 1_f' Q(x) 1_f`` -- ``Psi`` is affine in it with positive weight, so smaller is
@@ -2996,14 +2999,14 @@ def optimal_fold_partition(
     restarts: int = 8,
     seed: int = 0,
 ) -> FoldDesign:
-    """Variance-optimal balanced fold partition under delayed network interference -- Result 52.
+    """Variance-optimal balanced fold partition under delayed network interference.
 
     The fold partition enters the cross-fit sandwich only through the same-fold weighted 2-walk
     count with positive weight ``r^4 - 1`` (``validation/fold_spectrum_law.mac``,
     ``proofs/fold_spectrum_law.v``), so the design problem is to MINIMISE that mass over balanced
     ``k_folds``-partitions of the graph weighted by ``Q(x) = sum_{d,e} g_d g_e x^|d-e| S_d S_e``,
     which -- since the mass is ``1'Q1 - 2*cut`` with ``1'Q1`` partition-free -- is the
-    MAXIMUM-weight balanced cut of that graph and not the minimum-weight one (Result 61),
+    MAXIMUM-weight balanced cut of that graph and not the minimum-weight one,
     ``x = phi**lag``. On a cycle with ONE spillover shell the answer is proved over all labellings:
     width-2 stripes below ``x = g1/g0`` and alternating folds above it. With two shells it depends
     on ``gammas``, not only on ``x``: at ``(1, 0.7, 0.4)`` stripes win on ``[0, 7/10]`` and
@@ -3033,7 +3036,7 @@ def optimal_fold_partition(
     ``1e-8``. It can also close little: ``3.31%`` to ``2.95%`` on the 16-unit path at ``x = 0.6``.
     A large gap on the local-search path is an honest "could not certify", not a silent success.
 
-    ``time_axis`` opts into the TWO-AXIS problem (Result 59). Left at ``None`` the design set is the
+    ``time_axis`` opts into the TWO-AXIS problem. Left at ``None`` the design set is the
     ``m`` units and nothing changes. Given the panel length ``p`` it becomes the ``m*p``
     (unit, time) cells, ordered as ``kron(space, time)``, and the weight becomes the panel
     covariance ``Sigma = sum_q P_q (x) T_q``, ``[T_q]_{ts} = phi**|(t-s) - lag*q|``: a sum of
@@ -3048,8 +3051,8 @@ def optimal_fold_partition(
     by ``phi**(lag*q - (p-1))`` and the design has almost no reason to keep those pairs together.
     One axis at a time is a defensible scope at ``lag=1`` and an expensive one beyond it.
 
-    The objective is the PLUG-IN law's. Near a design boundary the exact moment shifts thresholds
-    (Result 52 (e)); rank the shortlisted designs with :func:`exact_ratio_moment` when it matters.
+    The objective is the PLUG-IN law's. Near a design boundary the exact moment shifts thresholds;
+    rank the shortlisted designs with :func:`exact_ratio_moment` when it matters.
     """
     gam = np.asarray(gammas, dtype=np.float64)
     mats = [np.asarray(sh, dtype=np.float64) for sh in shells]
@@ -3136,9 +3139,9 @@ def optimal_fold_partition(
 class FoldHeuristicCurve:
     """How far the fold-design heuristic falls short of the exact optimum, off the cycle.
 
-    Result 52's closed form is a statement about *vertex-transitive* graphs: it reads the optimal
-    partition off the spectrum of ``Q(x)`` because every vertex sees the same neighbourhood. On a
-    path, a star, a grid or a barbell that symmetry is gone and there is no closed form, so
+    The design law's closed form is a statement about *vertex-transitive* graphs: it reads the
+    optimal partition off the spectrum of ``Q(x)`` because every vertex sees the same neighbourhood.
+    On a path, a star, a grid or a barbell that symmetry is gone and there is no closed form, so
     :func:`optimal_fold_partition` falls back to spectral rounding plus balanced swaps. This
     measures what that fallback costs, by running the exact enumeration beside it on graphs small
     enough to enumerate -- the regime where "the heuristic is fine" can still be checked rather
@@ -3207,7 +3210,7 @@ def _named_topologies(m: int, n_random: int = 4, seed: int = 7) -> dict[str, NDA
 
 @dataclass(frozen=True)
 class FoldExactnessCurve:
-    """Heuristic shortfall and bound looseness, finally separated -- Result 61.
+    """Heuristic shortfall and bound looseness, finally separated.
 
     :func:`fold_heuristic_certificate` could only compare the fallback with the truth where
     enumeration runs, and it stopped at ``m = 16``. On a **circulant** the truth is reachable at
@@ -3278,9 +3281,9 @@ def fold_exactness_certificate(
 
     The structural gates are the reason the objective can be named at all. ``internal = 1'Q1 -
     2*cut`` with ``1'Q1`` partition-free, so **minimising the same-fold 2-walk mass is MAXIMISING
-    the cut of** ``Q(x)`` -- a max-bisection, not the "minimum-weight balanced cut" Result 52 (a)
-    called it, and the distinction is not cosmetic. Max-bisection has a 0.8776-approximation by
-    semidefinite programming (Austrin, Benabbas and Georgiou 2013), and under the Unique Games
+    the cut of** ``Q(x)`` -- a max-bisection, not a "minimum-weight balanced cut", as it is
+    sometimes called, and the distinction is not cosmetic. Max-bisection has a 0.8776-approximation
+    by semidefinite programming (Austrin, Benabbas and Georgiou 2013), and under the Unique Games
     Conjecture no polynomial-time algorithm approximates it beyond ``alpha_GW ~ 0.8786`` (Khot,
     Kindler, Mossel and O'Donnell 2007 prove it for max-cut; two disjoint copies of a graph have a
     maximum bisection of twice its maximum cut). For min-bisection no constant-factor
@@ -3437,12 +3440,12 @@ def fold_heuristic_certificate(
     n_random: int = 4,
     seed: int = 0,
 ) -> FoldHeuristicCurve:
-    """Price the fold heuristic against exact enumeration on graphs Result 52 does NOT cover.
+    """Price the fold heuristic against exact enumeration on graphs the closed form does NOT cover.
 
-    Result 52's honest-scope note says the design law is closed-form only on vertex-transitive
-    graphs and that beyond them the problem "degrades to combinatorial search". This is the
-    measurement that note asks for: on nine topologies -- eight of them non-transitive, four of
-    them random -- run the exact balanced bisection and the spectral-plus-swap fallback on the
+    The design law is closed-form only on vertex-transitive graphs; beyond them the problem
+    degrades to combinatorial search. This is the measurement that scope asks for: on nine
+    topologies -- eight of them non-transitive, four of them random -- run the exact balanced
+    bisection and the spectral-plus-swap fallback on the
     *same* ``Q(x)`` and report the ratio.
 
     **Measured, and it is the opposite of what the note feared:** at ``m = 12`` and ``m = 16`` the
@@ -3520,14 +3523,14 @@ def delayed_network_certificate(
     burn_in: int = 40,
     seed: int = 20260830,
 ) -> DelayedNetworkCurve:
-    """RESULT 51 -- the non-separable half of the delayed-exposure gate (derived in
+    """The non-separable half of the delayed-exposure gate (derived in
     ``validation/delayed_network_exposure.mac``, proved in ``proofs/delayed_network_exposure.v``).
 
     ``validation/delayed_exposure_gate.mac`` STEP 7 showed that a delay costs NOTHING under a
     separable covariance ``Sigma = Sigma_u (x) T`` with unit-level folds: ``tr(T)`` cancels between
-    numerator and denominator and Result 43 transfers verbatim, with ``dPsi/dphi = 0``. The only
-    remaining route is a delay that INTERACTS WITH THE NETWORK -- a shell-``d`` neighbour's
-    influence arriving at lag ``delta*d``::
+    numerator and denominator and the cluster-fold leakage law transfers verbatim, with
+    ``dPsi/dphi = 0``. The only remaining route is a delay that INTERACTS WITH THE NETWORK -- a
+    shell-``d`` neighbour's influence arriving at lag ``delta*d``::
 
         x_i(t) = sum_d g_d sum_{j : dist(i,j)=d} z_j(t - delta d)
         Cov(z_j(t), z_k(s)) = 1{j=k} phi^|t-s|
@@ -3666,7 +3669,7 @@ def delayed_network_certificate(
         flat.append(
             (m * p) ** 2 * sandwich / (float(np.trace(big_parity)) ** 2 * np.trace(sigma_full))
         )
-    # the exchangeable limit is Result 43's fold-geometry constant, read off the same projector
+    # the exchangeable limit is the cluster-fold law's constant, read off the same projector
     m_f = float(m)
     r = k_folds / (k_folds - 1)
     c_measured = m_f * float(np.trace(au_parity @ au_parity)) / float(np.trace(au_parity)) ** 2
@@ -3697,7 +3700,7 @@ def delayed_network_certificate(
 
 @dataclass(frozen=True)
 class CeExplicitConstantCurve:
-    """C1 END-TO-END: the certified ball, the explicit constant, and how conservative both are."""
+    """End-to-end: the certified ball, the explicit constant, and how conservative both are."""
 
     eta: float  # lmin(Q + K'RK)/lmax(P): the nominal loop's decay rate in the P metric
     theta: float  # 1 - sqrt(1 - eta): the contraction MARGIN the whole result is written in
@@ -3736,12 +3739,13 @@ def ce_explicit_constant_certificate(
     n_dirs: int = 240,
     seed: int = 11,
 ) -> CeExplicitConstantCurve:
-    """CONTRIBUTION 1 -- the finite-sample end-to-end constants (derived in
+    """The finite-sample end-to-end constants (derived in
     ``validation/ce_explicit_constants.mac``, proved in ``proofs/ce_explicit_constants.v``).
 
-    Every C1 statement so far took ``regret <= cc*||dB||^2`` as a HYPOTHESIS -- ``c2_end_to_end.v``
-    quantifies over an arbitrary ``0 <= cc`` -- and cited Mania-Tu-Recht's LOCAL quadratic bound.
-    Nothing computed the ball on which it holds, and nothing computed ``cc``. Both are here.
+    The order-transfer certificates took ``regret <= cc*||dB||^2`` as a HYPOTHESIS --
+    ``c2_end_to_end.v`` quantifies over an arbitrary ``0 <= cc`` -- and cited Mania-Tu-Recht's LOCAL
+    quadratic bound. Nothing computed the ball on which it holds, and nothing computed ``cc``. Both
+    are here.
 
     The lever is that the Lyapunov increment is an EXACT perfect square in the gain error,
 
@@ -3758,8 +3762,8 @@ def ce_explicit_constant_certificate(
     with ``eta = lmin(Q + K'RK)/lmax(P)``, ``theta = 1 - sqrt(1 - eta)``. Inside ``rho`` the
     certainty-equivalent gain provably stabilises the TRUE plant with the checkable Lyapunov
     certificate ``(A - B Khat)'P(A - B Khat) <= (1 - theta/2)^2 P``, and the regret is at most
-    ``C ||dB||^2``. Composed with Result 26's ``||B_hat - B|| = O_p(a_G)`` that is the end-to-end
-    statement the C1 line recorded as open.
+    ``C ||dB||^2``. Composed with the clustered cross-fit rate ``||B_hat - B|| = O_p(a_G)`` of
+    :func:`end_to_end_c2_certificate` that is the end-to-end statement the order transfer left open.
 
     The sweep runs past the ball on purpose: the certificate must be able to exhibit the failure it
     protects against, so ``unstable_fraction`` has to become positive at large multiples of ``rho``
@@ -3914,11 +3918,12 @@ def conjugate_time_certificate(
     delta_b: float = 1e-6,
 ) -> ConjugateTimeCurve:
     """THE CONJUGATE-TIME OBSTRUCTION (derived in ``validation/conjugate_time.mac``, proved in
-    ``proofs/conjugate_time.v``): the third member of the family of Result 13 (the active-set kink)
-    and Result 14 (the confounded turnpike gap) -- places where the smooth machinery every regret
+    ``proofs/conjugate_time.v``): the third member of the family of the active-set kink
+    (:func:`constrained_ce_regret_certificate`) and the confounded turnpike gap
+    (:func:`confounded_turnpike_certificate`) -- places where the smooth machinery every regret
     bound assumes quietly stops applying.
 
-    Result 14 says a long horizon is BENIGN: the discounted confounded gap stays finite. That
+    The turnpike gap says a long horizon is BENIGN: the discounted confounded gap stays finite. That
     holds for a POSITIVE-DEFINITE stage cost. For an INDEFINITE one -- a state that is rewarded
     rather than penalised, as in a growth or market-share objective -- the second-order sufficient
     fails at a FINITE horizon, and past it no constant in ``chc.regret`` exists at all. The two are
@@ -3945,9 +3950,10 @@ def conjugate_time_certificate(
 
     Three orders, measured separately because they are three claims: the cost-to-go has a SIMPLE
     pole with residue ``-r/b^2`` (free of ``a``, ``q`` and the terminal weight); the SENSITIVITY
-    ``dk/db`` -- which is Result 44's ``L_K`` and Results 18/20's ``du_star/db`` -- has a DOUBLE
-    pole, because differentiating the closed form turns the tangent into a ``sec^2``; and since
-    Result 44 has ``C`` proportional to ``L_K^2``, the regret constant has a FOURTH-order pole.
+    ``dk/db`` -- which is the ``L_K`` of :func:`ce_explicit_constant_certificate` and the
+    ``du_star/db`` of the order transfer and the exploration bound -- has a DOUBLE pole, because
+    differentiating the closed form turns the tangent into a ``sec^2``; and since that certificate
+    has ``C`` proportional to ``L_K^2``, the regret constant has a FOURTH-order pole.
 
     The last is not measured independently of the second. ``regret_coefficient`` is the gain
     error's cost at ``t = 0``, ``r (dk)^2 x0^2 / (db)^2``, the square of the sensitivity's forward
@@ -3998,7 +4004,7 @@ def conjugate_time_certificate(
             return bb * indefinite(h, bb) / r
 
         sens[i] = abs(gain(b + delta_b) - gain(b - delta_b)) / (2.0 * delta_b)
-        # The realised CE regret coefficient, through the exact quadratic form of Result 44's
+        # The realised CE regret coefficient, through the exact quadratic form of the gain-gap
         # identity: the gain fitted for b + delta_b, on the true plant, costs r*(dk)^2*x0^2.
         dk = gain(b + delta_b) - gain(b)
         regc[i] = r * dk * dk * x0 * x0 / (delta_b * delta_b)
@@ -4053,14 +4059,16 @@ def van_trees_certificate(
     sample_sizes: Sequence[int] = (5, 10, 20, 50, 100, 200),
     n_trials: int = 6000,
 ) -> VanTreesCurve:
-    """The FORMAL van Trees (Bayesian Cramer-Rao) inequality that Result 20 assumed (derived in
-    ``validation/van_trees.mac``; ``proofs/van_trees.v`` proves the Cauchy-Schwarz algebra from the
-    cited score identity and information additivity). For a Gaussian conjugate model
-    (prior ``N(0,tau^2)``, ``n`` obs ``x = theta + N(0,sigma^2)``) Bayes risk of ANY estimator is
-    at least ``1/(I_prior + n*I_data)``, ``I_prior = 1/tau^2``, ``I_data = 1/sigma^2`` -- and the
-    posterior-mean estimator HITS it (van Trees is tight for the Gaussian). Confounding reduces the
-    per-obs identifying information (fraction ``v_id < 1``), lifting the floor -- the Bayesian /
-    sequential analogue of the CR floor of Results 10/12 and the ``C/m_t`` term of Result 20.
+    """The FORMAL van Trees (Bayesian Cramer-Rao) inequality that the adaptive exploration bound
+    assumed (derived in ``validation/van_trees.mac``; ``proofs/van_trees.v`` proves the
+    Cauchy-Schwarz algebra from the cited score identity and information additivity). For a Gaussian
+    conjugate model (prior ``N(0,tau^2)``, ``n`` obs ``x = theta + N(0,sigma^2)``) Bayes risk of ANY
+    estimator is at least ``1/(I_prior + n*I_data)``, ``I_prior = 1/tau^2``, ``I_data = 1/sigma^2``
+    -- and the posterior-mean estimator HITS it (van Trees is tight for the Gaussian). Confounding
+    reduces the per-obs identifying information (fraction ``v_id < 1``), lifting the floor -- the
+    Bayesian / sequential analogue of the CR floor of :func:`information_lower_bound_certificate`
+    and :func:`hinf_robust_regret_certificate` and the ``C/m_t`` term of
+    :func:`chc.regret.adaptive_exploration_certificate`.
     """
     j_prior = 1.0 / tau**2
     i_data = 1.0 / sigma**2
@@ -4089,7 +4097,7 @@ class HInfRobustCurve:
     inflation_at_uce: Vector  # robust value at fixed u_ce: >= nominal, antitone in gamma (Rocq B,C)
     expected_regret: Vector  # regret of u_rob(gamma) under effect variance s^2 (U-shaped in gamma)
     u_ce: float  # certainty-equivalence gain b*xt/(b^2+rr)
-    u_pess_star: float  # variance-optimal gain b*xt/(b^2+rr+s^2) (Result 2, scalar one-step)
+    u_pess_star: float  # variance-optimal gain b*xt/(b^2+rr+s^2) (scalar one-step)
     nominal_at_uce: float  # nominal cost at u_ce (the gamma -> inf limit of inflation_at_uce)
     gamma_star: float  # argmin of the expected regret
     gain_at_gamma_star: float  # robust gain at gamma*: ~ u_pess_star (approx, not an identity)
@@ -4117,7 +4125,7 @@ def hinf_robust_regret_certificate(
     uncertainty in the effect ``b`` is an adversary perturbing the gain, penalised by budget
     ``gamma^2``; the robust controller solves ``min_u max_w``. This is a *correspondence*, not an
     identity: the worst-case objective ``gamma^2*e^2/(gamma^2-u^2)+rr*u^2`` and the expected
-    quadratic objective ``(b*u-xt)^2+(rr+s^2)u^2`` (Result 2, optimum ``u_pess=b*xt/(b^2+rr+s^2)``)
+    quadratic objective ``(b*u-xt)^2+(rr+s^2)u^2`` (optimum ``u_pess=b*xt/(b^2+rr+s^2)``)
     are different functions. The robust gain tends to ``u_ce`` as ``gamma`` grows, but from BELOW
     only when ``rr > b^2``: to first order in ``1/gamma^2`` it moves by
     ``u_ce rr xt^2 (b^2 - rr)/(b^2 + rr)^3`` (step (F) of the derivation), so on the defaults,
@@ -4129,7 +4137,7 @@ def hinf_robust_regret_certificate(
     """
     s2 = s * s
     u_ce = b * xt / (b * b + rr)
-    u_pess = b * xt / (b * b + rr + s2)  # variance-optimal control (Result 2)
+    u_pess = b * xt / (b * b + rr + s2)  # variance-optimal control
     nominal_uce = (b * u_ce - xt) ** 2 + rr * u_ce * u_ce
     oracle = (b * u_pess - xt) ** 2 + (rr + s2) * u_pess * u_pess  # min expected cost, Var(b)=s^2
     gammas = np.geomspace(gamma_lo, gamma_hi, n_gamma)
@@ -4194,10 +4202,10 @@ def constrained_ce_regret_certificate(
     true effect at an activation threshold (``u*(b_t) = umax``): on the INACTIVE side the
     regret is quadratic in the effect-estimate error; on the ACTIVE side the control freezes at
     ``umax`` so the regret is ZERO -- the curvature collapses, the source of the kink. Clipping is
-    non-expansive: constrained regret never exceeds unconstrained. Consequence (ties to Result 9
-    partial-ID and the marketplace budget): when the effect interval straddles a threshold the
-    pessimism budget must cover the active-set transition -- a naive controller that assumes the
-    constraint inactive pays that gap.
+    non-expansive: constrained regret never exceeds unconstrained. Consequence (ties to the
+    partial-ID sign threshold of :func:`partial_id_control_certificate` and the marketplace budget):
+    when the effect interval straddles a threshold the pessimism budget must cover the active-set
+    transition -- a naive controller that assumes the constraint inactive pays that gap.
 
     ``u*`` is unimodal in ``b`` (peak ``xt/(2*sqrt(rr))`` at ``b = sqrt(rr)``), so ``u*(b) = umax``
     has TWO roots and the cap binds on the bounded interval between them, with ``b_lo*b_hi = rr``;
@@ -4254,7 +4262,7 @@ class ConfoundedTurnpikeCurve:
     """Confounded control converges to the wrong turnpike; discounted regret stays finite."""
 
     horizons: Vector  # horizon T
-    undiscounted_regret: Vector  # T * per_step: linear, unbounded (sharpens Result 1d)
+    undiscounted_regret: Vector  # T * per_step: linear, unbounded
     discounted_regret: Vector  # sum g^t * per_step = per_step*(1-g^T)/(1-g): bounded
     discounted_bound: float  # per_step/(1-g): the finite discounted-regret cap
     turnpike_offset_formula: float  # xref*beta/(b+beta): the analytic turnpike gap
@@ -4276,10 +4284,11 @@ def confounded_turnpike_certificate(
     Derived in ``validation/confounded_turnpike.mac``; ``proofs/confounded_turnpike.v`` checks
     the offset formula and the discounted-sum bound, not the convergence to the turnpike. A
     confounded controller using the biased effect ``b_obs = b + beta`` (OVB) converges to the WRONG
-    turnpike ``x_conf = b*xref/(b+beta)`` and pays the offset every step. This upgrades Result 1d
-    (dynamic horizon regret, previously hand-argued) to a proper turnpike argument, and adds a NEW
-    discounted-regret certificate: the undiscounted cumulative regret ``T*c`` is unbounded, but the
-    discounted sum ``sum g^t c = c*(1-g^T)/(1-g)`` stays below ``c/(1-g)`` -- finite.
+    turnpike ``x_conf = b*xref/(b+beta)`` and pays the offset every step. This upgrades the dynamic
+    horizon regret of :func:`dynamic_causal_regret_certificate` to a proper turnpike argument, and
+    adds a NEW discounted-regret certificate: the undiscounted cumulative regret ``T*c`` is
+    unbounded, but the discounted sum ``sum g^t c = c*(1-g^T)/(1-g)`` stays below ``c/(1-g)`` --
+    finite.
 
     That "a long horizon is benign" holds because ``q > 0``. Under an INDEFINITE stage cost the
     horizon is bounded outright and no constant survives past the first conjugate point -- see
@@ -4411,11 +4420,12 @@ def doubly_robust_control_certificate(
     errors: Sequence[float] = (0.4, 0.2, 0.1, 0.05),
     seed: int = 0,
 ) -> DoublyRobustCurve:
-    """The doubly-robust version of result 0 (derived in ``validation/doubly_robust.mac``;
-    ``proofs/doubly_robust.v`` takes the product form as given and proves that it vanishes if either
-    nuisance is correct). For a binary intervention the AIPW estimator's bias is the PRODUCT
-    of the outcome-model error and the propensity error, ``dmu*de/(e+de)`` -- so the regret is
-    ``O((dmu*de)^2)`` and vanishes if EITHER nuisance model is correct (double robustness), unlike
+    """The doubly-robust version of :func:`orthogonal_control_certificate` (derived in
+    ``validation/doubly_robust.mac``; ``proofs/doubly_robust.v`` takes the product form as given
+    and proves that it vanishes if either nuisance is correct). For a binary intervention the AIPW
+    estimator's bias is the PRODUCT of the outcome-model error and the propensity error,
+    ``dmu*de/(e+de)`` -- so the regret is ``O((dmu*de)^2)`` and vanishes if EITHER nuisance model
+    is correct (double robustness), unlike
     outcome-regression (needs the outcome model) or IPW (needs the propensity model). Here the bias
     is ``dmu*de*E[(1/2-e)/e_hat]``: the propensity error moves the weight as well, so the slope is 4
     only as the errors vanish, and 3.33 over the default grid, which the defaults read as 3.20 at
@@ -4535,9 +4545,10 @@ def finite_horizon_pl_certificate(
     n_samples: int = 200,
     seed: int = 0,
 ) -> FiniteHorizonPLCurve:
-    """Finite-horizon (multivariate) version of the PL self-certifying regret bound (result #3),
-    without the steady-state / setpoint simplification of the dynamic result 1d. For the *full*
-    finite-horizon LQ objective ``J(U)``, ``U = (u_0,...,u_{T-1})``, the regret admits the bound
+    """Finite-horizon (multivariate) version of the PL self-certifying regret bound
+    (:func:`nonlinear_regret_certificate`), without the steady-state / setpoint simplification of
+    :func:`dynamic_causal_regret_certificate`. For the *full* finite-horizon LQ objective ``J(U)``,
+    ``U = (u_0,...,u_{T-1})``, the regret admits the bound
     ``grad^2 / (2*lambda_min(H))`` (``H`` the Hessian) -- self-certified from the achieved gradient
     over the whole trajectory, no optimum needed. Justified per-eigenmode by
     ``proofs/nonlinear_regret.v`` (`pl_mode_bound`): the min-curvature mode is tight, stiffer modes
@@ -4911,7 +4922,7 @@ def interference_regret_certificate(
     return RegretCurve(np.array(median_errors), np.array(median_gaps), exponent, np.array(inf_frac))
 
 
-# --- Result 33: confounding-robust LQ regret (bounded density ratio -> CVaR radius -> floor) ---
+# --- Confounding-robust LQ regret (bounded density ratio -> CVaR radius -> floor) ---
 
 
 def _lq_static_optimum(effect: float, effort: float, target: float) -> float:
@@ -4944,7 +4955,7 @@ def confounding_robust_lq_regret(
     ``eps + Delta`` is small against the distance from the effect to where ``u*`` turns,
     ``sqrt(r)``.
 
-    ``Delta`` is the confounding half-width on the effect estimate -- the §32 inflation
+    ``Delta`` is the confounding half-width on the effect estimate -- the MSM inflation
     (:func:`chc.uncertainty.confounding_robust_inflation`), an *irreducible* bias floor that does
     not vanish with sample size. Pushed through the order-doubling regret map it becomes a
     control-regret floor ``L_reg*Delta^2``: the LOCAL LQ control regret is SECOND-order in the
@@ -4960,13 +4971,14 @@ def confounding_robust_lq_regret_matrix(
 ) -> float:
     """Matrix confounding-robust LQ regret ``tr(E^T H E)``, ``E = stat + confounding``.
 
-    The Frobenius lift of the scalar approximation via the §21 matrix order-doubling (the scalar
+    The Frobenius lift of the scalar approximation via the matrix order-doubling of
+    :func:`multivariate_transfer_certificate` (the scalar
     order-doubling is Rocq ``regret_order_2p``; the matrix step ``tr(E^T H E) <=
     lambda_max(H)*||E||_F^2`` is standard and not in Rocq): for a positive-semidefinite LQ regret
     curvature ``H`` and effect-error
     matrix ``E``, the regret is the quadratic form ``tr(E^T H E) = O(||E||_F^2)``. The confounding
     floor (``stat = 0``) is ``tr(Delta^T H Delta)`` -- SECOND order in the Frobenius norm of the
-    matrix confounding half-width, the same second-order robustness as the scalar §33. Reduces to
+    matrix confounding half-width, the same second-order robustness as the scalar floor. Reduces to
     :func:`confounding_robust_lq_regret` in the ``1x1`` case, and is a second-order term as that is,
     not a bound on the worst regret.
     """
@@ -4979,7 +4991,7 @@ def confounding_robust_lq_regret_matrix(
 class ConfoundingRobustLQRegretCurve:
     """Evidence the confounding regret order-doubles effect error and floors at Delta^2."""
 
-    gammas: Vector  # swept §32 sensitivity levels Gamma
+    gammas: Vector  # swept MSM sensitivity levels Gamma
     # R(Gamma) = L_reg*(eps + Delta(Gamma))^2, the regret to second order: not a bound, the exact
     # regret's worst over the effect interval exceeds it by up to 8.4 % on the defaults
     regret_bounds: Vector
@@ -5001,7 +5013,7 @@ def confounding_robust_lq_regret_certificate(
 
     Grounds the analytic ``lq_regret_sensitivity`` against the exact static-LQ regret
     ``kappa*(u*(b_hat) - u*(b))^2`` at a small perturbation (ratio -> 1 proves the coefficient),
-    then maps each ``Gamma`` to its confounding half-width via the §32 inflation and checks the
+    then maps each ``Gamma`` to its confounding half-width via the MSM inflation and checks the
     second-order regret is monotone, recovers the statistical regret at ``Gamma=1``, and floors at
     ``Delta^2``. ``regret_bounds`` holds that second-order regret, which the exact one exceeds (see
     :func:`confounding_robust_lq_regret`). Only the first of ``ok``'s four gates is a measurement:
@@ -5009,7 +5021,7 @@ def confounding_robust_lq_regret_certificate(
     ``floor_quadratic_ratio`` being ``(2 Delta)^2 / Delta^2``.
     """
     from chc.uncertainty import (
-        confounding_robust_inflation,  # §32 half-width; local to keep JAX out
+        confounding_robust_inflation,  # MSM half-width; local to keep JAX out
     )
 
     l_reg = lq_regret_sensitivity(effect, effort, target)
@@ -5047,7 +5059,7 @@ def confounding_robust_lq_regret_certificate(
     )
 
 
-# --- Result 35: minimax confounding-robust controller under asymmetric loss ---
+# --- Minimax confounding-robust controller under asymmetric loss ---
 
 
 def certainty_equivalence_control(effect_estimate: float, target: float) -> float:
@@ -5072,7 +5084,7 @@ def confounding_robust_control(
     overshoot_penalty: float,
     undershoot_penalty: float,
 ) -> float:
-    """Minimax control over the §32 effect interval ``[b_hat +/- halfwidth]`` under asymmetric loss.
+    """Minimax control over the MSM effect interval ``[b_hat +/- halfwidth]`` under asymmetric loss.
 
     Loss ``alpha*(y-target)_+ + beta*(target-y)_+`` on the outcome ``y = b*u``; the controller does
     not know ``b`` in the confounding interval. The minimax ``u`` balances the two weighted worst
@@ -5121,7 +5133,7 @@ def worst_case_asymmetric_loss(
     overshoot_penalty: float,
     undershoot_penalty: float,
 ) -> float:
-    """Worst-case asymmetric loss of applying ``control`` over the §32 effect interval.
+    """Worst-case asymmetric loss of applying ``control`` over the MSM effect interval.
 
     The outcome ``b*u`` is linear in ``b``, so its worst overshoot and undershoot are at the
     interval's ends: for ``u > 0`` the overshoot at ``b_hat+D`` and the undershoot at ``b_hat-D``,
@@ -5140,16 +5152,17 @@ def asymmetric_control_improvement(
     overshoot_penalty: float,
     undershoot_penalty: float,
 ) -> float:
-    """Piecewise worst-case-loss improvement ``W_CE - W_rob`` of the §35 robust controller over CE.
+    """Piecewise worst-case-loss improvement ``W_CE - W_rob`` of the robust controller over CE.
 
     ``W_rob = 2*a*b*target*D/Q`` (branch-free, ``Q = (a+b)*b_hat + (a-b)*D``), but
-    ``W_CE = max(a,b)*target*D/b_hat``, so the improvement is PIECEWISE (reviewer-8): the
+    ``W_CE = max(a,b)*target*D/b_hat``, so the improvement is PIECEWISE: the
     OVERSHOOT-dominant branch ``a*target*D*(a-b)*(b_hat+D)/(b_hat*Q)`` for ``a >= b`` and the
     UNDERSHOOT-dominant branch ``b*target*D*(b-a)*(b_hat-D)/(b_hat*Q)`` for ``b >= a`` (Rocq
     ``rob_gap_*`` / ``rob_gap_under_*``). Both are ``>= 0`` for ``b_hat > D > 0`` and ``> 0`` iff
-    ``a != b`` and ``D > 0`` -- the old single formula only covered ``a >= b`` (missing Result 37's
-    ``b = 4*a`` regime). Here ``a = overshoot_penalty``, ``b = undershoot_penalty``. A negative
-    ``target`` is the mirror image, with the two penalties trading places.
+    ``a != b`` and ``D > 0`` -- the old single formula only covered ``a >= b`` (missing the
+    ``b = 4*a`` regime of :func:`confounding_robust_control_benchmark`). Here
+    ``a = overshoot_penalty``, ``b = undershoot_penalty``. A negative ``target`` is the mirror
+    image, with the two penalties trading places.
 
     Raises:
         ValueError: where ``halfwidth`` is negative or above ``effect_estimate``, as
@@ -5248,7 +5261,7 @@ def confounding_robust_control_certificate(
     )
 
 
-# --- Result 36: empirical confounding-regret floor (the §33 Delta^2 floor on synthetic data) ---
+# --- Empirical confounding-regret floor (the Delta^2 floor on synthetic data) ---
 
 
 @dataclass(frozen=True)
@@ -5271,7 +5284,7 @@ def confounding_regret_floor_certificate(
     n: int = 200_000,
     seed: int = 0,
 ) -> ConfoundingRegretFloorCurve:
-    """Show the §33 ``Delta^2`` regret floor emerges from real confounded data, not just algebra.
+    """Show the ``Delta^2`` regret floor emerges from real confounded data, not just algebra.
 
     A confounder ``z`` drives both the action (``u = z + noise``) and the outcome
     (``y = b_true*u + gamma*z + noise``). Naive OLS of ``y`` on ``u`` returns an effect biased by
@@ -5316,7 +5329,7 @@ def confounding_regret_floor_certificate(
     )
 
 
-# --- Result 37: grounding §35 on a synthetic marketplace task (estimate -> control pipeline) ---
+# --- The robust controller on a synthetic marketplace task (estimate -> control pipeline) ---
 
 
 def _asymmetric_cost(
@@ -5350,11 +5363,11 @@ def _confounded_effect_estimate(
 
 @dataclass(frozen=True)
 class MarketplaceControlCurve:
-    """§35 robust controller vs CE on realised marketplace cost across a confounding grid."""
+    """Robust controller vs CE on realised marketplace cost across a confounding grid."""
 
     confounding_levels: Vector  # swept true (unknown) confounding strengths
     ce_costs: Vector  # mean realised asymmetric cost of the CE controller at each level
-    robust_costs: Vector  # ...of the §35 confounding-robust controller
+    robust_costs: Vector  # ...of the minimax confounding-robust controller
     ce_worst_case: float  # max CE cost over the sweep (its downside)
     robust_worst_case: (
         float  # max robust cost over the sweep (<< CE: pessimism bounds the downside)
@@ -5381,17 +5394,18 @@ def confounding_robust_control_benchmark(
     n_periods: int = 400,
     seed: int = 0,
 ) -> MarketplaceControlCurve:
-    """Ground §35: does the confounding-robust controller beat CE on a full marketplace pipeline?
+    """Does the confounding-robust controller beat CE on a full marketplace pipeline?
 
     Synthetic OBSERVATIONAL confounded marketplace (not a randomised switchback -- the action
     follows the demand confounder z, so this is confounded logging, not an experiment): the naive
     effect estimate is biased, so the
     CE controller (trusting it) under-incentivises and misses completions -- expensive when churn
-    (``undershoot_penalty``) dominates budget waste (``overshoot_penalty``). The §35 controller uses
-    an assumed sensitivity ``Gamma`` and a half-width ``D``. **Calibration (named):** §32 gives
-    ``D = (Gamma-1)/(Gamma+1)*(CVaR_up - CVaR_lo)``; for THIS synthetic benchmark we calibrate the
-    sensitivity gap to the estimate, ``CVaR_up - CVaR_lo := b_hat``, so ``D = (Gamma-1)/(Gamma+1)*
-    b_hat`` -- a benchmark assumption, not a general consequence of §32.
+    (``undershoot_penalty``) dominates budget waste (``overshoot_penalty``). The robust controller
+    uses an assumed sensitivity ``Gamma`` and a half-width ``D``. **Calibration (named):** the MSM
+    gives ``D = (Gamma-1)/(Gamma+1)*(CVaR_up - CVaR_lo)``; for THIS synthetic benchmark we calibrate
+    the sensitivity gap to the estimate, ``CVaR_up - CVaR_lo := b_hat``, so
+    ``D = (Gamma-1)/(Gamma+1)*b_hat`` -- a benchmark assumption, not a general consequence of
+    the MSM.
 
     Reports realised cost across a confounding sweep: the robust controller bounds the WORST-CASE
     cost (pessimism) and wins **beyond a problem-dependent confounding threshold**, while paying a
@@ -5399,7 +5413,7 @@ def confounding_robust_control_benchmark(
     the honest robustness trade-off, not a universal win.
     """
     from chc.uncertainty import (
-        confounding_robust_inflation,  # §32 half-width; local to keep JAX out
+        confounding_robust_inflation,  # MSM half-width; local to keep JAX out
     )
 
     rng = np.random.default_rng(seed)
@@ -5445,7 +5459,7 @@ def confounding_robust_control_benchmark(
     )
 
 
-# --- Result 38: DYNAMIC grounding of §35 -- a real closed-loop controller on a confounded plant ---
+# --- The robust controller in a real closed loop on a confounded plant ---
 
 
 def confounding_robust_tracking_loop(
@@ -5461,15 +5475,15 @@ def confounding_robust_tracking_loop(
     noise_scale: float = 0.05,
     seed: int = 0,
 ) -> tuple[Vector, Vector, float]:
-    """Roll the confounded scalar plant ``x' = a*x + b_true*u + noise`` under the §35 controller.
+    """Roll the confounded scalar plant ``x' = a*x + b_true*u + noise`` under the robust controller.
 
-    Lifts the STATIC §35 minimax into a receding-horizon CLOSED LOOP (the reviewers' recurring
-    critique): each step aims the one-step target ``tau_t = x_target - a*x_t`` with
+    Lifts the STATIC minimax of :func:`confounding_robust_control` into a receding-horizon CLOSED
+    LOOP: each step aims the one-step target ``tau_t = x_target - a*x_t`` with
     :func:`confounding_robust_control` trusting the biased offline ``b_hat`` while the TRUE plant
     uses ``b_true`` (the model/plant split of :func:`chc.research.flagship.closed_loop`, in NumPy to
     keep this module x64-flag-independent). ``halfwidth = 0`` recovers certainty-equivalence exactly
-    (the §35 formula collapses to ``tau/b_hat``); ``halfwidth > 0`` (the §32 radius) is the robust
-    controller. Returns the realised trajectory, the applied controls, and the accumulated
+    (the minimax formula collapses to ``tau/b_hat``); ``halfwidth > 0`` (the MSM radius) is the
+    robust controller. Returns the realised trajectory, the applied controls, and the accumulated
     ASYMMETRIC stage cost ``Sum_t [alpha*(x_t - x_target)_+ + beta*(x_target - x_t)_+]``.
     """
     rng = np.random.default_rng(seed)
@@ -5489,11 +5503,11 @@ def confounding_robust_tracking_loop(
 
 @dataclass(frozen=True)
 class DynamicConfoundingCurve:
-    """§35 robust vs CE on realised CLOSED-LOOP cost across a confounding grid (the dynamic §37)."""
+    """Robust vs CE on realised CLOSED-LOOP cost across a confounding grid."""
 
     confounding_levels: Vector  # swept true (unknown) confounding strengths
     ce_costs: Vector  # mean realised closed-loop asymmetric cost of the CE controller
-    robust_costs: Vector  # ...of the §35 confounding-robust controller
+    robust_costs: Vector  # ...of the minimax confounding-robust controller
     ce_worst_case: float  # max CE cost over the sweep
     robust_worst_case: float  # max robust cost over the sweep (<= CE: pessimism bounds downside)
     savings_at_target_pct: float  # closed-loop cost reduction at the realistic confounding level
@@ -5521,18 +5535,18 @@ def confounding_robust_tracking_benchmark(
     n_periods: int = 400,
     seed: int = 0,
 ) -> DynamicConfoundingCurve:
-    """The DYNAMIC §37: does the confounding-robust controller beat CE in CLOSED LOOP over time?
+    """Does the confounding-robust controller beat CE in CLOSED LOOP over time?
 
     Same honest story as :func:`confounding_robust_control_benchmark`, now closed-loop over
     ``n_steps`` on the confounded plant ``x' = a*x + b_true*u + noise``: a demand confounder biases
     the offline ``b_hat``, the CE controller under-actuates and undershoots ``x_target`` (expensive
-    when churn = ``undershoot_penalty`` dominates budget waste), the §35 controller uses the §32
+    when churn = ``undershoot_penalty`` dominates budget waste), the robust controller uses the MSM
     radius (calibrated ``D = (Gamma-1)/(Gamma+1)*b_hat``, a benchmark assumption) to hedge. Reports
     mean realised closed-loop cost across a confounding sweep: robust bounds the worst case and wins
     beyond a problem-dependent threshold, paying a bounded premium near zero confounding.
     """
     from chc.uncertainty import (
-        confounding_robust_inflation,  # §32 half-width; local to keep JAX out
+        confounding_robust_inflation,  # MSM half-width; local to keep JAX out
     )
 
     rng = np.random.default_rng(seed)
@@ -5595,12 +5609,12 @@ def confounding_robust_tracking_benchmark(
     )
 
 
-# --- Result 59 (A15): the space-time fold problem, and what one axis at a time costs ---
+# --- The space-time fold problem, and what one axis at a time costs ---
 
 
 @dataclass(frozen=True)
 class SpaceTimeFoldCurve:
-    """Result 59: the two-axis fold problem -- its Kronecker rank, and the price of one axis."""
+    """The two-axis fold problem -- its Kronecker rank, and the price of one axis."""
 
     covariance_error: float  # max |simulated - panel_covariance|, on the scale below
     covariance_scale: float
@@ -5612,7 +5626,7 @@ class SpaceTimeFoldCurve:
     saturated_times: int  # ... and a panel too short to resolve the largest shift
     saturated_rank: tuple[int, ...]  # where the rank drops below the law, commuting / generic
     lags: tuple[int, ...]
-    slice_design: Vector  # Result 52's CROSS-SECTIONAL design, held constant in time
+    slice_design: Vector  # the CROSS-SECTIONAL design, held constant in time
     space_only: Vector  # best time-constant fold for the PANEL objective
     space_time: Vector  # best free (unit, time) fold
     slice_design_penalty: Vector  # (slice_design - space_only) / space_only: wrong WEIGHT
@@ -5621,7 +5635,7 @@ class SpaceTimeFoldCurve:
     axis_beats_weight_at_long_delay: bool
     exhaustive_ratio: float  # heuristic / exact optimum on a product set small enough to enumerate
     panel_weight: float  # w_1/w_0 at p=3, lag=1 -- what a time-constant fold really carries
-    slice_weight: float  # phi**lag -- what Result 52 scores it with
+    slice_weight: float  # phi**lag -- what the cross-sectional law scores it with
     ok: bool
 
 
@@ -5641,12 +5655,13 @@ def space_time_fold_certificate(
     restarts: int = 30,
     seed: int = 20260904,
 ) -> SpaceTimeFoldCurve:
-    """RESULT 59 -- folds on BOTH axes (derived in ``validation/space_time_folds.mac``, proved in
+    """Folds on BOTH axes (derived in ``validation/space_time_folds.mac``, proved in
     ``proofs/space_time_folds.v``).
 
-    Result 51 showed the delayed-network covariance is separable only at ``lag = 0``; Result 52
-    designed folds on the space axis alone and said so. Plan 24's P2.5 asks what the restriction
-    costs. Four gates, each able to fail:
+    The delayed-network covariance is separable only at ``lag = 0``
+    (:func:`delayed_network_certificate`), and :func:`optimal_fold_partition` without
+    ``time_axis`` designs folds on the space axis alone. This asks what that restriction costs. Four
+    gates, each able to fail:
 
     1. **The covariance formula is the simulator's.** ``panel_covariance`` is compared against
        trajectories drawn from the generative definition, never from the Kronecker form, so a wrong
@@ -5654,25 +5669,27 @@ def space_time_fold_certificate(
     2. **The Kronecker rank obeys the commutation law.** ``dmax+1`` when the shell operators commute
        (the cycle), ``2*dmax`` when they do not (a path) -- and never ``2*dmax+1``, because the
        ``q = 0`` and ``q = dmax`` spatial factors are symmetric on every graph. At ``lag = 0`` the
-       rank must be exactly 1, which is Result 51's STEP 7 read from the Kronecker side. Both
-       statements need a panel long enough to RESOLVE the shifts: once ``lag*q`` passes ``p-1``
-       every remaining temporal factor is a multiple of the same matrix, so the rank SATURATES
-       strictly below the law -- measured 4 against 5 (cycle) and 7 against 8 (path) at
-       ``p = 4, dmax = 4``. A short panel cannot see the coupling it is being asked to design for.
+       rank must be exactly 1, which is the separability at ``lag = 0`` of
+       :func:`delayed_network_certificate` read from the Kronecker side. Both statements need a
+       panel long enough to RESOLVE the shifts: once
+       ``lag*q`` passes ``p-1`` every remaining temporal factor is a multiple of the same matrix, so
+       the rank SATURATES strictly below the law -- measured 4 against 5 (cycle) and 7 against 8
+       (path) at ``p = 4, dmax = 4``. A short panel cannot see the coupling it is being asked to
+       design for.
     3. **Two different mistakes, and they cross.** Holding a fold constant in time is one error;
-       scoring it with Result 52's SINGLE-SLICE weight instead of the panel's is another, and they
-       are not the same. Measured on a cycle (``m=8``, ``p=4``, ``K=2``, ``phi=0.6``) the slice
-       weight costs ``3.3, 8.7, 2.8, 0.3%`` over ``lag = 1..4`` while the frozen time axis costs
-       ``0.3, 3.3, 13.3, 19.2%``. **At short delay the mistake to fix is the weight; at long delay
-       it is the axis.** The gate is that crossing, not either number alone.
+       scoring it with the cross-sectional SINGLE-SLICE weight instead of the panel's is another,
+       and they are not the same. Measured on a cycle (``m=8``, ``p=4``, ``K=2``, ``phi=0.6``) the
+       slice weight costs ``3.3, 8.7, 2.8, 0.3%`` over ``lag = 1..4`` while the frozen time axis
+       costs ``0.3, 3.3, 13.3, 19.2%``. **At short delay the mistake to fix is the weight; at long
+       delay it is the axis.** The gate is that crossing, not either number alone.
     4. **The heuristic is exact where exactness is checkable.** On a product set small enough to
        enumerate, spectral rounding plus balanced swaps must return the global optimum.
 
-    The last field pair is the quieter finding: a fold held constant in time is scored by Result 52
-    with the SINGLE-SLICE weight ``phi**lag``, but on a panel it really carries ``w_1/w_0``, the
-    ratio of shifted-Toeplitz masses. Those differ everywhere strictly inside ``(0,1)``
-    (``proofs/space_time_folds.v``, ``panel_weight_exceeds_the_slice_weight``), so even the one-axis
-    panel design is not the cross-sectional one.
+    The last field pair is the quieter finding: a fold held constant in time is scored by the
+    cross-sectional law with the SINGLE-SLICE weight ``phi**lag``, but on a panel it really carries
+    ``w_1/w_0``, the ratio of shifted-Toeplitz masses. Those differ everywhere strictly inside
+    ``(0,1)`` (``proofs/space_time_folds.v``, ``panel_weight_exceeds_the_slice_weight``), so even
+    the one-axis panel design is not the cross-sectional one.
     """
     gam = np.asarray(gammas, dtype=np.float64)
     dmax = gam.size - 1
@@ -5815,12 +5832,12 @@ def space_time_fold_certificate(
     )
 
 
-# --- Result 60 (P2.6): does Psi describe an ESTIMATOR, or only a process? ---
+# --- Does Psi describe an ESTIMATOR, or only a process? ---
 
 
 @dataclass(frozen=True)
 class PanelEstimatorGate:
-    """Result 60: Result 51's functional put against a real cross-fitted DML fit on a panel."""
+    """The delayed-network functional put against a real cross-fitted DML fit on a panel."""
 
     cluster_counts: tuple[int, ...]
     predicted: Vector  # Psi(parity)/Psi(block) from the functional
@@ -5873,13 +5890,14 @@ def panel_estimator_certificate(
     disturbance_scale: float = 2.0,
     seed: int = 20260904,
 ) -> PanelEstimatorGate:
-    """RESULT 60 -- Result 51's ``Psi`` against a real cross-fitted DML fit.
+    """The delayed-network ``Psi`` against a real cross-fitted DML fit.
 
-    Result 51 says in its own scope note that ``Psi`` is a functional of the process, evaluated with
-    the fold operator held fixed, and "not a re-derived estimator". This runs the comparison that
-    can settle it: two fold partitions of the same panel -- parity around each cycle against
-    contiguous blocks -- fitted by :func:`chc.network_causal.estimate_network_effects`, with the
-    realised variance ratio bootstrapped over draws and put against the functional's prediction.
+    :func:`delayed_network_certificate` says in its own scope note that ``Psi`` is a functional of
+    the process, evaluated with the fold operator held fixed, and "not a re-derived estimator". This
+    runs the comparison that can settle it: two fold partitions of the same panel -- parity around
+    each cycle against contiguous blocks -- fitted by
+    :func:`chc.network_causal.estimate_network_effects`, with the realised variance ratio
+    bootstrapped over draws and put against the functional's prediction.
 
     The algebra says what order to expect before the experiment (``panel_estimator_gate.mac``): the
     partition enters ``Psi`` exactly once, linearly, with positive weight, and with a block-diagonal
@@ -5905,7 +5923,7 @@ def panel_estimator_certificate(
     the conservatism in every cell, by 14% to 26%, and every interval there excludes 1, but three of
     their six intervals cover the prediction: at ``g = 2`` on both streams, and at ``g = 20`` on
     ``seed=20000``. **As a ranking rule the functional holds; as a point
-    predictor of an estimator's variance ratio it does not**, and Result 51's scope note is now
+    predictor of an estimator's variance ratio it does not**, and that scope note is now
     specific rather than cautious. The likely reason is in plain sight: ``Psi`` models the
     nuisance step as an exact projection onto fold indicators, while the estimator uses a ridge
     polynomial and then a second OLS stage whose own sandwich the functional does not carry.

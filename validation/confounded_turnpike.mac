@@ -3,7 +3,7 @@
    Hamiltonian). A long-horizon optimal trajectory spends almost all its time near a static "turnpike"
    (the Hamiltonian equilibrium / optimal steady state). A CONFOUNDED controller, using the biased
    effect b_obs = b + beta (omitted-variable bias), converges to the WRONG turnpike and pays a per-step
-   offset FOREVER. This upgrades result #1d (dynamic horizon regret, previously hand-argued) to a proper
+   offset FOREVER. This upgrades the dynamic horizon regret of dynamic_causal_mpc.mac to a proper
    turnpike argument, and yields a NEW discounted-regret certificate via the current-value Hamiltonian.
    Maxima is the source of truth. */
 display2d : false$
@@ -26,7 +26,8 @@ c : q*offset^2$
 print("per-step regret c = q*offset^2 =", c, " (paid every step; causal controller pays 0)")$
 
 /* (B) UNDISCOUNTED cumulative regret over horizon T = T*c -> infinity (LINEAR, turnpike-grounded).
-   This sharpens result #1d: the confounded trajectory is near x_conf for Theta(T) steps (turnpike
+   This sharpens dynamic_causal_mpc.mac: the confounded trajectory is near x_conf for Theta(T)
+   steps (turnpike
    property), each costing c, so cumulative regret grows without bound. */
 print("undiscounted cumulative regret R(T) = T*c -> infinity (linear in the horizon)")$
 

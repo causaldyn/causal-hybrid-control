@@ -1,20 +1,21 @@
-/* DISCOVERY / derivation: the TIME-FOLD LAW (Result 53). Result 44 priced folds that cut across
-   time under AR(1) at a 27-34% overstatement of the exchangeable law and left the design question
-   open ("a coding rule, not a theorem"). This file closes the design question. The affine
-   reduction of Result 52 is graph-free, and on the time axis the sandwich is LINEAR in the
-   covariance: the partition enters Psi_time = tr(A Sigma A)/tr(A)^2 only through
-   (r^4-1)(K/p) tr(F0 Sigma), Sigma[t,s] = phi^|t-s| -- the same-fold phi-weighted PAIR count
-   (STEP 1). The mode score of the stationary kernel is the AR(1) spectral density
+/* DISCOVERY / derivation: the TIME-FOLD LAW. validation/delayed_exposure_gate.mac STEP 6 priced
+   folds that cut across time under AR(1) at a 27-34% overstatement of the exchangeable law and
+   left the design question open ("a coding rule, not a theorem"). This file closes the design
+   question. The affine reduction of fold_spectrum_law.mac is graph-free, and on the time axis the
+   sandwich is LINEAR in the covariance: the partition enters Psi_time = tr(A Sigma A)/tr(A)^2 only
+   through (r^4-1)(K/p) tr(F0 Sigma), Sigma[t,s] = phi^|t-s| -- the same-fold phi-weighted PAIR
+   count (STEP 1). The mode score of the stationary kernel is the AR(1) spectral density
    lambda(c) = (1-phi^2)/(1-2 phi c + phi^2), c = cos theta, STRICTLY INCREASING in c for every
-   phi in (0,1) (STEPs 2-3): unlike Result 52's spatial kernel there is NO threshold and NO stripe
-   regime -- all spectral mass belongs at c = -1, i.e. ALTERNATE time points between folds, at
-   every phi. The kernel is convex in the lag (STEP 4, second difference phi^r (1-phi)^2), so the
-   alternating optimum is the density-1/2 case of Hubbard's most-homogeneous ground states for
-   convex 1D repulsion (Hubbard 1978; Pokrovsky-Uimin 1978) -- cited as context, while the
-   finite-path statement is established by exhaustive enumeration in the research log: parity is
-   the argmin and the contiguous half-split the argmax among ALL balanced partitions at every phi
-   tested, p <= 14, with the plug-in price of the default contiguous split reaching 5.9x
-   (and 2.5x under the exact moment of Result 51 (l)). Maxima is the source of truth here. */
+   phi in (0,1) (STEPs 2-3): unlike the spatial kernel of fold_spectrum_law.mac there is NO
+   threshold and NO stripe regime -- all spectral mass belongs at c = -1, i.e. ALTERNATE time
+   points between folds, at every phi. The kernel is convex in the lag (STEP 4, second difference
+   phi^r (1-phi)^2), so the alternating optimum is the density-1/2 case of Hubbard's
+   most-homogeneous ground states for convex 1D repulsion (Hubbard 1978; Pokrovsky-Uimin 1978) --
+   cited as context, while the finite-path statement is established by exhaustive enumeration, not
+   shipped here: parity is the argmin and the contiguous half-split the argmax among ALL balanced
+   partitions at every phi tested, p <= 14, with the plug-in price of the default contiguous split
+   reaching 5.9x (and 2.5x under the exact moment, chc.research.regret.exact_ratio_moment). Maxima
+   is the source of truth here. */
 display2d : false$
 
 mytrace(M) := sum(M[i, i], i, 1, length(M))$
@@ -54,7 +55,7 @@ res3a : ratsimp(diff(lam, c) - 2 * ph * (1 - ph^2) / (1 - 2 * ph * c + ph^2)^2)$
 res3b : ratsimp((1 - 2 * ph * c + ph^2) - (1 - ph)^2 - 2 * ph * (1 - c))$
 print("STEP 3   derivative residual", res3a, "; denominator floor residual", res3b,
       "  (0 0 confirms: lambda strictly increasing in c, so ALL mass belongs at c = -1 --",
-      "no threshold, unlike the spatial law of Result 52)")$
+      "no threshold, unlike the spatial law of fold_spectrum_law.mac)")$
 
 /* STEP 4: the kernel is convex in the lag -- Hubbard's hypothesis holds for AR(1). */
 res4 : ratsimp(ph^(q + 2) - 2 * ph^(q + 1) + ph^q - ph^q * (1 - ph)^2)$

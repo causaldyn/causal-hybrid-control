@@ -1,8 +1,9 @@
 /* THE CONJUGATE-TIME OBSTRUCTION: the horizon past which every chc.regret constant ceases to exist.
-   Third member of the family of Result 13 (the active-set kink) and Result 14 (the turnpike gap) --
-   places where the smooth machinery the regret bounds assume quietly stops applying.
+   Third member of the family of the active-set kink (validation/constrained_ce_regret.mac) and the
+   turnpike gap (validation/confounded_turnpike.mac) -- places where the smooth machinery the regret
+   bounds assume quietly stops applying.
 
-   Result 14 says long horizons are BENIGN (a turnpike): the discounted confounded gap stays finite.
+   The turnpike gap says long horizons are BENIGN: the discounted confounded gap stays finite.
    That is true for a POSITIVE-DEFINITE cost.  For an indefinite one -- a state that is REWARDED, as
    in a growth or market-share objective -- the second-order sufficient condition fails at a finite
    horizon, the Riccati solution escapes to infinity there, and every constant built on the smooth
@@ -96,12 +97,13 @@ print("STEP 5e coef2 at the certificate's plant (Tf -> t_conj) =",
       float( subst(append(vals, [Tf = tcn]), coef2) ))$
 
 print("=== STEP 6: the consequence for the regret constant ===")$
-/* Result 44: C is proportional to L_K^2.  A double pole in L_K is a FOURTH-order pole in C. */
-print("STEP 6a Result 44 has C proportional to L_K^2, so C(T) ~ (t_conj - T)^(-4)")$
+/* validation/ce_explicit_constants.mac: C is proportional to L_K^2.  A double pole in L_K is a
+   FOURTH-order pole in C. */
+print("STEP 6a ce_explicit_constants.mac has C proportional to L_K^2, so C(T) ~ (t_conj - T)^(-4)")$
 print("STEP 6b C(T) as a Laurent series:  C = kap*L_K^2 with L_K = coef2/eps^2 gives",
       ratsimp( kap*(coef/eps^2)^2 ), " -- a FOURTH-order pole, and",
       "log C = 4 log(1/eps) + log(kap coef^2), so a log-log fit of C against 1/eps has slope 4")$
-print("STEP 6c CONTRAST WITH RESULT 14. The turnpike says a long horizon is benign and the",
+print("STEP 6c CONTRAST WITH THE TURNPIKE GAP. The turnpike says a long horizon is benign and the",
       "discounted confounded gap stays FINITE. That holds for a positive-definite cost. Here the",
       "cost is indefinite and the horizon is BOUNDED: sup{T : the constant exists} = t_conj < inf.",
       "The two are not in conflict -- they are the two sides of the definiteness hypothesis, and",

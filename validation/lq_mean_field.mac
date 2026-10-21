@@ -12,7 +12,7 @@
    which is what a Deep Galerkin solver must actually satisfy.  Everything below is derived: the
    quadratic ansatz, the three coefficient ODEs, the Gaussian moments, the 2x2 forward-backward
    system, its EXACT solution, and the determinant whose vanishing is an obstruction of the same
-   family as Result 45's conjugate time.
+   family as the conjugate time of conjugate_time.mac.
 
    Certificate: chc.research.deep_galerkin.lq_mean_field_certificate; proofs/lq_mean_field.v. */
 
@@ -159,7 +159,7 @@ Timag : (%pi/2 - atan(kk_/w))/w$
 print("STEP 6h residual of den at T = arccot(k/w)/w =",
       ratsimp( trigsimp( subst([T = Timag], cos(w*T) - kk_*sin(w*T)/w) ) ), " (0)")$
 print("STEP 6i THE OBSTRUCTION.  Past that horizon the mean-field fixed point has no solution, or")$
-print("        a continuum of them.  It is the same shape as Result 45's conjugate time -- a")$
+print("        a continuum of them.  It is the same shape as the conjugate time -- a")$
 print("        determinant crossing zero and a constant blowing up like 1/(T* - T) -- but here in")$
 print("        the mean-field coupling rather than the single-agent second variation, and with an")$
 print("        exact threshold in c.  A Deep Galerkin solver run past T* is fitting a system with")$

@@ -27,7 +27,8 @@ promise nothing that was not asked for.
   action. A :class:`BarrierConstraint` does: passed as ``barrier=``, the audit's own condition is
   held in the solve by augmented-Lagrangian rounds (``docs/adr/0002-barrier-in-the-solve.md``).
 * **audit** -- :func:`certify_safety`. Given a barrier and a sensitivity level ``Gamma``, it prices
-  a *finished* plan against §40: where along it the safety guarantee survives unmeasured
+  a *finished* plan against the robust barrier condition of :mod:`chc.barrier`: where along it
+  the safety guarantee survives unmeasured
   confounding, and the largest ``Gamma`` the whole plan tolerates. Read-only by construction.
 * **filter** -- :func:`chc.barrier.robust_safety_filter`. It clips one nominal action into the
   certified interval at one state, online, scalar control.
@@ -2671,7 +2672,7 @@ def _refuse_unheldable(
 
 @dataclass(frozen=True)
 class SafetyCertificate:
-    """§40 evaluated along a finished plan: how much confounding its safety guarantee survives.
+    """The robust barrier check along a finished plan: how much confounding its guarantee survives.
 
     Two questions that must not be conflated, so both are reported:
 
@@ -2697,7 +2698,7 @@ class SafetyCertificate:
     # at the next
     planned_certified: Array
     certified_steps: int  # leading certified PREFIX, as in ``certified_horizon``, not a pass count
-    gamma_star: float  # weakest step's §40 ceiling; nan if some step certifies at no Gamma at all
+    gamma_star: float  # weakest step's Gamma ceiling; nan if some step certifies at no Gamma at all
     step_gamma_star: tuple[float, ...]  # per-step ceilings, so the weak link is locatable
     # largest d_k = Delta(Gamma)*||grad h(x_k)|| along the plan, Delta in the channel's units
     radius: float
@@ -2945,7 +2946,7 @@ def certify_safety(
     u_max: ArrayLike | None = None,
     sensitivity: ChannelSensitivity | None = None,
 ) -> SafetyCertificate:
-    """Price a plan's barrier guarantee against a partially identified control effect (§40).
+    """Price a plan's barrier guarantee against a partially identified control effect.
 
     The plan was made under a *point* estimate of the effect. If that estimate came from confounded
     logs the effect matrix is only set-identified, and given an **operator-norm** identification
@@ -2972,7 +2973,8 @@ def certify_safety(
             calibration ``cvar_gap := b_hat`` of :mod:`chc.research.sensitivity`. ``gamma = 1`` is
             exact identification -- zero radius, and this degenerates to the ordinary CBF check.
             NOTE the calibration burden: ``Delta`` is used here as an **operator-norm radius on the
-            effect matrix**, and §32's scalar CVaR gap does not by itself establish one. The share
+            effect matrix**, and the sensitivity model's scalar CVaR gap does not by itself
+            establish one. The share
             is the caller's externally calibrated input, exactly as ``gamma`` is; an absolute
             radius ``r`` is the share ``r / ||B_hat(x0)||_2``. The radius is a share of the
             *fitted* channel, so at every ``gamma``, however large, it stays within
@@ -3337,12 +3339,14 @@ number, or the bound itself did not come out finite."""
 
 @dataclass(frozen=True)
 class PlanRegretBound:
-    """How far a finished plan can be from the best one the same box allows (Result 69, L3.2).
+    """How far a finished plan can be from the best one the same box allows.
 
-    Result 6's self-certifying bound ``J(U) - J* <= |grad J|^2/(2 mu)`` needs no optimum, which is
+    The self-certifying bound ``J(U) - J* <= |grad J|^2/(2 mu)``
+    (:func:`chc.research.regret.finite_horizon_pl_certificate`) needs no optimum, which is
     what makes it a certificate rather than a diagnostic. It does not survive a box: at a lever the
     gradient holds against its own bound ``grad J`` is nonzero while the true regret is zero, so
-    that bound charges regret to a coordinate that cannot move. Result 13 read the same fact from
+    that bound charges regret to a coordinate that cannot move.
+    :func:`chc.research.regret.constrained_ce_regret_certificate` reads the same fact from
     the other side -- an active cap freezes the control and the regret's curvature collapses.
 
     What replaces it is the same quantity maximised over the *feasible* moves only. Per coordinate
@@ -3372,7 +3376,7 @@ class PlanRegretBound:
     """
 
     bound: float  # J(U) - min over the box of J where ``status`` certifies it; inf when refused
-    unconstrained_bound: float  # Result 6's |grad J|^2/(2 mu), for the comparison
+    unconstrained_bound: float  # the unconstrained |grad J|^2/(2 mu), for the comparison
     frank_wolfe_gap: float  # the mu-free fallback the box guarantees; bound <= this
     modulus: float  # the mu actually used, over the actions the box lets move, in its norm
     modulus_source: ModulusSource
@@ -3588,7 +3592,7 @@ def plan_regret_bound(
     seed: int = 0,
     constraints: Sequence[LinearConstraint] = (),
 ) -> PlanRegretBound:
-    """RESULT 69 (L3.2) -- the optimality gap of a finished plan, certified from its own gradient.
+    """The optimality gap of a finished plan, certified from its own gradient.
 
     Derived in ``validation/constrained_plan_regret.mac``, proved in
     ``proofs/constrained_plan_regret.v``. Reads the plan's actions, not the solver's internals, so
@@ -3624,7 +3628,7 @@ def plan_regret_bound(
             maximiser, which sums to ``bound`` less the multipliers' slack in the rows.
 
     The three numbers to read together: :attr:`~PlanRegretBound.bound` is what the box certifies,
-    :attr:`~PlanRegretBound.unconstrained_bound` is what Result 6 would have reported at the same
+    :attr:`~PlanRegretBound.unconstrained_bound` is what the unconstrained bound reports at the same
     plan, and :attr:`~PlanRegretBound.frank_wolfe_gap` is what survives if the modulus goes to zero.
     :attr:`~PlanRegretBound.status` says what the bound is: ``certified`` on a supplied modulus or
     a linear model's, ``diagnostic`` on a sampled one, and ``refused`` -- the bound ``inf`` -- when

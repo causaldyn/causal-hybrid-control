@@ -1,5 +1,5 @@
-/* DISCOVERY / derivation (CONTRIBUTION 2): what row-level cross-fitting COSTS on a clustered design.
-   The C2 write-up assumes A8 -- "K >= 2 folds of whole clusters" -- while the certificates split
+/* DISCOVERY / derivation: what row-level cross-fitting COSTS on a clustered design.
+   The clustered cross-fit rate assumes K >= 2 folds of whole clusters, while the certificates split
    folds by ROW PARITY, so every cluster sits in both folds. This file prices that violation. The
    cited literature cannot: CCDDHNR assume i.i.d. rows (folds are then automatically valid),
    Hansen-Lee assume independent cluster scores as a PRIMITIVE, Chiang-Kato-Ma-Sasaki assume folds
@@ -13,8 +13,8 @@ display2d : false$
 /* ---------------------------------------------------------------------------------------------
    STEP 1. The Frisch-Waugh-Lovell cancellation, exactly: the cross-fold hat matrix reproduces the
    design it is applied to, H_BA*Z_A = Z_B, whenever Z_A'Z_A is invertible. This is why f(Z) drops
-   out identically FOR ANY FOLD ASSIGNMENT, and is the clustered restatement of the own-sample
-   partialling-out finding already recorded in the log. Explicit 3-column design, 4+4 split. */
+   out identically FOR ANY FOLD ASSIGNMENT, and is the clustered restatement of own-sample
+   partialling-out. Explicit 3-column design, 4+4 split. */
 ZA : matrix([1,z1,c1],[1,z2,c2],[1,z3,c3],[1,z4,c4])$
 ZB : matrix([1,w1,d1],[1,w2,d2],[1,w3,d3],[1,w4,d4])$
 HBA : ZB . invert(transpose(ZA) . ZA) . transpose(ZA)$
@@ -44,7 +44,7 @@ Emoment : moment$
 for pr in [V*a, V*aA, V*e, V*eA, VA*a, VA*aA, VA*e, VA*eA] do
     Emoment : ratsubst(0, pr, Emoment)$
 print("STEP 3 E[Dtil*(Ytil - beta*Dtil)] =", ratsimp(Emoment),
-      " (0 confirms Result 43(a): row-level folds do NOT bias B-hat)")$
+      " (0 confirms row-level folds do NOT bias B-hat)")$
 
 /* ---------------------------------------------------------------------------------------------
    STEP 4. The second moment, where the damage IS. Write the within-cluster residual maker under row
@@ -111,7 +111,7 @@ Psi_norm      : ratsimp( Psi / c_mK )$
 one_minus_icc : ratsimp( 1 - tau2/(tau2 + sig2) )$
 print("STEP 6 Psi/c(m,K) =", Psi_norm, " ; 1 - rho_ICC =", one_minus_icc,
       " ; residual =", ratsimp(Psi_norm - one_minus_icc),
-      " (0 confirms Result 43(b): the normalised leakage law is EXACTLY 1 - rho_ICC)")$
+      " (0 confirms the normalised leakage law is EXACTLY 1 - rho_ICC)")$
 
 /* ---------------------------------------------------------------------------------------------
    STEP 7. Limits, monotonicity and domain. The construction needs at least one training row and one

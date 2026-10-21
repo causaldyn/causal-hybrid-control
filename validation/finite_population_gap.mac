@@ -1,7 +1,7 @@
 /* THE FINITE-POPULATION GAP: what N agents cost you against the Fokker-Planck density.
 
-   Result 49 solved a mean-field game as a coupled HJB/Fokker-Planck pair and left one modelling
-   gap open: the FP density is the N -> infinity limit, and nobody deploys to infinity.  This file
+   lq_mean_field.mac solves a mean-field game as a coupled HJB/Fokker-Planck pair and leaves one
+   modelling gap open: the FP density is the N -> infinity limit, and nobody deploys to infinity.  This file
    prices the gap for the scalar LQ mean-field game of chc.research.deep_galerkin.LQMeanFieldGame, and the
    answer is EXACT rather than fitted -- which is the whole point, because "we fitted an exponent
    of -0.5" is a much weaker claim than "the constant is v(t) and here is the identity".

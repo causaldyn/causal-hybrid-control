@@ -1,8 +1,10 @@
-/* DISCOVERY / derivation: the DOUBLY-ROBUST version of result 0. For a binary intervention (e.g.
+/* DISCOVERY / derivation: the DOUBLY-ROBUST version of orthogonal_control.mac. For a binary
+   intervention (e.g.
    "incentivise a zone or not") the AIPW / doubly-robust estimator of the effect has a bias that is
    the PRODUCT of the outcome-model error dmu and the propensity error de -- so it is exactly zero if
    EITHER model is correct (double robustness), and the control regret is O((dmu*de)^2). This refines
-   result 0 (which took both nuisances at one rate): the DR bias vanishes if either nuisance is right,
+   orthogonal_control.mac (which took both nuisances at one rate): the DR bias vanishes if either
+   nuisance is right,
    and is at most the outcome-regression (single-robust) bias in magnitude. Maxima derives the bias
    for one covariate stratum (propensity e; outcomes mu_1, mu_0), perturbing the estimates. */
 display2d : false$

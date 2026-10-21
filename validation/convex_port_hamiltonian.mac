@@ -1,5 +1,4 @@
-/* The port-Hamiltonian residual needs a COERCIVE energy, not merely a decreasing one -- Appendix A
-   item A20, the last of Result 30's transfer ledger.
+/* The port-Hamiltonian residual needs a COERCIVE energy, not merely a decreasing one.
 
    chc.residual.PortHamiltonianResidual encodes x' = (J - R) grad H(x) + g(x) u with J skew and
    R = L L' PSD, and its docstring says: "With no input the energy obeys H' = -dH . R dH <= 0, so H
@@ -21,7 +20,7 @@
    Run: timeout 600 maxima --very-quiet -b validation/convex_port_hamiltonian.mac */
 
 print("================================================================")$
-print("A COERCIVE ENERGY FOR THE PORT-HAMILTONIAN RESIDUAL (A20)")$
+print("A COERCIVE ENERGY FOR THE PORT-HAMILTONIAN RESIDUAL")$
 print("================================================================")$
 
 /* ===== STEP 1: the passivity identity, and the skew term that cancels ===== */

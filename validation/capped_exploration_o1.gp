@@ -1,14 +1,15 @@
 \\ PARI/GP: the O(1) term of the capped-exploration stopping mass, at 60 digits.
 \\
-\\ Result 56 gave the stopping mass as S* = sqrt(K T/(A c)) - I0/c.  Result 66 replaced it with the
-\\ fixed point of A(I0 + cS)^2 = K c (T - n), n = S/kap, because the leading form runs 25% high once
-\\ the caps open late.  validation/capped_exploration_schedule.mac STEP 7 derives WHY: the fixed
+\\ validation/capped_exploration.mac gave the stopping mass as S* = sqrt(K T/(A c)) - I0/c.
+\\ validation/capped_exploration_schedule.mac replaced it with the fixed point of
+\\ A(I0 + cS)^2 = K c (T - n), n = S/kap, because the leading form runs 25% high once the caps open
+\\ late.  validation/capped_exploration_schedule.mac STEP 7 derives WHY: the fixed
 \\ point is the positive root of a QUADRATIC, and its expansion at large T is
 \\
 \\     S* = sqrt(K T/(A c)) - I0/c - K/(2 A c kap) + (K + 4 A I0 kap) sqrt(K/(A c))/(8 A c kap^2 sqrt(T))
 \\          + O(T^-3/2)
 \\
-\\ so Result 56 drops a CONSTANT, not a vanishing remainder, and that constant is the only place the
+\\ so S56 drops a CONSTANT, not a vanishing remainder, and that constant is the only place the
 \\ cap enters the mass below O(1/sqrt(T)).  Float64 cannot separate a 1/sqrt(T) tail from a constant
 \\ at T = 10^12 -- the difference is ~1e-6 of a quantity of size ~1e5, and the cancellation in
 \\ S56 - Sexact eats most of the digits -- so this is checked in exact rationals at 60 digits.
@@ -41,8 +42,8 @@ print("(1) quadratic residual at the root  [A w^2 + (K/kap) w - K c T - K I0/kap
      print("    T = 10^", j, "   residual = ", A*w^2 + (K/kap)*w - K*c*T - K*I0/kap));}
 print("");
 
-\\ (2) Result 56's form minus the exact root converges to the CONSTANT, not to zero.
-\\     Five horizons, three decades apart, so the trend is a curve and not a two-point slope (R1).
+\\ (2) The leading form minus the exact root converges to the CONSTANT, not to zero.
+\\     Five horizons, three decades apart, so the trend is a curve and not a two-point slope.
 print("(2) S56(T) - Sexact(T)   ->   K/(2 A c kap) = ", o1);
 {for(j = 4, 12, T = 10^j; d = S56(T) - Sex(T);
      print("    T = 10^", j, "   gap = ", d, "   gap - o1 = ", d - o1));}

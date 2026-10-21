@@ -1,4 +1,4 @@
-/* C1 END-TO-END, the finite-sample half: an EXACT gain-gap identity, then the explicit ball on
+/* CE END-TO-END, the finite-sample half: an EXACT gain-gap identity, then the explicit ball on
    which a certainty-equivalent controller is guaranteed to stabilise the TRUE plant, and the
    explicit constant in front of ||dB||^2.  Maxima is the authoritative reference; the Python
    certificate (ce_explicit_constant_certificate) and proofs/ce_explicit_constants.v follow it.

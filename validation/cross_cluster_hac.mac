@@ -1,5 +1,6 @@
-/* DISCOVERY / derivation (Result 71, A3'): what cross-cluster psi-dependence does to the clustered
-   rate. The claim `cross_cluster_mixing_certificate` measures is asymmetric -- the G^-1/2 RATE
+/* DISCOVERY / derivation (clusters that are not independent): what cross-cluster psi-dependence
+   does to the clustered rate.
+   The claim `cross_cluster_mixing_certificate` measures is asymmetric -- the G^-1/2 RATE
    survives while the CONSTANT moves -- and the constant's form is a PREDICTION, not an observation.
 
    Setup. Clusters on a line, two INDEPENDENT unit-variance AR(1)-across-cluster fields with decay

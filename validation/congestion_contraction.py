@@ -1,4 +1,4 @@
-"""Numeric cross-check of validation/congestion_contraction.mac (Result 39 §B).
+"""Numeric cross-check of validation/congestion_contraction.mac.
 
 A symbolic bound is a hypothesis until it is checked numerically. Three claims:
 

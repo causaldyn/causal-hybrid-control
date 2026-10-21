@@ -1,5 +1,6 @@
 % Independent cross-check of the space-time covariance's KRONECKER structure in Octave, built
-% from the generative law rather than from chc.network_causal.panel_covariance. Result 59 claims
+% from the generative law rather than from chc.network_causal.panel_covariance.
+% validation/space_time_folds.mac claims
 % (i) Sigma = sum_q P_q (x) T_q with P_{-q} = P_q', T_{-q} = T_q', (ii) the Van Loan-Pitsianis
 % rearrangement has rank dmax+1 on a cycle (commuting shells) and 2*dmax on a path, (iii) rank 1
 % at lag = 0, and (iv) the rank SATURATES once lag*q passes the panel's longest lag p-1.

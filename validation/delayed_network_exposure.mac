@@ -2,9 +2,10 @@
    THE NON-SEPARABLE HALF OF THE DELAYED-EXPOSURE GATE.
 
    validation/delayed_exposure_gate.mac STEP 7 showed a delay is FREE under a separable covariance
-   Sigma = Sigma_u (x) T with unit-level folds: tr(T) cancels and Result 43 transfers verbatim. It
-   named two escape routes. This file takes the second one -- a NON-separable Sigma, where the delay
-   interacts with the network -- and derives the law there.
+   Sigma = Sigma_u (x) T with unit-level folds: tr(T) cancels and the static clustered cross-fit
+   law of validation/cluster_fold_leakage.mac transfers verbatim. It named two escape routes. This
+   file takes the second one -- a NON-separable Sigma, where the delay interacts with the network --
+   and derives the law there.
 
    MODEL (stationary on Z, windowed to t = 1..p, so Sigma is a covariance by construction):
 
@@ -113,7 +114,7 @@ print("STEP 5b  Psi(delta=0) - Psi_poly at x = 1 =",
       ratsimp(psi0 - subst(phi = 1, psi_poly)), " (zero)")$
 
 /* ---------------------------------------------------------------------------------------------
-   STEP 6. The complete graph with delta = 0 must be Result 43 EXACTLY, with an explicit
+   STEP 6. The complete graph with delta = 0 must be that static law EXACTLY, with an explicit
    fold-geometry constant c(m,K) = m tr(A_u^2)/tr(A_u)^2 -- the quantity the shipped certificate
    currently only MEASURES as c_fold_measured. At K = 2 it is m(m+14)/(m+2)^2. */
 c_fold(m, K) := block([r : K/(K-1)], m*(m - r^4 + (r^4-1)*K) / (m - r^2 + (r^2-1)*K)^2)$
@@ -121,7 +122,7 @@ Jm : genmatrix(lambda([i,j], 1), mm, mm)$
 Sexc : tau2*Jm + sig2*Id$
 psi_exc : ratsimp(mm^2 * mat_trace(Au . Sexc . Au) / (mat_trace(Au)^2 * mat_trace(Sexc)))$
 print("STEP 6a  Psi_exch / c(m,K) - (1 - rho_ICC) =",
-      ratsimp(psi_exc/c_fold(mm, KK) - (1 - tau2/(tau2 + sig2))), " (zero: Result 43)")$
+      ratsimp(psi_exc/c_fold(mm, KK) - (1 - tau2/(tau2 + sig2))), " (zero: the static law)")$
 print("STEP 6b  c(m,2) - m(m+14)/(m+2)^2 =",
       ratsimp(c_fold(m, 2) - m*(m + 14)/(m + 2)^2), " (zero: matches the shipped prediction)")$
 print("STEP 6c  c(m,K) at K = 2,3,4 and m = 8 :",

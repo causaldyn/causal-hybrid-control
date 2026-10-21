@@ -1,10 +1,10 @@
-/* Multivariate van Trees on the ACTION -- Appendix A item A18, the arm Result 57 left open.
+/* Multivariate van Trees on the ACTION -- the arm action_van_trees.mac left open.
 
-   Result 57 removed Result 10's unbiasedness and delta-method caveats by working in action space,
-   where the one-step LQ regret is EXACTLY (b^2+rr)(u - u*(b))^2, and then applying van Trees to
-   the estimand psi(b) = u*(b). Its honest scope closed with: "the model is still the scalar
-   one-step LQ plant; the multivariate case has the same structure with psi' a Jacobian and the
-   floor a trace, which is Result 25's territory."
+   action_van_trees.mac removed the unbiasedness and delta-method caveats of the Cramer-Rao floor
+   (information_lower_bound.mac) by working in action space, where the one-step LQ regret is
+   EXACTLY (b^2+rr)(u - u*(b))^2, and then applying van Trees to the estimand psi(b) = u*(b). Its
+   model is still the scalar one-step LQ plant; the multivariate case has the same structure with
+   psi' a Jacobian and the floor a trace, as in the clustered floor of clustered_van_trees.mac.
 
    This file does that case. What it finds is not bookkeeping: the scalar floor is a PRODUCT of a
    curvature and an information, and the multivariate floor is a TRACE of their interleaving --
@@ -18,7 +18,7 @@
    Run: timeout 600 maxima --very-quiet -b validation/multivariate_van_trees.mac */
 
 print("================================================================")$
-print("MULTIVARIATE VAN TREES ON THE ACTION (A18)")$
+print("MULTIVARIATE VAN TREES ON THE ACTION")$
 print("================================================================")$
 
 /* ===== STEP 1: the regret is an exact quadratic form in the ACTION, at any dimension ===== */
@@ -45,7 +45,7 @@ dv : uv - ustar$
 gap : ratsimp( J(uv) - J(ustar) - transpose(dv) . Mm . dv )$
 print("STEP 1b J(u) - J(u*) - (u-u*)' M (u-u*) =", gap, " (0)")$
 print("STEP 1c so the curvature is the MATRIX M = B'QB + R, exactly and for every u -- the")$
-print("        scalar (b^2 + rr) of Result 57 is its 1x1 case, and nothing is linearised")$
+print("        scalar (b^2 + rr) is its 1x1 case, and nothing is linearised")$
 
 /* the stationarity that picks u* out, as a check that u* is the minimiser and not just a root */
 print("STEP 1d grad_u J at u* =", ratsimp( subst([u1 = ustar[1][1], u2 = ustar[2][1]],
@@ -74,16 +74,16 @@ print("        of diagonal entries, each of the form v'Dv -- is nonnegative.  Th
 print("        van Trees inequality Sigma >= Psi' G^(-1) Psi' is therefore a REGRET bound:")$
 print("        E[regret] >= tr( M Psi' G^(-1) Psi'' ),  G = n I_data + I(prior)")$
 
-/* ===== STEP 4: the scalar case, and Result 10's constant ===== */
+/* ===== STEP 4: the scalar case, and the Cramer-Rao constant ===== */
 
-print("=== STEP 4: at p = q = d = 1 the trace collapses to Result 10's C ===")$
+print("=== STEP 4: at p = q = d = 1 the trace collapses to the Cramer-Rao C ===")$
 
 psi1 : -bb*xt/(bb^2 + rr)$                /* u*(b) in the scalar model */
 dpsi : ratsimp(diff(psi1, bb))$
 print("STEP 4a psi'(b) =", dpsi)$
 scalarC : ratsimp( (bb^2 + rr) * dpsi^2 )$
 print("STEP 4b M psi'^2 =", scalarC)$
-print("STEP 4c Result 10's C = xt^2 (rr - b^2)^2/(rr + b^2)^3; residual =",
+print("STEP 4c the Cramer-Rao C = xt^2 (rr - b^2)^2/(rr + b^2)^3; residual =",
       ratsimp( scalarC - xt^2*(rr - bb^2)^2/(rr + bb^2)^3 ), " (0)")$
 print("STEP 4d so the multivariate floor CONTAINS the scalar one; the constant does not move")$
 
@@ -91,7 +91,7 @@ print("STEP 4d so the multivariate floor CONTAINS the scalar one; the constant d
 
 print("=== STEP 5: what kills the floor is a DIRECTION the action cannot see ===")$
 
-print("STEP 5a scalar: psi'(b) = 0 at rr = b^2 (Result 57(d)) -- one equation in one unknown,")$
+print("STEP 5a scalar: psi'(b) = 0 at rr = b^2 (the knife edge) -- one equation in one unknown,")$
 print("        so a 1-parameter family MEETS it.  Multivariate: the floor tr(M Psi' G^-1 Psi'')")$
 print("        is a sum of terms w' M w with w the columns of Psi' G^(-1/2), and M > 0, so")$
 print("        it vanishes IFF Psi' = 0 -- q*d equations, which a generic family misses")$
@@ -131,7 +131,7 @@ print("        floor_conf/floor_exp is then")$
 ratio : ratsimp( subst(h2 = kk*h2, fl2) / fl2 )$
 print("       ", ratio)$
 print("STEP 6c which is kk only when e1 = 0, and 1 when e2 = 0.  In the scalar model there is")$
-print("        one direction and the ratio is always kk -- Result 10's V_exp/V_conf.  So the")$
+print("        one direction and the ratio is always kk -- the Cramer-Rao V_exp/V_conf.  So the")$
 print("        scalar 'confounding costs a factor' is the ALIGNED corner of a statement whose")$
 print("        general form is a weighted mean of the per-direction factors, weights")$
 print("        (M_ii e_i^2 h_i), and whose other corner is FREE")$
@@ -155,7 +155,7 @@ Hd : matrix([h1, 0], [0, h2])$
 fl7 : ratsimp( tr2( Md . Pd . Hd . transpose(Pd) ) )$
 claim7 : h1*x1^2*(rr - bb1^2)^2/(rr + bb1^2)^3 + h2*x2^2*(rr - bb2^2)^2/(rr + bb2^2)^3$
 print("STEP 7c floor - [ h1 C(bb1, x1) + h2 C(bb2, x2) ] =", ratsimp(fl7 - claim7), " (0)")$
-print("        so the multivariate floor is the sum of Result 10's constant per channel, each")$
+print("        so the multivariate floor is the sum of the Cramer-Rao constant per channel, each")$
 print("        weighted by the information available in THAT direction")$
 print("STEP 7d at the knife edge rr = bb2^2 the second constant vanishes:",
       ratsimp( subst(rr = bb2^2, ratsimp(fl7 - h1*x1^2*(bb2^2 - bb1^2)^2/(bb2^2 + bb1^2)^3)) ), " (0)")$
