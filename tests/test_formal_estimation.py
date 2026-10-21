@@ -23,6 +23,7 @@ from hypothesis import strategies as st
 from scipy import optimize, stats
 from scipy.special import lambertw
 
+from chc import dynamics_id
 from chc.delay import STABILISING_RATIO_FLOOR, delay_design_loss, delay_margin
 from chc.dlm import (
     DynamicLinearModel,
@@ -36,6 +37,7 @@ from chc.dlm import (
     forward_filter_geos,
     stacked_prior,
 )
+from chc.dynamics import LinearDynamics
 from chc.dynamics_id import (
     ChannelRegion,
     closed_loop_gain_attribution,
@@ -115,6 +117,10 @@ FORMAL_LINKS = {
             "test_tracked_log_leaves_the_drift_free_along_the_rocq_family",
             "test_exploration_off_the_manifold_recovers_the_drift",
         ),
+    },
+    "chc.dynamics_id._spline_shift": {
+        "cites": ("paired_score_shift.mac",),
+        "tests": ("test_the_spline_shift_reads_the_move_against_its_own_error",),
     },
     "chc.dynamics_id.omitted_confounder_bound": {
         "cites": ("omitted_confounder_bound.mac",),
@@ -636,6 +642,50 @@ def test_omitted_confounder_robustness_value_moves_the_bound_onto_the_null(
         confounded_fit, weights, cf_y=share_ci, cf_d=share_ci, null=null
     )
     assert at_ci.ci_lower == pytest.approx(null, abs=1e-8)
+
+
+def test_the_spline_shift_reads_the_move_against_its_own_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``paired_score_shift.mac``: both fits are linear in the rate, so on one log's covariates
+    and actions, redraws of the noise move the spline fit's channel from the default's by what the
+    rows' paired weights say. On a plant the polynomial holds, with ``t(3)`` confounders, the move
+    in its own errors reads as a standard normal: its mean square over 30 redraws is 1 within the
+    0.26 that 30 squares leave, so the bounds sit 2.3 of those out. The sieve is held at the
+    spline without the confounders' powers: chosen on each redraw's rate it reads the outcome, and
+    the fits are linear in the rate only given it. In the default fit's errors, as
+    up to 0.19.0, the spline's own scatter came on top: the move's SD read 3.32 of them over 200
+    logs, and the fit warned on 12.5 %."""
+    rng = np.random.default_rng(64)
+    rows = 500
+    z = rng.standard_t(3, size=(rows, 2))
+    x = rng.normal(size=(rows, 1))
+    u = 0.7 * z.sum(axis=1, keepdims=True) + 0.5 * rng.normal(size=(rows, 1))
+    mean = x + 0.1 * (-0.6 * x + 0.8 * u + z.sum(axis=1, keepdims=True))
+    read: list[tuple[float, float]] = []
+    original = dynamics_id._spline_shift
+
+    def recorded(*args: object, **options: object) -> tuple[float, float]:
+        read.append(original(*args, **options))  # type: ignore[arg-type]
+        return read[-1]
+
+    monkeypatch.setattr("chc.dynamics_id._spline_shift", recorded)
+    monkeypatch.setattr(
+        "chc.dynamics_id._chosen_sieve", lambda *args, knots, **options: (knots, False)
+    )
+    known = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+    for _ in range(30):
+        data = {
+            "x": x,
+            "u": u,
+            "x_next": mean + 0.01 * rng.normal(size=(rows, 1)),
+            "z0": z[:, :1],
+            "z1": z[:, 1:],
+        }
+        fit_causal_residual(known, data, 0.1, adjust_for=("z0", "z1"), channel_degree=0)
+    assert len(read) == 30
+    squares = [(moved / spread) ** 2 for moved, spread in read]
+    assert 0.4 < float(np.mean(squares)) < 1.6
 
 
 # --------------------------------------------------------------------------- chc.experiment

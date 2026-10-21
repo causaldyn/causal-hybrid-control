@@ -20,7 +20,7 @@ import pytest
 import scipy.linalg
 import scipy.stats
 
-from chc import _units, causal
+from chc import _units, causal, dynamics_id
 from chc.control import projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import HybridDynamics, LinearDynamics
@@ -29,6 +29,7 @@ from chc.dynamics_id import (
     ConfoundedControlAffineSystem,
     _absorbed,
     _channel_design,
+    _chosen_sieve,
     _clustered_squares,
     _less_below_nothing,
     _logged_relations,
@@ -884,12 +885,17 @@ def test_the_decision_weight_takes_the_regret_to_the_floor_of_its_class(nuisance
     costs nine times that. The regret is computed from Q's moments, not from the fit. Nuisances
     outside the fits' polynomial sieve leave the decision weight at the floor, since its moment
     stays orthogonal to their error and it reads the states where the sieve is good; the
-    unweighted fit, which reads the tails, moved to 7.9 times it."""
+    unweighted fit, which reads the tails, moved to 7.9 times it, and says that its nuisances miss
+    the log's: spline nuisances move its channel by six errors of the move."""
     curvature = 0.4
     data = _decision_log(64_000, curvature, seed=4, nuisances=nuisances)
     floor = curvature**2 * DECISION_VARIANCE**2
     decision = _decision_regret(_line(_decision_fit(data, _decision_weight)), curvature)
-    unweighted = _decision_regret(_line(_decision_fit(data, None)), curvature)
+    with warnings.catch_warnings(record=True) as records:
+        warnings.simplefilter("always", FutureWarning)
+        unweighted = _decision_regret(_line(_decision_fit(data, None)), curvature)
+    warned = [record for record in records if "nuisance_knots='auto'" in str(record.message)]
+    assert len(warned) == (nuisances == "trigonometric")
 
     assert decision == pytest.approx(floor, rel=0.05)
     assert unweighted > 6.0 * decision  # 9.9 and 7.9 times
@@ -3178,6 +3184,18 @@ def test_the_persistence_check_of_pairs_in_one_period_reads_no_test() -> None:
     assert math.isnan(check.p_value)
 
 
+def test_the_nuisance_check_of_a_fit_given_few_periods_warns_against_their_t() -> None:
+    """A fit given periods reads its error off ``nu`` cosines, one at 2 to 10 periods, so the
+    move's error is a ``t(1)``'s and three of them is no tail. On 200 logs each of this linear
+    plant, which the polynomial holds, at 2, 4 and 10 periods of 50 units, the move passed three
+    of its errors on 4.5 %, 6.0 % and 2.0 %, and passed ``t(1)``'s quantile as far out, 236, on
+    none, 0.5 % and none. This log's moved 4.4."""
+    data, _, periods = _persistent_log(0.0, units=50, periods=2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        fit_causal_residual(_known, data, 0.1, adjust_for=("z",), channel_degree=0, periods=periods)
+
+
 def _paired_products(residual: np.ndarray, units: int, periods: int) -> np.ndarray:
     """Rows period-major, unit ``i``'s transition in period ``t`` row ``units t + i``: each pair's
     product of scaled residuals, in the order of the later transition's row, periods 1 on."""
@@ -3314,10 +3332,16 @@ def test_an_identified_fit_keeps_its_moment_residual_without_its_influence() -> 
 # ---- the rk4 drift's pushes, and what else the fit reads ----
 
 
-def _pushed_log(seed: int, n: int, correlation: float, noise: float = 0.01):
-    """``x' = -0.7 x + 0.8 u + z``, ``z`` held over the step and stepped by RK4 exactly, logged on
-    ``u = 0.9 z + 0.4 eta``: the confounder pushes the state as well as the action, and leans on
-    the state by ``correlation``."""
+def _pushed_log(
+    seed: int,
+    n: int,
+    correlation: float,
+    noise: float = 0.01,
+    push: Callable[[np.ndarray], np.ndarray] = lambda z: z,
+):
+    """``x' = -0.7 x + 0.8 u + push(z)``, ``z`` held over the step and stepped by RK4 exactly,
+    logged on ``u = 0.9 z + 0.4 eta``: the confounder pushes the state as well as the action, and
+    leans on the state by ``correlation``."""
     rng = np.random.default_rng(seed)
     h = -0.7
     growth = 1 + h + h**2 / 2 + h**3 / 6 + h**4 / 24
@@ -3325,7 +3349,7 @@ def _pushed_log(seed: int, n: int, correlation: float, noise: float = 0.01):
     x = rng.normal(size=(n, 1))
     z = correlation * x + math.sqrt(1 - correlation**2) * rng.normal(size=(n, 1))
     u = 0.9 * z + 0.4 * rng.normal(size=(n, 1))
-    x_next = growth * x + input_gain * (0.8 * u + z) + noise * rng.normal(size=(n, 1))
+    x_next = growth * x + input_gain * (0.8 * u + push(z)) + noise * rng.normal(size=(n, 1))
     data = {"x": x, "u": u, "z": z, "x_next": x_next}
     return {key: jnp.asarray(value) for key, value in data.items()}
 
@@ -3372,6 +3396,32 @@ def test_the_rk4_channel_error_covers_the_spread_a_covariate_s_push_left() -> No
         errors.append(fit.channel_error)
     ratio = float(np.std(channels, ddof=1) / np.mean(errors))
     assert 0.4 < ratio < 1.8
+
+
+def test_the_rk4_fit_holds_a_covariate_s_push_in_the_nuisances_basis() -> None:
+    """The nuisances hold a push quadratic in the confounder, and the drift held it linearly: what
+    the drift left, ``1.5 (z^2 - 1)``, reached the channel through RK4's growth factor where its
+    error, read off the moment's residual, does not look. On these 40 logs the channel scattered
+    31 times as far as its error said and its 95 % interval covered on 1 of them. Held in the
+    nuisances' basis, it covers on 39, as the linear push does, and scatters 0.98 as far. Over 40
+    logs the coverage's Monte Carlo SD is 0.034 at 0.95, so 0.85 is three of them below, and the
+    spread's ratio to the error is read within 2.5 of its 11 % SD."""
+    channels, errors = [], []
+    for seed in range(40):
+        fit = fit_causal_residual(
+            _ZERO,
+            _pushed_log(seed, 500, 0.0, push=lambda z: z + 1.5 * (z**2 - 1.0)),
+            1.0,
+            adjust_for=("z",),
+            integrator="rk4",
+            channel_degree=0,
+        )
+        assert fit.channel_error is not None
+        channels.append(float(np.asarray(fit.residual.channel).ravel()[0]))
+        errors.append(fit.channel_error)
+    channels_array, errors_array = np.asarray(channels), np.asarray(errors)
+    assert np.mean(np.abs(channels_array - 0.8) <= 1.96 * errors_array) >= 0.85
+    assert 0.7 < float(np.std(channels_array, ddof=1) / np.mean(errors_array)) < 1.4
 
 
 def test_an_unconfounded_empty_set_is_fitted_as_identified() -> None:
@@ -3453,10 +3503,36 @@ def test_the_rk4_fit_converges_where_the_known_physics_leaves_the_residual_nothi
             x_next=jax.vmap(lambda x, u: rk4_step(truth, 0.0, x, u, 1.0))(data["x"], data["u"])
             + noise * jnp.asarray(np.random.default_rng(1).normal(size=(500, 1))),
         )
-        fit = fit_causal_residual(truth, data, 1.0, adjust_for=("z",), integrator="rk4")
+        # the spline's move and its error are rounding there: on one machine their ratio read 13
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", FutureWarning)
+            fit = fit_causal_residual(truth, data, 1.0, adjust_for=("z",), integrator="rk4")
         assert float(jnp.max(jnp.abs(fit.residual.channel))) < 1e-9
         assert fit.integrator_defect is not None
         assert fit.integrator_defect < 1e-9
+
+
+def test_a_log_the_known_physics_solves_exactly_raises_no_nuisance_warning() -> None:
+    """Stepped by RK4 from the known plant with no noise, the log leaves the residual nothing, and
+    both the channel's move under spline nuisances and its errors are rounding: their ratio read
+    5.7, 7.0 and 49.5 on these three logs, and the fit warned that its nuisances miss. A move is
+    read no finer than the square root of the working precision of a channel that moves the rate
+    by its own size, where the Newton steps stop."""
+    truth = LinearDynamics(jnp.array([[-7.0]]), jnp.array([[8.0]]))
+    step = jax.vmap(lambda x, u: rk4_step(truth, 0.0, x, u, 0.1))
+    for seed in range(3):
+        rng = np.random.default_rng(seed)
+        z = rng.normal(size=(2000, 1))
+        u = -z + 0.5 * rng.normal(size=(2000, 1))
+        x = rng.normal(size=(2000, 1))
+        data = {"x": x, "u": u, "z": z, "x_next": step(jnp.asarray(x), jnp.asarray(u))}
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", FutureWarning)
+            fit = fit_causal_residual(
+                truth, data, 0.1, adjust_for=("z",), channel_degree=0, integrator="rk4"
+            )
+        assert fit.channel_error is not None
+        assert fit.channel_error < 1e-15
 
 
 def test_without_clusters_a_transition_s_states_are_summed_before_squaring() -> None:
@@ -3543,7 +3619,8 @@ def test_the_nuisance_shift_reads_a_sieve_that_misses_in_its_errors() -> None:
     """The degree-2 fit reads tens of its errors from its refit on a spline; the spline fit reads
     a fraction of one from its refit at twice the knots, where both nuisances hold the truth."""
     data = _outside_the_polynomial(4000, 0)
-    plain = _fit_outside(data)
+    with pytest.warns(FutureWarning, match="nuisance_knots='auto'"):
+        plain = _fit_outside(data)
     spline = _fit_outside(data, nuisance_knots="auto")
     richer = _fit_outside(data, nuisance_knots=32)
     assert nuisance_shift(plain, spline, data["x"]) > 20.0
@@ -3559,15 +3636,17 @@ def test_the_nuisance_shift_reads_a_sieve_that_misses_in_its_errors() -> None:
 
 def test_the_nuisance_shift_refuses_what_it_cannot_read() -> None:
     data = _outside_the_polynomial(400, 1)
-    fit = _fit_outside(data)
+    with pytest.warns(FutureWarning, match="nuisance_knots='auto'"):
+        fit = _fit_outside(data)
     unidentified = fit_causal_residual(
         LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1))), data, 0.1, channel_degree=0
     )
     with pytest.raises(ValueError, match="not identified"):
         nuisance_shift(unidentified, fit, data["x"])
-    affine = fit_causal_residual(
-        LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1))), data, 0.1, adjust_for=("z",)
-    )
+    with pytest.warns(FutureWarning, match="nuisance_knots='auto'"):
+        affine = fit_causal_residual(
+            LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1))), data, 0.1, adjust_for=("z",)
+        )
     with pytest.raises(ValueError, match="differ in shape"):
         nuisance_shift(fit, affine, data["x"])
 
@@ -3575,20 +3654,133 @@ def test_the_nuisance_shift_refuses_what_it_cannot_read() -> None:
 def test_the_spline_sieve_holds_the_polynomial_and_reads_orthonormal() -> None:
     """The sieve's columns span the polynomial's, so a nuisance the polynomial holds the sieve
     holds too, and they are orthonormal over the log at unit mean square: the spline's truncated
-    powers, near collinear, reach the ridge's Gram whitened. A flag adds no spline column."""
+    powers, near collinear, reach the ridge's Gram whitened. A flag adds no spline column. Without
+    its powers a splined covariate's square is out of the span, the rest of the polynomial in."""
     rng = np.random.default_rng(2)
     covariates = jnp.asarray(
         np.column_stack(
             [rng.normal(size=500), rng.normal(size=500) * 1e3 + 5e3, rng.random(500) < 0.3]
         )
     )
+    standardised = jnp.asarray(_units.standardised(covariates))
+    polynomial = np.asarray(causal._polynomial_features(standardised, 2))
+
+    def left(sieve: np.ndarray, columns: np.ndarray) -> np.ndarray:
+        return columns - sieve @ np.linalg.lstsq(sieve, columns, rcond=None)[0]
+
     sieve = np.asarray(_nuisance_sieve(covariates, 2, 8))
-    polynomial = np.asarray(causal._polynomial_features(_units.standardised(covariates), 2))
-    left = polynomial - sieve @ np.linalg.lstsq(sieve, polynomial, rcond=None)[0]
-    assert np.max(np.abs(left)) <= 1e-9 * np.max(np.abs(polynomial))
+    assert np.max(np.abs(left(sieve, polynomial))) <= 1e-9 * np.max(np.abs(polynomial))
     np.testing.assert_allclose(sieve.T @ sieve / 500, np.eye(sieve.shape[1]), atol=1e-10)
     # 10 polynomial columns less the flag's square, its own twin, and two splines of 6 columns
     assert sieve.shape[1] == 9 + 2 * 6
+
+    lean = np.asarray(_nuisance_sieve(covariates, 2, 8, powers=False))
+    # the monomials in order: 1, c0, c1, c2, c0^2, c0 c1, c0 c2, c1^2, c1 c2, c2^2
+    held, outside = polynomial[:, [0, 1, 2, 3, 5, 6, 8, 9]], polynomial[:, [4, 7]]
+    assert np.max(np.abs(left(lean, held))) <= 1e-9 * np.max(np.abs(held))
+    assert np.min(np.sqrt(np.mean(left(lean, outside) ** 2, axis=0))) > 0.01
+    assert lean.shape[1] == 7 + 2 * 6
+
+
+def _heavy_tailed_log(seed: int, rows: int) -> dict[str, jax.Array]:
+    """A linear plant the degree-2 polynomial holds, ``x' = x + 0.1 (-0.6 x + 0.8 u + z0 + z1)
+    + 0.01 e``, on ``u = 0.7 (z0 + z1) + 0.5 a``, its two confounders drawn ``t(3)``."""
+    rng = np.random.default_rng(seed)
+    z = rng.standard_t(3, size=(rows, 2))
+    x = rng.normal(size=(rows, 1))
+    u = 0.7 * z.sum(axis=1, keepdims=True) + 0.5 * rng.normal(size=(rows, 1))
+    x_next = x + 0.1 * (-0.6 * x + 0.8 * u + z.sum(axis=1, keepdims=True))
+    x_next = x_next + 0.01 * rng.normal(size=(rows, 1))
+    data = {"x": x, "u": u, "x_next": x_next, "z0": z[:, :1], "z1": z[:, 1:]}
+    return {name: jnp.asarray(column) for name, column in data.items()}
+
+
+def test_a_spline_sieve_does_not_extrapolate_a_power_into_a_heavy_tail() -> None:
+    """On this log a confounder lies at -18 of its scales. With its square beside its spline, the
+    nuisance fitted on one fold read the square at that row of the other as the few rows past the
+    outer knots had set it, and left the action a residual of 11 where its noise is 0.5: the
+    spline fit's error came to 14.8 times the polynomial's, and the polynomial fit warned that
+    the spline moved its channel by 17 of its errors, on a plant the polynomial holds."""
+    data = _heavy_tailed_log(64, 500)
+    covariates = jnp.concatenate([data["x"], data["z0"], data["z1"]], axis=1)
+    rate = (data["x_next"] - data["x"]) / 0.1
+    options = {"degree": 2, "knots": 8, "folds": 2, "ridge": 1e-6, "seed": 0}
+    assert _chosen_sieve(covariates, rate, data["u"], **options) != (8, True)
+    options = {"adjust_for": ("z0", "z1"), "channel_degree": 0}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        plain = fit_causal_residual(_ZERO, data, 0.1, **options)
+    spline = fit_causal_residual(_ZERO, data, 0.1, nuisance_knots="auto", **options)
+    assert plain.channel_error is not None
+    assert spline.channel_error is not None
+    assert spline.channel_error / plain.channel_error < 1.5
+    assert abs(float(spline.residual.channel.ravel()[0]) - 0.8) < 3.0 * spline.channel_error
+
+
+def _quadratic_log(seed: int, confounder: Callable[[np.random.Generator], np.ndarray]) -> dict:
+    """1000 rows of ``x' = x + 0.1 (-0.5 x + u + 0.5 z + 0.6 z^2) + 0.01 e`` on a lever
+    ``u = 0.8 z + 0.4 (z^2 - 1) + 0.5 v``, quadratic in its confounder ``z``, which the polynomial
+    holds."""
+    rng = np.random.default_rng(seed)
+    z = confounder(rng)
+    x, v, e = rng.normal(size=(3, 1000, 1))
+    u = 0.8 * z + 0.4 * (z**2 - 1.0) + 0.5 * v
+    rate = -0.5 * x + u + 0.5 * z + 0.6 * z**2
+    data = {"x": x, "z": z, "u": u, "x_next": x + 0.1 * rate + 0.01 * e}
+    return {name: jnp.asarray(column) for name, column in data.items()}
+
+
+@pytest.mark.parametrize("tails", ["normal", "t5"])
+def test_the_sieve_falls_back_to_the_polynomial_a_quadratic_nuisance_needs(tails: str) -> None:
+    """Neither spline sieve holds a quadratic nuisance on every log. Without the confounder's
+    square beside its spline the nuisances are lines past the outer knots: over 100 logs of 1000
+    rows with a normal confounder the channel's bias was 2.0 of its errors, its interval covering
+    47 %. With it, the square is read off the rows past the outer knots alone, and with a ``t(5)``
+    confounder the channel scattered 3.6 times as far as the polynomial's over 40 logs. The
+    polynomial predicts the other fold the better on both, and is the sieve read: the spline fit
+    is the polynomial's."""
+    confounder = {
+        "normal": lambda rng: rng.normal(size=(1000, 1)),
+        "t5": lambda rng: rng.standard_t(5, size=(1000, 1)),
+    }[tails]
+    data = _quadratic_log(5, confounder)
+    covariates = jnp.concatenate([data["x"], data["z"]], axis=1)
+    options = {"degree": 2, "knots": 10, "folds": 2, "ridge": 1e-6, "seed": 0}
+    euler_rate = (data["x_next"] - data["x"]) / 0.1
+    assert _chosen_sieve(covariates, euler_rate, data["u"], **options) == (None, True)
+    options = {"adjust_for": ("z",), "channel_degree": 0}
+    plain = fit_causal_residual(_ZERO, data, 0.1, **options)
+    spline = fit_causal_residual(_ZERO, data, 0.1, nuisance_knots="auto", **options)
+    assert spline.channel_error is not None
+    assert plain.channel_error is not None
+    assert spline.channel_error == plain.channel_error
+    assert abs(float(spline.residual.channel.ravel()[0]) - 1.0) < 3.0 * spline.channel_error
+
+
+@pytest.mark.parametrize("plant", ["t3 linear", "t5 quadratic"])
+def test_the_spline_sieve_scatters_no_wider_than_the_polynomial_on_heavy_tails(plant: str) -> None:
+    """Where the polynomial holds the truth the spline should cost little. With the splined
+    covariates' powers kept, the channel scattered 3.0 times as far as the polynomial's over 200
+    logs of 500 rows of a linear plant with ``t(3)`` confounders, and 4.4 times at 2000 rows;
+    over 40 logs of 1000 rows with a lever and a drift quadratic in a ``t(5)`` confounder, 3.6
+    times, and without the powers its bias was 4.4 of its errors. Over 30 logs a ratio of two
+    spreads moves by about a fifth of itself, so 1.2 sits well clear of those readings."""
+    plain, spline = [], []
+    if plant == "t3 linear":
+        logs = [_heavy_tailed_log(seed, 500) for seed in range(30)]
+        options, truth = {"adjust_for": ("z0", "z1"), "channel_degree": 0}, 0.8
+    else:
+        logs = [
+            _quadratic_log(seed, lambda rng: rng.standard_t(5, size=(1000, 1)))
+            for seed in range(30)
+        ]
+        options, truth = {"adjust_for": ("z",), "channel_degree": 0}, 1.0
+    for data in logs:
+        for knots, channels in ((None, plain), ("auto", spline)):
+            fit = fit_causal_residual(_ZERO, data, 0.1, nuisance_knots=knots, **options)
+            channels.append(float(fit.residual.channel.ravel()[0]))
+    assert np.std(spline, ddof=1) / np.std(plain, ddof=1) < 1.2
+    assert abs(np.mean(spline) - truth) < 3.0 * np.std(spline, ddof=1) / np.sqrt(len(spline))
 
 
 def test_the_spline_sieve_on_a_linear_plant_reads_the_polynomial_s_channel() -> None:
@@ -3629,11 +3821,26 @@ def test_a_default_fit_says_when_a_spline_refit_moves_its_channel() -> None:
         _fit_outside(_outside_the_polynomial(1000, 0), nuisance_knots="auto")
 
 
+def _recording_spline_shift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[float, float]]:
+    """Every move and error the default fit's check reads, in order."""
+    read: list[tuple[float, float]] = []
+    original = dynamics_id._spline_shift
+
+    def recorded(*args: object, **options: object) -> tuple[float, float]:
+        read.append(original(*args, **options))  # type: ignore[arg-type]
+        return read[-1]
+
+    monkeypatch.setattr("chc.dynamics_id._spline_shift", recorded)
+    return read
+
+
 def test_the_default_fit_reads_the_spline_shift_without_a_second_fit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The check solves the spline's moment at the fit's own target and fits nothing else; under
-    Euler that is the refit's channel, so the shift it states is the refit's ``nuisance_shift``."""
+    Euler that is the refit's channel, so the move it reads is the refit's."""
     data = _outside_the_polynomial(1000, 0)
     refits: list[object] = []
 
@@ -3641,14 +3848,20 @@ def test_the_default_fit_reads_the_spline_shift_without_a_second_fit(
         refits.append(options.get("nuisance_knots"))
         return fit_causal_residual(*args, **options)  # type: ignore[arg-type]
 
+    read = _recording_spline_shift(monkeypatch)
     monkeypatch.setattr("chc.dynamics_id.fit_causal_residual", counted)
     with pytest.warns(FutureWarning, match="nuisance_knots='auto'") as records:
         fit = _fit_outside(data)
     monkeypatch.undo()
     assert refits == []
+    ((moved, spread),) = read
     stated = float(str(records[0].message).split(" move the channel by ")[1].split()[0])
+    assert stated == pytest.approx(moved / spread, rel=1e-2, abs=0.0)
     refit = _fit_outside(data, nuisance_knots="auto")
-    assert stated == pytest.approx(nuisance_shift(fit, refit, data["x"]), rel=1e-2, abs=0.0)
+    assert fit.channel_error is not None
+    assert moved == pytest.approx(
+        nuisance_shift(fit, refit, data["x"]) * fit.channel_error, rel=1e-9, abs=0.0
+    )
 
 
 def test_under_rk4_the_default_fit_s_check_reads_the_refit_s_fixed_point(
@@ -3656,8 +3869,10 @@ def test_under_rk4_the_default_fit_s_check_reads_the_refit_s_fixed_point(
 ) -> None:
     """Under ``rk4`` the refit's channel is its own fixed point, not the moment at this fit's
     target: on 500 rows of ``x' = -0.7 x + 0.8 u`` stepped at ``dt = 1``, the moment alone read the
-    shift 0.586 for the refit's 0.818, 28 % short. One Newton step through the fit's own Newton
-    matrix reads 0.81747, within 4e-5 of it."""
+    move 28 % short of the refit's. One Newton step through the fit's own Newton matrix read it
+    within 4e-5 while both drift regressions held the covariate's push linearly; the refit's now
+    holds it in the spline's basis, and the fit's in the polynomial's, and the step reads it
+    within 0.11 %."""
     rng = np.random.default_rng(1)
     x, z, v, e = rng.normal(size=(4, 500, 1))
     u = 0.9 * z + 0.4 * v
@@ -3665,19 +3880,17 @@ def test_under_rk4_the_default_fit_s_check_reads_the_refit_s_fixed_point(
     step = jax.vmap(lambda xi, ui: rk4_step(truth, 0.0, xi, ui, 1.0))
     after = step(jnp.asarray(x), jnp.asarray(u)) + 0.01 * np.exp(x) * e
     data = {"x": jnp.asarray(x), "u": jnp.asarray(u), "z": jnp.asarray(z), "x_next": after}
-    read: list[float] = []
-
-    def recorded(*args: CausalDynamicsFit) -> float:
-        read.append(nuisance_shift(*args))  # type: ignore[arg-type]
-        return read[-1]
-
     known = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
     options = {"adjust_for": ("z",), "integrator": "rk4", "channel_degree": 0}
-    monkeypatch.setattr("chc.dynamics_id.nuisance_shift", recorded)
+    read = _recording_spline_shift(monkeypatch)
     fit = fit_causal_residual(known, data, 1.0, **options)  # type: ignore[arg-type]
     monkeypatch.undo()
     refit = fit_causal_residual(known, data, 1.0, nuisance_knots="auto", **options)  # type: ignore[arg-type]
-    assert read == [pytest.approx(nuisance_shift(fit, refit, data["x"]), rel=1e-3, abs=0.0)]
+    assert fit.channel_error is not None
+    ((moved, _),) = read
+    assert moved == pytest.approx(
+        nuisance_shift(fit, refit, data["x"]) * fit.channel_error, rel=2e-3, abs=0.0
+    )
 
 
 @pytest.mark.parametrize("knots", [2, 0, -1, True, 3.0, "more"])
