@@ -1980,9 +1980,11 @@ class _HeldBarrier(eqx.Module):
     ``rest`` carries the uncertainty penalty the plan may already have.
 
     Each barrier holds two conditions at every step, the two the audit certifies a step by beyond
-    ``h >= 0`` where the plan starts: the barrier condition, and ``h >= 0`` at the step's next
-    state, where the path would otherwise leave the set between the points the condition is read
-    at. The shortfall, and the multipliers with it, have those two columns per barrier, in turn,
+    ``h >= 0`` where the plan starts: the barrier condition, and ``h - ||grad h|| e >= 0`` at the
+    step's next state, ``e`` the deviation tube a plant whose channel is in the set can reach
+    (:func:`_deviation_tube`), where its path would otherwise leave the set: between the points the
+    condition is read at, or away from the model's states, which it is read at. The shortfall, and
+    the multipliers with it, have those two columns per barrier, in turn,
     ``(steps, 2 * barriers)``. Each column is multiplied by its ``factors`` entry: a condition's,
     the largest condition's scale over its own; a next state's, the same scale over the largest
     ``|h|`` along the path; so one back-off and one penalty read every column alike, whatever the
@@ -2011,12 +2013,16 @@ class _HeldBarrier(eqx.Module):
     rest_weight: float = eqx.field(static=True, default=0.0)
 
     def shortfall(self, states: Array, actions: Array) -> Array:
-        """Per step and barrier, ``-alpha h - (a + <w, u> - d ||u||)`` and ``-h`` at the step's next
-        state, each times its factor: positive where the audit fails."""
+        """Per step and barrier, ``-alpha h - (a + <w, u> - d ||u||)`` and ``-(h - ||grad h|| e)``
+        at the step's next state, ``e`` the deviation tube there (:func:`_deviation_tube`), each
+        times its factor: positive where the audit fails."""
         reached = self._next_states(states, actions)
+        deviation = _deviation_tube(
+            self.model, states, actions, self.dt, self._delta(states), self.inverse
+        )[1:]
         columns = []
         for index, barrier in enumerate(self._barriers()):
-            left = -jax.vmap(lambda x, h=barrier: jnp.squeeze(h(x)))(reached)
+            left = -_barrier_room(barrier, reached, deviation)
             if self.paths is not None:
                 left = jnp.where(self.paths[:, index] > 0.0, left, -jnp.inf)
             columns += [self._shortfall(barrier, states, actions), left]
@@ -2500,6 +2506,11 @@ class SafetyCertificate:
       This is about the problem, and is the number an operator can act on. A plan can fail the
       first while the second is comfortable, which says the planner, not the confounding, is at
       fault; the reverse says no controller would have helped.
+
+    So ``gamma_star = inf`` beside few or no certified steps is no contradiction: where the drift
+    alone holds every step, or the radius has no part a level widens (a sensitivity with no
+    confounding), the ceiling is ``inf``, while a certified step needs this plan's own action to
+    clear the condition and its path, widened by ``deviation``, to stay in the set.
     """
 
     barrier_values: Array  # h(x_k) along the nominal trajectory, k = 0 .. horizon-1
@@ -2519,6 +2530,10 @@ class SafetyCertificate:
     # takes past the estimate's size from it; ``absolute``, a sensitivity model's bound on the
     # channel's error (``sensitivity=``), which can hold a channel far from its estimate
     radius_model: Literal["relative", "absolute"]
+    # e_0 .. e_H: how far the path of a plant whose channel is within the radius of the model's
+    # can be from the model's predicted states under the plan's actions; a step is certified only
+    # where h less ||grad h|| times it is not negative at the step's state and at the next
+    deviation: Array
 
 
 def _norm(vectors: Array) -> Array:
@@ -2593,6 +2608,100 @@ def _guaranteed(
 
 def _shaped(actions: Array, inverse: Array | NDArray[np.float64] | None) -> Array:
     return actions if inverse is None else actions * jnp.asarray(inverse, actions.dtype)
+
+
+def _spectral(matrix: Array) -> Array:
+    """``||M||_2``, differentiated as the top singular pair's ``u1' dM v1``: a subgradient where the
+    top singular value repeats, as on the identity, where an SVD's derivative is nan."""
+    _, vectors = jnp.linalg.eigh(jax.lax.stop_gradient(matrix.T @ matrix))
+    return _norm(matrix @ vectors[:, -1])
+
+
+def _step_gains(
+    model: Dynamics, t: Array, x: Array, u: Array, dt: float
+) -> tuple[Array, Array, Array]:
+    """``||dF/dx||``, ``||dF/dc||`` and the action the field takes, of the one-step map ``F`` that
+    :func:`chc.integrate.rk4_step` steps ``model`` by from ``x`` under ``u``, ``c`` a constant added
+    to the field at every stage: how a gap in the state, and a channel error ``E u`` held over the
+    step, reach the next state."""
+
+    def stepped(x: Array, shift: Array) -> Array:
+        field, taken = model.at_step(x, u) if isinstance(model, _SetAtStep) else (model, u)
+        if isinstance(field, _EulerStep):
+            return x + dt * (field(t, x, taken) + shift)
+        k1 = field(t, x, taken) + shift
+        k2 = field(t + 0.5 * dt, x + 0.5 * dt * k1, taken) + shift
+        k3 = field(t + 0.5 * dt, x + 0.5 * dt * k2, taken) + shift
+        k4 = field(t + dt, x + dt * k3, taken) + shift
+        return x + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+
+    zero = jnp.zeros_like(x)
+    growth = jax.jacfwd(stepped, argnums=0)(x, zero)
+    gain = jax.jacfwd(stepped, argnums=1)(x, zero)
+    taken = model.at_step(x, u)[1] if isinstance(model, _SetAtStep) else u
+    return _spectral(growth), _spectral(gain), taken
+
+
+def _deviation_tube(
+    model: Dynamics,
+    states: Array,
+    actions: Array,
+    dt: float,
+    delta: float | Array,
+    inverse: Array | NDArray[np.float64] | None = None,
+) -> Array:
+    """``e_0 .. e_H``: how far from the model's states ``states`` (``x_0 .. x_{H-1}``) the path of a
+    plant whose channel is within ``delta`` of the model's at each step can be, stepped by the same
+    one-step map under the same ``actions``:
+
+        ``e_{k+1} = ||dF/dx|| e_k + ||dF/dc|| delta_k ||D^+ u_k||``,  ``e_0 = 0``
+
+    (:func:`_step_gains`), ``D^+`` the levers' ``inverse``. On a model affine in the state with a
+    channel error that does not move with it, it bounds the gap, and on one state, one lever and
+    actions of one sign the plant at the radius's edge reaches it
+    (``validation/barrier_deviation_tube.mac``); elsewhere it reads the map's slope and the radius
+    at the model's state, a bound to first order in the gap."""
+    steps = states.shape[0]
+    radii = jnp.broadcast_to(jnp.asarray(delta, states.dtype), (steps,))
+
+    def carried(_: None) -> Array:
+        times = dt * jnp.arange(steps, dtype=states.dtype)
+        growth, gain, taken = jax.vmap(lambda t, x, u: _step_gains(model, t, x, u, dt))(
+            times, states, actions
+        )
+        pushes = gain * radii * _norm(_shaped(taken, inverse))
+
+        def carry(gap: Array, step: tuple[Array, Array]) -> tuple[Array, Array]:
+            rate, push = step
+            reached = rate * gap + push
+            return reached, reached
+
+        reached = jax.lax.scan(carry, jnp.zeros((), states.dtype), (growth, pushes))[1]
+        return jnp.concatenate([jnp.zeros((1,), states.dtype), reached])
+
+    # a radius of zero, the ordinary barrier's at gamma = 1, opens no tube: skip the slopes
+    return jax.lax.cond(
+        jnp.any(radii != 0.0),
+        carried,
+        lambda _: jnp.zeros((steps + 1,), states.dtype),
+        None,
+    )
+
+
+# the audit runs eagerly, and an eager scan or cond compiles anew on every call: a receding horizon
+# would recompile the tube at every step
+_compiled_tube = eqx.filter_jit(_deviation_tube)
+
+
+def _barrier_room(barrier: Callable[[Array], Array], states: Array, deviation: Array) -> Array:
+    """``h(x_k) - ||grad h(x_k)|| e_k`` at each state: the least ``h`` a plant ``e_k`` from ``x_k``
+    can have, exactly on an affine ``h`` and to first order in ``e_k`` otherwise."""
+
+    def scalar_h(x: Array) -> Array:
+        return jnp.squeeze(barrier(x))
+
+    values = jax.vmap(scalar_h)(states)
+    return values - _norm(jax.vmap(jax.grad(scalar_h))(states)) * deviation
 
 
 def _reach(u_max: ArrayLike, levers: int | None = None) -> NDArray[np.float64]:
@@ -2726,22 +2835,39 @@ def certify_safety(
             given a hidden confounder moves by a factor within ``[1/gamma, gamma]``, at the
             sensitivity's ``level``. ``gamma = 1`` is then the sampling error alone, not exact
             identification, and ``gamma_star`` is each step's largest ``gamma`` under that model:
-            below ``(3 + sqrt 5)/2``, or ``inf`` where the drift alone keeps the step. On a log
-            whose levers follow a confounder at ``gamma = 1.5``, a plan certified at
-            ``gamma <= gamma_star`` kept the true plant in the set (ADR 0111). ``gamma`` must be
-            below ``(3 + sqrt 5)/2``. The certificate's ``radius_model`` reads ``"absolute"``
-            with a ``sensitivity`` and ``"relative"`` without one.
+            below ``(3 + sqrt 5)/2``, or ``inf`` where the drift alone keeps the step. On logs
+            whose levers follow a confounder at ``gamma = 1.5``, a plan held and certified under
+            the fit's own sensitivity at that level kept the true plant in the set over its
+            certified steps on 20 logs of 20, on a stable drift and on an unstable one (ADR 0111,
+            ADR 0119). ``gamma`` must be below ``(3 + sqrt 5)/2``. The certificate's
+            ``radius_model`` reads ``"absolute"`` with a ``sensitivity`` and ``"relative"``
+            without one.
 
     Assumes the plant is control-affine, and checks it: the condition reads the drift and the
     channel at zero action, so a model whose field, seen through ``grad h``, is not affine in the
     action at the planned actions or at those ``gamma_star`` reads is refused. Assumes the
     uncertainty set isotropic (see :mod:`chc.barrier`; ``d*||u||`` is exact for a Euclidean ball,
-    an outer bound otherwise). Audits the *model's* trajectory at its steps: a step is certified
-    where the condition holds at its state and the model's path is in the safe set at that state
-    and the next, ``h >= 0`` at both. The condition alone does not keep the path there between
-    the points it is read at: at ``dt = 1`` and ``alpha = 1`` a plan that met it at every step of
-    twelve ended outside the set. Forward invariance (Nagumo/Brezis) is assumed as throughout the
-    CBF literature; what is certified is the condition at the steps, and the path's states.
+    an outer bound otherwise).
+
+    What a certified step promises: every plant whose channel is within the radius of the
+    model's, its drift the model's, stepped by the model's one-step map under the plan's own
+    actions from the plan's start, is in the safe set at that step's state and the next. The
+    condition is read at the *model's* states, and such a plant's path leaves them: under an
+    exact absolute radius of 0.1004 on a drift of 0.3, a plan certified on all 60 steps by the
+    condition alone took the plant at the radius's edge to ``h = -0.132``, and on an integrator at
+    ``dt = 1`` one certified on all 12 took it to ``h = -0.5``. So a step is certified where the
+    condition holds at its state and ``h - ||grad h|| e >= 0`` at its state and at the next, ``e``
+    the deviation tube ``e_{k+1} = ||dF/dx|| e_k + ||dF/dc|| Delta_k ||D^+ u_k||`` that the
+    channel's radius can open between the two paths (``deviation``,
+    ``validation/barrier_deviation_tube.mac``), ``F`` the one-step map, ``c`` an error added to
+    the field. The tube bounds the gap where the model is affine in the state, the channel's error
+    does not move with the state (a relative radius, or a sensitivity of ``channel_degree`` 0) and
+    ``h`` is affine; elsewhere it reads the map's slope, the radius and ``grad h`` at the model's
+    states, and holds to first order in its own width. It is about the channel alone: an error in
+    the drift, and a plant stepped by another map than the model's, are outside it. Reading ``h``
+    at both ends of a step also catches a path that leaves the set between the points the
+    condition is read at: at ``dt = 1`` and ``alpha = 1`` a plan that met it at every step of
+    twelve ended outside the set. Between the steps nothing is read.
 
     Raises:
         ValueError: if ``cvar_gap`` is not positive or not finite, which would make the radius
@@ -2820,10 +2946,21 @@ def _audit(
     h_values, grad_norm, drift, channel = _barrier_terms(model, barrier, states, actions, dt)
     guaranteed = _guaranteed(drift, channel, grad_norm, actions, delta, inverse)
     required = -alpha * h_values
-    # The condition is read at the path's sample points alone, and a step of length dt can leave
-    # the set between them: at dt = 1 a plan that met it at every step of twelve ended outside.
-    reached = jax.vmap(lambda x: jnp.squeeze(barrier(x)))(plan.trajectory[1:])
-    certified = (guaranteed >= required) & (h_values >= 0.0) & (reached >= 0.0)
+    # The condition is read at the model's states, and a plant whose channel is in the set is
+    # elsewhere: under the plan's own actions its path drifts from the model's by up to the
+    # deviation tube, and it is in the set where h less the tube's reach is. Read at the step's
+    # state and at the next, since a step of length dt can also leave the set between the points
+    # the condition is read at: at dt = 1 a plan that met it at every step of twelve ended outside.
+    deviation = _compiled_tube(
+        model,
+        states,
+        actions,
+        dt,
+        jnp.asarray(delta, states.dtype),
+        None if inverse is None else jnp.asarray(inverse, states.dtype),
+    )
+    room = _barrier_room(barrier, plan.trajectory, deviation)
+    certified = (guaranteed >= required) & (room[:-1] >= 0.0) & (room[1:] >= 0.0)
 
     if not authority > 0.0:  # a nan passed `authority <= 0` and priced every step's threshold nan
         source = "u_max" if u_max is not None else "the plan's largest action (it never acts)"
@@ -2875,6 +3012,7 @@ def _audit(
         step_gamma_star=per_step,
         radius=float(jnp.max(delta * grad_norm)),
         radius_model="relative" if sensitivity is None else "absolute",
+        deviation=deviation,
     )
 
 
@@ -3005,6 +3143,7 @@ def _every_barrier(audits: Sequence[SafetyCertificate]) -> SafetyCertificate:
         step_gamma_star=step_gamma_star,
         radius=max(audit.radius for audit in audits),
         radius_model=audits[0].radius_model,  # one sensitivity audits every barrier
+        deviation=audits[0].deviation,  # the plant's path, which no barrier moves
     )
 
 

@@ -109,6 +109,30 @@ def _ceiling_rows(flat: Array, gamma: float, ceiling: float) -> Array:
     )
 
 
+def _tube_rows(flat: Array, gamma: float, signs: np.ndarray, bound: float, side: float) -> Array:
+    """``h - e`` at each next state, ``h = side (x[1] - bound)`` with ``|grad h| = 1``, ``e`` the
+    deviation a plant whose channel is within the radius can reach, written out from the
+    oscillator's RK4 step here: ``e_{k+1} = rho e_k + sigma Delta |u_k|``, ``rho = ||R(dt A)||``,
+    ``sigma = dt ||phi(dt A)||``. ``|u_k|`` is ``signs[k] u_k``, which is exact in the orthant
+    ``signs`` picks out, and :func:`_orthant_rows` keeps the program in it."""
+    z = DT * np.array([[0.0, 1.0], [-(OMEGA**2), -2.0 * ZETA * OMEGA]])
+    eye = np.eye(2)
+    z2 = z @ z
+    z3 = z2 @ z
+    rho = np.linalg.norm(eye + z + z2 / 2.0 + z3 / 6.0 + z3 @ z / 24.0, 2)
+    sigma = DT * np.linalg.norm(eye + z / 2.0 + z2 / 6.0 + z3 / 24.0, 2)
+    spread = confounding_robust_inflation(1.0, 0.0, gamma)  # the channel's size is 1
+    lags = np.subtract.outer(np.arange(HORIZON), np.arange(HORIZON))
+    carry = np.where(lags >= 0, rho ** np.maximum(lags, 0), 0.0) * sigma * spread
+    us = flat.reshape(HORIZON, 1)
+    reached = rollout(OSCILLATOR, X0, us, DT)[1:, 1]
+    return side * (reached - bound) - jnp.asarray(carry) @ (jnp.asarray(signs) * us[:, 0])
+
+
+def _orthant_rows(flat: Array, signs: np.ndarray) -> Array:
+    return jnp.asarray(signs) * flat
+
+
 def _exact_floor_optimum(
     gamma: float,
     floor: float = FLOOR,
@@ -119,8 +143,31 @@ def _exact_floor_optimum(
 
     ``penalty(xs, us)`` joins the task cost, and must stay quadratic in the actions -- as a support
     model's is on this linear plant -- for the Hessian taken at zero to be the program's own. A
-    ``ceiling`` adds its own condition to the floor's.
+    ``ceiling`` adds its own condition to the floor's. At ``gamma > 1`` each next state must also
+    clear its bounds by the deviation tube (:func:`_tube_rows`). Its ``|u_k|`` makes the program a
+    QP in each orthant of the actions: it is solved in the orthant of the last solution's signs,
+    from the optimum without the tube, until the signs repeat with no action at zero, where the
+    orthant's rows do not bind and its optimum is the program's.
     """
+    if gamma == 1.0:
+        return _orthant_optimum(gamma, floor, penalty, ceiling, None)
+    signs = np.sign(_orthant_optimum(gamma, floor, penalty, ceiling, None)[0])
+    for _ in range(8):
+        actions, value = _orthant_optimum(gamma, floor, penalty, ceiling, signs)
+        if np.all(signs * actions > 1e-9) and np.array_equal(np.sign(actions), signs):
+            return actions, value
+        signs = np.where(actions == 0.0, signs, np.sign(actions))
+    raise AssertionError("the orthants did not settle on one with no action at zero")
+
+
+def _orthant_optimum(
+    gamma: float,
+    floor: float,
+    penalty: Callable[[Array, Array], Array] | None,
+    ceiling: float | None,
+    signs: np.ndarray | None,
+) -> tuple[np.ndarray, float]:
+    """:func:`_exact_floor_optimum` in the orthant ``signs``, or without the tube at None."""
 
     def value(flat: Array) -> Array:
         us = flat.reshape(HORIZON, 1)
@@ -130,10 +177,15 @@ def _exact_floor_optimum(
         return task + penalty(rollout(OSCILLATOR, X0, us, DT)[:-1], us)
 
     def condition(flat: Array) -> Array:
-        rows = _floor_rows(flat, gamma, floor)
-        if ceiling is None:
-            return rows
-        return jnp.concatenate([rows, _ceiling_rows(flat, gamma, ceiling)])
+        rows = [_floor_rows(flat, gamma, floor)]
+        if ceiling is not None:
+            rows.append(_ceiling_rows(flat, gamma, ceiling))
+        if signs is not None:
+            rows.append(_tube_rows(flat, gamma, signs, -floor, 1.0))
+            if ceiling is not None:
+                rows.append(_tube_rows(flat, gamma, signs, ceiling, -1.0))
+            rows.append(_orthant_rows(flat, signs))
+        return jnp.concatenate(rows)
 
     zero = jnp.zeros(HORIZON)
     hessian = np.asarray(jax.hessian(value)(zero))
@@ -216,6 +268,11 @@ def test_a_band_holds_each_bound_s_condition_and_lands_on_the_exact_optimum(
         np.minimum(floor_rows[:HORIZON], floor_rows[HORIZON:]),
         np.minimum(rows[:HORIZON], rows[HORIZON:]),
     )
+    if gamma > 1.0:  # a step's next state binds where it clears a bound by the tube alone
+        signs = np.sign(actions)
+        for bound, side in ((-FLOOR, 1.0), (ceiling, -1.0)):
+            reach = _tube_rows(jnp.asarray(actions), gamma, signs, bound, side)
+            slack = np.minimum(slack, np.asarray(reach))
     binds = np.minimum(rows[:HORIZON], rows[HORIZON:]) <= 1e-9
     speed = np.asarray(rollout(OSCILLATOR, X0, jnp.asarray(actions).reshape(-1, 1), DT))[:-1, 1]
     assert np.any(binds & (speed + FLOOR < ceiling - speed))
@@ -527,15 +584,16 @@ def test_a_barrier_constraint_refuses_what_certify_safety_could_not_price(
 
 def test_a_tuple_is_audited_barrier_by_barrier_and_read_as_one() -> None:
     """Each step reads every barrier: certified where all are, its value the least, its pair the
-    one with the least room, its ceiling the least; the radius is the widest, here the ceiling's,
-    whose gradient is twice the floor's."""
+    one with the least room, its ceiling the least, and the deviation the one path's; the radius
+    is the widest, here the ceiling's, whose gradient is twice the floor's. At ``gamma = 1.02``
+    the free plan's tube still leaves a step both barriers certify, which it does not at 1.05."""
     plan = causal_plan(OSCILLATOR, X0, COST, DT, HORIZON, -U_MAX, U_MAX)
 
     def velocity_ceiling(x: Array) -> Array:
         return 2.0 * (0.1 - x[1])
 
     barriers = (_velocity_floor, velocity_ceiling)
-    kwargs = {"alpha": ALPHA, "gamma": 2.0, "u_max": U_MAX}
+    kwargs = {"alpha": ALPHA, "gamma": 1.02, "u_max": U_MAX}
     floor, ceiling = (certify_safety(plan, OSCILLATOR, b, DT, **kwargs) for b in barriers)
     both = certify_safety(plan, OSCILLATOR, barriers, DT, **kwargs)
 
@@ -561,6 +619,8 @@ def test_a_tuple_is_audited_barrier_by_barrier_and_read_as_one() -> None:
     )
     assert both.gamma_star == min(floor.gamma_star, ceiling.gamma_star)
     assert both.radius == ceiling.radius == 2.0 * floor.radius > 0.0
+    np.testing.assert_array_equal(np.asarray(both.deviation), np.asarray(floor.deviation))
+    np.testing.assert_array_equal(np.asarray(ceiling.deviation), np.asarray(floor.deviation))
 
 
 def test_an_empty_tuple_of_barriers_is_refused() -> None:
@@ -656,24 +716,30 @@ def test_the_audit_reads_the_same_in_any_units_of_each_lever(units: tuple[float,
     """Each force in units of its own, its box with it: the same plan, read in those units, clears
     the same steps by the same guaranteed derivative, and every step's ceiling is the same. With
     one number for both forces, the largest action of either, the ball and the radius read their
-    units as one: in ``(1e3, 1)`` the plan, which clears 12 steps of 20, cleared none, and
-    ``gamma*`` read 2779 where it reads 4.59. Held in the solve, whose rounds step each action in
+    units as one: in ``(1e3, 1)`` the plan, which cleared 12 steps of 20 at ``gamma = 2`` before
+    the deviation tube joined the audit, cleared none, and ``gamma*`` read 2779 where it reads
+    4.59. The tube reads each action in units of its lever's largest action too, so the plant's
+    deviation is the same in every units. Held in the solve, whose rounds step each action in
     units of its own curvature, every step clears at one cost in every units; stepped in the
     caller's, ``(1e3, 1)`` held none."""
     kwargs = {"alpha": ALPHA, "gamma": 2.0}
+    # the free plan's tube at gamma = 2 leaves no step certified; at 1.1 it leaves 11
+    audited = {"alpha": ALPHA, "gamma": 1.1}
     model, cost = _two_forces()
     plan = causal_plan(model, X0, cost, DT, HORIZON, -TWO_REACH, TWO_REACH)
-    one = certify_safety(plan, model, _velocity_floor, DT, u_max=TWO_REACH, **kwargs)
+    one = certify_safety(plan, model, _velocity_floor, DT, u_max=TWO_REACH, **audited)
     assert one.certified_steps < HORIZON  # the free plan breaks the floor
-    # 12, not the 14 steps whose condition holds: two of those are outside the floor
-    assert int(np.sum(np.asarray(one.planned_certified))) == 12
+    assert int(np.sum(np.asarray(one.planned_certified))) == 11
     assert any(1.0 < value < math.inf for value in one.step_gamma_star)
 
     scale = np.asarray(units)
     other_model, _ = _two_forces(units)
     moved = replace(plan, actions=plan.actions * jnp.asarray(scale))
     other = certify_safety(
-        moved, other_model, _velocity_floor, DT, u_max=TWO_REACH * scale, **kwargs
+        moved, other_model, _velocity_floor, DT, u_max=TWO_REACH * scale, **audited
+    )
+    np.testing.assert_allclose(
+        np.asarray(other.deviation), np.asarray(one.deviation), rtol=1e-12, atol=1e-15
     )
     assert other.certified_steps == one.certified_steps
     np.testing.assert_array_equal(
