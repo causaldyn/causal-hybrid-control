@@ -24,7 +24,18 @@ from scipy import optimize, stats
 from scipy.special import lambertw
 
 from chc.delay import STABILISING_RATIO_FLOOR, delay_design_loss, delay_margin
-from chc.dlm import GeoDLM, Polynomial, Prior, forward_filter_geos, stacked_prior
+from chc.dlm import (
+    DynamicLinearModel,
+    GeoDLM,
+    Polynomial,
+    Prior,
+    Regression,
+    _directional,
+    _nested,
+    _structure,
+    forward_filter_geos,
+    stacked_prior,
+)
 from chc.dynamics_id import (
     ChannelRegion,
     closed_loop_gain_attribution,
@@ -77,10 +88,20 @@ FORMAL_LINKS = {
         ),
     },
     "chc.dlm": {
-        "cites": ("geo_dlm.mac",),
+        "cites": ("directional_dlm.mac", "geo_dlm.mac"),
         "tests": (
             "test_geo_filter_joint_update_is_the_sequential_one",
             "test_geo_filter_multiplicative_discount_keeps_geos_apart_in_precision",
+            "test_directional_discount_keeps_what_the_rows_do_not_read",
+            "test_directional_discount_with_one_discount_is_directional_forgetting",
+        ),
+    },
+    "chc.dlm._directional": {
+        "cites": ("directional_dlm.mac",),
+        "tests": (
+            "test_directional_discount_keeps_what_the_rows_do_not_read",
+            "test_directional_discount_with_one_discount_is_directional_forgetting",
+            "test_directional_core_parts_add_up_and_average_the_rates",
         ),
     },
     "chc.dynamics_id.ChannelRegion.stability_level": {
@@ -359,6 +380,79 @@ def test_geo_filter_multiplicative_discount_keeps_geos_apart_in_precision(seed: 
         kept[form] = [_cross_precision(fit.prior_covariance[t]) for t in range(1, 6)]
     assert max(kept["multiplicative"]) < 1e-10
     assert min(kept["additive"]) > 1e-4
+
+
+def _evolved(rng: np.random.Generator) -> np.ndarray:
+    root = rng.normal(size=(2, 2))
+    return root @ root.T + 0.1 * np.eye(2)
+
+
+@settings(max_examples=40, deadline=None)
+@given(seed=SEEDS)
+def test_directional_discount_keeps_what_the_rows_do_not_read(seed: int) -> None:
+    """directional_dlm.mac steps 1-4: a level beside a constant column, the rows read only
+    ``a theta`` with ``a = (1, c)``. The information on ``u = (c, -1)``, which they do not read, is
+    ``P``'s, ``theta`` given ``a theta`` is as ``P`` had it, and ``a theta``'s variance is inflated
+    by an average of the two blocks' rates."""
+    rng = np.random.default_rng(seed)
+    p, c = _evolved(rng), float(rng.uniform(0.5, 5.0))
+    deltas = rng.uniform(0.5, 1.0, 2)
+    model = DynamicLinearModel(
+        (Polynomial(1, deltas[0]), Regression(1, deltas[1])),
+        Prior(np.zeros(2), np.eye(2), 1.0, math.inf),
+    )
+    s = _structure(model)
+    window = np.array([[1.0, c], [1.0, c]])
+    r = _directional(s, p, np.ones(2, dtype=bool), window)
+    a, u = np.array([1.0, c]), np.array([c, -1.0])
+    assert u @ np.linalg.solve(r, u) == pytest.approx(u @ np.linalg.solve(p, u), rel=1e-9, abs=0.0)
+    given_r = r - np.outer(r @ a, r @ a) / (a @ r @ a)
+    given_p = p - np.outer(p @ a, p @ a) / (a @ p @ a)
+    np.testing.assert_allclose(given_r, given_p, rtol=0.0, atol=1e-10 * np.abs(p).max())
+    rates = (1.0 - deltas) / deltas
+    inflation = (a @ r @ a) / (a @ p @ a) - 1.0
+    assert rates.min() * (1 - 1e-9) <= inflation <= rates.max() * (1 + 1e-9)
+    assert np.linalg.eigvalsh(r - p)[0] >= -1e-12 * np.abs(p).max()
+
+
+@settings(max_examples=40, deadline=None)
+@given(seed=SEEDS)
+def test_directional_discount_with_one_discount_is_directional_forgetting(seed: int) -> None:
+    """directional_dlm.mac step 5: one discount, ``R^-1 = P^-1 - (1 - delta) a' (a P a')^-1 a``
+    where the rows read only ``a theta``, and ``R = P / delta`` where they read every direction."""
+    rng = np.random.default_rng(seed)
+    p, c, delta = _evolved(rng), float(rng.uniform(0.5, 5.0)), float(rng.uniform(0.5, 1.0))
+    model = DynamicLinearModel(
+        (Polynomial(1, delta), Regression(1, delta)), Prior(np.zeros(2), np.eye(2), 1.0, math.inf)
+    )
+    s, live = _structure(model), np.ones(2, dtype=bool)
+    a = np.array([1.0, c])
+    r = _directional(s, p, live, np.array([a, a]))
+    kulhavy = np.linalg.inv(p) - (1.0 - delta) * np.outer(a, a) / (a @ p @ a)
+    np.testing.assert_allclose(
+        np.linalg.inv(r), kulhavy, rtol=1e-9, atol=1e-9 * np.abs(kulhavy).max()
+    )
+    full = _directional(s, p, live, np.array([a, [1.0, 2.0 * c]]))
+    np.testing.assert_allclose(full, p / delta, rtol=1e-9, atol=0.0)
+
+
+@settings(max_examples=40, deadline=None)
+@given(seed=SEEDS)
+def test_directional_core_parts_add_up_and_average_the_rates(seed: int) -> None:
+    """directional_dlm.mac step 3: the nested parts add up to the covariance, so one rate scales
+    it; a group at rate 0 keeps its rows; the core is a variance, and a row's inflation is an
+    average of the rates."""
+    rng = np.random.default_rng(seed)
+    root = rng.normal(size=(5, 5))
+    covariance = root @ root.T + 0.05 * np.eye(5)
+    np.testing.assert_allclose(_nested(covariance, np.full(5, 0.3)), 0.3 * covariance, rtol=1e-9)
+    rates = np.array([0.0, 0.2, 0.2, 0.05, 0.5])
+    core = _nested(covariance, rates)
+    np.testing.assert_allclose(core[0], 0.0, atol=1e-12 * np.abs(covariance).max())
+    assert np.linalg.eigvalsh(core)[0] >= -1e-12 * np.abs(covariance).max()
+    for f in rng.normal(size=(20, 5)):
+        ratio = (f @ core @ f) / (f @ covariance @ f)
+        assert -1e-12 <= ratio <= 0.5 * (1 + 1e-9)
 
 
 # ---------------------------------------------------------------------------- chc.dynamics_id

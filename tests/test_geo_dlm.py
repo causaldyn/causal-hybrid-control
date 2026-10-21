@@ -16,6 +16,7 @@ import pytest
 from scipy import linalg, stats
 
 from chc.dlm import (
+    DiscountForm,
     DynamicLinearModel,
     GeoDLM,
     Polynomial,
@@ -64,7 +65,7 @@ def _one_geo(form, beta, dof, hold):
     return geo, alone
 
 
-@pytest.mark.parametrize("form", ["additive", "multiplicative"])
+@pytest.mark.parametrize("form", ["directional", "additive", "multiplicative"])
 @pytest.mark.parametrize(
     ("beta", "dof", "hold"), [(1.0, 6.0, False), (0.95, 6.0, True), (1.0, math.inf, False)]
 )
@@ -230,7 +231,8 @@ def test_a_regressor_held_while_idle_is_live_where_any_geo_that_reads_it_moves()
     coefficients and the second geo's deviations are discounted, the first geo's are not."""
     geos, delta = 2, 0.9
     held = Regression(1, delta, hold_when_idle=True)
-    model = GeoDLM((held,), (held,), geos, stacked_prior(_prior(1), _prior(1), geos))
+    prior = stacked_prior(_prior(1), _prior(1), geos)
+    model = GeoDLM((held,), (held,), geos, prior, "additive")
     y, x = _panel(7, geos, 1)
     x[:, 0, 0] = 1.0
     x[:, 1, 0] = 1.0
@@ -250,14 +252,21 @@ def test_a_stacked_prior_repeats_the_regional_one_for_each_geo():
     assert (prior.scale, prior.dof) == (1.3, 6.0)
 
 
-@pytest.mark.parametrize("form", ["additive", "multiplicative"])
+@pytest.mark.parametrize("form", ["directional", "additive", "multiplicative"])
 @pytest.mark.parametrize(
     ("beta", "dof", "hold"), [(1.0, 6.0, False), (0.95, 6.0, True), (1.0, math.inf, False)]
 )
 def test_one_geo_is_smoothed_as_chc_dlm_smooths_it(form, beta, dof, hold):
-    """The filters agree to ``1e-14``; each gain solves against ``R_(t+1)``, near ``1e4`` in
-    condition in the multiplicative form, so the smoothers agree to some ``1e-12`` of the scale."""
+    """The filters agree to ``1e-14``; each gain solves against ``R_(t+1)``, so the smoothers
+    agree to some ``1e-12`` of the scale. The multiplicative form's evolution variance is not one
+    here, the national and the regional coefficients on the same columns correlated and their
+    discounts different, and both smoothers refuse it."""
     geo, alone = _one_geo(form, beta, dof, hold)
+    if form == "multiplicative":
+        for fit in (geo, alone):
+            with pytest.raises(ValueError, match="not a variance"):
+                smooth(fit)
+        return
     ours, theirs = smooth(geo), smooth(alone)
     for mine, expected in [
         (ours.mean, theirs.mean),
@@ -299,13 +308,14 @@ def _batch(fit, units: np.ndarray, v: float):
     return (cov @ vec).reshape(horizon, p), cov, blk
 
 
-def _three_geos(dof: float, beta: float = 1.0):
+def _three_geos(dof: float, beta: float = 1.0, form: DiscountForm = "directional"):
     """A level and a slope a geo, so the evolution is not the identity."""
     model = GeoDLM(
         NATIONAL,
         (Polynomial(2, 0.9), Regression(2, 0.95)),
         3,
         stacked_prior(_prior(2, dof=dof), _prior(4, dof=dof), 3),
+        form,
         variance_discount=beta,
         relative_variance=[0.6, 1.0, 1.8],
     )
@@ -316,8 +326,11 @@ def _three_geos(dof: float, beta: float = 1.0):
 def test_the_smoother_over_geos_is_every_state_s_posterior_given_every_geo(dof):
     """A known variance: the model is one Gaussian over every state, and the smoother is its
     posterior. A learned one: that posterior in the variance's units, ``V`` the filter's ``S`` at
-    each step, times ``E[V | D_T] = S_T n_T / (n_T - 2)``."""
-    fit = _three_geos(dof)
+    each step, times ``E[V | D_T] = S_T n_T / (n_T - 2)``. The batch inverts each step's
+    evolution variance, so the form is the additive one: the directional form's is singular on
+    the directions the geos never separate, a national coefficient against every geo's
+    deviation from it."""
+    fit = _three_geos(dof, form="additive")
     if math.isinf(dof):
         units, v, factor = np.ones(T), fit.model.prior.scale, 1.0
     else:

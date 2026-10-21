@@ -104,6 +104,7 @@ def own(replicates: int, rng: np.random.Generator) -> dict[str, object]:
     model = DynamicLinearModel(
         (Polynomial(1, 0.95), Regression(1, 0.9)),
         Prior(np.array([10.0, 1.0]), np.diag([4.0, 0.25]), 0.5, 5.0),
+        form="additive",
         variance_discount=0.98,
     )
     pits = []
@@ -138,7 +139,7 @@ def _hit(samples: np.ndarray, truth: np.ndarray) -> np.ndarray:
 
 def _fit(y: np.ndarray, x: np.ndarray, prior: Prior, d_level: float, d_coef: float) -> DLMFit:
     blocks = (Polynomial(1, d_level), Regression(2, d_coef))
-    return forward_filter(DynamicLinearModel(blocks, prior), y, x)
+    return forward_filter(DynamicLinearModel(blocks, prior, form="additive"), y, x)
 
 
 def _bounds(samples: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

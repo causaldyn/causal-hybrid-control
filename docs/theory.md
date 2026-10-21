@@ -170,6 +170,7 @@ failures, when the tests were first written (names relative to `chc`):
 | `delayed_exposure_gate.mac` | `regret.delayed_network_certificate` | `test_formal_regret_b.py` |
 | `delayed_network_exposure.mac` | `regret.delayed_network_certificate` | `test_formal_regret_b.py` |
 | `delayed_network_exposure.v` | `regret.delayed_network_certificate` | `test_formal_regret_b.py` |
+| `directional_dlm.mac` | `dlm`, `dlm._directional` | `test_formal_estimation.py` |
 | `dither_channel_move.mac` | `gate.ChannelMove.price`, `gate.channel_move` | `test_formal_estimation.py` |
 | `dither_channel_move.v` | `gate.ChannelMove.price` | `test_formal_estimation.py` |
 | `dither_drift_evalue.mac` | `gate.channel_drift_evalues` | `test_formal_estimation.py` |

@@ -64,7 +64,9 @@ def test_filter_equals_the_conjugate_regression_when_nothing_is_discounted():
 def test_a_single_discount_is_discount_weighted_least_squares():
     x, y = _world(1)
     delta, v = 0.9, 0.25
-    model = DynamicLinearModel((Regression(2, delta),), _prior(2, scale=v, spread=3.0))
+    model = DynamicLinearModel(
+        (Regression(2, delta),), _prior(2, scale=v, spread=3.0), form="additive"
+    )
     fit = forward_filter(model, y, x)
     horizon = y.size
     w = delta ** (horizon - 1 - np.arange(horizon))
@@ -154,13 +156,21 @@ def test_an_idle_regressor_winds_up_unless_held(caplog):
     delta, idle = 0.9, 30
     y = np.random.default_rng(6).standard_normal(idle)
     x = np.zeros(idle)
-    loose = DynamicLinearModel((Regression(1, delta),), _prior(1, spread=2.0))
+    loose = DynamicLinearModel((Regression(1, delta),), _prior(1, spread=2.0), form="additive")
     with caplog.at_level(logging.WARNING, logger="chc.dlm"):
         fit = forward_filter(loose, y, x)
     assert fit.covariance[-1, 0, 0] == pytest.approx(2.0 * delta**-idle, rel=1e-12)
     assert any(getattr(r, "chc_event", None) == "dlm_windup" for r in caplog.records)
-    held = DynamicLinearModel((Regression(1, delta, hold_when_idle=True),), _prior(1, spread=2.0))
+    held = DynamicLinearModel(
+        (Regression(1, delta, hold_when_idle=True),), _prior(1, spread=2.0), form="additive"
+    )
     assert forward_filter(held, y, x).covariance[-1, 0, 0] == pytest.approx(2.0, rel=1e-12)
+    caplog.clear()
+    directional = DynamicLinearModel((Regression(1, delta),), _prior(1, spread=2.0))
+    with caplog.at_level(logging.WARNING, logger="chc.dlm"):
+        fit = forward_filter(directional, y, x)
+    assert fit.covariance[-1, 0, 0] == pytest.approx(2.0, rel=1e-12)
+    assert not any(getattr(r, "chc_event", None) == "dlm_windup" for r in caplog.records)
 
 
 @pytest.mark.parametrize(
@@ -169,6 +179,8 @@ def test_an_idle_regressor_winds_up_unless_held(caplog):
         ("additive", "constant", True),
         ("additive", "drawn", False),
         ("multiplicative", "constant", False),
+        ("directional", "constant", False),
+        ("directional", "drawn", False),
     ],
 )
 def test_blocks_seen_only_through_their_sum_are_logged_as_winding_up(
@@ -196,26 +208,110 @@ def test_blocks_seen_only_through_their_sum_are_logged_as_winding_up(
         assert 0.5 * variance < fit.scale[-1] < 2.0 * variance
 
 
+_HORIZON = 156
+
+
+def _held_regressor(kind: str, rng: np.random.Generator) -> np.ndarray:
+    if kind == "constant":
+        return np.full(_HORIZON, 3.0)
+    if kind == "price steps":
+        return np.repeat(3.0 * np.exp(0.15 * rng.standard_normal(6)), 26)
+    if kind == "trend":
+        return 1.0 + 4.0 * np.arange(_HORIZON) / _HORIZON + 0.1 * rng.standard_normal(_HORIZON)
+    spread = math.sqrt(math.log(1.0 + 0.35**2))
+    return 3.0 * np.exp(spread * rng.standard_normal(_HORIZON) - spread**2 / 2.0)
+
+
+@pytest.mark.parametrize("kind", ["constant", "price steps", "trend", "lognormal beside a season"])
+def test_the_default_form_covers_beside_a_regressor_that_moves_little(kind: str):
+    """A level at 0.95 beside a regressor at 0.9, and a season at 0.98 for the last kind; the
+    level a random walk, ``V = 0.09``, 156 steps. Component discounting, the former default,
+    inflated the variance of the blocks' poorly resolved difference every step, and it leaked
+    into the one-step forecast: its 90% intervals covered 1.000, 0.999, 0.994 and 0.823 over 200
+    series, with ``S_T`` at 0.04 to 0.5 of ``V``. The directional default covers 0.89 to 0.90 on
+    every kind. Tolerance: four of this run's Monte Carlo standard errors, plus 0.01 for the
+    discount model's own misfit to a random-walk level, which reads 0.891 to 0.902 over 200
+    series of the 23 worlds of the same grid."""
+    rng = np.random.default_rng(31)
+    seasonal = kind == "lognormal beside a season"
+    blocks = (Polynomial(1, 0.95),)
+    blocks += (Seasonal(52.0, (1, 2), 0.98),) if seasonal else ()
+    blocks += (Regression(1, 0.9),)
+    p = sum(b.size for b in blocks)
+    model = DynamicLinearModel(blocks, Prior(np.zeros(p), 10.0 * np.eye(p), 0.1, 3.0))
+    cover = []
+    for _ in range(25):
+        x = _held_regressor(kind, rng)
+        level = 2.0 + np.cumsum(0.02 * rng.standard_normal(_HORIZON))
+        season = 0.3 * np.sin(2 * np.pi * np.arange(_HORIZON) / 52.0) if seasonal else 0.0
+        y = level + season + 0.5 * x + 0.3 * rng.standard_normal(_HORIZON)
+        fit = forward_filter(model, y, x)
+        u = stats.t.cdf(y - fit.one_step_mean, fit.one_step_dof, scale=np.sqrt(fit.one_step_scale))
+        cover.append(np.mean((u[52:] > 0.05) & (u[52:] < 0.95)))
+    error = np.std(cover, ddof=1) / math.sqrt(len(cover))
+    assert abs(np.mean(cover) - 0.90) < 4.0 * error + 0.01
+
+
 def test_a_filter_over_geos_logs_blocks_seen_only_through_their_sum(caplog):
     rng = np.random.default_rng(29)
     horizon, geos = 260, 2
     y = 10.0 + 2.0 + 0.3 * rng.standard_normal((horizon, geos))
     x = np.full((horizon, geos, 1), 2.0)
-    model = GeoDLM((Polynomial(1, 0.95),), (Regression(1, 0.9),), geos, _prior(3, dof=2.0))
+    blocks = ((Polynomial(1, 0.95),), (Regression(1, 0.9),), geos, _prior(3, dof=2.0))
     with caplog.at_level(logging.WARNING, logger="chc.dlm"):
-        forward_filter_geos(model, y, x)
+        forward_filter_geos(GeoDLM(*blocks, form="additive"), y, x)
     assert [r.chc_event for r in caplog.records if r.name == "chc.dlm"] == ["dlm_windup"]
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="chc.dlm"):
+        forward_filter_geos(GeoDLM(*blocks), y, x)
+    assert not [r for r in caplog.records if r.name == "chc.dlm"]
 
 
 def test_a_scale_lost_to_an_unresolved_direction_names_it():
-    """Proportional columns in one block under a discount below 1: the direction they never
-    separate grows by ``1 / delta`` a step until the forecast's variance rounds below zero."""
+    """Proportional columns in one block under a discount below 1: the additive form grows the
+    direction they never separate by ``1 / delta`` a step until the directions they do separate
+    are lost to rounding, and is refused there, naming the direction; the directional form holds
+    that direction at its prior variance."""
     rng = np.random.default_rng(0)
     x1 = rng.gamma(2.0, 1.0, 600)
     y = 10.0 + 0.5 * x1 + 0.3 * rng.standard_normal(600)
-    model = DynamicLinearModel((Polynomial(1, 0.95), Regression(2, 0.9)), _prior(3, dof=1.0))
-    with pytest.raises(FloatingPointError, match=r"largest eigenvalue is \S+ times the"):
-        forward_filter(model, y, np.column_stack([x1, 2.0 * x1]))
+    x = np.column_stack([x1, 2.0 * x1])
+    blocks = (Polynomial(1, 0.95), Regression(2, 0.9))
+    additive = DynamicLinearModel(blocks, _prior(3, dof=1.0), form="additive")
+    with pytest.raises(
+        FloatingPointError,
+        match=r"times its smallest.*widest direction \[ ?-?0\. +-?0\.894 +-?0\.447\]",
+    ):
+        forward_filter(additive, y, x)
+    fit = forward_filter(DynamicLinearModel(blocks, _prior(3, dof=1.0)), y, x)
+    unread = np.array([0.0, 2.0, -1.0]) / math.sqrt(5.0)
+    assert unread @ fit.covariance[-1] @ unread / fit.scale[-1] == pytest.approx(10.0, rel=1e-6)
+    assert fit.mean[-1, 1] + 2.0 * fit.mean[-1, 2] == pytest.approx(0.5, abs=0.02)
+
+
+def test_a_constant_beside_a_level_is_refused_or_held_not_carried():
+    """A constant column beside a level, 1500 steps. The additive form grew their unresolved
+    difference by about ``1 / 0.9`` a step and ran on: ``Q_t`` reached 1e25 and the level plus
+    the coefficient, which the data do resolve, read a standard deviation of 0, with no error. It
+    is now refused where the covariance's eigenvalues span ``1e13``, naming the direction; the
+    directional form holds that direction at its prior variance and ``Q_t`` near the truth's."""
+    rng = np.random.default_rng(37)
+    horizon, variance = 1500, 0.09
+    x = np.full(horizon, 3.0)
+    level = 2.0 + np.cumsum(0.02 * rng.standard_normal(horizon))
+    y = level + 0.5 * x + math.sqrt(variance) * rng.standard_normal(horizon)
+    blocks = (Polynomial(1, 0.95), Regression(1, 0.9))
+    prior = Prior(np.zeros(2), 10.0 * np.eye(2), 0.1, 3.0)
+    with pytest.raises(
+        FloatingPointError,
+        match=r"largest eigenvalue is \S+ times its smallest.*direction \[ ?-?0\.949 +-?0\.316\]",
+    ):
+        forward_filter(DynamicLinearModel(blocks, prior, "additive"), y, x)
+    fit = forward_filter(DynamicLinearModel(blocks, prior), y, x)
+    unread = np.array([3.0, -1.0]) / math.sqrt(10.0)
+    held = np.einsum("i,tij,j->t", unread, fit.covariance, unread) / fit.scale
+    np.testing.assert_allclose(held, 10.0 / 0.1, rtol=1e-9)
+    assert np.max(fit.one_step_scale[52:]) < 2.0 * (variance + 0.02**2)
 
 
 def test_a_seasonal_block_rotates_once_a_period():
@@ -266,6 +362,25 @@ def test_a_constant_forecast_refuses_an_evolution_variance_that_is_not_one():
     assert np.all(np.linalg.eigvalsh(compounding.state_scale) > 0.0)
     additive = forward_filter(DynamicLinearModel(blocks, _prior(2)), y, np.ones(30))
     assert np.all(np.linalg.eigvalsh(forecast(additive, 10, ones).state_scale) > 0.0)
+
+
+def test_smoothing_refuses_an_evolution_variance_that_is_not_one():
+    """The smoother and the backward sampler read ``R_t - G C_(t-1) G'`` as a variance. Under the
+    multiplicative form with discounts that differ it is not one, and they ran on: over a level
+    beside a constant column the smoothed level's variance came out negative. Every step is now
+    checked; the directional and the additive forms' steps pass."""
+    y = 3.0 + np.random.default_rng(5).standard_normal(30)
+    blocks = (Polynomial(1, 0.99), Regression(1, 0.8))
+    multiplicative = forward_filter(
+        DynamicLinearModel(blocks, _prior(2), "multiplicative"), y, np.ones(30)
+    )
+    with pytest.raises(ValueError, match="not a variance"):
+        smooth(multiplicative)
+    with pytest.raises(ValueError, match="not a variance"):
+        backward_sample(multiplicative, 4, 0)
+    for form in ("directional", "additive"):
+        fit = forward_filter(DynamicLinearModel(blocks, _prior(2), form), y, np.ones(30))
+        assert np.all(np.diagonal(smooth(fit).covariance, axis1=1, axis2=2) > 0.0)
 
 
 def _joint(fit, w_scale: np.ndarray, r1: np.ndarray, v: float):
@@ -524,6 +639,7 @@ def _channel_model(coefficient_discount: float, dof: float) -> DynamicLinearMode
     return DynamicLinearModel(
         (Polynomial(1, 0.95), Regression(1, coefficient_discount)),
         Prior(np.array([10.0, 0.0]), np.diag([25.0, 1.0]), 0.1, dof),
+        "additive",
     )
 
 
@@ -593,6 +709,7 @@ def test_a_static_coefficient_held_to_a_sign_is_the_truncated_normal(effect, sig
     model = DynamicLinearModel(
         (Polynomial(1, 0.95), Regression(1, 1.0)),
         Prior(np.array([10.0, 0.0]), np.diag([25.0, 1.0]), 0.09, math.inf),
+        "additive",
     )
     fit = forward_filter(model, y, x[:, None])
     mean, cov = _path_posterior(fit, 0.09)
@@ -628,6 +745,7 @@ def test_a_drifting_coefficient_held_to_a_sign_matches_quadrature(x, hold):
     model = DynamicLinearModel(
         (Polynomial(1, 0.8), Regression(1, 0.7, hold_when_idle=hold)),
         Prior(np.zeros(2), np.array([[0.5, 0.6], [0.6, 1.0]]), 0.5, math.inf),
+        "additive",
     )
     fit = forward_filter(model, np.array([0.4, -0.3, -0.2]), x[:, None])
     mean, cov = _path_posterior(fit, 0.5)
@@ -687,6 +805,7 @@ def test_two_channels_held_to_their_signs_match_rejection_from_the_batch_posteri
             0.5,
             math.inf,
         ),
+        "additive",
     )
     x = np.array([[1.0, 0.3], [0.2, 1.5], [1.2, 0.8]])
     fit = forward_filter(model, np.array([0.3, -0.4, 0.1]), x)
@@ -1121,7 +1240,8 @@ def test_invalid_data_raise():
 def test_numpy_integers_are_integers_everywhere_a_count_is_taken():
     """``np.int64(3)`` was refused as not a positive integer, and a step read off
     ``np.flatnonzero`` as outside the series it is inside."""
-    three, model = np.int64(3), DynamicLinearModel((Regression(1, 0.95),), _prior(1, dof=3.0))
+    three = np.int64(3)
+    model = DynamicLinearModel((Regression(1, 0.95),), _prior(1, dof=3.0), "additive")
     x, y = _world(4, width=1)
     fit = forward_filter(model, y, x)
     assert forward_filter(model, y, x, interventions={np.int64(10): 0.5}).y.size == y.size
