@@ -7,9 +7,9 @@ study's plant — rather than a stage of a decision taken from logs. They are ou
 0.20.0 freezes: any of them may change or be withdrawn in any release, and `import chc` imports
 none of them. Import each from its own path, `chc.research.<module>`.
 
-Each moved here in 0.19.0. Until 0.20.0 each name still imports from the path it had before, with
-a `DeprecationWarning` that names its path here: `chc.mmm.run_marketing_mix leaves chc.mmm in
-0.20.0: import it from chc.research.mmm`.
+Each moved here in 0.19.0. The path it had before served it with a `DeprecationWarning` through
+0.19.x and was deleted in 0.20.0: `import chc.mmm` is now a `ModuleNotFoundError`, and
+`chc.regret.van_trees_certificate` an `AttributeError`. Import each name from its path here.
 
 | module | what it carries | path before 0.19.0 |
 |---|---|---|

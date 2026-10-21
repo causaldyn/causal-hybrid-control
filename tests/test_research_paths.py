@@ -1,10 +1,10 @@
-"""The research periphery lives in `chc.research`, and every path it left still serves it, warning.
+"""The research periphery lives in `chc.research`, and the paths it left are gone.
 
 0.19.0 moved sixteen modules into `chc.research` whole, and the research halves of `chc.regret`,
-`chc.games` and `chc.residual` beside them. Each old path imports without a warning, so that
-`import chc` stays silent for a caller that turns warnings into errors, and serves each moved name
-with a `DeprecationWarning` naming the new path, until 0.20.0 deletes it. These tests hold the
-boundary itself: nothing outside `chc.research` imports from it, so the lifecycle loads none of it.
+`chc.games` and `chc.residual` beside them. Their old paths served each moved name with a
+`DeprecationWarning` through 0.19.x, and 0.20.0 deleted them: a whole module's old path no longer
+imports, and a split module no longer has its moved half. These tests hold the boundary itself:
+nothing outside `chc.research` imports from it, so the lifecycle loads none of it.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import ast
 import importlib
 import os
 import pkgutil
-import re
 import subprocess
 import sys
 import warnings
@@ -23,14 +22,27 @@ import pytest
 
 import chc
 import chc.research
-from chc import _moved
 
 SRC = Path(chc.__file__).resolve().parent
-SPLIT = {
-    "chc.regret": "chc.research.regret",
-    "chc.games": "chc.research.games",
-    "chc.residual": "chc.research.residual",
-}
+WHOLE = (
+    "benchmark",
+    "causal_bench",
+    "deep_galerkin",
+    "epidemic",
+    "flagship",
+    "galerkin",
+    "koopman",
+    "lalonde",
+    "meanfield",
+    "mintime",
+    "mmm",
+    "sensitivity",
+    "spine",
+    "surrogate",
+    "symbolic",
+    "transport",
+)
+SPLIT = ("regret", "games", "residual")
 
 
 def _defined(module: str) -> set[str]:
@@ -47,116 +59,39 @@ def _defined(module: str) -> set[str]:
     return {name for name in names if not name.startswith("_")}
 
 
-def _served_names(new: str) -> list[str]:
-    """A moved module's public names: its ``__all__``, or the names its own top level defines."""
-    return sorted(getattr(importlib.import_module(new), "__all__", None) or _defined(new))
-
-
 def test_the_research_package_holds_the_modules_that_moved_whole_and_the_three_halves() -> None:
-    found = {f"chc.research.{m.name}" for m in pkgutil.iter_modules(chc.research.__path__)}
-    assert found == set(_moved.MODULES.values()) | set(SPLIT.values())
-    assert len(_moved.MODULES) == 16
+    found = {m.name for m in pkgutil.iter_modules(chc.research.__path__)}
+    assert found == {*WHOLE, *SPLIT}
 
 
-@pytest.mark.parametrize("old", sorted(_moved.MODULES))
-def test_a_module_that_moved_whole_serves_each_name_from_its_new_path_with_a_warning(
-    old: str,
-) -> None:
-    new = _moved.MODULES[old]
+@pytest.mark.parametrize("name", WHOLE)
+def test_the_old_path_of_a_module_that_moved_whole_is_gone(name: str) -> None:
+    assert not SRC.joinpath(f"{name}.py").exists()
+    sys.modules.pop(f"chc.{name}", None)
+    with pytest.raises(ModuleNotFoundError, match=rf"No module named 'chc\.{name}'"):
+        importlib.import_module(f"chc.{name}")
+    with pytest.raises(AttributeError, match=rf"module 'chc' has no attribute '{name}'"):
+        getattr(chc, name)
+
+
+@pytest.mark.parametrize("name", SPLIT)
+def test_a_split_module_no_longer_has_its_moved_half(name: str) -> None:
+    old = importlib.import_module(f"chc.{name}")
+    moved = _defined(f"chc.research.{name}")
+    assert moved
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        shim = importlib.import_module(old)
-    names = _served_names(new)
-    assert _defined(new) <= set(names)
-    for name in names:
-        with pytest.warns(
-            DeprecationWarning,
-            match=rf"^{re.escape(old)}\.{name} leaves {re.escape(old)} in 0\.20\.0: "
-            rf"import it from {re.escape(new)}$",
-        ):
-            found = getattr(shim, name)
-        assert found is getattr(importlib.import_module(new), name), name
-
-
-@pytest.mark.parametrize("old", sorted(SPLIT))
-def test_a_split_module_serves_exactly_its_moved_half_with_a_warning(old: str) -> None:
-    new = SPLIT[old]
-    module = importlib.import_module(old)
-    assert set(module._MOVED) == _defined(new)
-    assert not set(module._MOVED) & set(vars(module))
-    for name in sorted(module._MOVED):
-        with pytest.warns(
-            DeprecationWarning,
-            match=rf"^{old}\.{name} leaves {old} in 0\.20\.0: import it from {new}$",
-        ):
-            found = getattr(module, name)
-        assert found is getattr(importlib.import_module(new), name), name
-
-
-@pytest.mark.parametrize("old", sorted(SPLIT))
-def test_type_checkers_see_each_moved_half_at_its_old_path(old: str) -> None:
-    tree = ast.parse(SRC.joinpath(old.split(".")[1]).with_suffix(".py").read_text())
-    block = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.If)
-        and isinstance(node.test, ast.Name)
-        and node.test.id == "TYPE_CHECKING"
-    )
-    bound = {
-        (statement.module, alias.name)
-        for statement in block.body
-        if isinstance(statement, ast.ImportFrom)
-        for alias in statement.names
-        if alias.asname == alias.name
-    }
-    assert bound == {(SPLIT[old], name) for name in importlib.import_module(old)._MOVED}
-
-
-@pytest.mark.parametrize("old", sorted(_moved.MODULES))
-def test_type_checkers_see_a_whole_module_at_its_old_path(old: str) -> None:
-    tree = ast.parse(SRC.joinpath(old.split(".")[1]).with_suffix(".py").read_text())
-    stars = [
-        node.module
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and [a.name for a in node.names] == ["*"]
-    ]
-    assert stars == [_moved.MODULES[old]]
-
-
-def test_an_old_path_serves_no_private_and_no_unknown_name() -> None:
-    with pytest.raises(AttributeError, match=r"module 'chc\.mmm' has no attribute 'no_such_name'"):
-        _ = chc.mmm.no_such_name
-    # what the new module imports is not a name that moved: it served `chc.mmm.np`, warning
-    for imported in ("np", "jax", "dataclass", "annotations", "LinearDynamics"):
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            with pytest.raises(AttributeError, match=f"has no attribute '{imported}'"):
-                getattr(chc.mmm, imported)
-    with pytest.raises(AttributeError, match="has no attribute '_DEFAULT_ERRORS'"):
-        _ = chc.regret._DEFAULT_ERRORS
-    with pytest.raises(ImportError):
-        from chc.regret import no_such_name  # noqa: F401
-
-
-def test_the_warning_points_at_the_line_that_read_the_name() -> None:
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        from chc.mmm import run_marketing_mix  # noqa: F401
-        from chc.regret import van_trees_certificate  # noqa: F401
-    assert [(w.category, w.filename) for w in caught] == [(DeprecationWarning, __file__)] * 2
+        assert [n for n in sorted(moved) if hasattr(old, n)] == []
+    assert not hasattr(old, "_MOVED")
 
 
 def test_the_top_level_serves_each_name_that_moved_from_its_chc_research_path() -> None:
-    """Served from its old path, a moved name would warn twice and name a deprecated module."""
+    """The top level's deprecated names stay until 1.0: each must still be served from a module
+    that defines it, now that the paths the research modules left are gone."""
     research = {name: m for name, m in chc._MOVED.items() if m.startswith("chc.research.")}
     assert len(research) == 166
     assert [name for name, m in research.items() if name not in _defined(m)] == []
-    assert [
-        name
-        for name, m in chc._MOVED.items()
-        if m in SPLIT and name in importlib.import_module(m)._MOVED
-    ] == []
+    assert [name for name, m in chc._MOVED.items() if name not in _defined(m)] == []
 
 
 @pytest.mark.parametrize("statement", ["import chc", "import chc.decision"])

@@ -6,8 +6,7 @@ with no page, or a renamed one leaves a page behind that fails only when someone
 Each page also states its stability tier, and `mkdocs.yml` files it under one; both are copies of
 the tier table on the reference's index page, and a page promising "stable" for a module the table
 calls experimental is a promise nobody made. The modules of `chc.research` have theirs under
-`docs/api/research/`, in the research tier; the paths they left are not modules of their own and
-have no page.
+`docs/api/research/`, in the research tier.
 """
 
 from __future__ import annotations
@@ -18,15 +17,13 @@ from pathlib import Path
 
 import chc
 import chc.research
-from chc import _moved
 
 ROOT = Path(__file__).resolve().parent.parent
 API = ROOT / "docs" / "api"
-LEFT = {old.removeprefix("chc.") for old in _moved.MODULES}
 MODULES = sorted(
     m.name
     for m in pkgutil.iter_modules(chc.__path__)
-    if not m.name.startswith("_") and m.name not in LEFT and m.name != "research"
+    if not m.name.startswith("_") and m.name != "research"
 )
 PAGES = sorted(path.stem for path in API.glob("*.md") if path.stem != "index")
 RESEARCH = sorted(m.name for m in pkgutil.iter_modules(chc.research.__path__))

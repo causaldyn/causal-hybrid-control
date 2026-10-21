@@ -12,14 +12,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from itertools import combinations_with_replacement
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import Array
 
-from chc import _moved
 from chc.frames import _real_numbers
 from chc.toeplitz import (
     circulant_matvec,
@@ -1016,54 +1015,3 @@ def fit_spectral_residual(
             jnp.fft.irfft(coefficients[:, 1], n=n),
         ),
     )
-
-
-# The research half of this module moved to chc.research.residual in 0.19.0. Each of its names
-# is served from here with a DeprecationWarning until 0.20.0 (docs/adr/0117).
-_MOVED = frozenset(
-    {
-        "spectral_residual_certificate",
-        "SpectralResidualCurve",
-    }
-)
-
-if TYPE_CHECKING:
-    # isort: off
-    from chc.research.residual import (
-        spectral_residual_certificate as spectral_residual_certificate,
-        SpectralResidualCurve as SpectralResidualCurve,
-    )
-    # isort: on
-else:
-    __getattr__ = _moved.serve_names(__name__, "chc.research.residual", _MOVED)
-
-# The names this module keeps, then the moved ones: listed, so that a star-import reads
-# each moved name through __getattr__, and warns, and dir() shows them.
-__all__ = [
-    "ContractiveResidual",
-    "ControlAffineResidual",
-    "ConvexEnergyCertificate",
-    "DampingInjectionCertificate",
-    "GraphResidual",
-    "KANResidual",
-    "LipschitzCertificate",
-    "LipschitzResidual",
-    "MLPResidual",
-    "PortHamiltonianCertificate",
-    "PortHamiltonianEnergy",
-    "PortHamiltonianResidual",
-    "RBFKANLayer",
-    "SpectralResidual",
-    "ZeroResidual",
-    "control_affine_features",
-    "convex_energy_certificate",
-    "damping_injection_certificate",
-    "fit_spectral_residual",
-    "lipschitz_certificate",
-    "port_hamiltonian_certificate",
-    *sorted(_MOVED),
-]
-
-
-def __dir__() -> list[str]:
-    return sorted({*globals(), *__all__})
