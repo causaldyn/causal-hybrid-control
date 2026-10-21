@@ -186,7 +186,13 @@ def test_an_empty_set_a_graph_proves_enough_fits_an_identified_channel_and_its_t
     assert (proved.model_fit.identified, proved.model_fit.method) == (True, "orthogonal")
     assert proved.certificate.identification_radius is not None
     assert proved.certificate.certified_horizon is not None
-    assert proved.certificate.certified_horizon > 0
+    # the tube is evaluated and trusts a step; the plan's incentive, outside the logged range from
+    # its first step, is what ends the certified horizon there
+    assert proved.plan is not None
+    assert proved.plan.uncertainty_tube is not None
+    assert proved.plan.tolerance is not None
+    assert float(proved.plan.uncertainty_tube[1]) <= proved.plan.tolerance
+    assert proved.certificate.lever_range_step == proved.certificate.certified_horizon == 0
     # the push of demand left out is noise of SD 0.15 a step, where the incentive moves supply 0.04
     assert proved.model_fit.channel_error is not None
     assert abs(_channel(proved) - B_TRUE) < 4.0 * proved.model_fit.channel_error
@@ -1663,6 +1669,44 @@ def test_every_state_of_the_record_is_strict_json(build, reads: dict[str, object
     )
 
 
+def test_the_barrier_s_radius_model_is_in_the_certificate_its_record_and_the_report() -> None:
+    """What the barrier's radius is goes to the certificate and its record: ``relative`` on a plan
+    audited by a share of the fitted channel, None with no bound; and the report reads ``gamma*``
+    by it. A plan inside the range its levers were logged in has no cut."""
+    audited = _small()
+    assert audited.certificate.radius_model == "relative"
+    assert audited.certificate.lever_range_step is None
+    written = json.loads(json.dumps(audited.to_json(), allow_nan=False))["certificate"]
+    assert (written["radius_model"], written["lever_range_step"]) == ("relative", None)
+    assert "(a relative margin on a share of the fitted channel" in audited.report()
+    free = _small(constraints=[])
+    assert free.certificate.radius_model is None
+    assert json.loads(json.dumps(free.to_json()))["certificate"]["radius_model"] is None
+    absolute = dataclasses.replace(
+        audited, certificate=dataclasses.replace(audited.certificate, radius_model="absolute")
+    )
+    assert "(a level of the channel's sensitivity model)" in absolute.report()
+
+
+def test_an_infinite_ceiling_beside_uncertified_steps_is_explained() -> None:
+    """``gamma* = inf`` asks whether some admissible action clears each step's condition at every
+    level, a certified step whether this plan's action does and its widened path stays in the set:
+    beside fewer certified steps than the plan has, the report says the two answer different
+    questions, and beside all of them it says nothing more."""
+    audited = _small()
+    horizon = int(audited.plan.actions.shape[0])
+
+    def read(steps: int) -> str:
+        certificate = dataclasses.replace(
+            audited.certificate, gamma_star=math.inf, barrier_certified_steps=steps
+        )
+        return dataclasses.replace(audited, certificate=certificate).report()
+
+    note = "gamma* = inf says some admissible action clears each step's condition at every level"
+    assert note in read(0)
+    assert note not in read(horizon)
+
+
 def test_the_plan_s_first_order_check_is_in_the_record_with_a_status_for_each_null() -> None:
     """The plan's stationarity and constraint violation go to the record and the report beside
     their tolerances and statuses. A plan held under the constraints' barrier reads its stationarity
@@ -2981,7 +3025,9 @@ def test_aware_dates_held_as_objects_are_read_on_their_own_wall_clock() -> None:
 def test_a_plan_that_acts_outside_the_lever_s_logged_range_says_so(caplog) -> None:
     """Logged within 0.2 of zero, a lever whose push is ``2 tanh(u)`` was planned at 3 at the first
     step, its box allowing 5: the plant left the planned path by 2.1 there, in a tube of 0.32 that
-    certified three steps, and nothing said the channel was read where the log never went."""
+    certified three steps, and nothing said the channel was read where the log never went. The
+    tube's error is read at the log's actions, so the certified horizon ends at the first step
+    out of range, here the first, and the certificate, its record and the report say where."""
     rng = np.random.default_rng(0)
     rows: dict[str, list[float]] = {name: [] for name in ("unit", "time", "x", "u", "w")}
     for unit in range(40):
@@ -3012,6 +3058,16 @@ def test_a_plan_that_acts_outside_the_lever_s_logged_range_says_so(caplog) -> No
     assert record.logged == [-0.2, 0.2]  # type: ignore[attr-defined]
     assert record.steps[0] == 0  # type: ignore[attr-defined]
     assert "outside the range the panel logged, [-0.2, 0.2], first at step 0" in record.getMessage()
+    certificate = result.certificate
+    assert certificate.lever_range_step == 0
+    assert certificate.certified_horizon == result.plan.certified_horizon == 0
+    assert certificate.certificate_status == "uncertified"
+    assert certificate.trustworthy_steps == 0
+    written = json.loads(json.dumps(result.to_json(), allow_nan=False))["certificate"]
+    assert (written["lever_range_step"], written["certified_horizon"]) == (0, 0)
+    assert "from step 0 the plan sets a lever outside the range the panel logged" in (
+        result.report()
+    )
 
 
 def test_a_noisy_log_whose_units_never_step_twice_leaves_the_tube_unevaluated(caplog) -> None:
