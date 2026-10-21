@@ -37,7 +37,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from numpy.typing import NDArray
-from scipy.optimize import minimize
+from scipy import special, stats
+from scipy.optimize import OptimizeResult, minimize
 
 from chc import _units
 from chc.frames import _real_entries
@@ -222,6 +223,13 @@ class FittedEquilibrium:
     mass: float  # total drivers
     rmse: float  # root mean square of the fit's residual over the logged blocks and zones
     converged: bool  # whether the least-squares solve met its tolerance
+    # p-value of an F test of the residuals on each zone's demand and incentive, to the second
+    # order: small where the logs follow some other law than the fitted class
+    lack_of_fit: float
+    # how far the logged incentives improve the fit: Vuong's z of the blocks' squared residuals
+    # against the same fit with no incentive; below the one-sided 5% quantile the drivers' answer
+    # to an incentive is not told from none, and the planner refuses the fit
+    incentive_z: float
 
     def drivers(self, u: Array) -> Array:
         """The equilibrium driver distribution at the planning demand under incentive ``u``."""
@@ -257,6 +265,54 @@ def _fitted_drivers(attract: Array, u: Array, parameters: tuple[Array, Array, Ar
     return fixed_point(_fitted_step, (attract, u, beta, congestion, mass), start).x
 
 
+_INCENTIVE_Z = float(special.ndtri(0.95))
+"""Vuong's ``z`` below which a fit's incentive response is not told from none, one-sided 5%."""
+
+_LACK_OF_FIT = 0.01
+"""The lack-of-fit p-value below which :func:`fit_equilibrium` warns."""
+
+
+def _lack_of_fit(
+    residual: NDArray[np.float64], demand: NDArray[np.float64], u: NDArray[np.float64]
+) -> float:
+    """The p-value of an F test of ``residual`` on each zone's own intercept, demand and incentive
+    to the second order, every zone's terms together. Under the fitted class the residual is the
+    logs' noise and follows none of them; the fit's own parameters, already projected out, make the
+    test conservative. A residual of exactly zero fits, at 1."""
+    blocks, zones = residual.shape
+    explained = kept = 0.0
+    terms = 0
+    for zone in range(zones):
+        columns = [
+            (column - column.mean()) / (column.std() or 1.0)
+            for column in (demand[:, zone], u[:, zone])
+        ]
+        d, v = columns
+        design = np.stack([np.ones(blocks), d, v, d * d, v * v, d * v], axis=1)
+        coefficients, _, rank, _ = np.linalg.lstsq(design, residual[:, zone], rcond=None)
+        left = residual[:, zone] - design @ coefficients
+        explained += float(residual[:, zone] @ residual[:, zone] - left @ left)
+        kept += float(left @ left)
+        terms += int(rank)
+    total = blocks * zones
+    if explained + kept == 0.0:
+        return 1.0
+    if kept == 0.0:
+        return 0.0
+    statistic = (explained / terms) / (kept / (total - terms))
+    return float(stats.f.sf(statistic, terms, total - terms))
+
+
+def _incentive_z(with_u: NDArray[np.float64], without_u: NDArray[np.float64]) -> float:
+    """Vuong's ``z`` of the blocks' summed squared residuals without the incentive less with it:
+    positive where the incentive explains the completions."""
+    gain = np.sum(without_u**2, axis=1) - np.sum(with_u**2, axis=1)
+    spread = float(np.std(gain, ddof=1))
+    if spread == 0.0:
+        return 0.0 if float(np.mean(gain)) == 0.0 else math.copysign(math.inf, float(np.mean(gain)))
+    return math.sqrt(gain.size) * float(np.mean(gain)) / spread
+
+
 def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEquilibrium:
     """Estimate the congestion equilibrium the logs were generated under, by least squares.
 
@@ -269,48 +325,120 @@ def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEqu
     the largest block's completions, since a block completes no more rides than it has drivers.
 
     The demand is logged and enters the model, so the logging policy's chase of it does not
-    confound the fit. What is assumed and not tested: the model class, which is the simulator's
-    (a market whose drivers follow another law is fitted by the nearest logit equilibrium), and an
-    attractiveness that moves with the demand. The parameters' sampling error is not carried into
-    the plan; :attr:`FittedEquilibrium.rmse` against the logs' noise says how well the class fits.
+    confound the fit. What is assumed: the model class, which is the simulator's, and an
+    attractiveness that moves with the demand. Neither is proved, but a market that breaks them
+    leaves its mark on the residuals, and :attr:`FittedEquilibrium.lack_of_fit` reads it: an F test
+    of each zone's residual on its own demand and incentive to the second order. Below 0.01 the
+    fit warns. On 20 logs of 400 blocks from five markets whose attractiveness stays put while the
+    demand moves, the fit converged on every one with the sensitivity 0.56 too high on average
+    (1.2 at most), its residual 2.4 to 3 times the noise's, and nothing said; the test read below
+    1e-226 on each, and below 1e-15 on 20 logs of 50 blocks. On 50 logs of the class itself it
+    read under 0.01 once (0.006) at 400 blocks, and never at 50.
+
+    The fit is then fitted again with every incentive at zero, and
+    :attr:`FittedEquilibrium.incentive_z` is Vuong's ``z`` of what the incentives gain, block by
+    block: a fit whose drivers do not tell an incentive from none plans nothing, and
+    :func:`pessimistic_equilibrium_allocation` refuses it. On the same markets' logs with the
+    incentives shuffled across the blocks, the planner had spent the whole budget through the fit,
+    and on some markets lost completions by it; its ``z`` read -12.5 to -1.1 on 400 blocks and at
+    most 1.26 on 50, under the one-sided 5% quantile 1.645 on all 40, where the logs themselves
+    read at least 11.7 and 3.3, and the markets outside the class at least 14.1 and 3.8.
+
+    The fit reads its ``n_zones + 3`` parameters from at least as many blocks: on five markets of
+    12 zones, 3 blocks read the sensitivity 0.54 off at the median and 3.2 at worst, and 15 blocks
+    0.056 and 0.49. The parameters' sampling error is not carried into the plan. A zone that draws
+    almost no drivers in any logged block tells little of its attractiveness: the default market's
+    zone 8 averages 0.0008 drivers on a demand of 0.50, and its attractiveness read 0.95 for 0.63
+    on 400 blocks and 0.96 on 6400, where moving it over that range moves the mean squared
+    residual by 1e-10 of its 4e-4.
 
     Args:
         logs: :meth:`SharedStateMarket.generate_logs`'s, or any with ``u``, ``demand`` and ``y``
-            of shape ``(n_blocks, n_zones)``.
+            of shape ``(n_blocks, n_zones)``, ``n_blocks`` at least the ``n_zones + 3`` parameters
+            and the demand positive.
         max_iter: L-BFGS iterations at most.
+
+    Raises:
+        ValueError: on columns that are not finite matrices of one shape, fewer blocks than
+            parameters, or a demand that is not positive.
+
+    Warns:
+        UserWarning: where :attr:`FittedEquilibrium.lack_of_fit` is below 0.01.
     """
     read = _real_entries(logs, ("u", "demand", "y"), "logs")
     u, demand, y = (jnp.asarray(read[name]) for name in ("u", "demand", "y"))
+    for name, column in (("u", u), ("demand", demand), ("y", y)):
+        if column.ndim != 2 or column.shape != u.shape:
+            raise ValueError(
+                f"logs[{name!r}] has shape {column.shape}; the logs are (n_blocks, n_zones) and"
+                f" logs['u'] is {u.shape}"
+            )
+        if not bool(jnp.all(jnp.isfinite(column))):
+            raise ValueError(f"logs[{name!r}] is not finite")
+    n_blocks, n_zones = u.shape
+    if n_blocks < n_zones + 3:
+        raise ValueError(
+            f"{n_blocks} blocks for {n_zones} zones: the fit has n_zones + 3 = {n_zones + 3}"
+            " parameters and reads them from at least as many blocks"
+        )
+    if not bool(jnp.all(demand > 0.0)):
+        raise ValueError(
+            f"logs['demand'] reaches {float(jnp.min(demand))}; a zone's demand is positive"
+        )
     dtype = jnp.result_type(u, demand, y, float)
     u, demand, y = (column.astype(dtype) for column in (u, demand, y))
-    n_zones = u.shape[1]
 
     def unpack(p: Array) -> tuple[Array, tuple[Array, Array, Array]]:
         return p[:n_zones], (jnp.exp(p[n_zones]), jnp.exp(p[n_zones + 1]), jnp.exp(p[n_zones + 2]))
 
-    def loss(p: Array) -> Array:
+    def residual(p: Array, incentive: Array) -> Array:
         attract, parameters = unpack(p)
-        drivers = jax.vmap(lambda d, v: _fitted_drivers(attract * d, v, parameters))(demand, u)
-        return jnp.mean((y - jnp.minimum(demand, drivers)) ** 2)
+        drivers = jax.vmap(lambda d, v: _fitted_drivers(attract * d, v, parameters))(
+            demand, incentive
+        )
+        return y - jnp.minimum(demand, drivers)
 
-    value_and_grad = jax.jit(jax.value_and_grad(loss))
-
-    def objective(p: NDArray[np.float64]) -> tuple[float, NDArray[np.float64]]:
-        value, grad = value_and_grad(jnp.asarray(p, dtype=dtype))
-        return float(value), np.asarray(grad, dtype=np.float64)
-
+    value_and_grad = jax.jit(
+        jax.value_and_grad(lambda p, incentive: jnp.mean(residual(p, incentive) ** 2))
+    )
     mass = 1.2 * float(jnp.max(jnp.sum(y, axis=1)))
     start = np.concatenate([np.ones(n_zones), [0.0, 0.0, math.log(mass)]])
-    result = minimize(objective, start, jac=True, method="L-BFGS-B", options={"maxiter": max_iter})
+
+    def solve(incentive: Array) -> tuple[OptimizeResult, NDArray[np.float64]]:
+        def objective(p: NDArray[np.float64]) -> tuple[float, NDArray[np.float64]]:
+            value, grad = value_and_grad(jnp.asarray(p, dtype=dtype), incentive)
+            return float(value), np.asarray(grad, dtype=np.float64)
+
+        found = minimize(
+            objective, start, jac=True, method="L-BFGS-B", options={"maxiter": max_iter}
+        )
+        left = np.asarray(residual(jnp.asarray(found.x, dtype=dtype), incentive), np.float64)
+        return found, left
+
+    result, left = solve(u)
+    _, idle = solve(jnp.zeros_like(u))
+    lack_of_fit = _lack_of_fit(left, np.asarray(demand, np.float64), np.asarray(u, np.float64))
     attract, (beta, congestion, total) = unpack(jnp.asarray(result.x, dtype=dtype))
+    rmse = math.sqrt(float(result.fun))
+    if lack_of_fit < _LACK_OF_FIT:
+        warnings.warn(
+            f"fit_equilibrium: the residuals still follow the zones' demand and incentive (F test"
+            f" p = {lack_of_fit:.2g}, rmse {rmse:.3g}): the logs do not follow a logit congestion"
+            " equilibrium whose attractiveness moves with the demand, and a plan through this fit"
+            " reads the nearest one",
+            UserWarning,
+            stacklevel=2,
+        )
     return FittedEquilibrium(
         demand=jnp.mean(demand, axis=0),
         attract=attract,
         beta=float(beta),
         congestion=float(congestion),
         mass=float(total),
-        rmse=math.sqrt(float(result.fun)),
+        rmse=rmse,
         converged=bool(result.success),
+        lack_of_fit=lack_of_fit,
+        incentive_z=_incentive_z(left, idle),
     )
 
 
@@ -333,7 +461,31 @@ def pessimistic_equilibrium_allocation(
     will require ``equilibrium``. ``market`` gives the budget and the zones either way.
     ``response`` enters only through the tilt, so through the simulator's equilibrium the plan is
     close to the oracle whatever the response says.
+
+    Raises:
+        ValueError: on a response or an equilibrium whose zones are not ``market``'s, or an
+            equilibrium whose drivers do not tell an incentive from none
+            (:attr:`FittedEquilibrium.incentive_z`): every plan through it reads the same.
     """
+    for name, part in (("marginal", response.marginal), ("se", response.se)):
+        if jnp.shape(part) != (market.n_zones,):
+            raise ValueError(
+                f"response.{name} has shape {jnp.shape(part)}; the market has {market.n_zones}"
+                " zones"
+            )
+    if equilibrium is not None:
+        if equilibrium.demand.shape != (market.n_zones,):
+            raise ValueError(
+                f"the equilibrium has {equilibrium.demand.shape[0]} zones and the market"
+                f" {market.n_zones}"
+            )
+        if not equilibrium.incentive_z >= _INCENTIVE_Z:
+            raise ValueError(
+                f"the fitted equilibrium's drivers do not tell an incentive from none (z ="
+                f" {equilibrium.incentive_z:.2f}, under {_INCENTIVE_Z:.3f}): the logged"
+                " incentives explain no more of the completions than none, so no plan through it"
+                " is better than another"
+            )
     # The worst response within radius SEs that is not negative, less the estimate projected onto
     # the same prior: -min(max(m, 0), radius * se), never a bonus (validation/marketplace_tilt.mac).
     # Read against the raw estimate, a negative one earned its zone a bonus of |m| per unit.

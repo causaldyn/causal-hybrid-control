@@ -100,23 +100,91 @@ def test_the_fitted_equilibrium_recovers_the_market_s_parameters(env: dict) -> N
     assert fitted.rmse == pytest.approx(0.02, rel=0.1)
 
 
-def test_a_fit_on_logs_that_carry_no_response_plans_nothing_of_value(env: dict) -> None:
+def test_a_fit_on_logs_that_carry_no_response_is_refused_by_the_planner(env: dict) -> None:
     """The fitted equilibrium is the logs': with each zone's incentives shuffled across the blocks
-    they no longer move the completions they are logged beside, the fit reads drivers that do not
-    follow an incentive, and the plan through it wins none of the oracle's lift over doing
-    nothing, where the logs' own wins most."""
+    they no longer move the completions they are logged beside, and the fit reads drivers that do
+    not follow an incentive. Planned through, it spent the budget anyway, and the plan won none of
+    the oracle's lift over doing nothing; on other markets it lost completions. Fitted again with
+    no incentive at all, the logs read as well or better, so the planner refuses the fit, where the
+    logs' own plans and wins most of the lift."""
     market, logs, base, oracle = env["market"], env["logs"], env["base"], env["oracle"]
     shared = calibrate_shared_state(logs)
     order = np.random.default_rng(0).permutation(logs["u"].shape[0])
-    scrambled = fit_equilibrium(logs | {"u": logs["u"][order]})
+    with pytest.warns(UserWarning, match="residuals still follow"):
+        scrambled = fit_equilibrium(logs | {"u": logs["u"][order]})
     assert scrambled.beta < 0.1
-    lift = oracle - base
-    plans = {
-        name: pessimistic_equilibrium_allocation(market, shared, equilibrium=equilibrium)
-        for name, equilibrium in (("logs", env["fitted"]), ("scrambled", scrambled))
-    }
-    assert market.value(plans["logs"]) - base > 0.8 * lift
-    assert market.value(plans["scrambled"]) - base < 0.1 * lift
+    assert scrambled.incentive_z < 1.645 < env["fitted"].incentive_z
+    with pytest.raises(ValueError, match="do not tell an incentive from none"):
+        pessimistic_equilibrium_allocation(market, shared, equilibrium=scrambled)
+    plan = pessimistic_equilibrium_allocation(market, shared, equilibrium=env["fitted"])
+    assert market.value(plan) - base > 0.8 * (oracle - base)
+
+
+def _fixed_attractiveness_logs(market: SharedStateMarket, n_blocks: int, key: jax.Array) -> dict:
+    """Logs of a market outside the fitted class: each block's demand moves with its season, and
+    the zones' attractiveness stays at its base."""
+    base_demand, base_attract = market._base()
+
+    def block(carry: None, k: jax.Array) -> tuple[None, dict]:
+        k_season, k_scale, k_noise = jax.random.split(k, 3)
+        demand = base_demand * (0.5 + jax.random.uniform(k_season, (market.n_zones,)))
+        scale = 0.4 + 1.2 * jax.random.uniform(k_scale)
+        u = scale * market.budget * jax.nn.softmax(market.confounding * demand)
+        x = market._equilibrium(base_attract, u)
+        y = jnp.minimum(demand, x) + 0.02 * jax.random.normal(k_noise, (market.n_zones,))
+        return None, {
+            "u": u,
+            "demand": demand,
+            "aggregate": jnp.full(market.n_zones, jnp.sum(u)),
+            "y": y,
+        }
+
+    return jax.lax.scan(block, None, jax.random.split(key, n_blocks))[1]
+
+
+def test_a_market_outside_the_fitted_class_is_warned_of(env: dict) -> None:
+    """Attractiveness that stays put while the demand moves: the fit converged, with its
+    sensitivity half a unit off and nothing said. Its residuals follow each zone's demand and
+    incentive, and the F test on them reads it, where on the class's own logs it does not."""
+    market = env["market"]
+    with pytest.warns(UserWarning, match=r"residuals still follow the zones' demand.*p = "):
+        fitted = fit_equilibrium(_fixed_attractiveness_logs(market, 400, jax.random.key(1)))
+    assert fitted.converged
+    assert fitted.lack_of_fit < 1e-10
+    assert env["fitted"].lack_of_fit > 0.01
+    assert fitted.incentive_z > 1.645  # the incentive still moves the drivers
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        (lambda logs: logs | {"demand": logs["demand"][:, :11]}, r"logs\['demand'\] has shape"),
+        (lambda logs: logs | {"u": logs["u"][:, 0]}, r"logs\['u'\] has shape \(400,\)"),
+        (lambda logs: logs | {"y": logs["y"].at[3, 2].set(jnp.nan)}, r"logs\['y'\] is not finite"),
+        (lambda logs: logs | {"demand": logs["demand"].at[5, 1].set(-0.3)}, "demand is positive"),
+        (lambda logs: {name: column[:14] for name, column in logs.items()}, "14 blocks for 12"),
+    ],
+    ids=["zones", "vector", "nan", "negative demand", "blocks"],
+)
+def test_logs_outside_the_fit_s_contract_are_refused(env: dict, edit, message: str) -> None:
+    """11 zones of demand beside 12 of incentive failed in JAX's broadcasting, a vector of
+    incentives on an index, and a negative demand, or 3 blocks, fitted and "converged" (the
+    sensitivity 3.57 for 2.5)."""
+    with pytest.raises(ValueError, match=message):
+        fit_equilibrium(edit(env["logs"]))
+
+
+def test_the_planner_refuses_zones_that_are_not_the_market_s(env: dict) -> None:
+    """A 6-zone equilibrium on a 12-zone market failed in JAX's broadcasting."""
+    market, logs = env["market"], env["logs"]
+    shared = calibrate_shared_state(logs)
+    six = SharedStateMarket(n_zones=6, seed=0)
+    small = fit_equilibrium(six.generate_logs(60, jax.random.key(4)))
+    with pytest.raises(ValueError, match="the equilibrium has 6 zones and the market 12"):
+        pessimistic_equilibrium_allocation(market, shared, equilibrium=small)
+    short = ExposureResponse(marginal=shared.marginal[:6], se=shared.se[:6])
+    with pytest.raises(ValueError, match=r"response.marginal has shape \(6,\)"):
+        pessimistic_equilibrium_allocation(market, short, equilibrium=env["fitted"])
 
 
 def test_naive_over_predicts_while_chc_delivers_more(env: dict) -> None:
