@@ -52,11 +52,18 @@ still change).
   and its controller no longer move with the state's offset (one verdict at levels 0, 1, 5 and
   273.15, which read refused, accepted, refused, refused), and `koopman_controller` refuses a law
   whose closed loop leaves the target. Gains, `channel` and `residuals` gain a row or column.
-- **A held barrier's rounds share one budget of `steps`** (a held plan takes at most twice
-  `steps`), each round gets half of what is left, and a round its budget cut no longer grows the
-  penalty. Each of up to 31 rounds had its own `steps`, and a cut round grew the penalty tenfold:
-  on an oscillator at `steps=10` the plan cost 134 % above the optimum; over steps 3–100 the worst
-  is now 14.9 %. A plan that does not converge is the cheapest iterate that meets the audit.
+- **A held barrier's rounds share one budget of `steps` for each set of held next states** (a
+  held plan takes at most twice `steps`, plus `steps` each time a next state joins), each round
+  gets half of what is left, and a round its budget cut no longer grows the penalty. Each of up to
+  31 rounds had its own `steps`, and a cut round grew the penalty tenfold: on an oscillator at
+  `steps=10` the plan cost 134 % above the optimum; over steps 3–100 the worst is now 14.9 %.
+- **A held plan that does not converge is the candidate the audit certifies over the most leading
+  steps**: the rounds' iterates and the projection onto the longest leading run of steps a
+  projection holds. It was the rounds' last iterate, which on a confounded integrator under the
+  deviation tube met the condition at no step; now 7 and 8 of 12.
+- **Held solves under a non-zero radius take longer**: the deviation tube ties each next state to
+  every earlier action. A two-lever oscillator needs about 40,000 descent steps to converge, and at
+  the default 10,000 ends `max_iterations`, every step certified.
 - **`prescribe` ends the certified horizon at the first step that sets a lever outside its logged
   range**, recorded as `lever_range_step`; it had only warned.
 - **A panel's undeclared numbered periods off every uniform grid are refused**, naming the row:
@@ -92,7 +99,8 @@ still change).
   logs where the polynomial holds (5.7 to 49.5 on exact logs); now on none of them, and on 40 of
   40 logs of a curved plant.
 - **A held plan read `converged` where its stationarity was beyond its tolerance** (3.9e-5 against
-  1.4e-6 on an epidemic); `converged` now requires it within.
+  1.4e-6 on an epidemic); `converged` now requires it within, and is read on the plan even where
+  the budget cut the last round's descent (a floor read `max_iterations` at 5e-9 against 1.4e-6).
 - **A model not affine in the action, or a path that overflows, is refused before a held solve**,
   not after it, and without the divide warning.
 - **`finite_horizon_dlqr` returned a saddle's gains for a negative action weight**; it refuses
