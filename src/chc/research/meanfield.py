@@ -38,6 +38,21 @@ def _meanfield_grad(planner: MeanFieldControl, u_seq: Array) -> Array:
     return jax.grad(lambda plan: planner.rollout_cost(plan))(u_seq)
 
 
+@partial(jax.jit, static_argnums=(0, 3))
+def _descended(planner: MeanFieldControl, u_seq: Array, step: float, steps: int) -> Array:
+    """``steps`` projected-gradient steps of fixed size ``step`` on the budget's simplices."""
+    project = jax.vmap(lambda row: project_simplex(row, planner.budget))
+
+    def body(_: int, plan: Array) -> Array:
+        return project(plan - step * jax.grad(planner.rollout_cost)(plan))
+
+    return jax.lax.fori_loop(0, steps, body, u_seq)
+
+
+_DESCENT_STEPS = (1.0, 0.1, 0.01)
+_DESCENT_LENGTH = 2000
+
+
 @dataclass(frozen=True)
 class MeanFieldControl:
     """Agents migrate gradually toward incentivised zones; the platform steers them to a target."""
@@ -143,11 +158,14 @@ class MeanFieldControl:
 
         The planner warm-starts from the myopic open-loop plan, so it refines (never worsens) it.
         The oracle is the least cost among the myopic and planned plans, the planner run three
-        times as long, and SLSQP's refinements of the myopic and the long plan: the best of local
-        searches, not a proved optimum, and never above a plan it is compared with. The planner run
-        longer alone stalls: at the defaults, in float64, it costs 67.94 where SLSQP from the
-        myopic plan reaches 45.69, so against it alone the planned plan's regret read 0.57, not
-        22.8.
+        times as long, SLSQP's refinements of the myopic and the long plan, and plain projected
+        gradient from the myopic, planned and long plans at the fixed steps 1, 0.1 and 0.01,
+        2000 steps each, with SLSQP's refinement of the best: the best of local searches, not a
+        proved optimum, and never above a plan it is compared with. The cost is not convex, and
+        each search ends in the basin its start and step lead to. The planner run longer alone
+        stalls: at the defaults, in float64, it costs 67.94; SLSQP from the myopic plan reaches
+        45.69, and projected gradient from it at the step 0.1 reaches 42.81, so against SLSQP
+        alone every regret read 2.88 low.
         """
         myopic_seq = self._myopic_plan()
         planned_seq = self.plan(steps=steps, init=myopic_seq)
@@ -155,7 +173,19 @@ class MeanFieldControl:
         no_control = float(self.rollout_cost(jnp.zeros((self.horizon, self.n_zones))))
         myopic = float(self.rollout_cost(myopic_seq))
         planned = float(self.rollout_cost(planned_seq))
-        searched = (long_seq, self._polished(myopic_seq), self._polished(long_seq))
+        descents = [
+            _descended(self, start, step, _DESCENT_LENGTH)
+            for start in (myopic_seq, planned_seq, long_seq)
+            for step in _DESCENT_STEPS
+        ]
+        descended = min(descents, key=lambda u: float(_meanfield_cost(self, u)))
+        searched = (
+            long_seq,
+            self._polished(myopic_seq),
+            self._polished(long_seq),
+            descended,
+            self._polished(descended),
+        )
         oracle = min([myopic, planned, *(float(self.rollout_cost(u)) for u in searched)])
         return {
             "no-control": no_control - oracle,

@@ -3,8 +3,10 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from scipy.optimize import minimize
 
+from chc.games import project_simplex
 from chc.research.meanfield import MeanFieldControl
 
 
@@ -36,4 +38,21 @@ def test_the_oracle_is_no_worse_than_slsqp_from_the_myopic_plan() -> None:
     assert np.max(np.abs(budget_rows @ found.x - model.budget)) < 1e-6
     oracle = float(model.rollout_cost(myopic)) - regrets["myopic"]
     assert oracle <= found.fun + 1e-3
+    assert min(regrets.values()) >= 0.0
+
+
+def test_the_oracle_is_no_worse_than_projected_gradient_from_the_myopic_plan() -> None:
+    """At the defaults SLSQP from the myopic plan stops at 45.69, and plain projected gradient from
+    the same plan at the step 0.1 reaches 42.81: against the first every regret read 2.88 low."""
+    model = MeanFieldControl()
+    regrets = model.regrets()
+    myopic = model._myopic_plan()
+    oracle = float(model.rollout_cost(myopic)) - regrets["myopic"]
+    grad = jax.jit(jax.grad(model.rollout_cost))
+    project = jax.jit(jax.vmap(lambda row: project_simplex(row, model.budget)))
+    plan = myopic
+    for _ in range(300):  # 42.81 to 1e-9 from the 100th step
+        plan = project(plan - 0.1 * grad(plan))
+    assert float(model.rollout_cost(plan)) == pytest.approx(42.81, abs=0.01)
+    assert oracle <= float(model.rollout_cost(plan)) + 1e-6
     assert min(regrets.values()) >= 0.0
