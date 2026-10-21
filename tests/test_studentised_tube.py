@@ -460,9 +460,12 @@ def test_a_fit_that_keeps_no_covariances_reads_its_root_means_at_every_state() -
     no field error."""
     fit = _fit(0.2, 0.1, 60)
     states = np.array([[0.0], [3.0], [-7.0]])
-    np.testing.assert_array_equal(
+    # np.hypot and math.hypot may differ in the last place across platforms' libm
+    np.testing.assert_allclose(
         _field_errors(fit, np.array([2.0]), states, np.zeros((3, 0))),
         np.full(3, math.hypot(0.4, 0.1)),
+        rtol=1e-15,
+        atol=0.0,
     )
     no_channel = dataclasses.replace(fit, _lever_errors=None)
     np.testing.assert_array_equal(

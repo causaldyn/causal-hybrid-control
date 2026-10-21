@@ -733,6 +733,7 @@ def _bump(times: np.ndarray, horizon: float) -> tuple[np.ndarray, np.ndarray]:
     size=st.floats(1e-3, 3.0),
 )
 @example(entries=(1.5, 1.0, 0.0, 0.0), row=(-0.234375, 0.75), size=0.00390625)
+@example(entries=(1.5, -0.5625, 1.5, 1.0), row=(1.0, 1.0), size=1.0)
 def test_adjoint_weighted_error_is_exact_for_an_affine_field(
     entries: tuple[float, float, float, float], row: tuple[float, float], size: float
 ) -> None:
@@ -760,8 +761,21 @@ def test_adjoint_weighted_error_is_exact_for_an_affine_field(
     assert estimate(size) / size == pytest.approx(
         estimate(small) / small, rel=1e-9 + 1e-13 / small, abs=0.0
     )
-    # and the quadrature floor of a 401-point trapezoid is O(h^2) ~ 1e-5 relative
-    assert estimate(size) == pytest.approx(size * shape[0, 1], rel=1e-4, abs=0.0)
+    # and the 401-point trapezoid's error is O(h^2) with a constant that grows with the field's
+    # entries (1.3e-4 relative at entries (1.5, -0.5625, 1.5, 1.0)): Richardson extrapolation
+    # against a 1601-point grid removes the h^2 term and leaves O(h^4)
+    fine_times, fine_path, _ = _affine_problem(matrix, terminal_row, 1.0, horizon, 1601)
+    fine_shape, fine_rate = _bump(fine_times, horizon)
+    fine = adjoint_weighted_error(
+        lambda y: operator @ y,
+        fine_times,
+        fine_path + size * fine_shape,
+        fine_path @ matrix.T + size * fine_rate,
+        terminal_row,
+    )
+    assert (16.0 * fine - estimate(size)) / 15.0 == pytest.approx(
+        size * shape[0, 1], rel=1e-7, abs=0.0
+    )
 
 
 def test_adjoint_weighted_error_remainder_is_second_order() -> None:
