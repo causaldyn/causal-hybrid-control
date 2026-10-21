@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import replace
 from typing import get_args
 
@@ -294,6 +295,18 @@ def test_adaptive_exploration_lower_bound_holds_for_a_single_burst(m0: float, et
         if best > m0:  # the burst then comes within its first round's floor of the bound
             assert regret - bound <= k_vt / m0 + 1e-9
     assert (curve.adaptive_regret >= curve.lower_bound).all()
+
+
+def test_adaptive_exploration_has_no_rate_where_no_schedule_has_regret() -> None:
+    """At rr = b^2 the decision does not move with b: every schedule's regret is zero, and the
+    log-log slopes are nan, without a divide warning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        curve = adaptive_exploration_certificate(b=1.0, rr=1.0, horizons=(10, 100, 1000))
+    assert not np.any(curve.adaptive_regret)
+    assert not np.any(curve.greedy_regret)
+    assert math.isnan(curve.adaptive_slope)
+    assert math.isnan(curve.greedy_slope)
 
 
 def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:

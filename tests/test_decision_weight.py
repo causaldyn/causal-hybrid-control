@@ -378,6 +378,7 @@ def test_a_change_that_is_not_the_channel_s_shape_is_refused(change: np.ndarray)
         weight.regret(change)
 
 
+@pytest.mark.filterwarnings("error::RuntimeWarning")
 @pytest.mark.parametrize(("a", "horizon"), [(60.0, 30), (200.0, 20)])
 def test_a_plan_whose_rollout_leaves_the_float_range_is_not_weighed(a: float, horizon: int) -> None:
     """At ``a = 60`` over 30 steps the rollout overflows, and the cost's derivatives with it: LAPACK

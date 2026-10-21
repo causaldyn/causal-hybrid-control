@@ -173,8 +173,10 @@ class AdaptiveExplorationCurve:
     # 2*sqrt(A*K*T/eta) - A*m0/eta, K = C*sigma^2: the proved sequence lower bound, which the
     # information m0 held before the first round lowers
     lower_bound: Vector
-    adaptive_slope: float  # log-log slope of adaptive regret vs T (~0.5)
-    greedy_slope: float  # log-log slope of greedy regret vs T (~1)
+    # log-log slopes of adaptive (~0.5) and greedy (~1) regret vs T; nan at rr = b^2, where the
+    # decision does not move with b and every schedule's regret is zero
+    adaptive_slope: float
+    greedy_slope: float
     schedule: Vector  # the tapering exploration schedule v_t (decreasing)
     adaptive_over_bound: float  # adaptive / van-Trees bound at the largest T (>= 1, ~ constant)
 
@@ -243,8 +245,13 @@ def adaptive_exploration_certificate(
     # 2*sqrt(A*K*T/eta) - A*m0/eta (Rocq reduced_objective_lower_bound): without the offset a
     # single burst of exploration in round 1 beat it, by up to A*m0/eta
     lb = 2.0 * np.sqrt(a_curv * k_vt * hs / eta) - a_curv * m0 / eta
-    adaptive_slope = float(np.polyfit(np.log(hs), np.log(adaptive), 1)[0])
-    greedy_slope = float(np.polyfit(np.log(hs), np.log(greedy), 1)[0])
+
+    def slope(regret: np.ndarray) -> float:
+        if not np.all(regret > 0.0):
+            return float("nan")
+        return float(np.polyfit(np.log(hs), np.log(regret), 1)[0])
+
+    adaptive_slope, greedy_slope = slope(adaptive), slope(greedy)
     sched = kappa / np.sqrt(np.arange(1, schedule_horizon + 1, dtype=np.float64))
     return AdaptiveExplorationCurve(
         hs,

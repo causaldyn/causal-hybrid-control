@@ -648,7 +648,7 @@ def _regret_curvature(
         np.zeros((size, size)) if weight is None else (weight + weight.T) / 2,
         int(basis.shape[1]),
         weakly_active,
-        float(np.linalg.norm(basis.T @ gradient)) / max(1.0, float(np.linalg.norm(pull))),
+        _length(basis.T @ gradient) / max(1.0, _length(pull)),
     )
 
 
@@ -952,6 +952,12 @@ def _guess(lo: Array, hi: Array) -> Array:
     return jnp.clip(jnp.zeros_like(lo), lo, hi)
 
 
+def _length(vector: NDArray[np.float64]) -> float:
+    """The Euclidean length, scaled as it is summed: ``np.linalg.norm`` squares each entry first,
+    so a gradient past ``1e154`` overflowed to inf and warned where its length is a number."""
+    return math.hypot(*np.ravel(vector).tolist())
+
+
 def _kkt(
     gradient: NDArray[np.float64],
     actions: NDArray[np.float64],
@@ -983,8 +989,8 @@ def _kkt(
     # A row at its upper bound pushes back along +a, at its lower along -a; an equality row, either.
     columns = (matrix[active] * np.where(down[active] & ~up[active], -1.0, 1.0)[:, None]).T
     local, pull = columns[free], gradient[free]
-    scale = max(1.0, float(np.linalg.norm(pull)))
-    size = max(float(np.linalg.norm(pull)), float(np.linalg.norm(reference)))
+    scale = max(1.0, _length(pull))
+    size = max(_length(pull), _length(reference))
     multipliers, singular = np.zeros(active.size), np.zeros(0)
     if active.size and local.shape[0]:
         multipliers = np.linalg.lstsq(local, -pull, rcond=None)[0]
@@ -997,7 +1003,7 @@ def _kkt(
         columns=columns,
         multipliers=multipliers,
         singular=singular,
-        residual=float(np.linalg.norm(pull + local @ multipliers)) / scale,
+        residual=_length(pull + local @ multipliers) / scale,
         scale=scale,
         slack=1e3 * tolerance * size,
         remainder=gradient + columns @ multipliers,
@@ -1073,7 +1079,7 @@ def _diagnostics(problem: _PlanProblem, actions: Array) -> tuple[float | None, f
         fit = lsq_linear(pushes, -gradient, bounds=(least, np.inf), method="bvls")
         miss = gradient + pushes @ fit.x
     return (
-        float(np.linalg.norm(miss)) / kkt.scale,
+        _length(miss) / kkt.scale,
         stationarity_tolerance,
         violation,
         violation_tolerance,
