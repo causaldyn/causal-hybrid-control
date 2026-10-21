@@ -33,7 +33,8 @@ one.
 ## The one result
 
 On a confounded log, fitting the action's effect without the logged confounder flips its sign (true
-`+1.0`, naive `-0.2`). Control the true system with each estimate:
+`+1.0`, naive `-0.2`). Control the true system with each estimate (JAX's default float32; under
+`JAX_ENABLE_X64=1` the costs read 4.61 and 13736.84, the regret 13732.23):
 
 ```text
 controller            cost      regret    viol     ood
@@ -156,11 +157,13 @@ Every module, with what it does and what was measured:
 
 Symbolic results are derived in Maxima and cross-checked in PARI/GP and Octave
 ([`validation/`](https://github.com/causaldyn/causal-hybrid-control/tree/main/validation)); CI
-checks that each derivation runs to completion, not what it prints. The algebraic cores of the
-control and guarantee invariants are proved in Rocq
+runs each Maxima derivation and fails where one stops on an error or prints a check as failed
+(`(FAIL)`, `(INVALID)`); a value it prints with no such check is not compared. The algebraic
+cores of the control and guarantee invariants are proved in Rocq
 ([`proofs/`](https://github.com/causaldyn/causal-hybrid-control/tree/main/proofs)), with MathComp
 for the matrix statements: identities and inequalities over the reals, often a scalar or a small
-case of the statement the code uses. No test links a proof to the code. A published statistical
+case of the statement the code uses. Each docstring that cites a proof or a derivation is tied to
+property tests of its float code, one of which must call the cited object. A published statistical
 result a proof relies on enters it as a named, cited premise, which states only what the algebra
 takes from it, so the statistical content stays with the citation. Each file's header says what it
 proves and what it assumes ([theory](https://causaldyn.github.io/causal-hybrid-control/theory/)).

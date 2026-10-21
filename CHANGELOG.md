@@ -128,12 +128,12 @@ still change).
   the noise the tube reads is smaller than the plant's. Under an AR(0.9) disturbance of standard
   deviation 2, the tube held 0.918 at step 1. The report's persistence line says so too.
   `trustworthy_steps` does not change.
-- **Each docstring that cites a proof or a derivation is tied to a test of its code.** The 123
+- **Each docstring that cites a proof or a derivation is tied to a test of its code.** The 126
   objects in `src/chc` that cite a file under `proofs/` or `validation/` each have property tests
   of the cited statement on the float code (`tests/test_formal_*.py`), and
-  `tests/test_formal_links.py` fails on a citation without one. Of 22 statements the code did not
-  satisfy, 15 are fixed below and 7 docstrings are narrowed to what their lemmas prove; no
-  expected failure is left. The theory page lists them.
+  `tests/test_formal_links.py` fails on a citation without one. Of 22 expected failures, on 18
+  statements the code did not satisfy, 15 are fixed below and 7 are docstrings narrowed to what
+  their lemmas prove; none is left. The theory page lists them.
 - **`CappedExplorationPolicy.last_round`**: the amount the last exploring round spends, below the
   cap where the optimum fills it partly.
 
@@ -173,8 +173,9 @@ still change).
   `spine`, `surrogate`, `symbolic` and `transport`. The research halves of three more move beside
   them: 103 certificates of `chc.regret`, three of `chc.games` and `spectral_residual_certificate`
   of `chc.residual`. `chc.regret` keeps the LQ solve, the certainty-equivalence gap, the exploration
-  certificates and policy and the minimax-regret actions, and falls from 7,279 lines to 1,522, so
-  `import chc`, which `chc.lqr` and `prescribe` need, no longer loads the other 6,020; it loads
+  certificates and policy and the minimax-regret actions, and falls from 7,279 lines (6,949 in
+  0.18.0, before this release's fixes) to 1,522, so `import chc`, which `chc.lqr` and `prescribe`
+  need, no longer loads the 6,020 of `chc.research.regret`; it loads
   nothing from `chc.research`. Their API pages move under `api/research/`, in a research tier.
 - **The top level's 166 deprecated names that moved are served from `chc.research`**, and their
   warning names the new path: `chc.van_trees_certificate leaves the top level in 1.0: import it

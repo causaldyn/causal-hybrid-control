@@ -90,7 +90,7 @@ hypotheses' region. It is not a proof about the code.
 
 Where the code does not satisfy the statement, the test is the counterexample, marked as an
 expected failure (`xfail(strict=True)`) with its numbers, until the code or the docstring is
-corrected. No statement is in that state now. Eleven statements were, with thirteen expected
+corrected. No statement is in that state now. Eighteen statements were, with twenty-two expected
 failures, when the tests were first written (names relative to `chc`):
 
 - Fixed in the code: `regret._self_consistent_mass` iterated its fixed-point map, which can
@@ -101,6 +101,15 @@ failures, when the tests were first written (names relative to `chc`):
   `regret.constrained_ce_regret_certificate`'s `pessimism_budget` was 45 % low at the defaults,
   and is now the exact cost gap to the clip; `regret.information_lower_bound_certificate` raised
   at r = b², where its floor is zero, and now returns it.
+- Fixed in the code, in floating point: `uncertainty.lipschitz_rollout_bound` computed
+  (1 + L dt)^H − 1 by cancelling, and read 0 at a tiny rate in the open and the closed loop;
+  `galerkin.optimal_upwind` cancelled above its series crossover, and
+  `galerkin.convection_diffusion_exact` overflowed for s < 0 and cancelled as s/ε → 0;
+  `delay.delay_design_loss` bracketed its root short of π/2 and raised just above the stabilising
+  floor; `regret.exact_ratio_moment` integrated in absolute units, not its own scale, and returned −3.3·10⁻¹⁰ for
+  2·10⁻⁵; `regret.minimax_action` raised where a candidate's cost overflowed, which now reads
+  +inf; `regret.multivariate_action_floor` returned a negative floor for an indefinite curvature,
+  which it now refuses.
 - Docstrings narrowed to what the lemma proves, each with a test of the narrowed statement:
   `regret.hinf_robust_regret_certificate` (where b² > r the robust gain lies above the
   certainty-equivalent one, and the certainty-equivalent regret can fall below the calibrated
