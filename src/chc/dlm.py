@@ -645,13 +645,17 @@ def forward_filter(
         if math.isnan(ys[t]):
             m, c, n = a, r, beta * n
         else:
-            e = float(ys[t] - f)
+            e = float(ys[t]) - f  # Python floats: an error past the range is inf, not a warning
+            if not math.isfinite(e):
+                raise FloatingPointError(f"step {t}: the update is not finite, its error {e}")
             gain = rf / q
             n_new = beta * n + 1.0
             v_new = v if math.isinf(n_new) else v * (beta * n + e * e / q) / n_new
             shrink = eye - np.outer(gain, f_row)
-            c = _sym((v_new / v) * (shrink @ r @ shrink.T + np.outer(gain, gain) * v))
-            m = a + gain * e
+            # an update past the float range is refused below, at its step, not warned of here
+            with np.errstate(over="ignore", invalid="ignore"):
+                c = _sym((v_new / v) * (shrink @ r @ shrink.T + np.outer(gain, gain) * v))
+                m = a + gain * e
             _finite_update(t, v_new, m, c)
             score[t] = _log_t(e, nu, q)
             n, v = n_new, v_new
@@ -1867,14 +1871,21 @@ def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None)
                 root = linalg.cho_factor(q_seen, lower=True)
             except np.linalg.LinAlgError:
                 raise FloatingPointError(_unresolved(t, "is not positive definite", r, v)) from None
-            e = ys[t, seen] - f[seen]
+            with np.errstate(over="ignore", invalid="ignore"):
+                e = ys[t, seen] - f[seen]
+            if not np.all(np.isfinite(e)):
+                raise FloatingPointError(f"step {t}: the update is not finite, its errors {e}")
             gain = linalg.cho_solve(root, observed @ r).T
-            quad = float(e @ linalg.cho_solve(root, e))
-            n_new = beta * n + k
-            v_new = v if math.isinf(n_new) else v * (beta * n + quad) / n_new
             shrink = eye - gain @ observed
-            c = _sym((v_new / v) * (shrink @ r @ shrink.T + (gain * (v * weights[seen])) @ gain.T))
-            m = a + gain @ e
+            # an update past the float range is refused below, at its step, not warned of here
+            with np.errstate(over="ignore", invalid="ignore"):
+                quad = float(e @ linalg.cho_solve(root, e))
+                n_new = beta * n + k
+                v_new = v if math.isinf(n_new) else v * (beta * n + quad) / n_new
+                c = _sym(
+                    (v_new / v) * (shrink @ r @ shrink.T + (gain * (v * weights[seen])) @ gain.T)
+                )
+                m = a + gain @ e
             _finite_update(t, v_new, m, c)
             log_det = 2.0 * float(np.sum(np.log(np.diag(root[0]))))
             score[t] = _log_multivariate_t(quad, log_det, k, nu)

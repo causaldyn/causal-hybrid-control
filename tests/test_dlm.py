@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -1152,3 +1153,18 @@ def test_a_mean_that_overflows_is_refused_with_a_known_scale():
     y[8], y[9] = 1.7e308, -1.7e308
     with pytest.raises(FloatingPointError, match="step 9: the update is not finite"):
         forward_filter(DynamicLinearModel((Polynomial(1, 0.9),), _prior(1)), y)
+
+
+def test_an_error_past_the_float_range_is_refused_without_a_runtime_warning():
+    """The forecast error was a NumPy subtraction, which overflowed with a RuntimeWarning before
+    the refusal; under warnings as errors the warning was what the caller saw. The error is now
+    taken in Python floats and refused at its step, over one series and over geos."""
+    y = np.zeros(20)
+    y[8], y[9] = 1.7e308, -1.7e308
+    geo = GeoDLM((Polynomial(1, 0.9),), (), 2, _prior(1))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(FloatingPointError, match="step 9: the update is not finite"):
+            forward_filter(DynamicLinearModel((Polynomial(1, 0.9),), _prior(1)), y)
+        with pytest.raises(FloatingPointError, match="step 9: the update is not finite"):
+            forward_filter_geos(geo, np.column_stack([y, np.zeros(20)]))
