@@ -64,7 +64,7 @@ from chc.dynamics import (
     LinearDynamics,
 )
 from chc.dynamics_id import CausalDynamicsFit, fit_causal_residual, persistence_check
-from chc.graph import AdjustmentSet, CausalGraph
+from chc.graph import AdjustmentSet, CausalGraph, CyclicGraphError
 from chc.integrate import rollout
 from chc.mpc import PeriodBudget
 from chc.panel import Panel, PanelError
@@ -2922,6 +2922,237 @@ def test_a_constrained_state_whose_channel_is_confounded_leaves_the_effect_unide
     assert result.certificate.identification == "not_identified"
     assert result.plan is None
     assert "none identifies the levers' effect on ['c']" in result.certificate.adjustment.reason
+
+
+def _feedback_logs(reads: str, n_units: int = 100, n_periods: int = 10, seed: int = 0) -> Panel:
+    """A lever ``u`` its logger sets from the logged ``w`` and from a state: the constrained ``c``,
+    which ``u`` does not move and which moves the target ``y`` (``reads="c"``), or the target
+    itself, beside ``u`` moving ``c`` (``reads="y"``). An Euler plant, so the channel into ``y``
+    is 0.8 and the one into ``c`` is 0 for the first and -0.4 for the second."""
+    rng = np.random.default_rng(seed)
+    rows: dict[str, list[float]] = {name: [] for name in ("unit", "time", "y", "c", "u", "w")}
+    for unit in range(n_units):
+        y, c = rng.normal(0.0, 0.2, 2)
+        for period in range(n_periods):
+            w = rng.normal()
+            u = 0.9 * w + 2.0 * (c if reads == "c" else y) + rng.normal(0.0, 0.5)
+            for name, value in zip(rows, (unit, period, y, c, u, w), strict=True):
+                rows[name].append(value)
+            if reads == "c":
+                y, c = (
+                    y + DT * (-0.6 * y + 0.8 * u + 1.5 * w + 0.5 * c) + rng.normal(0.0, 0.01),
+                    c + DT * (-0.3 * c) + rng.normal(0.0, 0.05),
+                )
+            else:
+                y, c = (
+                    y + DT * (-0.6 * y + 0.8 * u + 1.5 * w) + rng.normal(0.0, 0.01),
+                    c + DT * (0.25 * c - 0.4 * u) + rng.normal(0.0, 0.01),
+                )
+    return Panel.from_frame(
+        {name: np.asarray(values) for name, values in rows.items()}, unit="unit", time="time"
+    )
+
+
+def _feedback_prescribe(panel: Panel, graph: CausalGraph):
+    return prescribe(
+        panel,
+        levers=[Lever("u", lo=-2.0, hi=2.0, unit_cost=0.05)],
+        target=Target("y", value=1.0),
+        constraints=[Constraint("c", hi=0.5)],
+        adjustment=graph,
+        horizon=5,
+        dt=DT,
+        tolerance=0.5,
+        integrator="euler",
+    )
+
+
+def test_a_logger_that_reads_a_constrained_state_leaves_the_effect_identified() -> None:
+    """The fit conditions on the states at a transition's start, so a logger that reads one is a
+    back-door path that state blocks. Read on the columns alone, the constrained state was an
+    outcome that is its own lever's parent, and 0.19.0 refused the effect that 0.18.0 had
+    identified. Read over the period, the set is ``("w",)``, and the edge from ``c`` to the lever
+    changes nothing the fit reads: the channel is the one the graph without it gives, 0.8 into
+    ``y`` and 0 into ``c`` within four of its errors."""
+    edges = [("w", "u"), ("w", "y"), ("u", "y"), ("c", "y")]
+    panel = _feedback_logs("c")
+    read = _feedback_prescribe(panel, CausalGraph.from_edges([*edges, ("c", "u")]))
+    unread = _feedback_prescribe(panel, CausalGraph.from_edges(edges))
+    assert read.certificate.identification == "identified"
+    assert read.certificate.adjustment.covariates == ("w",)
+    channel = np.asarray(read.model_fit.residual.channel)[:, 0, 0]
+    np.testing.assert_allclose(
+        channel, np.asarray(unread.model_fit.residual.channel)[:, 0, 0], rtol=1e-12, atol=0.0
+    )
+    error = read.model_fit.channel_error
+    assert error is not None
+    assert np.all(np.abs(channel - np.array([0.8, 0.0])) <= 4.0 * error), (channel, error)
+
+
+def test_a_logger_that_reads_the_state_its_lever_moves_is_drawn_unrolled() -> None:
+    """``y -> u`` beside ``u -> y`` is a cycle over the columns and no graph. Unrolled over one lag,
+    the logger's edges at lag 0 and each move at lag 1, it is one: the transition runs from the
+    slice ``t-1`` to ``t``, the set is ``("w",)``, and the channel is 0.8 into ``y`` and -0.4 into
+    ``c`` within four of its errors. A latent that confounds the lever with ``c`` still leaves the
+    effect not identified."""
+    with pytest.raises(CyclicGraphError):
+        CausalGraph.from_edges([("w", "u"), ("w", "y"), ("u", "y"), ("u", "c"), ("y", "u")])
+    persistence = [("y", "y", 1), ("c", "c", 1)]
+    graph = CausalGraph.unrolled(
+        [("w", "u", 0), ("y", "u", 0), ("w", "y", 1), ("u", "y", 1), ("u", "c", 1), *persistence],
+        lags=1,
+    )
+    result = _feedback_prescribe(_feedback_logs("y"), graph)
+    assert result.certificate.identification == "identified"
+    assert result.certificate.adjustment.covariates == ("w",)
+    channel = np.asarray(result.model_fit.residual.channel)[:, 0, 0]
+    error = result.model_fit.channel_error
+    assert error is not None
+    assert np.all(np.abs(channel - np.array([0.8, -0.4])) <= 4.0 * error), (channel, error)
+    assert result.logger_check is not None
+    assert result.logger_check.given == ("y", "c", "w")
+
+    confounded = CausalGraph.unrolled(
+        [
+            ("w", "u", 0),
+            ("w", "y", 1),
+            ("u", "y", 1),
+            ("u", "c", 1),
+            ("L", "u", 0),
+            ("L", "c", 1),
+            *persistence,
+        ],
+        lags=1,
+        latent=("L",),
+    )
+    refused = _feedback_prescribe(_feedback_logs("y"), confounded)
+    assert refused.certificate.identification == "not_identified"
+    assert "none identifies the levers' effect on ['c']" in refused.certificate.adjustment.reason
+
+
+def test_an_unrolled_graph_names_what_a_transition_cannot_read() -> None:
+    panel = _feedback_logs("y", n_units=4, n_periods=4)
+    with pytest.raises(DecisionError, match="unrolled over no lag"):
+        _feedback_prescribe(panel, CausalGraph.unrolled([("u", "y", 0)], lags=0))
+    with pytest.raises(KeyError, match=r"\['c\[t\]'\] are not nodes of this graph"):
+        _feedback_prescribe(panel, CausalGraph.unrolled([("u", "y", 1), ("y", "y", 1)], lags=1))
+    with pytest.raises(KeyError, match=r"no column: \['v\[t-1\]'\]"):
+        _feedback_prescribe(
+            panel, CausalGraph.unrolled([("u", "y", 1), ("u", "c", 1), ("v", "y", 1)], lags=1)
+        )
+
+
+def test_a_declared_calendar_reads_known_physics_from_the_panel_s_first_period() -> None:
+    """The fit reads ``known`` at a transition's steps from the panel's first period times ``dt``.
+    Declared daily, those steps counted days since 1970, so a weekly season was read 20,458 days
+    late, four days of its week off, and the channel came back +3.48 where it is 1. Every reading of
+    the same days now gives the same fit."""
+    week = 2.0 * np.pi / 7.0
+    rng = np.random.default_rng(0)
+    rows: dict[str, list[float]] = {name: [] for name in ("unit", "day", "x", "u", "z")}
+    for unit in range(30):
+        x = rng.normal()
+        for day in range(30):
+            z = rng.normal()
+            u = np.sin(week * day) + 0.5 * z + 0.5 * rng.normal()
+            for name, value in zip(rows, (unit, day, x, u, z), strict=True):
+                rows[name].append(value)
+            x = x + DT * (-0.5 * x + u + 2.0 * np.sin(week * day) + z) + 1e-3 * rng.normal()
+    logs = {name: np.asarray(values) for name, values in rows.items()}
+    dates = np.datetime64("2026-01-05") + logs["day"].astype("timedelta64[D]")
+
+    def known(t: jax.Array, state: jax.Array, action: jax.Array) -> jax.Array:
+        return 2.0 * jnp.sin(week * jnp.asarray(t) / DT) * jnp.ones_like(state)
+
+    def channel(day: np.ndarray, frequency: str | float | None) -> float:
+        panel = Panel.from_frame({**logs, "day": day}, unit="unit", time="day", frequency=frequency)
+        result = prescribe(
+            panel,
+            levers=[Lever("u", lo=-2.0, hi=2.0, unit_cost=0.05)],
+            target=Target("x", value=1.0),
+            adjustment=["z"],
+            horizon=5,
+            dt=DT,
+            known=known,
+            integrator="euler",
+        )
+        return float(result.model_fit.residual.channel[0, 0, 0])
+
+    undeclared = channel(dates, None)
+    assert undeclared == pytest.approx(1.0, abs=0.01)
+    for day, frequency in ((dates, "D"), (dates, "observed"), (logs["day"] + 100.0, 1)):
+        assert channel(day, frequency) == pytest.approx(undeclared, rel=1e-12, abs=0.0), frequency
+
+
+@pytest.mark.parametrize("stamp", [3.3, 3.0000001])
+def test_a_period_off_every_grid_is_refused_rather_than_ranked(stamp: float) -> None:
+    """Fifty units logged at whole periods give 950 transitions. One more row at 3.3, or at
+    3.0000001 where a float jittered, put the periods on no grid, and ranked, it lay between 3 and
+    4 in the 49 units that did not log it: each lost that transition, 902 in all, and nothing said
+    so. Undeclared numbers on no grid are refused, naming the row; ``"observed"`` still ranks
+    them."""
+    rng = np.random.default_rng(0)
+    frame = {
+        "unit": np.append(np.repeat(np.arange(50), 20), 0),
+        "time": np.append(np.tile(np.arange(20.0), 50), stamp),
+        "x": rng.normal(size=1001),
+        "u": rng.normal(size=1001),
+    }
+    stray = Panel.from_frame(frame, unit="unit", time="time")
+    with pytest.raises(PanelError, match=rf"{stamp!r} \(row 1000, unit 0\) is no whole number"):
+        _transitions(stray, states=("x",), levers=("u",), adjust_for=())
+    observed = Panel.from_frame(frame, unit="unit", time="time", frequency="observed")
+    data, _ = _transitions(observed, states=("x",), levers=("u",), adjust_for=())
+    assert data["x"].shape == (902, 1)
+
+
+@pytest.mark.parametrize("day", ["2026-03-29", "2026-10-25"])
+def test_hourly_stamps_across_a_summer_time_change_are_read_on_their_instants(day: str) -> None:
+    """Six hours in a row stamped in Berlin, where the clock goes forward an hour in March and back
+    an hour in October. On the wall clock, autumn's 02:00 came twice and was refused as a duplicate,
+    and spring's skipped hour parted the log, which gave four transitions; on their instants both
+    give five."""
+    from zoneinfo import ZoneInfo
+
+    berlin = ZoneInfo("Europe/Berlin")
+    start = datetime.datetime.fromisoformat(day).replace(tzinfo=datetime.UTC)
+    column = np.empty(6, dtype=object)
+    column[:] = [(start + datetime.timedelta(hours=k)).astimezone(berlin) for k in range(6)]
+    frame = {"home": np.zeros(6, dtype=int), "hour": column, "x": np.arange(6.0), "u": np.ones(6)}
+    panel = Panel.from_frame(frame, unit="home", time="hour")
+    data, _ = _transitions(panel, states=("x",), levers=("u",), adjust_for=())
+    assert np.asarray(data["x_next"] - data["x"])[:, 0].tolist() == [1.0] * 5
+
+
+def test_most_units_with_no_transition_on_the_declared_step_are_named(caplog) -> None:
+    """Forty of fifty units logged every second period on a declared step of one have no two
+    periods in a row, and were dropped from the fit without a word."""
+    rng = np.random.default_rng(0)
+    unit, time = np.repeat(np.arange(50), 20), np.tile(np.arange(20.0), 50)
+    kept = (unit >= 40) | (time % 2 == 0)
+    frame = {
+        "unit": unit[kept],
+        "time": time[kept],
+        "x": rng.normal(size=int(kept.sum())),
+        "u": rng.normal(size=int(kept.sum())),
+    }
+    panel = Panel.from_frame(frame, unit="unit", time="time", frequency=1)
+    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+        data, _ = _transitions(panel, states=("x",), levers=("u",), adjust_for=())
+    assert data["x"].shape == (190, 1)
+    (record,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "transitions"]
+    assert record.getMessage().startswith("40 of 50 units, 0 among them")
+    caplog.clear()
+    full = {**frame, "unit": unit, "time": time, "x": np.zeros(unit.size), "u": np.zeros(unit.size)}
+    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+        data, _ = _transitions(
+            Panel.from_frame(full, unit="unit", time="time", frequency=1),
+            states=("x",),
+            levers=("u",),
+            adjust_for=(),
+        )
+    assert data["x"].shape == (950, 1)
+    assert not [r for r in caplog.records if getattr(r, "chc_event", None) == "transitions"]
 
 
 @pytest.mark.parametrize("integrator", ["rk4", "euler"])

@@ -1825,10 +1825,22 @@ def prescribe(
         adjustment: a :class:`~chc.graph.CausalGraph` to *derive* the adjustment set from, or a
             sequence of column names to *assert* it. Required, and deliberately so --- omitting it
             would default to adjusting for nothing, which is a causal claim, not an absence of one.
-            A graph's set is derived for the levers' effect on every state, the target and each
-            constrained column together, since one set reads the channel into all of them: where
-            no set does, the effect is ``not_identified``, and the reason names the states no set
-            identifies it on alone.
+            A graph is read over the period a transition spans: the levers at its start, the
+            states, the target and each constrained column, a period on, and the states at its
+            start conditioned on, as the fit conditions on them whatever else it adjusts for.
+            Over the columns, an edge into a state moves that state a period on, and every other
+            edge acts within the period, a latent's too: so ``c -> u`` is a logger that reads the
+            state ``c``, a path the state at the start blocks. The set is derived for the levers'
+            effect on every state together, since one set reads the channel into all of them:
+            where no set does, the effect is ``not_identified``, and the reason names the states no
+            set identifies it on alone.
+            A logger that reads a state its lever moves, ``y -> u`` beside ``u -> y``, is a cycle
+            over the columns, which :class:`~chc.graph.CausalGraph` refuses; draw it with
+            :meth:`~chc.graph.CausalGraph.unrolled` over ``lags=1``: what the logger reads at lag
+            0, ``("y", "u", 0)``, each move at lag 1, ``("u", "y", 1)``, and each state's own at
+            lag 1, ``("y", "y", 1)``. The transition then runs from its slice ``t-1`` to ``t``,
+            and only columns at ``t-1`` are adjusted for; a latent that persists across periods
+            is drawn so too, at every lag it acts.
             An empty set a graph derives, for a randomised lever or one set by the states alone,
             is fitted as identified, with its errors and its tube; an asserted empty set is
             fitted as the observational regression, with neither.
@@ -2113,10 +2125,14 @@ def prescribe(
 
     resolved = _resolve_adjustment(adjustment, panel=panel, states=states, levers=lever_names)
     if isinstance(adjustment, CausalGraph):
-        parents = {p for lever in lever_names for p in adjustment.parents(lever)}
+        column = _start_nodes(adjustment, panel.names)
+        acting = tuple(node for node, name in column.items() if name in lever_names)
+        parents = {column.get(p, p) for node in acting for p in adjustment.parents(node)}
         logged_on = tuple(sorted(parents - {*lever_names}))
-        uncaused = set(adjustment.observed) - adjustment.descendants(lever_names)
-        latent = set(logged_on) - set(adjustment.observed)
+        observed = {column[node] for node in adjustment.observed if node in column}
+        caused = {column.get(node, node) for node in adjustment.descendants(acting)}
+        uncaused = observed - caused
+        latent = set(logged_on) - observed
     else:
         logged_on, uncaused, latent = resolved.covariates, set(), set()
     columns = _Columns(
@@ -3069,20 +3085,39 @@ def _resolve_adjustment(
 ) -> AdjustmentSet:
     """Derive the set from a graph, or take the caller's word and record that that is what it is.
 
+    A graph is read over the period a transition spans (:func:`_one_period`): the levers at its
+    start, the states a period on, and the states at its start held, since the fit conditions on
+    them whatever else it adjusts for. A logger that reads a constrained state is then a back-door
+    path the state at the start blocks; read on the columns alone, that state was an outcome the
+    lever's own parent, and no set identified the effect.
+
     The fit reads the channel into every state off one set, so a graph's set is derived for the
     levers' effect on all of them together: a set that identifies the effect on the target alone
     leaves the channel into a constrained state confounded, and the barrier and the tube priced on
     it."""
     if isinstance(adjustment, CausalGraph):
-        adjustment.require_columns(panel.names)
-        joint = adjustment.adjustment_set(treatment=levers, outcome=states)
-        if joint.status == "identified" or len(states) == 1:
+        sliced, start, end = _one_period(adjustment, panel=panel, states=states, levers=levers)
+        treatment = tuple(start[lever] for lever in levers)
+        held = tuple(start[state] for state in states if start[state] in sliced.nodes)
+
+        def derive(outcome: tuple[str, ...]) -> AdjustmentSet:
+            return sliced.adjustment_set(treatment=treatment, outcome=outcome, given=held)
+
+        joint = derive(tuple(end[state] for state in states))
+        if joint.status == "identified":
+            column = {node: name for name, node in start.items()}
+            covariates = tuple(
+                column[node] for node in joint.covariates if column[node] not in states
+            )
+            return AdjustmentSet(
+                covariates,
+                "identified",
+                f"blocks every non-causal path from {list(levers)} to {list(states)} a period on, "
+                "beside the states at the period's start, which the fit conditions on",
+            )
+        if len(states) == 1:
             return joint
-        confounded = [
-            state
-            for state in states
-            if adjustment.adjustment_set(treatment=levers, outcome=state).status != "identified"
-        ]
+        confounded = [state for state in states if not derive((end[state],))]
         return AdjustmentSet(
             (),
             "not_identified",
@@ -3111,32 +3146,120 @@ def _resolve_adjustment(
     )
 
 
+def _start_nodes(graph: CausalGraph, names: Sequence[str]) -> dict[str, str]:
+    """Each node of ``graph`` that stands for a column at the start of a transition, and that
+    column: every node of a graph over the columns, and the slice ``t-1`` of an unrolled one."""
+    if graph.lags is None:
+        return {node: node for node in graph.nodes}
+    at = {CausalGraph.lagged_name(name, 1): name for name in names}
+    return {node: at[node] for node in graph.nodes if node in at}
+
+
+def _one_period(
+    graph: CausalGraph,
+    *,
+    panel: Panel,
+    states: tuple[str, ...],
+    levers: tuple[str, ...],
+) -> tuple[CausalGraph, dict[str, str], dict[str, str]]:
+    """The caller's graph over the one period a transition spans, the node of each column at its
+    start, and the node of each state a period on.
+
+    A graph over the columns is read so: an edge into a state moves that state's next value, every
+    other edge acts within the period, and each state's next value follows from its own. A logger
+    that reads a state and a lever that moves it, ``y -> u`` and ``u -> y``, is a cycle over the
+    columns and no graph; an unrolled one (:meth:`chc.graph.CausalGraph.unrolled`) draws it, and
+    is read from its slice ``t-1`` to its slice ``t``. Its nodes at any other slice, and the
+    columns at ``t`` but the states, are latent here: the fit adjusts for no column but at the
+    transition's start.
+
+    Raises:
+        DecisionError: for an unrolled graph of no lag, which holds no transition.
+        KeyError: for an observed node with no column, a lever with no node at the start or a state
+            with none a period on.
+    """
+    if graph.lags is None:
+        graph.require_columns(panel.names)
+        missing = sorted((set(levers) | set(states)) - set(graph.nodes))
+        if missing:
+            raise KeyError(f"{missing} are not nodes of this graph; nodes are {list(graph.nodes)}")
+
+        def later(state: str) -> str:
+            name = f"{state}[t+1]"
+            while name in graph.nodes:
+                name += "'"
+            return name
+
+        end = {state: later(state) for state in states}
+        edges = [(parent, end.get(child, child)) for parent, child in graph.edges]
+        sliced = CausalGraph.from_edges(
+            [*edges, *((state, end[state]) for state in states)], latent=graph.latent
+        )
+        return sliced, {node: node for node in graph.nodes}, end
+    if graph.lags < 1:
+        raise DecisionError(
+            "the graph is unrolled over no lag, so it holds no transition; unroll it over lags=1, "
+            "the period a transition spans"
+        )
+    named = {
+        CausalGraph.lagged_name(name, lag) for name in panel.names for lag in range(graph.lags + 1)
+    }
+    unnamed = sorted(set(graph.observed) - named)
+    if unnamed:
+        raise KeyError(
+            f"graph names observed variables with no column: {unnamed}; declare them latent or add "
+            "the columns"
+        )
+    start = {name: CausalGraph.lagged_name(name, 1) for name in panel.names}
+    end = {state: CausalGraph.lagged_name(state, 0) for state in states}
+    missing = sorted(({start[lever] for lever in levers} | set(end.values())) - set(graph.nodes))
+    if missing:
+        raise KeyError(
+            f"{missing} are not nodes of this graph: a transition reads each lever at the slice "
+            f"t-1 and each state at t; nodes are {list(graph.nodes)}"
+        )
+    unread = set(graph.observed) - set(start.values()) - set(end.values())
+    return CausalGraph(graph.nodes, graph.edges, graph.latent | unread), start, end
+
+
 def _period_steps(panel: Panel) -> NDArray[np.int64]:
     """Each row's period as a step on the panel's time grid: two periods are one step apart only
     where no period lies between them.
 
+    The steps count from the panel's first period, which is step 0, whatever the grid: the fit
+    reads ``known`` physics at a transition's steps times ``dt``, and a calendar's count from 1970
+    would read it on that clock.
+
     The grid is the panel's declared ``frequency``, a calendar's or a step's, where it has one, so
     a period no unit logged still parts the two on either side of it; ``"observed"`` ranks the
     periods as :meth:`chc.panel.Panel.codes` ranks them. Undeclared, periods that are numbers or
-    dates sit on the grid of their smallest spacing where every period falls on it. Periods off
-    such a grid, calendar months stamped as dates among them, and text are ranked: the periods
-    logged are the grid, and a period no unit logged is not seen. A number read as a grid point and
-    not as a position, such as 202412 for a month, puts each year's turn 89 steps from the month
-    before it, so no transition crosses it.
+    dates sit on the grid of their smallest spacing where every period falls on it. Text is ranked:
+    the periods logged are the grid, and a period no unit logged is not seen. A number read as a
+    grid point and not as a position, such as 202412 for a month, puts each year's turn 89 steps
+    from the month before it, so no transition crosses it.
+
+    Undeclared numbers on no such grid are refused, not ranked: ranked, one row at 3.3, or at
+    3.0000001, in one unit's log of whole periods lies between 3 and 4 in every other unit's, and
+    each of them loses that transition: 49 of 950 in a panel of 50 units.
 
     An inferred grid is refused where most of the periods a unit logs in a row are more than one of
     its steps apart: the least spacing was then set by a period off the log's own step, one stray
     row at 3.5 in a log of whole periods, and on its grid every other transition parts as a gap.
 
     Raises:
-        PanelError: for such a grid, naming the two periods that set its step and a row of each.
+        PanelError: for numbers on no grid, naming the row furthest off the grid of their most
+            common spacing; for such a grid, naming the two periods that set its step and a row of
+            each.
     """
     column = np.asarray(panel[panel.time])
     frequency = panel.provenance.frequency
     if frequency is not None and frequency != "observed":
-        return _ordinals(column, frequency)
+        steps = _ordinals(column, frequency)
+        return steps - steps.min() if steps.size else steps
     steps = None if frequency == "observed" else _grid_steps(column)
     if steps is None:
+        if frequency is None and column.dtype.kind in "iuf":
+            raise _off_grid(panel, column)
         return panel.codes()[1]
     units, _ = panel.codes()
     order = np.lexsort((steps, units))
@@ -3159,6 +3282,25 @@ def _period_steps(panel: Panel) -> NDArray[np.int64]:
     return steps
 
 
+def _off_grid(panel: Panel, column: NDArray[Any]) -> PanelError:
+    """The refusal of numbered periods on no uniform grid, naming the row furthest off the grid of
+    their most common spacing."""
+    distinct = np.unique(column)
+    spacings, counts = np.unique(np.diff(distinct), return_counts=True)
+    spacing = float(spacings[np.argmax(counts)])
+    ratio = (column - distinct[0]) / spacing
+    row = int(np.argmax(np.abs(ratio - np.rint(ratio))))
+    return PanelError(
+        f"time column {panel.time!r} holds numbers on no uniform grid: {column.tolist()[row]!r} "
+        f"(row {row}, unit {panel[panel.unit].tolist()[row]!r}) is no whole number of their most "
+        f"common spacing, {spacing:g}, from the first period, {distinct[0].item()!r}. Read in "
+        "their sorted order, a period some units log would part the two on either side of it in "
+        "every unit that does not log it, and lose that transition; declare the periods' step "
+        "with frequency=, which names each row off it, or frequency='observed' to read them in "
+        "their sorted order"
+    )
+
+
 def _transitions(
     panel: Panel,
     *,
@@ -3177,7 +3319,8 @@ def _transitions(
     either side of the hole and nothing across it, and so does a period no unit logged, where the
     periods are numbers (:func:`_period_steps`). That is why an unbalanced panel is allowed here
     while :meth:`chc.panel.Panel.wide` refuses one --- a transition needs two adjacent rows, not a
-    rectangle.
+    rectangle. Where most units give no transition, as where they log every second period on a
+    declared step of one, a warning names how many: the fit then reads the few that do.
     """
     unit_codes, _ = panel.codes()
     time_codes = _period_steps(panel)
@@ -3192,6 +3335,16 @@ def _transitions(
     if current.size == 0:
         raise DecisionError(
             "no unit has two consecutive periods, so there is not a single transition to fit on"
+        )
+    logged = np.unique(unit_codes)
+    idle = np.setdiff1d(logged, unit_codes[current])
+    if 2 * idle.size > logged.size:
+        _log.warning(
+            f"{idle.size} of {logged.size} units, {panel.units[int(idle[0])]!r} among them, log no "
+            "two periods one step apart on the panel's grid, so none of their rows enters the fit: "
+            "a unit that logs every second period on a grid of one has no transition; declare the "
+            "step the units log on",
+            extra={"chc_event": "transitions", "units": int(logged.size), "idle": int(idle.size)},
         )
     following = np.array(
         [row_of[(int(unit_codes[row]), int(time_codes[row]) + 1)] for row in current],

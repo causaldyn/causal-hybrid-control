@@ -84,6 +84,19 @@ explicit sequence of column names, which *asserts* it. There is no default, beca
 would be "adjust for nothing", which is a causal claim this library exists to stop people making by
 accident. An unidentified effect produces no schedule at all.
 
+The graph is read over the period a transition spans. The fit conditions on the states at the
+period's start, so a logger that reads a state is a path that state blocks. Over the columns, an
+edge into a state moves it a period on, and every other edge acts within the period. A logger that
+reads the state its lever moves, `y -> u` beside `u -> y`, is a cycle over the columns. Draw it with
+`CausalGraph.unrolled(..., lags=1)`: what the logger reads at lag 0, each move at lag 1, and each
+state's own persistence at lag 1:
+
+```python
+graph = CausalGraph.unrolled(
+    [("w", "u", 0), ("y", "u", 0), ("w", "y", 1), ("u", "y", 1), ("y", "y", 1)], lags=1
+)
+```
+
 ## See it
 
 - [Tutorial 1](../tutorials/01_causal_vs_predictive_control.md) — the naive fit flips the sign, and
