@@ -242,7 +242,7 @@ def _pessimistic_loop(
     u_hi: Array,
     steps: int,
     lr0: float,
-    tol: float,
+    tol: float | Array,
     uncertainty: PenaltyModel | None,
     lam_unc: float,
     blocks: Blocks = (),
@@ -279,8 +279,8 @@ def _pessimistic_loop(
 
     The confounding radius' norm is not differentiated: with no ``blocks`` the augmented cost holds
     it unsmoothed, and each step takes it, with the box, by its proximal map
-    (:func:`_radius_norms`, :func:`chc.control._descend`). ``limit`` is
-    :func:`chc.control._descend`'s.
+    (:func:`_radius_norms`, :func:`chc.control._descend`). ``limit``, and ``tol`` as a weakly
+    typed scalar, are :func:`chc.control._descend`'s.
     """
 
     def task(us: Array) -> Array:

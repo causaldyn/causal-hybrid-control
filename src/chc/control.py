@@ -26,7 +26,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, overload
 
 import equinox as eqx
 import jax
@@ -752,12 +752,23 @@ def _backtrack(
     return kept, kept_value, fell, kept_duals
 
 
-def _stationarity_tolerance(tol: float, dtype: Any) -> float:
+@overload
+def _stationarity_tolerance(tol: float, dtype: Any) -> float: ...
+@overload
+def _stationarity_tolerance(tol: Array, dtype: Any) -> Array: ...
+def _stationarity_tolerance(tol: float | Array, dtype: Any) -> float | Array:
     """The largest first-order residual a stopped descent may leave, read in the variables of
     :func:`_action_units` at the guess, zeros clipped to the box:
     ``10 sqrt(2 max(tol, 4 eps))``, ``eps`` the actions' precision
-    (``docs/adr/0097-a-plan-reads-its-first-order-check-on-its-face.md``)."""
-    return 10.0 * math.sqrt(2.0 * max(tol, 4.0 * float(jnp.finfo(dtype).eps)))
+    (``docs/adr/0097-a-plan-reads-its-first-order-check-on-its-face.md``).
+
+    A traced ``tol``, a weakly typed scalar, gives the number the Python one does, by the same
+    correctly rounded operations in its precision, so a descent can take ``tol`` as an argument
+    rather than compile once per value."""
+    floor = 4.0 * float(jnp.finfo(dtype).eps)
+    if isinstance(tol, jax.Array):
+        return 10.0 * jnp.sqrt(2.0 * jnp.maximum(tol, floor))
+    return 10.0 * math.sqrt(2.0 * max(tol, floor))
 
 
 def _first_order_residual(
@@ -913,7 +924,7 @@ def _descend(
     units: tuple[Array, Array | float, Array | float],
     steps: int,
     lr0: float,
-    tol: float,
+    tol: float | Array,
     blocks: Blocks,
     *,
     scaled: bool,
@@ -986,7 +997,9 @@ def _descend(
     ``limit``, a traced count, stops the descent after that many accepted steps where it is below
     ``steps``, which sizes the history and compiles: the barrier rounds of
     :func:`chc.plan.causal_plan` share one budget, and each round gets what the last ones left
-    without a compilation of its own.
+    without a compilation of its own. ``tol`` may be traced as well, as a weakly typed scalar,
+    which reads in each comparison as the Python number would: those rounds alternate two
+    tolerances, and a Python one compiled the descent once for each.
     """
     if norms is not None and blocks:
         raise ValueError("a proximal step for the norm takes the box alone, not linear rows")
