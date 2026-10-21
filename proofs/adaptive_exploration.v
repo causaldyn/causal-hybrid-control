@@ -1,5 +1,6 @@
-(* Rocq (CONTRIBUTION 3): the ADAPTIVE information-exploration duality, the SEQUENTIAL analogue of
-   results 10 (static Cramer-Rao) and 11 (static Av+B/v). At round t the controller injects exploration
+(* Rocq: the ADAPTIVE information-exploration duality, the SEQUENTIAL analogue of
+   the static Cramer-Rao floor (information_lower_bound.v) and the static Av+B/v law
+   (optimal_exploration.v). At round t the controller injects exploration
    variance v_t; the accumulated Fisher information is m_t (in variance units). The VAN TREES (Bayesian
    Cramer-Rao) inequality bounds the estimation floor by K/m_t even for adaptive observations (its
    algebraic core is proved in van_trees.v), so the per-round cost is A*v_t + K/m_t. Facts: (A) the floor
@@ -30,7 +31,7 @@ Proof.
 Qed.
 
 (* (B) Per-round tradeoff optimum: with vstar characterised by A*(m+vstar)^2 = K, the cost gap over it
-   is the sum-of-squares A*(v-vstar)^2/(m+v) >= 0 -- the AM-GM optimum of result 11 shifted by the
+   is the sum-of-squares A*(v-vstar)^2/(m+v) >= 0 -- the AM-GM optimum of optimal_exploration.v shifted by the
    accumulated information m. *)
 Theorem single_round_tradeoff : forall a k m v vstar,
   0 < a -> 0 < m + v -> 0 < m + vstar -> a * (m + vstar) ^ 2 = k ->
@@ -49,7 +50,7 @@ Qed.
 
 (* (C) The optimal exploration schedule TAPERS: as accumulated information grows (m1 <= m2), the optimal
    increment shrinks (v2 <= v1), because both keep the total information at the threshold sqrt(K/A).
-   This is a decreasing schedule -- not the constant v* of the static result 11. *)
+   This is a decreasing schedule -- not the constant v* of the static law. *)
 Theorem schedule_tapers : forall k a m1 v1 m2 v2,
   0 < a -> m1 <= m2 -> 0 < m1 + v1 -> 0 < m2 + v2 ->
   a * (m1 + v1) ^ 2 = k -> a * (m2 + v2) ^ 2 = k -> v2 <= v1.

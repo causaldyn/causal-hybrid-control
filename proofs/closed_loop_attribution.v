@@ -1,6 +1,7 @@
-(* Rocq (WHY b1 IS LARGE AND NEGATIVE): Result 41 ends with "Not established. Why b1 is large and
-   negative on a setpoint-tracked zone ... no derivation here fixes the magnitude." These lemmas fix
-   it, and refute the guess that stood in for it.
+(* Rocq (WHY b1 IS LARGE AND NEGATIVE): the control-affine fit of
+   validation/actuator_reparametrisation.mac leaves open why b1 is large and negative on a
+   setpoint-tracked zone; nothing there fixes the magnitude. These lemmas fix it, and refute the
+   guess that stood in for it.
 
    A proportional tracking loop puts the log on an affine manifold x = c + m*u with m = -1/Kp. On
    that manifold the control-affine fit d + a*x + (b0 + b1*x)*u collapses to a quadratic in u, and

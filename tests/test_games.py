@@ -23,13 +23,13 @@ from chc.research.games import (
 
 @pytest.fixture(scope="module")
 def transfer() -> EquilibriumTransferCertificate:
-    """Result 39's evidence -- ~9 s of leader solves, so it is built once for the module."""
+    """The transfer evidence -- ~9 s of leader solves, so it is built once for the module."""
     return equilibrium_transfer_certificate()
 
 
 @pytest.fixture(scope="module")
 def monotonicity() -> EquilibriumMonotonicityCertificate:
-    """Result 39's GLOBAL half: moduli over a box plus finite-perturbation displacements."""
+    """The transfer's GLOBAL half: moduli over a box plus finite-perturbation displacements."""
     return equilibrium_monotonicity_certificate()
 
 
@@ -194,7 +194,7 @@ def test_optimal_damping_solves_a_game_the_default_cannot() -> None:
 def test_equilibrium_conditioning_is_exactly_one_at_every_congestion(
     transfer: EquilibriumTransferCertificate,
 ) -> None:
-    """Result 39: the ambient ``||(I - S')^{-1}||_2 = 1`` uniformly -- the equilibrium never
+    """The ambient ``||(I - S')^{-1}||_2 = 1`` uniformly -- the equilibrium never
     *locally* amplifies an operator perturbation, however close the damped solver is to losing
     contraction.
     """
@@ -261,7 +261,7 @@ def test_a_finite_operator_perturbation_moves_the_equilibrium_no_further(
 def test_the_tangent_improvement_is_local_and_evaporates_over_the_box(
     monotonicity: EquilibriumMonotonicityCertificate,
 ) -> None:
-    # Result 39 (b)'s strictly-better tangent constant is a neighbourhood statement. Near a corner
+    # The strictly-better tangent constant is a neighbourhood statement. Near a corner
     # the softmax approaches a vertex, s_min collapses, and the improvement is gone -- which is
     # exactly why quoting it globally is a mistake.
     assert monotonicity.local_tangent_bound > monotonicity.tangent_bound
@@ -272,7 +272,7 @@ def test_the_tangent_improvement_is_local_and_evaporates_over_the_box(
 def test_an_active_constraint_costs_an_order_and_a_vertex_costs_the_slope(
     transfer: EquilibriumTransferCertificate,
 ) -> None:
-    # The regularity assumption behind Result 39 (c), made falsifiable. With the budget constraint
+    # The regularity assumption of the order transfer, made falsifiable. With the budget constraint
     # active the slope drops by nearly a full order; at a vertex the plan does not move at all, so
     # the regret is identically zero and there is no slope to degrade.
     assert transfer.constrained_slope < transfer.regret_slope - 0.5

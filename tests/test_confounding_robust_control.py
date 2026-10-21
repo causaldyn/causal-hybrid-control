@@ -1,6 +1,6 @@
-"""chc.regret: §35 minimax confounding-robust controller under asymmetric loss.
+"""chc.regret: the minimax confounding-robust controller under asymmetric loss.
 
-Under a symmetric loss CE is already minimax (pessimism = centre, §33). Under an ASYMMETRIC loss the
+Under a symmetric loss CE is already minimax (pessimism = centre). Under an ASYMMETRIC loss the
 pessimism radius shifts the gain and strictly beats CE (Rocq ``confounding_robust_control.v``).
 """
 
@@ -38,7 +38,7 @@ def test_certificate_confirms_shift_and_strict_improvement() -> None:
 
 
 def test_symmetric_loss_recovers_certainty_equivalence() -> None:
-    # alpha=beta: the minimax control is the CE centre (recovers §33's "pessimism = centre")
+    # alpha=beta: the minimax control is the CE centre (the symmetric "pessimism = centre")
     u_ce = certainty_equivalence_control(1.4, 1.0)
     u_rob = confounding_robust_control(1.4, 0.3, 1.0, 2.0, 2.0)
     assert u_rob == pytest.approx(u_ce)
@@ -71,17 +71,17 @@ def test_worst_case_loss_is_the_max_of_the_weighted_tails() -> None:
 def test_piecewise_improvement_matches_numeric_in_both_regimes() -> None:
     # reviewer-8: the analytic gap is piecewise in max(alpha,beta); it must match the numeric
     # W_CE - W_rob in BOTH the overshoot-dominant (alpha>beta) and undershoot-dominant (beta>alpha,
-    # Result 37's regime) branches -- the old single formula only covered alpha>=beta
+    # marketplace regime) branches -- the old single formula only covered alpha>=beta
     over = asymmetric_control_improvement(1.3, 0.25, 1.0, 4.0, 1.0)  # alpha>beta
     under = asymmetric_control_improvement(1.3, 0.25, 1.0, 1.0, 4.0)  # beta>alpha (churn 4x)
     assert over == pytest.approx(_numeric_improvement(1.3, 0.25, 1.0, 4.0, 1.0), abs=1e-12)
     assert under == pytest.approx(_numeric_improvement(1.3, 0.25, 1.0, 1.0, 4.0), abs=1e-12)
     assert over > 0.0  # overshoot-dominant branch strictly beats CE
-    assert under > 0.0  # undershoot-dominant branch (Result 37 regime) strictly beats CE too
+    assert under > 0.0  # undershoot-dominant branch (marketplace regime) strictly beats CE too
     assert asymmetric_control_improvement(1.3, 0.25, 1.0, 2.0, 2.0) == pytest.approx(0.0)  # a=b
 
 
-# --- Result 37: grounding on a synthetic marketplace task (full estimate -> control pipeline) ---
+# --- Grounding on a synthetic marketplace task (full estimate -> control pipeline) ---
 
 
 def test_the_benchmarks_naive_estimate_is_the_least_squares_slope() -> None:
@@ -119,11 +119,11 @@ def test_benchmark_pays_an_honest_premium_when_unconfounded() -> None:
     assert curve.unconfounded_premium_pct > 0.0
 
 
-# --- Result 38: DYNAMIC grounding -- a real closed-loop controller on a confounded plant ---
+# --- DYNAMIC grounding -- a real closed-loop controller on a confounded plant ---
 
 
 def test_tracking_loop_halfwidth_zero_is_the_ce_baseline() -> None:
-    # the §35 formula collapses to tau/b_hat at halfwidth=0, so a zero-radius loop IS CE
+    # the minimax formula collapses to tau/b_hat at halfwidth=0, so a zero-radius loop IS CE
     _, us, _ = confounding_robust_tracking_loop(0.6, 2.0, 2.5, 0.0, 1.0, 1.0, 4.0, n_steps=5)
     # first step: tau_0 = x_target - a*x0 = 1 - 0 = 1, u_0 = tau_0 / b_hat = 1/2.5
     assert us[0] == pytest.approx(certainty_equivalence_control(2.5, 1.0))

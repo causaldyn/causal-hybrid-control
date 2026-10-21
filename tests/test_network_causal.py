@@ -139,7 +139,7 @@ def test_gnn_nuisance_recovers_direct_and_spillover() -> None:
 
 
 def test_propagation_estimate_recovers_the_lag_the_persistence_and_the_truncation() -> None:
-    """Result 51's ``delta`` and ``phi`` are fitted here, not assumed as model parameters.
+    """The network law's ``delta`` and ``phi`` are fitted here, not assumed as model parameters.
 
     The panel's spillover reaches distance 2 (``gammas`` has three entries), so shell 3 carries no
     direct edge and its apparent peak must stop advancing -- which is what pins ``n_shells``.
@@ -186,7 +186,7 @@ def test_fold_groups_default_is_the_historical_path_and_groups_stay_intact() -> 
 
 
 def test_the_delayed_network_law_is_an_estimator_variance_ratio() -> None:
-    """Result 51's ``Psi`` predicts the VARIANCE OF AN ESTIMATOR, not only a property of a process.
+    """The network ``Psi`` predicts the VARIANCE OF AN ESTIMATOR, not only a property of a process.
 
     ``Psi = N^2 tr(A Sigma A)/(tr(A)^2 tr Sigma)`` was forced algebraically by
     ``validation/delayed_exposure_gate.mac`` STEP 6. For ``theta_hat = u'A eps / u'A u`` with an
@@ -259,7 +259,7 @@ def test_the_fold_design_crossover_is_a_threshold_on_phi_to_the_delay() -> None:
 
 
 def test_fold_choice_moves_realised_coverage_not_just_variance() -> None:
-    """The point of Results 43 and 51 is INTERVALS, so measure intervals, not only second moments.
+    """The point of the fold laws is INTERVALS, so measure intervals, not only second moments.
 
     The cross-fit hat ``M = I - F_opp`` leaves the estimator exactly unbiased -- the held-out
     prediction reproduces the design, so the moment stays orthogonal for ANY fold assignment. What
@@ -417,14 +417,14 @@ def test_graph_shells_reproduces_the_cycle_and_partitions_any_graph() -> None:
         assert all(np.array_equal(a, b) for a, b in zip(general, special, strict=True))
 
     # A path is the simplest non-vertex-transitive case: the ends see one neighbour, the interior
-    # two, which is exactly the symmetry Result 52's closed form assumes and a path does not have.
+    # two, which is exactly the symmetry the closed form assumes and a path does not have.
     m = 6
     path = np.zeros((m, m))
     for i in range(m - 1):
         path[i, i + 1] = path[i + 1, i] = 1.0
     shells = graph_shells(path, 2)
     assert list(shells[1].sum(1)) == [1.0, 2.0, 2.0, 2.0, 2.0, 1.0]
-    # The structural lemma Result 51 rests on: a vertex sits at exactly one distance from i.
+    # The structural lemma of the network law: a vertex sits at exactly one distance from i.
     for d in range(3):
         for e in range(3):
             if d != e:
@@ -446,7 +446,7 @@ def test_graph_shells_reproduces_the_cycle_and_partitions_any_graph() -> None:
 
 
 def test_the_fold_heuristic_finds_the_exact_optimum_off_the_cycle() -> None:
-    # Result 52's design law is closed-form only on vertex-transitive graphs, and its honest-scope
+    # The fold design law is closed-form only on vertex-transitive graphs, and its honest-scope
     # note says the problem "degrades to combinatorial search" beyond them. It degrades in the
     # closed form, not in the answer: on nine topologies -- eight non-transitive, four random --
     # the spectral-plus-swap fallback returns exactly what enumeration does.

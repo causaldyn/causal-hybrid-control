@@ -1,9 +1,9 @@
-"""Dynamic confounding-robust control: the §35 controller in a CLOSED LOOP on a confounded plant.
+"""Dynamic confounding-robust control: the minimax controller, CLOSED LOOP, on a confounded plant.
 
-Lifts the static §35 minimax into a receding-horizon controller on the confounded scalar plant
+Lifts the static minimax into a receding-horizon controller on the confounded scalar plant
 x' = a*x + b_true*u + noise: a demand confounder biases the offline effect estimate, the CE
 controller under-actuates and undershoots the target (expensive when churn outweighs budget waste),
-and the §35 controller uses the §32 sensitivity radius to hedge -- over 30 closed-loop steps.
+and the robust controller uses the MSM sensitivity radius to hedge -- over 30 closed-loop steps.
 
 Run: uv run python scripts/run_dynamic_confounding_demo.py
 """

@@ -1,4 +1,4 @@
-(* Rocq (CONTRIBUTION 2, exposure-map generalisation): the marketplace network model
+(* Rocq (multi-channel control, exposure-map generalisation): the marketplace network model
        x_{t+1} = A x_t + (B_d + B_s W) u_t + eps,   B_eff(W) = B_d + B_s W,
    with a zonal exposure/migration matrix W (Aronow-Samii exposure map; Bramoulle et al. SAR; Munro, Xu &
    Wager and Wager & Xu market equilibrium; Hays & Raghavan shared-state DML). Estimating (B_d, B_s, W)

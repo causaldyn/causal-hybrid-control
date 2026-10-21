@@ -1,5 +1,5 @@
-"""ConfoundingRobustPenalty: linear in the radius, equals radius*Sigma||u_t|| (the §34 dimensional
-bound on the confounded effect error), from_sensitivity matches the §32 MSM inflation, and it
+"""ConfoundingRobustPenalty: linear in the radius, equals radius*Sigma||u_t|| (the dimensional
+bound on the confounded effect error), from_sensitivity matches the MSM inflation, and it
 shrinks the closed-loop action magnitude in pessimistic_control as the assumed confounding grows.
 """
 
@@ -35,7 +35,7 @@ def test_penalty_is_linear_in_the_radius() -> None:
 
 
 def test_penalty_equals_radius_times_summed_control_norm() -> None:
-    us = jnp.array([[3.0, 4.0], [0.0, 1.0]])  # per-step L2 norms 5, 1 (the §34 ||u_t|| factor)
+    us = jnp.array([[3.0, 4.0], [0.0, 1.0]])  # per-step L2 norms 5, 1 (the ||u_t|| factor)
     xs = jnp.zeros((2, 3))
     pen = ConfoundingRobustPenalty(radius=0.5)
     assert jnp.allclose(pen.penalty_trajectory(xs, us), 0.5 * (5.0 + 1.0))
@@ -43,7 +43,7 @@ def test_penalty_equals_radius_times_summed_control_norm() -> None:
 
 def test_from_sensitivity_radius_matches_the_msm_inflation() -> None:
     pen = ConfoundingRobustPenalty.from_sensitivity(cvar_gap=1.3, gamma=2.5)
-    assert pen.radius == confounding_robust_inflation(1.3, 0.0, 2.5)  # §32 half-width Delta(Gamma)
+    assert pen.radius == confounding_robust_inflation(1.3, 0.0, 2.5)  # MSM half-width Delta(Gamma)
 
 
 def test_zero_radius_penalty_is_zero_regardless_of_the_controls() -> None:

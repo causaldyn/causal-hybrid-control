@@ -67,7 +67,7 @@ def test_project_box_fixes_points_already_inside(us: list[float]) -> None:
     assert bool(jnp.array_equal(project_box(xs, -5.0, 5.0), xs))
 
 
-# ---- §40: the safety certificate may only shrink as the assumed confounding grows ----
+# ---- The safety certificate may only shrink as the assumed confounding grows ----
 
 
 def _toy_plan():

@@ -1,4 +1,4 @@
-(* Rocq (CONTRIBUTION 2, END-TO-END): the control-side reduction of the C2 chain
+(* Rocq (multi-channel control, END-TO-END): the control-side reduction of the chain
        multichannel causal estimation  ->  bottleneck rate  ->  dynamic control regret.
    On a clustered network (G clusters) the cross-fit two-channel Robinson-DML total-effect estimate has
    error ||B_hat - B|| <= s + e_d + e_s, where s is the cluster-robust SAMPLING term and e_d, e_s are the

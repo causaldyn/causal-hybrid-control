@@ -1,10 +1,11 @@
 (* THE FINITE-POPULATION GAP: the algebraic core of what N agents cost against the density.
 
-   Result 49 solves a mean-field game as a coupled HJB/Fokker-Planck pair, and the density it
-   returns is the N -> infinity limit.  validation/finite_population_gap.mac prices the gap for
-   the scalar LQ case: under the MEAN-FIELD optimal control the feedback depends on an agent's
-   own state and on deterministic coefficients only, so the closed-loop agents are INDEPENDENT
-   Ornstein-Uhlenbeck processes, the empirical mean is a sample mean of N i.i.d. draws, and
+   proofs/lq_mean_field.v solves a mean-field game as a coupled HJB/Fokker-Planck pair, and the
+   density it returns is the N -> infinity limit.  validation/finite_population_gap.mac prices the
+   gap for the scalar LQ case: under the MEAN-FIELD optimal control the feedback depends on an
+   agent's own state and on deterministic coefficients only, so the closed-loop agents are
+   INDEPENDENT Ornstein-Uhlenbeck processes, the empirical mean is a sample mean of N i.i.d.
+   draws, and
 
        E[(m_N(t) - m(t))^2] = v(t) / N      exactly, at every t and every N,
 

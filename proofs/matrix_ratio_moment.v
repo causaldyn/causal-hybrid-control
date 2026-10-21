@@ -1,13 +1,13 @@
-(* Rocq: the algebraic core of the EXACT MATRIX RATIO MOMENT (Result 54).
+(* Rocq: the algebraic core of the EXACT MATRIX RATIO MOMENT.
 
    validation/matrix_ratio_moment.mac derives, for the two-channel cross-fit estimator's exact
    sampling variance V = E[(X'AX)^{-1} X'A Sigma A X (X'AX)^{-1}]: the 2x2 inverse is
    adj(M)/det(M), so V = E[adj(M) N adj(M)/det(M)^2]; every entry of the sandwich is a signed sum
    of products of THREE quadratic forms in vec(X); det(M)^{-2} is an Ingham-Siegel integral over
-   the positive-definite cone (the matrix form of the scalar resolvent Result 51 (l) is built
-   on); and the tilted-Gaussian three-form moment is fixed by Isserlis' 15 pairings. Stdlib has
-   no matrices: what is proved here is the 2x2 component algebra the evaluator expands --
-   stated entrywise over the reals, closed by ring. *)
+   the positive-definite cone (the matrix form of the scalar resolvent of
+   chc.research.regret.exact_ratio_moment is built on); and the tilted-Gaussian three-form moment is
+   fixed by Isserlis' 15 pairings. Stdlib has no matrices: what is proved here is the 2x2 component
+   algebra the evaluator expands -- stated entrywise over the reals, closed by ring. *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
@@ -46,8 +46,8 @@ Lemma sandwich_entry_22 :
   = m12*m12*n11 - 2*m11*m12*n12 + m11*m11*n22.
 Proof. intros; ring. Qed.
 
-(* (C) The scalar shadow of the Ingham-Siegel tail: the q = 1 case is Result 51 (l)'s kernel,
-   and the positive-cone constraint for q = 2 in Cholesky coordinates
+(* (C) The scalar shadow of the Ingham-Siegel tail: the q = 1 case is the scalar
+   exact_ratio_moment's kernel, and the positive-cone constraint for q = 2 in Cholesky coordinates
    T = [[a^2, ac], [ac, c^2 + b^2]] holds by construction: det(T) = (a b)^2 >= 0 and the
    leading entry a^2 >= 0 -- the parametrisation cannot leave the cone, which is what makes
    the evaluator's change of variables legitimate. *)

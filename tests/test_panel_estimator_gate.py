@@ -1,6 +1,6 @@
-"""chc.regret: Result 51's Psi put against a real cross-fitted DML fit on a panel (§60).
+"""chc.regret: the delayed-network Psi put against a real cross-fitted DML fit on a panel.
 
-Result 51 shipped Psi with a scope note saying it is a functional of the process, not a re-derived
+Psi ships with a scope note saying it is a functional of the process, not a re-derived
 estimator. These run the comparison that settles it, and the answer is not the flattering one: the
 functional RANKS the two fold partitions correctly at every cluster count and its ``O(1/g)`` washout
 law holds, but its point prediction of the variance ratio is conservative -- the real estimator

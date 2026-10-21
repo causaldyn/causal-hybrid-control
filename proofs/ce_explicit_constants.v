@@ -1,8 +1,8 @@
-(* Rocq (CONTRIBUTION 1): the finite-sample end-to-end half -- the EXACT gain-gap identity, the
+(* Rocq (order transfer): the finite-sample end-to-end half -- the EXACT gain-gap identity, the
    explicit ball on which a certainty-equivalent controller still stabilises the TRUE plant, and the
    explicit constant in front of ||dB||^2.
 
-   What this replaces. Every C1 statement so far took "regret <= cc * ||dB||^2" as a HYPOTHESIS
+   What this replaces. Every order-transfer statement so far took "regret <= cc * ||dB||^2" as a HYPOTHESIS
    (c2_end_to_end.v A5 quantifies over an arbitrary 0 <= cc), citing Mania-Tu-Recht's LOCAL quadratic
    bound. Nothing computed the ball on which it holds, and nothing computed cc. Both are here, and
    the route is different: STEP 1 of validation/ce_explicit_constants.mac shows the Lyapunov
@@ -19,7 +19,7 @@
    ce_explicit_constant_certificate sweep. The ONE remaining citation on the control side is uniform
    validity of the gain map's Lipschitz constant on the ball (Konstantinov-Petkov-Christov-Angelova
    1993; Sun 1998), taken as a hypothesis (l_k) and certified numerically on the ball, exactly as the
-   clustered CLT stays cited in the C2 line.
+   clustered CLT stays cited in c2_end_to_end.v.
 
    Parameterisation. The proofs are stated in s with s^2 = 1 - eta rather than in sqrt(1 - eta), so
    every goal stays polynomial and nra stays in scope. theta := 1 - s. *)
@@ -84,7 +84,7 @@ Definition rho (s bB lk : R) : R := theta s / (2 * bB * lk).
 Definition modulus (s bB lk d : R) : R := s + bB * lk * d.
 
 (* THE MISSING LINK: inside the ball the perturbed closed loop still contracts, with an explicit
-   margin theta/2. This is the statement nothing in the C1 line previously had. *)
+   margin theta/2. This is the statement no order-transfer proof previously had. *)
 Theorem perturbed_loop_contraction : forall s bB lk d,
   0 <= s -> s < 1 -> 0 < bB -> 0 < lk -> 0 <= d -> d <= rho s bB lk ->
   modulus s bB lk d <= 1 - theta s / 2.
@@ -266,8 +266,8 @@ Qed.
 
 (* ---------- (F) Composition with the statistical half. ---------- *)
 
-(* C2 (Result 26) gives ||dB|| = O_p(a_G). Composed with the theorem above, the CONTROL regret is
-   bounded by C * a_G^2 inside the ball -- the end-to-end statement the C1 line said was open, now
+(* The clustered cross-fit rate gives ||dB|| = O_p(a_G). Composed with the theorem above, the CONTROL regret is
+   bounded by C * a_G^2 inside the ball -- the end-to-end statement the earlier proofs left open, now
    with both the ball and the constant explicit rather than hypothesised. *)
 Theorem end_to_end_composition : forall cbound aG d,
   0 <= cbound -> 0 <= d -> d <= aG -> forall reg,

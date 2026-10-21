@@ -1,4 +1,4 @@
-"""What a barrier certificate is worth: the pointwise §40 check against the true reachable tube.
+"""What a barrier certificate is worth: the pointwise robust check against the true reachable tube.
 
 Run: uv run python scripts/reachability_demo.py
 """

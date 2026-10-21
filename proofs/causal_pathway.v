@@ -13,7 +13,7 @@
         per-step tail shrinking by q each horizon -- so truncating at finite H loses geometrically little.
    (L3) WEAKEST-LINK / multiplicative bottleneck. A path's contribution is the PRODUCT of edge
         magnitudes: |a*b*c| = |a|*|b|*|c|, and one weak edge (|a|<=eps) caps the whole path at
-        eps*|b|*|c|. The temporal-path analogue of the C2 channel bottleneck. *)
+        eps*|b|*|c|. The temporal-path analogue of the channel bottleneck of multichannel_control.v. *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.

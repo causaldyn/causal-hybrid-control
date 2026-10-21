@@ -1,4 +1,4 @@
-(* Rocq (FIX Result 30, reviewer-7): the explicit-Euler contraction factor. A negative one-sided
+(* Rocq (a correction): the explicit-Euler contraction factor. A negative one-sided
    Lipschitz mu = mu_2(J_f) < 0 does NOT give the discrete factor 1 + mu*dt; with the full Lipschitz L,
    |d + dt(f(x)-f(y))|^2 <= (1 + 2*mu*dt + L^2*dt^2)*|d|^2 (validation/contractive_euler.mac). We prove
    the two facts that make q(dt) = sqrt(1 + 2*mu*dt + L^2*dt^2) a valid Gronwall factor a in [0,1):

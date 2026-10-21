@@ -3,7 +3,8 @@
    in validation/confounded_turnpike.mac). A long-horizon optimal trajectory sits near a static turnpike
    (optimal steady state) for almost all of its length. A CONFOUNDED controller, using the biased effect
    b_obs = b + beta, converges to the WRONG turnpike x_conf = b*xref/(b+beta) and pays the offset every
-   step. This gives result #1d a proper turnpike footing, plus a NEW discounted-regret certificate:
+   step. This gives the dynamic regret of dynamic_causal_mpc.v a turnpike footing, plus a NEW
+   discounted-regret certificate:
    undiscounted cumulative regret grows linearly (unbounded), but the discounted sum stays bounded by
    c/(1-g). *)
 

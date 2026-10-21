@@ -1,4 +1,4 @@
-"""Safety under a partially identified control effect (Result 40, ``chc.barrier``)."""
+"""Safety under a partially identified control effect (``chc.barrier``)."""
 
 import numpy as np
 import pytest
@@ -70,7 +70,7 @@ def test_no_deficit_means_no_threshold_rather_than_a_large_one() -> None:
 
 
 def test_gamma_star_inverts_the_msm_radius_exactly() -> None:
-    """Round-trip through §32: the radius at ``Gamma*`` is the threshold radius, to machine zero."""
+    """Round-trip: the MSM radius at ``Gamma*`` is the threshold radius, to machine zero."""
     cvar_gap, grad_norm, threshold = 1.0, 1.0, 0.4
     gamma_star = barrier_gamma_star(threshold, cvar_gap, grad_norm)
     assert gamma_star == pytest.approx(7.0 / 3.0)
@@ -201,7 +201,7 @@ def test_an_empty_admissible_set_is_reported_rather_than_silently_clipped() -> N
 
 
 def test_the_safety_filter_holds_the_limit_where_a_regret_sized_budget_does_not() -> None:
-    """The operational half of §40, measured in closed loop rather than argued from slopes."""
+    """The operational half of the claim, measured in closed loop rather than argued from slopes."""
     bench = safety_filter_benchmark()
     by_name = dict(zip(bench.controllers, bench.violation_rate, strict=True))
     assert by_name["oracle"] == 0.0

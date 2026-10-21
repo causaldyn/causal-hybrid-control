@@ -1,4 +1,4 @@
-(* Rocq: a regret certificate BEYOND the local linearisation (control-first result #3). The LQ /
+(* Rocq: a regret certificate BEYOND the local linearisation. The LQ /
    certainty-equivalence bounds (proofs/interference_regret.v, causal_mpc.v) and the local nonlinear
    certificate (chc.lqr.linearized_regret_certificate) linearise around the optimum. For a
    mu-strongly-convex control cost the regret admits a GLOBAL, self-certifying upper bound

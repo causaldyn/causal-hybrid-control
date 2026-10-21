@@ -1,15 +1,16 @@
-(* Rocq: the algebraic core of the FOLD-SPECTRUM LAW (Result 52).
+(* Rocq: the algebraic core of the FOLD-SPECTRUM LAW.
 
-   validation/fold_spectrum_law.mac derives, for the cross-fit sandwich of Result 51 on a
+   validation/fold_spectrum_law.mac derives, for the cross-fit sandwich on a
    delayed-network covariance: (i) the residualiser's square stays inside the idempotent algebra
    <I, E, F> -- squaring promotes r^2 to r^4 and nothing else -- so the fold partition enters the
    variance functional ONLY through the same-fold overlap term, with weight r^4 - 1 > 0: the
    variance-optimal fold design minimises the same-fold 2-walk mass of the graph weighted by
    Q(x) = sum g_d g_e x^|d-e| S_d S_e -- which is the MAXIMUM-weight balanced cut of that graph,
-   not the minimum-weight one this header claimed until Result 61 (proofs/fold_cut_duality.v); (ii) on a cycle the K = 2 objective diagonalises over
-   Fourier modes with score lambda(c) = g0^2 + 4 g1^2 c^2 + 4 g0 g1 x c + shell-2 terms,
-   c = cos(theta); (iii) the two pure spectral designs, parity (all mass at c = -1) and width-2
-   stripes (all mass at c = 0), differ by the factored two-threshold law
+   not the minimum-weight one an earlier version of this header claimed (proofs/fold_cut_duality.v);
+   (ii) on a cycle the K = 2 objective diagonalises over Fourier modes with score
+   lambda(c) = g0^2 + 4 g1^2 c^2 + 4 g0 g1 x c + shell-2 terms, c = cos(theta); (iii) the two pure
+   spectral designs, parity (all mass at c = -1) and width-2 stripes (all mass at c = 0), differ by
+   the factored two-threshold law
        lambda_parity - lambda_stripes = 4 (g0 x - g1)(2 g2 x - g1).
 
    Honest scope, as in omega_jensen_gap.v: Stdlib has no matrices, so the <I, E, F> subalgebra is
@@ -34,8 +35,8 @@ Proof. intro r; split; ring. Qed.
 
 (* (B) The weight on the same-fold term is r^4 - 1 > 0 for every genuine fold count
    (r = K/(K-1) > 1): smaller same-fold weighted 2-walk count means smaller variance.  Since
-   that count is 1'Q1 - 2*cut with 1'Q1 partition-free (Result 61), the design problem is a
-   MAXIMUM cut of Q -- the earlier reading of this comment had the direction backwards. *)
+   that count is 1'Q1 - 2*cut with 1'Q1 partition-free (proofs/fold_cut_duality.v), the design
+   problem is a MAXIMUM cut of Q -- an earlier reading of this comment had it backwards. *)
 Lemma partition_weight_positive : forall r : R, 1 < r -> 0 < r^4 - 1.
 Proof.
   intros r H.

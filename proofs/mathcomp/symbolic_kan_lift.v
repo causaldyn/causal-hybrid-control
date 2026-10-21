@@ -1,4 +1,5 @@
-(* Rocq + MathComp: SYMBOLIC EXTRACTION FROM A KOLMOGOROV-ARNOLD LAYER in n inputs (Result 46).
+(* Rocq + MathComp: SYMBOLIC EXTRACTION FROM A KOLMOGOROV-ARNOLD LAYER in n inputs
+   (proofs/symbolic_kan.v).
 
    proofs/symbolic_kan.v states the gauge and the separability floor for a two-input layer. This
    file proves them for a layer b + sum_i f_i(x_i) with ANY number of inputs n, over any real

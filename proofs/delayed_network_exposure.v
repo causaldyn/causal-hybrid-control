@@ -1,7 +1,7 @@
 (* Rocq: the algebraic core of the DELAYED NETWORK EXPOSURE law.
 
    validation/delayed_exposure_gate.mac STEP 7 showed that a delay is FREE under a separable
-   covariance Sigma = Sigma_u (x) T with unit-level folds: tr(T) cancels and Result 43 transfers
+   covariance Sigma = Sigma_u (x) T with unit-level folds: tr(T) cancels and cluster_fold_leakage.v transfers
    verbatim. It left exactly one escape route -- a NON-separable Sigma, i.e. a delay that interacts
    with the network. validation/delayed_network_exposure.mac takes that route and derives the law.
 
@@ -224,7 +224,7 @@ Theorem separable_limit_kills_phi : forall k u0 u1c u2 phi1 phi2,
   psi_poly k u0 u1c u2 (phi1 ^ 0) = psi_poly k u0 u1c u2 (phi2 ^ 0).
 Proof. intros; unfold psi_poly; simpl; ring. Qed.
 
-(* (E) COMPOSITION with Result 43. At delta = 0 on a complete graph the law reduces to the
+(* (E) COMPOSITION with cluster_fold_leakage.v. At delta = 0 on a complete graph the law reduces to the
    exchangeable one, Psi = c(m,K) * (1 - rho_ICC), with the fold-geometry constant
    c(m,K) = m * tr(A_u^2) / tr(A_u)^2 -- the quantity the shipped certificate only MEASURES.
    Its two trace values come from the same projector algebra as (A). *)
@@ -246,7 +246,7 @@ Proof.
 Qed.
 
 (* At K = 2 the penalty is EXACTLY (10m-4)/(m+2)^2: positive at every cluster size, decaying like
-   10/m. This is the cluster-SIZE counterpart of the O(1/G) cluster-COUNT leak of Result 43. *)
+   10/m. This is the cluster-SIZE counterpart of the O(1/G) cluster-COUNT leak of cluster_fold_leakage.v. *)
 Theorem c_fold_excess_at_K2 : forall m,
   0 < m -> c_fold m 2 2 - 1 = (10 * m - 4) / (m + 2) ^ 2.
 Proof. intros m Hm. unfold c_fold. field. nra. Qed.

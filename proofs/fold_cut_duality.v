@@ -1,11 +1,10 @@
-(* Rocq: what combinatorial problem the fold design is, and what the certified gap guarantees
-   (Result 61).
+(* Rocq: what combinatorial problem the fold design is, and what the certified gap guarantees.
 
    validation/fold_cut_duality.mac derives, for a symmetric weight matrix Q and a bisection sign
    vector s: internal = (1'Q1 + s'Qs)/2, cut = (1'Q1 - s'Qs)/4, hence internal = 1'Q1 - 2 cut.
    Since 1'Q1 does not depend on the partition, MINIMISING the same-fold 2-walk mass -- which is
-   what Result 52 showed Psi is affine-increasing in -- is MAXIMISING the cut of Q.  The design
-   problem is a MAX-bisection, not the minimum-weight cut Result 52 (a) named it.
+   what Psi is affine-increasing in (proofs/fold_spectrum_law.v) -- is MAXIMISING the cut of Q.  The
+   design problem is a MAX-bisection, not the minimum-weight cut it was first named.
 
    Proved here: (A) the duality and its consequence for the ordering; (B) the certificate
    sandwich, i.e. that the reported Ky Fan gap is a ONE-SIDED guarantee -- eps certified implies
@@ -39,7 +38,7 @@ Lemma min_internal_iff_max_cut :
 Proof. intros total c1 c2. unfold internal. split; intro H; lra. Qed.
 
 (* The quadratic-form route: internal = (total + q)/2 and cut = (total - q)/4 with q = s'Qs,
-   which is the form the Fourier diagonalisation of Result 52 (b) actually uses. *)
+   which is the form the Fourier diagonalisation of proofs/fold_spectrum_law.v uses. *)
 Lemma quadratic_form_agrees :
   forall total q : R, (total + q) / 2 = internal total ((total - q) / 4).
 Proof. intros total q. unfold internal. lra. Qed.

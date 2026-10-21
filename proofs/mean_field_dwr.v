@@ -1,11 +1,12 @@
-(* Rocq: the algebraic core of the CONDITIONED RESIDUAL (Result 55).
+(* Rocq: the algebraic core of the CONDITIONED RESIDUAL.
 
-   validation/mean_field_dwr.mac derives, for the LQ mean-field game of Result 49: the numerical
-   error at t = 0 is EXACTLY the total defect divided by the fixed-point determinant den(T); the
-   dual weight z(s) = Phi(T-s)^T v / den(T) is the exact adjoint solution and equals v/den at
-   s = T; the reduced HJB residual is homogeneous of degree 1 in (m, S), so an approximator whose
-   reduced state stays bounded keeps a bounded residual while its error diverges (F); and den has
-   a SIMPLE zero at the obstruction, so Result 49's fitted pole exponent -0.998 is exactly -1.
+   validation/mean_field_dwr.mac derives, for the LQ mean-field game of proofs/lq_mean_field.v: the
+   numerical error at t = 0 is EXACTLY the total defect divided by the fixed-point determinant
+   den(T); the dual weight z(s) = Phi(T-s)^T v / den(T) is the exact adjoint solution and equals
+   v/den at s = T; the reduced HJB residual is homogeneous of degree 1 in (m, S), so an approximator
+   whose reduced state stays bounded keeps a bounded residual while its error diverges (F); and den
+   has a SIMPLE zero at the obstruction, so the certificate's fitted pole exponent -0.998 is
+   exactly -1.
 
    Honest scope, as in lq_mean_field.v: Stdlib has no matrices, so the transition matrix and the
    adjoint ODE stay in Maxima and what is proved here is the scalar spine -- the exact quotient,
@@ -96,7 +97,7 @@ Proof.
 Qed.
 
 (* (E) THE POLE EXPONENT IS EXACTLY -1. A simple zero means den(T) = d1 (T - Tstar) to leading
-   order, so the error times the gap is CONSTANT -- Result 49 fitted -0.998 on a five-point
+   order, so the error times the gap is CONSTANT -- the certificate fitted -0.998 on a five-point
    log-log regression of the same quantity. *)
 Lemma simple_pole_has_exponent_minus_one :
   forall d d1 gap : R,

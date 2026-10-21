@@ -1,4 +1,4 @@
-"""chc.uncertainty: calibrating the MSM sensitivity Gamma instead of only assuming it (§32).
+"""chc.uncertainty: calibrating the MSM sensitivity Gamma instead of only assuming it.
 
 Two calibrations, and both can fail here. ``benchmark_gamma`` prices Gamma in units of the
 confounding the OBSERVED covariates carry -- which forces a logarithmic scale, because odds ratios

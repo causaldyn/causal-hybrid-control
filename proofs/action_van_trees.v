@@ -1,15 +1,16 @@
-(* Rocq: the algebraic core of the ACTION-SIDE VAN TREES BOUND (Result 57).
+(* Rocq: the algebraic core of the ACTION-SIDE VAN TREES BOUND.
 
    validation/action_van_trees.mac derives: the one-step LQ regret is EXACTLY a squared error in
    the ACTION, J(u) - J(u_star) = (b^2+rr)(u - u_star)^2, so no delta method is needed; van Trees applied
    to the estimand psi(b) = u_star(b) -- valid for every estimator, biased or not -- times that exact
-   curvature gives a floor whose large-sample limit is Result 10's constant C sigma^2/V_id
-   unchanged; the finite-n shortfall is O(1/n); and the knife-edge caveat rr = b^2 survives,
+   curvature gives a floor whose large-sample limit is the Cramer-Rao constant C sigma^2/V_id
+   of information_lower_bound.v unchanged; the finite-n shortfall is O(1/n); and the knife-edge
+   caveat rr = b^2 survives,
    because there psi'(b) = 0 as a property of the problem.
 
    Honest scope, as in information_lower_bound.v and van_trees.v: the van Trees inequality itself
    is a measure-theoretic input, cited (Gill-Levit 1995; van der Vaart Thm 2.5.2) and taken as a
-   hypothesis exactly as in Result 42. What is proved here is the algebra that turns it into a
+   hypothesis exactly as in minimax_exploration.v. What is proved here is the algebra that turns it into a
    control-regret floor: the exact regret identity, the constant, the quotient's monotonicity and
    limit, and the two sign facts. *)
 
@@ -20,7 +21,7 @@ Open Scope R_scope.
 
 (* (A) THE EXACT REGRET IDENTITY. For J(u) = (xt + b u)^2 + rr u^2 with u_star = -b xt/(b^2+rr),
    the excess cost is exactly (b^2+rr)(u - u_star)^2 -- for EVERY u, with no linearisation. This is
-   what removes Result 10's delta-method caveat: regret is already a squared error in the action,
+   what removes the Cramer-Rao floor's delta-method caveat: regret is already a squared error in the action,
    so the nonlinearity of u*(b) never has to be approximated. *)
 Lemma regret_is_exact_squared_action_error :
   forall b rr xt u : R,
@@ -34,7 +35,7 @@ Proof.
   field; exact H.
 Qed.
 
-(* (B) THE CONSTANT IS THE ONE RESULT 10 ALREADY CARRIES. With psi = u_star the sensitivity is
+(* (B) THE CONSTANT IS THE CRAMER-RAO FLOOR'S OWN. With psi = u_star the sensitivity is
    psi' = -xt (rr - b^2)/(rr + b^2)^2, and (b^2 + rr) psi'^2 is exactly
    C = xt^2 (rr - b^2)^2/(rr + b^2)^3. So switching from Cramer-Rao on the effect to van Trees on
    the action costs nothing in the constant. *)
@@ -62,7 +63,7 @@ Definition ActionVanTreesFloor (action_mse sensitivity n i_data i_prior : R) : P
 (* THE ACTION-SIDE FLOOR, IN THE VOCABULARY OF ITS CITED INPUT. Lemma (A) makes regret EXACTLY the
    curvature times the squared action error, with no linearisation, so van Trees on the action
    transfers to regret without a delta method: E[R] >= curvature * psi'^2/(n I_data + I_prior).
-   Lemma (C) then puts that below its large-n limit, which is Result 10's constant. This proves
+   Lemma (C) then puts that below its large-n limit, which is the Cramer-Rao constant. This proves
    nothing the lemmas around it do not; what it adds is that the dependency on the cited
    inequality is in the TYPE rather than in the header. *)
 Lemma action_regret_floor_from_cited_inputs :

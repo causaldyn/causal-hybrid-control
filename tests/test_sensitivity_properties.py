@@ -1,8 +1,8 @@
-"""Property-based (hypothesis) tests for the §32/§35 sensitivity invariants.
+"""Property-based (hypothesis) tests for the MSM radius and minimax-controller invariants.
 
 The Rocq proofs assert these for symbolic inputs; here hypothesis hammers the shipped NumPy code
 with random valid inputs -- the numeric complement catching float / edge-case drift hand-picked
-examples miss. Properties: §32 radius never optimistic / tight at Gamma=1 / monotone; §35 gain
+examples miss. Properties: MSM radius never optimistic / tight at Gamma=1 / monotone; minimax gain
 shift is a sign dichotomy, symmetric loss recovers CE, analytic improvement matches the numeric one.
 """
 
@@ -34,7 +34,7 @@ positive = finite(0.1, 20.0)
 outcomes_st = st.lists(finite(-100.0, 100.0), min_size=8, max_size=400).map(np.asarray)
 
 
-# ---- §32: bounded-density-ratio radius ----
+# ---- Bounded-density-ratio radius ----
 
 
 @given(cvar_lo=finite(-50.0, 50.0), gap=positive, gamma=gammas)
@@ -79,7 +79,7 @@ def test_robust_radius_never_below_nominal(outcomes: np.ndarray, base: float, ga
     assert confounding_robust_radius(base, outcomes, gamma) >= base - 1e-9  # pessimism only grows
 
 
-# ---- §35: minimax controller under asymmetric loss ----
+# ---- Minimax controller under asymmetric loss ----
 
 # b_hat > D > 0 (identified effect sign): draw b_hat, then D as a strict fraction of it.
 _bhat = finite(0.5, 20.0)

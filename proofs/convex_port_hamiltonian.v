@@ -1,5 +1,4 @@
-(* Rocq: the algebraic core of A COERCIVE ENERGY FOR THE PORT-HAMILTONIAN RESIDUAL (Result 68,
-   Appendix A item A20).
+(* Rocq: the algebraic core of A COERCIVE ENERGY FOR THE PORT-HAMILTONIAN RESIDUAL.
 
    chc.residual.PortHamiltonianResidual encodes x' = (J - R) grad H(x) + g(x) u and claims that
    because H' = -grad H . R grad H <= 0, "the residual can't blow up off-support like a black box

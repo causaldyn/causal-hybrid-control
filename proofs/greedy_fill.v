@@ -1,10 +1,11 @@
 (* Rocq: the greedy fill is optimal for EVERY prefix-antitone objective, at every horizon.
 
-   Results 56 and 66 prove the capped-exploration law for one estimation term, K/(I0 + c S), and
-   leave the T-round step -- "saturate the earliest rounds" beats every other schedule -- to Maxima
-   and the certificate, on the grounds that Stdlib has no schedules (capped_exploration.v,
-   capped_exploration_schedule.v). It needs none. A schedule is a function nat -> R, a prefix sum
-   is a recursion, and the whole T-round argument is two facts about prefix sums:
+   capped_exploration.v and capped_exploration_schedule.v prove the capped-exploration law for one
+   estimation term, K/(I0 + c S), and leave the T-round step -- "saturate the earliest rounds" beats
+   every other schedule -- to Maxima and the certificate, on the grounds that Stdlib has no
+   schedules (capped_exploration.v, capped_exploration_schedule.v). It needs none. A schedule is a
+   function nat -> R, a prefix sum is a recursion, and the whole T-round argument is two facts about
+   prefix sums:
 
      (A) every feasible schedule of total M has t-th prefix sum at most min(M, C_t), with C_t the
          caps' own prefix sum;
@@ -18,8 +19,8 @@
 
    Nothing here uses convexity, and nothing uses the form K/(I0 + c S): section (D) shows that
    form is one member of the class. The optimisation over the total M is then one-dimensional,
-   which is where Result 66's bracket takes over. A budget constrains only M, so it changes the
-   one-dimensional problem and not the schedule. *)
+   which is where capped_exploration_schedule.v's bracket takes over. A budget constrains only M, so
+   it changes the one-dimensional problem and not the schedule. *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
@@ -34,7 +35,7 @@ Fixpoint psum (v : nat -> R) (t : nat) : R :=
   | S t' => psum v t' + v t'
   end.
 
-(* Each round at its cap until the total m is spent: the schedule Results 56 and 66 ship. *)
+(* Each round at its cap until the total m is spent: the capped-exploration schedule. *)
 Definition greedy (cap : nat -> R) (m : R) (t : nat) : R :=
   Rmax 0 (Rmin (cap t) (m - psum cap t)).
 

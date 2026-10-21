@@ -1065,7 +1065,7 @@ def test_the_rk4_fixed_point_takes_the_weights_too() -> None:
 
 
 def test_a_constant_channel_is_n_m_coefficients_beside_the_drifts_own_basis() -> None:
-    """``channel_degree=0`` estimates the channel §18/§19 cover and leaves the drift affine.
+    """``channel_degree=0`` estimates the constant channel and leaves the drift affine.
 
     Two-sided like the rest: adjusted, it lands on the truth; unadjusted, it is as wrong as the
     affine channel's constant term, since the class does not identify anything the moment does

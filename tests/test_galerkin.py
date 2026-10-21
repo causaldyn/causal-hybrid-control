@@ -148,7 +148,7 @@ def test_optimal_upwind_series_branch_agrees_with_the_closed_form() -> None:
 
 
 def test_convection_diffusion_certificate_locates_the_threshold_and_prices_the_cure() -> None:
-    # Result 47. Each block can fail on its own, and the certificate is run at whatever precision
+    # Cell-Peclet. Each block can fail on its own, and the certificate is run at whatever precision
     # is in force -- which is why nodal exactness is stated in ULPs and not in absolute error.
     curve = convection_diffusion_certificate()
     # (1) THE INSTABILITY. Above the threshold the scheme undershoots and alternates.

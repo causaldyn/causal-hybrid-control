@@ -175,7 +175,8 @@ def test_sign_identification_threshold_and_partial_id_robust_control() -> None:
 
 
 def test_doubly_robust_control_vanishes_if_either_model_correct() -> None:
-    # DR version of result 0 (proofs/doubly_robust.v): the AIPW control effect's bias is the product
+    # DR version of orthogonal CE control (proofs/doubly_robust.v): the AIPW control effect's bias
+    # is the product
     # of the outcome and propensity errors, so regret -> 0 if EITHER model is correct (double
     # robustness), unlike outcome-regression (needs the outcome) or IPW (needs the propensity)
     curve = doubly_robust_control_certificate(n_seeds=16)
@@ -239,7 +240,7 @@ def test_control_regret_has_an_information_lower_bound() -> None:
     assert (np.abs(ratio - 1.0) < 0.35).all()  # efficient estimator is tight against the CR bound
     assert (curve.confounded_floor > curve.cramer_rao_floor).all()  # confounding raises the floor
     assert curve.floor_ratio > 1.0  # less identifying information => strictly higher floor
-    # Result 57: the unbiased CR floor is beatable AT a point -- a Hodges estimator drives the
+    # The unbiased CR floor is beatable AT a point -- a Hodges estimator drives the
     # regret there to exactly zero -- which is why it was never a minimax statement. The van Trees
     # floor, which assumes nothing about bias, is not beatable, and it separates the superefficient
     # estimator from the efficient one instead of being vacuous for both.
@@ -251,8 +252,9 @@ def test_control_regret_has_an_information_lower_bound() -> None:
 
 
 def test_van_trees_inequality_is_tight_for_the_gaussian_conjugate() -> None:
-    # Contribution 3, formal (proofs/van_trees.v): the van-Trees (Bayesian CR) inequality that
-    # Result 20 assumed. Bayes risk >= 1/(I_prior + n*I_data); the posterior-mean estimator hits it
+    # Formal (proofs/van_trees.v): the van-Trees (Bayesian CR) inequality that the adaptive
+    # exploration bound assumes. Bayes risk >= 1/(I_prior + n*I_data); the posterior-mean estimator
+    # hits it
     # (tight for Gaussian). Confounding shrinks the identifying info, raising the floor.
     curve = van_trees_certificate()
     assert (curve.empirical_mse >= 0.9 * curve.van_trees_bound).all()  # van Trees is a lower bound
@@ -310,10 +312,11 @@ def test_adaptive_exploration_has_no_rate_where_no_schedule_has_regret() -> None
 
 
 def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:
-    # Contribution 3 (proofs/adaptive_exploration.v): control with online effect learning.
+    # proofs/adaptive_exploration.v: control with online effect learning.
     # A tapering schedule v_t ~ 1/sqrt(t) reaches cumulative regret Theta(sqrt(T)) -- matching the
     # van-Trees sqrt(T) lower bound -- while greedy (no explore) is Theta(T) and the static v* of
-    # Result 11 over-explores (~T). The optimal schedule decreases; not a static rule.
+    # optimal_exploration_certificate over-explores (~T). The optimal schedule decreases; not a
+    # static rule.
     curve = adaptive_exploration_certificate()
     assert 0.4 < curve.adaptive_slope < 0.65  # tapering schedule -> sqrt(T) cumulative regret
     assert curve.greedy_slope > 0.9  # never exploring -> linear (Theta T)
@@ -333,24 +336,26 @@ def test_adaptive_exploration_achieves_the_van_trees_sqrt_t_rate() -> None:
 
 
 def test_cluster_fold_leakage_prices_the_a8_violation() -> None:
-    # Contribution 2, Result 43 (proofs/cluster_fold_leakage.v): assumption A8 asks for folds of
+    # proofs/cluster_fold_leakage.v: the cluster rate's assumptions ask for folds of
     # WHOLE clusters; the certificates used to split by row parity, leaving every cluster in both
     # folds. The finding is NOT a bias -- it is a change of estimator, visible only in the second
     # moment. Each block below can fail on its own.
     curve = cluster_fold_leakage_certificate()
-    # (1) NO BIAS, either scheme, either nuisance class. Falsifies Result 43(a) if it fails.
+    # (1) NO BIAS, either scheme, either nuisance class. Falsifies the no-bias claim if it fails.
     assert np.abs(curve.lin_bias_row).max() < 0.02
     assert np.abs(curve.lin_bias_cluster).max() < 0.02
     assert np.abs(curve.aware_bias_row).max() < 0.02
     assert np.abs(curve.aware_bias_cluster).max() < 0.02
     # (2) For the library's OWN linear nuisance the fold scheme washes out as G grows -- which is
-    # what licenses the C2 numbers published before the fold was corrected.
+    # what licenses the multi-channel numbers published before the fold was corrected.
     assert curve.lin_sd_ratio[-1] > 0.95
     assert curve.lin_sd_ratio[-1] > curve.lin_sd_ratio[0]
-    # (3) THE A8 DISCRIMINATOR. With a cluster-aware nuisance, row folds estimate each cluster's
+    # (3) THE WHOLE-CLUSTER-FOLD DISCRIMINATOR. With a cluster-aware nuisance, row folds estimate
+    # each cluster's
     # own effect from its own training rows and subtract it, annihilating the residual ICC;
     # whole-cluster folds cannot see the held-out cluster's effect, so they preserve it. This is
-    # the assertion that makes this a test OF A8 rather than one that happens to pass under it.
+    # the assertion that makes this a test OF whole-cluster folds rather than one that happens to
+    # pass under them.
     assert curve.resid_icc_row.max() < 0.02
     assert curve.resid_icc_cluster[-1] > 0.8 * curve.icc_grid[-1]
     assert np.all(np.diff(curve.resid_icc_cluster) > 0)  # tracks rho_ICC
@@ -365,7 +370,7 @@ def test_cluster_fold_leakage_prices_the_a8_violation() -> None:
     )  # antitone in rho_ICC (Rocq: leak_ratio_antitone)
     # (6) A genuine cluster-MEASURABLE exposure -- what a partial-interference spillover actually
     # is -- is reproduced exactly from the held-out row's own cluster, so row folds annihilate the
-    # channel: it loses its variation entirely (Result 43(c)).
+    # channel: it loses its variation entirely.
     assert curve.exposure_resid_var_row < 0.02 * curve.exposure_resid_var_cluster
     # (7) ... and the consequence is a bias of EXACTLY the annihilated coefficient, -b_s. This is
     # the one regime where the leak is not merely a variance question; cluster folds fix it.
@@ -375,7 +380,7 @@ def test_cluster_fold_leakage_prices_the_a8_violation() -> None:
 
 
 def test_ce_explicit_constants_certify_a_ball_and_a_constant() -> None:
-    # Contribution 1, Result 44 (proofs/ce_explicit_constants.v): every earlier C1 statement took
+    # proofs/ce_explicit_constants.v: every earlier order-transfer statement took
     # "regret <= cc*||dB||^2" as a HYPOTHESIS and cited Mania-Tu-Recht's LOCAL bound. Here the ball
     # and the constant are both computed. Each block below can fail on its own.
     curve = ce_explicit_constant_certificate()
@@ -406,7 +411,8 @@ def test_ce_explicit_constants_certify_a_ball_and_a_constant() -> None:
 
 
 def test_regret_scaling_reports_the_unbounded_event_it_conditions_on() -> None:
-    # Defect fixed with Result 44: regret_scaling used to `continue` past both unstabilisable
+    # Defect fixed with the explicit constants: regret_scaling used to `continue` past both
+    # unstabilisable
     # draws and draws whose CE gain destabilises the TRUE plant. There regret is +inf and E[R] does
     # not exist, so the reported exponent is CONDITIONAL -- the share is now returned, not dropped.
     a = np.array([[1.0, 0.1], [0.0, 0.95]])
@@ -422,7 +428,8 @@ def test_regret_scaling_reports_the_unbounded_event_it_conditions_on() -> None:
 
 
 def test_conjugate_time_bounds_the_horizon_every_regret_constant_lives_on() -> None:
-    # Result 45 (proofs/conjugate_time.v): Result 14's turnpike says a long horizon is BENIGN, but
+    # proofs/conjugate_time.v: the confounded turnpike (confounded_turnpike_certificate) says a
+    # long horizon is BENIGN, but
     # only for a positive-definite stage cost. Under an indefinite one the backward Riccati solution
     # escapes in finite time, and every constant in this module is built on an object that stops
     # existing there. Three distinct pole orders are the claim, so they are checked separately.
@@ -440,7 +447,8 @@ def test_conjugate_time_bounds_the_horizon_every_regret_constant_lives_on() -> N
     assert abs(curve.sensitivity_slope - 2.0) < 0.05
     assert curve.sensitivity_slope > curve.value_slope + 0.5
     assert curve.sensitivity_residue[-1] > 0.1
-    # (4) Result 44 has C ~ L_K^2, and the coefficient read at t = 0, the sensitivity squared,
+    # (4) ce_explicit_constant_certificate has C ~ L_K^2, and the coefficient read at t = 0, the
+    # sensitivity squared,
     # carries FOURTH order by construction; the regret realised over the horizon is third order
     # (test_the_realised_conjugate_time_regret_has_a_third_order_pole).
     assert abs(curve.regret_slope - 4.0) < 0.1
@@ -457,7 +465,7 @@ def test_conjugate_time_bounds_the_horizon_every_regret_constant_lives_on() -> N
 
 
 def test_minimax_exploration_floor_is_valid_sharp_and_causal() -> None:
-    # Contribution 3, the open item closed (proofs/minimax_exploration.v): the sequential bound is
+    # proofs/minimax_exploration.v: the sequential bound is
     # now an inf over ALL policies, not over schedules, and its constant is explicit --
     # c_causal = 2*A*|du*/db|*sigma/sqrt(eta). Three separate claims, checked separately.
     curve = minimax_exploration_certificate()
@@ -478,7 +486,7 @@ def test_minimax_exploration_floor_is_valid_sharp_and_causal() -> None:
 
 
 def test_multichannel_control_needs_every_channel_orthogonalised() -> None:
-    # Contribution 2 (proofs/multichannel_control.v): on a clustered network the total effect
+    # proofs/multichannel_control.v: on a clustered network the total effect
     # B=b_d+b_s has two interference channels. Cross-fit Robinson DML: orthogonalising only the
     # direct caps regret at O(delta^2) (spillover bottleneck); orthogonalising both -> ~delta^4.
     # The effective sample size is the number of clusters G (estimate concentrates at 1/sqrt(G)).
@@ -490,7 +498,7 @@ def test_multichannel_control_needs_every_channel_orthogonalised() -> None:
 
 
 def test_multivariate_interference_needs_every_channel_orthogonalised() -> None:
-    # Contribution 2, multivariate (composes proofs/multichannel_control.v with multivariate LQ):
+    # Multivariate (composes proofs/multichannel_control.v with multivariate LQ):
     # the total effect is an input MATRIX B = B_d + B_s. On a 2-state/1-input LQ, orthogonalising
     # only direct (spillover plug-in) caps the LQ regret at O(delta^2); both -> O(delta^4).
     curve = multivariate_interference_certificate()
@@ -504,7 +512,7 @@ def test_multivariate_interference_needs_every_channel_orthogonalised() -> None:
 
 
 def test_end_to_end_c2_two_regimes() -> None:
-    # Contribution 2, END-TO-END (proofs/c2_end_to_end.v): multichannel causal estimation ->
+    # END-TO-END (proofs/c2_end_to_end.v): multichannel causal estimation ->
     # bottleneck rate -> dynamic control regret on a clustered LQ network, R = O_p[G^-1 +
     # (sum delta^p)^2]. Two regimes: real cross-fit DML G-sweep (sampling-dominated, ~1/G) and a
     # deterministic delta-sweep (half ~ delta^2, full ~ delta^4).
@@ -518,7 +526,7 @@ def test_end_to_end_c2_two_regimes() -> None:
 
 
 def test_clustered_lower_bound_makes_the_sampling_floor_irreducible() -> None:
-    # Contribution 2, the LOWER bound (proofs/clustered_van_trees.v): the G^-1 sampling regret is
+    # The LOWER bound (proofs/clustered_van_trees.v): the G^-1 sampling regret is
     # IRREDUCIBLE, not just an upper bound. Clustered van Trees (effective info I0 + G*Ic) + the
     # lower-Lipschitz regret map give G*E[R] >= kappa0/(I0+Ic) > 0 for all G, up to kappa0/Ic.
     # Empirically G*regret is a flat, positive plateau -> regret ~ 1/G on BOTH sides (tight).
@@ -533,7 +541,7 @@ def test_clustered_lower_bound_makes_the_sampling_floor_irreducible() -> None:
 
 
 def test_the_cluster_rate_survives_summable_cross_cluster_dependence_and_only_that() -> None:
-    # A3' (paper 1, Appendix C.3): Contribution 2's G^-1/2 does NOT need independent clusters, only
+    # The multi-channel cluster rate G^-1/2 does NOT need independent clusters, only
     # psi-dependence with a SUMMABLE coefficient (Kojevnikov-Marmer-Song 2021; Leung 2022). Both
     # halves are gated, because "the rate survived" alone is unfalsifiable -- it is also what an arm
     # with no dependence at all reports. The non-summable arm (a FIXED super-block count, so psi
@@ -545,7 +553,8 @@ def test_the_cluster_rate_survives_summable_cross_cluster_dependence_and_only_th
     assert curve.blocked_slope > -0.15  # psi that never decays: effective n is the block count
     assert np.min(np.abs(curve.slopes - curve.blocked_slope)) > 0.3
 
-    # the CONSTANT is the half A3' actually moves, and it is predicted rather than just observed:
+    # the CONSTANT is the half psi-dependence actually moves, and it is predicted rather than just
+    # observed:
     # the bread is free of rho (a unit-variance field has unit variance whatever its correlation
     # length), so G*MSE must be AFFINE in the HAC sum sum_{d != 0} psi(d) = 2 rho^2/(1 - rho^2)
     assert curve.hac_r_squared > 0.9
@@ -571,7 +580,7 @@ def test_the_cluster_rate_survives_summable_cross_cluster_dependence_and_only_th
 
 
 def test_exposure_map_has_three_channel_bottleneck() -> None:
-    # Contribution 2, exposure-map generalization (proofs/exposure_map_c2.v): the marketplace plant
+    # Exposure-map generalization (proofs/exposure_map_c2.v): the marketplace plant
     # x_{t+1}=A x_t + (B_d + B_s W)u_t + eps has three effect channels (direct, spillover-coeff, and
     # exposure map W). R = O_p[G^-1 + (r_d+r_s+r_W)^2]. Orthogonalising all three -> delta^4; else
     # the exposure map W plug-in (r_W ~ delta) makes it the bottleneck -> ~delta^2.
@@ -588,7 +597,7 @@ def test_exposure_map_has_three_channel_bottleneck() -> None:
 
 
 def test_transfer_theorem_holds_in_multivariate_lq() -> None:
-    # Contribution 1, multivariate (shares proofs/composition_transfer.v, error-agnostic): on a
+    # Order transfer, multivariate (shares proofs/composition_transfer.v, error-agnostic): on a
     # 2-state/1-input LQ plant the exact Dean et al. certainty-equivalence gap is quadratic in the
     # effect-matrix error, so an order-p estimator (||dB||~delta^p) gives LQ regret ~ delta^(2p) --
     # the same order-doubling as the scalar transfer, now for matrices.
@@ -603,7 +612,8 @@ def test_transfer_theorem_holds_in_multivariate_lq() -> None:
 def test_control_map_doubles_the_estimator_order() -> None:
     # general orthogonal-to-control transfer (proofs/composition_transfer.v): an order-p effect
     # estimator (error delta^p) yields order-2p control regret -- the control map doubles the order,
-    # for every p. Generalises Result 0 (p=1 -> 2 plug-in; p=2 -> 4 DML). Uses the exact regret map.
+    # for every p. Generalises orthogonal CE control (p=1 -> 2 plug-in; p=2 -> 4 DML). Uses the
+    # exact regret map.
     curve = composition_transfer_certificate()
     assert np.allclose(curve.slopes, curve.expected_slopes, atol=0.35)  # regret slope ~ 2p
     assert (np.diff(curve.slopes) > 1.5).all()  # each higher order is ~2 steeper (order doubling)
@@ -662,7 +672,7 @@ def test_the_wdro_radius_is_second_order_and_the_exact_bound_covers_the_regret()
 
 
 def test_regret_band_holds_with_high_probability() -> None:
-    # high-prob regret bound (proofs/highprob_regret.v): the sub-Gaussian upgrade of Result 10 (in
+    # high-prob regret bound (proofs/highprob_regret.v): sub-Gaussian upgrade of the CR floor (in
     # expectation). With prob >= 1-delta, regret <= 2*log(2/delta) * the CR floor; confounding
     # (smaller V_id) widens the band. Concentration checked by Monte-Carlo coverage.
     curve = highprob_regret_certificate()
@@ -670,7 +680,7 @@ def test_regret_band_holds_with_high_probability() -> None:
     assert np.allclose(curve.band_over_floor, 2 * np.log(2 / curve.deltas))  # band = 2*log(2/delta)
     assert (np.diff(curve.band_over_floor) > 0).all()  # smaller delta (more confidence) => wider
     assert (curve.confounded_bands > curve.highprob_bands).all()  # confounding widens the band
-    assert curve.cr_floor > 0.0  # the Result 10 in-expectation floor exists
+    assert curve.cr_floor > 0.0  # the in-expectation CR floor exists
 
 
 def test_highprob_coverage_reads_the_exact_regret_not_its_quadratic_proxy() -> None:
@@ -686,7 +696,8 @@ def test_highprob_coverage_reads_the_exact_regret_not_its_quadratic_proxy() -> N
 def test_confounded_controller_settles_at_the_wrong_turnpike() -> None:
     # confounded turnpike gap (proofs/confounded_turnpike.v): a confounded controller (biased effect
     # b_obs = b + beta) converges to the WRONG turnpike x_conf = b*xref/(b+beta) and pays the offset
-    # every step. Undiscounted cumulative regret T*c is unbounded (sharpens Result 1d); discounted
+    # every step. Undiscounted cumulative regret T*c is unbounded (sharpens
+    # dynamic_causal_regret_certificate); discounted
     # sum stays below c/(1-g) -- finite via the discount.
     curve = confounded_turnpike_certificate()
     assert np.isclose(curve.turnpike_offset_simulated, curve.turnpike_offset_formula)  # gap formula
@@ -738,7 +749,7 @@ def test_hinf_robustness_is_pessimism_with_gamma_as_the_knob() -> None:
     # H-inf robust control (proofs/hinf_robust_regret.v): confounding as an adversary on the gain,
     # budget gamma^2. Robustness INFLATES cost above nominal (= pessimism), antitone in gamma (gamma
     # -> inf recovers CE); at the regret-optimal gamma* the robust gain reproduces the variance-
-    # optimal pessimistic control (Result 2) -- two roads to the same cautious control.
+    # optimal pessimistic control -- two roads to the same cautious control.
     curve = hinf_robust_regret_certificate()
     assert (np.diff(curve.inflation_at_uce) < 0).all()  # antitone in the budget gamma (Rocq C)
     assert (curve.inflation_at_uce >= curve.nominal_at_uce - 1e-9).all()  # inflates (Rocq B)
@@ -755,7 +766,7 @@ def test_hinf_robustness_is_pessimism_with_gamma_as_the_knob() -> None:
 def test_optimal_exploration_balances_control_and_identification() -> None:
     # explore-exploit (proofs/optimal_exploration.v): excess = A*v + B/v, minimum at v* = sqrt(B/A)
     # -- interior (pure exploitation never optimal); confounding lifts both v* and the floor. Dual
-    # of Result 10 (B is the CR floor exploration buys down).
+    # of the CR floor (B is the floor exploration buys down).
     curve = optimal_exploration_certificate(n_seeds=400)
     i = int(np.argmin(curve.total_cost))
     assert 0 < i < curve.exploration_grid.size - 1  # interior optimum, not a boundary
@@ -891,7 +902,7 @@ def test_linearized_certificate_matches_the_lq_gap_on_the_linearisation() -> Non
 
 
 def test_capped_exploration_front_loads_and_does_not_become_a_taper() -> None:
-    # Result 56, validation/capped_exploration.mac, proofs/capped_exploration.v.
+    # validation/capped_exploration.mac, proofs/capped_exploration.v.
 
     # 1. against a projected-gradient solve of the full convex program: the front-loaded block is
     #    the GLOBAL optimum, not a heuristic. The objective is convex, so the reference is exact.
@@ -948,8 +959,8 @@ def test_capped_exploration_front_loads_and_does_not_become_a_taper() -> None:
 
 
 def test_capped_exploration_under_a_schedule_and_a_budget_moves_the_mass_not_the_length() -> None:
-    # Result 66, validation/capped_exploration_schedule.mac, proofs/capped_exploration_schedule.v.
-    # Result 56 left this as honest scope: a cap that VARIES, or a budget on top of the cap,
+    # validation/capped_exploration_schedule.mac, proofs/capped_exploration_schedule.v.
+    # The constant-cap law left this as open scope: a cap that VARIES, or a budget on top of a cap,
     # changes the feasible set, so n* stops being a formula. What survives is the stopping MASS.
 
     horizon = 400
@@ -991,7 +1002,7 @@ def test_capped_exploration_under_a_schedule_and_a_budget_moves_the_mass_not_the
     assert policy.cost == pytest.approx(reference, rel=1e-4)
     assert (schedule > 0.999 * caps).sum() == pytest.approx(policy.block_rounds, abs=2)
 
-    # 2. the two cost implementations are independent and must agree: Result 56's digamma
+    # 2. the two cost implementations are independent and must agree: the constant cap's digamma
     #    identity, O(1) per candidate, against the explicit harmonic sum the schedule path has to
     #    materialise. Comparing two POLICIES at a constant cap would not test this -- the policy
     #    routes a constant cap to the digamma path and would be checking it against itself
@@ -1041,7 +1052,7 @@ def test_capped_exploration_under_a_schedule_and_a_budget_moves_the_mass_not_the
         assert abs(shaped.exploration_mass - shaped.predicted_mass) < landing
     lengths = [shaped.block_rounds for shaped in policies.values()]
     assert max(lengths) / min(lengths) > 3.0
-    # ... while Result 56's LEADING form sqrt(K T/(A c)) - I0/c is not that invariant: it reads
+    # ... while the constant-cap LEADING form sqrt(K T/(A c)) - I0/c is not that invariant: it reads
     #     the whole horizon, so it runs 25% high as soon as the caps open late
     leading = float(np.sqrt(numerator * rounds / (curvature * info_rate)) - i0 / info_rate)
     assert policies["constant"].exploration_mass == pytest.approx(leading, rel=0.08)
@@ -1103,12 +1114,12 @@ def test_capped_exploration_under_a_schedule_and_a_budget_moves_the_mass_not_the
 
 
 def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_result_fifty_six_dropped() -> None:
-    # Result 66 extended, validation/capped_exploration_schedule.mac STEP 7,
+    # validation/capped_exploration_schedule.mac STEP 7,
     # validation/capped_exploration_o1.gp, proofs/capped_exploration_schedule.v section (H).
-    # Result 56's sqrt(K T/(A c)) - I0/c is the root of the first-order condition with the
+    # The constant-cap sqrt(K T/(A c)) - I0/c is the root of the first-order condition with the
     # REMAINING horizon held at the full T. Under a constant cap the stopping round is S/cap, so
     # the remaining horizon is a function of the mass and the root solves a QUADRATIC in
-    # w = I0 + c S. What Result 56 drops is therefore a CONSTANT, not a vanishing remainder.
+    # w = I0 + c S. What that form drops is therefore a CONSTANT, not a vanishing remainder.
 
     b, rr, xt, sigma, i0, eta = 1.0, 0.5, 1.0, 0.7, 1.0, 0.6
     curvature = b * b + rr
@@ -1144,7 +1155,7 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_result_fifty_six_
         )
         assert fixed == pytest.approx(exact(horizon, cap), abs=cap)
 
-    # 2. the gap to Result 56 converges to K/(2 A c cap) -- a CONSTANT, over five decades of T
+    # 2. the gap to the leading form converges to K/(2 A c cap) -- a CONSTANT, over 5 decades of T
     gaps = [result_56(t) - exact(t, cap) for t in (10**4, 10**5, 10**6, 10**7, 10**8)]
     assert gaps[-1] == pytest.approx(constant / cap, rel=1e-3)
     # ... and it is a ceiling, not just a limit: proofs/capped_exploration_schedule.v
@@ -1162,7 +1173,7 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_result_fifty_six_
     assert all(abs(tail[i]) < abs(tail[i + 1]) for i in range(len(tail) - 1))
 
     # 4. the cap enters the mass ONLY through that constant, so a tighter actuator is exactly
-    #    where Result 56's form over-states -- inversely in the cap, and unboundedly
+    #    where the leading form over-states -- inversely in the cap, and unboundedly
     horizon = 4000
     overstatement = {k: result_56(horizon) - exact(horizon, k) for k in (0.3, 0.1, 0.03, 0.01)}
     assert all(v <= constant / k for k, v in overstatement.items())
@@ -1171,16 +1182,16 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_result_fifty_six_
     assert overstatement[0.3] / exact(horizon, 0.3) < 0.01
     assert overstatement[0.01] / exact(horizon, 0.01) > 0.15
 
-    # 5. the policy's own mass agrees with the quadratic, not with Result 56's form
+    # 5. the policy's own mass agrees with the quadratic, not with the leading form
     policy = capped_exploration_policy(horizon=10**5, cap=cap)
     assert policy.predicted_mass == pytest.approx(exact(10**5, cap), abs=cap)
     assert abs(policy.predicted_mass - result_56(10**5)) > 1.9
 
 
 def test_multivariate_van_trees_prices_an_alignment_where_the_scalar_floor_prices_a_ratio() -> None:
-    # Result 67, validation/multivariate_van_trees.mac, proofs/multivariate_van_trees.v.
-    # Result 57 closed with "the multivariate case has the same structure with psi' a Jacobian and
-    # the floor a trace". The structure is the same; the conclusion is not.
+    # validation/multivariate_van_trees.mac, proofs/multivariate_van_trees.v.
+    # The scalar floor on the action suggests the multivariate case has the same structure, with
+    # psi' a Jacobian and the floor a trace. The structure is the same; the conclusion is not.
 
     rr = 0.5
     weight, control = np.eye(2), rr * np.eye(2)
@@ -1423,7 +1434,7 @@ def test_a_ratio_tolerance_that_is_no_number_is_refused(tolerance: float) -> Non
 
 
 def test_exact_matrix_ratio_moment_matches_the_haar_law_and_prices_the_two_channel_gap() -> None:
-    # Result 54, validation/matrix_ratio_moment.mac, proofs/matrix_ratio_moment.v.
+    # validation/matrix_ratio_moment.mac, proofs/matrix_ratio_moment.v.
 
     # 1. Wishart: A = Sigma = I and Om = I_2n makes the object E[(X'X)^-1] = I/(n - 3)
     wishart = exact_matrix_ratio_moment(np.eye(6), np.eye(6), np.eye(12), nodes=32)
@@ -1486,7 +1497,7 @@ def test_exact_matrix_ratio_moment_matches_the_haar_law_and_prices_the_two_chann
 
 
 def test_general_q_ratio_moment_lifts_the_sandwich_off_two_channels() -> None:
-    # Result 63, validation/general_q_ratio_moment.mac, proofs/general_q_ratio_moment.v.
+    # validation/general_q_ratio_moment.mac, proofs/general_q_ratio_moment.v.
 
     # 1. the S_m weights ARE Isserlis: sum over S_m of 2^(m - cycles) is the number of perfect
     #    matchings of 2m points, (2m-1)!!. This is the identity that lets the hand-written
@@ -1529,8 +1540,8 @@ def test_general_q_ratio_moment_lifts_the_sandwich_off_two_channels() -> None:
 
 
 def test_matrix_ratio_certificate_reports_what_the_grid_is_worth() -> None:
-    # Result 63 (d), (d'): at q = 3 the value alone hides a percent-scale quadrature error, and
-    # the isotropy bar of (e) only exists on exchangeable problems. The refinement residual works
+    # At q = 3 the value alone hides a percent-scale quadrature error, and
+    # the isotropy bar only exists on exchangeable problems. The refinement residual works
     # on any problem, but it is an ESTIMATE, not a bound. It measures the STEP e(k-1) - e(k), so
     # residual/true = r - 1 and it majorises the error iff the per-node rate r >= 2. Over 13 cells
     # the ratio runs 0.30x to 5.26x, below 1 in five -- each of those a cell with r < 2.
@@ -1570,7 +1581,7 @@ def test_matrix_ratio_certificate_reports_what_the_grid_is_worth() -> None:
 
 
 def test_the_ratio_status_can_convict_and_cannot_certify() -> None:
-    # Result 63 (d'): the residual is guaranteed to majorise the error once the per-node rate
+    # The residual is guaranteed to majorise the error once the per-node rate
     # reaches 2, and a rate is a ratio of two ERRORS, which a certificate holding one difference and
     # no reference value cannot form. So the status names what the bars can establish, and no more.
     assert get_args(MatrixRatioStatus) == ("convicted", "not_convicted")
@@ -1643,7 +1654,7 @@ def test_no_q3_grid_reads_certified_whatever_its_bars(
 
 
 def test_an_anisotropic_numerator_has_an_exact_anchor_too() -> None:
-    # Result 63 (g): with Omega = I and C = I the sandwich is (tr B / n) I / (n - q - 1) for ANY
+    # With Omega = I and C = I the sandwich is (tr B / n) I / (n - q - 1) for ANY
     # PSD B -- polar decomposition X = H T, H Haar and independent of T, E[H'BH] = (tr B / n) I.
     # The projection anchor (r / n) is the special case tr P = r. This is the first check of the
     # general code with a numerator that is neither the identity nor a projection.
@@ -1657,7 +1668,7 @@ def test_an_anisotropic_numerator_has_an_exact_anchor_too() -> None:
     # B does NOT change the regime: at n = 6 (margin 2) the relative error is 2.8e-6 at nodes = 20
     # and 4.6e-8 at 40 whether B is the identity or not. An earlier reading of the ABSOLUTE numbers
     # here as "algebraic off B proportional to I" compared them with relative ones and is withdrawn;
-    # what governs the accuracy is the margin n - (q + 2). See Result 63 (j).
+    # what governs the accuracy is the margin n - (q + 2).
     scale = float(np.max(np.abs(want)))
     coarse = exact_matrix_ratio_moment(b, np.eye(n), np.eye(2 * n), nodes=20)
     assert 1e-6 < float(np.max(np.abs(coarse - want))) / scale < 1e-5
@@ -1675,7 +1686,7 @@ def test_an_anisotropic_numerator_has_an_exact_anchor_too() -> None:
 
 
 def test_the_master_anchor_covers_every_other_one_and_the_reduction_is_exact() -> None:
-    # Result 63 (i), general form: for regressor_cov = kron(R, S) and denominator = S^-1 the exact
+    # General form: for regressor_cov = kron(R, S) and denominator = S^-1 the exact
     # answer is (tr(BS)/n) R^-1 / (n - q - 1) for ANY PSD numerator B. Factor S = FF' and R = GG':
     # X = F Z G' for a standard Z, the denominator becomes G(Z'Z)G' -- S cancels entirely -- and
     # the numerator becomes G Z'(F'BF)Z G', so the Omega = I anchor applies to the bracket and
@@ -1723,7 +1734,7 @@ def test_the_master_anchor_covers_every_other_one_and_the_reduction_is_exact() -
 
 
 def test_correlated_channels_have_an_exact_anchor_and_it_is_the_hard_one() -> None:
-    # Result 63 (i): with numerator = denominator = I and regressor_cov = kron(R, I_n), the
+    # With numerator = denominator = I and regressor_cov = kron(R, I_n), the
     # sandwich collapses to E[(X'X)^-1] with X'X ~ Wishart_q(n, R), so the exact answer is
     # R^-1 / (n - q - 1). It is the first anchor with CORRELATED channels -- which is the case
     # the estimator actually ships for -- and the rule is measurably worse on it than on any
@@ -1761,7 +1772,7 @@ def test_correlated_channels_have_an_exact_anchor_and_it_is_the_hard_one() -> No
 
 
 def test_the_isotropy_bar_rides_along_when_the_channels_are_exchangeable() -> None:
-    # Result 63 (e) proves half the diagonal spread LOWER-bounds the largest entry error whenever
+    # Half the diagonal spread LOWER-bounds the largest entry error whenever
     # the exact answer is isotropic. The certificate can compute that for free -- it is a function
     # of the returned matrix -- but only where it is valid, so the precondition is detected rather
     # than assumed.
@@ -1785,7 +1796,7 @@ def test_the_isotropy_bar_rides_along_when_the_channels_are_exchangeable() -> No
 
 
 def test_exact_ratio_moment_closed_forms_tail_condition_and_crossover_immunity() -> None:
-    # Result 51 (l)/(m), validation/omega_jensen_gap.mac, proofs/omega_jensen_gap.v.
+    # validation/omega_jensen_gap.mac, proofs/omega_jensen_gap.v.
 
     # 1. chi-square closed forms: B = C = I, Om = I gives E[1/chi2_n] = 1/(n - 2)
     assert abs(exact_ratio_moment(np.eye(3), np.eye(3), np.eye(3)) - 1.0) < 1e-9
@@ -1803,7 +1814,7 @@ def test_exact_ratio_moment_closed_forms_tail_condition_and_crossover_immunity()
     with pytest.raises(ValueError, match="null space"):
         exact_ratio_moment(np.eye(5), np.diag([1.0] * 4 + [0.0]), np.eye(5))
 
-    # 4. Result 51 (m): at Om = I the plug-in crossover is EXACT. Build the delayed-network
+    # 4. at Om = I the plug-in crossover is EXACT. Build the delayed-network
     #    Sigma on C_6, close A_u from its closed form, bisect the plug-in ratio to its root in
     #    phi, and the exact ratio must equal 1 there -- no Jensen shift.
     m, p_t, k_folds, lag, d_max = 6, 5, 2, 1, 2
@@ -1850,7 +1861,7 @@ def test_exact_ratio_moment_closed_forms_tail_condition_and_crossover_immunity()
 
 
 def test_delayed_network_law_and_the_limit_of_its_design_rule() -> None:
-    # Result 51 (proofs/delayed_network_exposure.v): once a delay PROPAGATES THROUGH THE NETWORK,
+    # proofs/delayed_network_exposure.v: once a delay PROPAGATES THROUGH THE NETWORK,
     # Sigma stops being separable and Psi becomes a polynomial in phi^delta. Everything below is
     # measured against trajectories drawn from the generative definition, not from the formula.
     curve = delayed_network_certificate(n_draws=20_000)
@@ -1880,12 +1891,12 @@ def test_delayed_network_law_and_the_limit_of_its_design_rule() -> None:
     # 4. delta = 0 must lose phi entirely -- STEP 7 of the gate file, reached from this side
     assert abs(curve.separable_spread) < 1e-12
 
-    # 5. the exchangeable limit is Result 43's fold-geometry constant, unchanged
+    # 5. the exchangeable limit is the cluster-fold leakage law's fold-geometry constant, unchanged
     assert abs(curve.c_fold_measured / curve.c_fold_predicted - 1.0) < 1e-12
 
 
 def test_optimal_fold_partition_recovers_the_stripe_law_and_certifies() -> None:
-    # Result 52, validation/fold_spectrum_law.mac, proofs/fold_spectrum_law.v.
+    # validation/fold_spectrum_law.mac, proofs/fold_spectrum_law.v.
     import itertools
 
     gammas = (1.0, 0.7, 0.4)

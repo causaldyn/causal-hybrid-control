@@ -1,5 +1,5 @@
-(* Rocq + MathComp: VAN TREES ON THE ACTION at any dimension -- the matrix statements of Results 57
-   and 67.
+(* Rocq + MathComp: VAN TREES ON THE ACTION at any dimension -- the matrix statements of
+   proofs/action_van_trees.v and proofs/multivariate_van_trees.v.
 
    proofs/multivariate_van_trees.v proves them at 2x2 with explicit reals. This file proves them for
    an action of any dimension p and an information of any dimension q, over an abstract field

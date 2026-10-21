@@ -1,4 +1,5 @@
-(* Rocq + MathComp: THE STABILISING BALL IN DELAY SPACE for a multivariate loop (Result 50).
+(* Rocq + MathComp: THE STABILISING BALL IN DELAY SPACE for a multivariate loop
+   (proofs/delay_ball.v).
 
    proofs/delay_ball.v proves the half-line for a scalar loop x' = -K x(t - tau) designed as
    K^ = g / tauhat. This file proves the n-mode version for a design K^ = G / tauhat whose

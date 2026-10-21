@@ -271,7 +271,7 @@ def test_a_valid_barrier_certificate_makes_the_tube_the_whole_safe_set() -> None
 
 
 def test_identification_slack_destroys_the_certificate_at_the_zero_action_threshold() -> None:
-    """Past ``radius = ||B^T grad h||`` the §40 rule zeroes the action, and the floor gives way."""
+    """Past ``radius = ||B^T grad h||`` the rule zeroes the action, and the floor gives way."""
     common = {
         "lower": (-1.5, -1.5),
         "upper": (1.5, 1.5),
@@ -292,7 +292,7 @@ def test_identification_slack_destroys_the_certificate_at_the_zero_action_thresh
 
 
 def test_pointwise_certification_traps_a_relative_degree_two_barrier() -> None:
-    """``B^T grad h == 0`` makes the §40 condition blind to the actuator, so it certifies too much.
+    """``B^T grad h == 0`` makes the margin blind to the actuator, so it certifies too much.
 
     The barrier verdict is then *identical* at every radius while the truth shrinks -- the sharpest
     statement of why :func:`chc.plan.certify_safety`'s per-step prefix is a filter, not a proof.

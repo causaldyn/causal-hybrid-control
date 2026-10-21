@@ -1,16 +1,16 @@
-(* Rocq (DOES Psi DESCRIBE AN ESTIMATOR?). Result 51 shipped Psi with a scope note
+(* Rocq (DOES Psi DESCRIBE AN ESTIMATOR?). Psi ships with a scope note
    saying it is a functional of the PROCESS, evaluated with the fold operator held fixed, and not a
    re-derived estimator. This file proves the algebra that says what the experiment can and cannot
    show, as derived in validation/panel_estimator_gate.mac.
 
    Two groups. (i) The partition enters Psi exactly once, linearly, with a strictly positive weight
-   -- so ranking designs is ranking the same-fold mass, which is Result 52's premise, and nothing
-   about the ranking depends on the rest of Psi. (ii) With a block-diagonal covariance over g
-   independent clusters, every partition-free factor cancels from the RATIO of two designs, leaving
-   a Mobius function of g whose limit is 1 and whose distance from 1 is bounded by C/g. The design
-   law is therefore a FINITE-CLUSTER statement: it washes out in the number of independent blocks,
-   not in the number of rows. The ordering, by contrast, is g-invariant -- which is exactly the
-   claim the measured gate confirms while rejecting the point prediction. *)
+   -- so ranking designs is ranking the same-fold mass, which is the fold design's premise, and
+   nothing about the ranking depends on the rest of Psi. (ii) With a block-diagonal covariance over
+   g independent clusters, every partition-free factor cancels from the RATIO of two designs,
+   leaving a Mobius function of g whose limit is 1 and whose distance from 1 is bounded by C/g. The
+   design law is therefore a FINITE-CLUSTER statement: it washes out in the number of independent
+   blocks, not in the number of rows. The ordering, by contrast, is g-invariant -- which is exactly
+   the claim the measured gate confirms while rejecting the point prediction. *)
 
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.

@@ -1,12 +1,11 @@
-(* Rocq: the algebraic core of MULTIVARIATE VAN TREES ON THE ACTION (Result 67, Appendix A item
-   A18).
+(* Rocq: the algebraic core of MULTIVARIATE VAN TREES ON THE ACTION.
 
-   Result 57 removed Result 10's unbiasedness and delta-method caveats by noticing that the
-   one-step LQ regret is EXACTLY a squared error in the action, and then applying van Trees to the
-   estimand psi(b) = u*(b). Its honest scope closed with: "the model is still the scalar one-step
-   LQ plant; the multivariate case has the same structure with psi' a Jacobian and the floor a
-   trace." validation/multivariate_van_trees.mac does that case, and the structure is not the only
-   thing that changes: the scalar floor is a PRODUCT of a curvature and an information, while the
+   proofs/action_van_trees.v removed the Cramer-Rao floor's unbiasedness and delta-method caveats by
+   noticing that the one-step LQ regret is EXACTLY a squared error in the action, and then applying
+   van Trees to the estimand psi(b) = u*(b). Its model is the scalar one-step LQ plant; the
+   multivariate case has the same structure with psi' a Jacobian and the floor a trace.
+   validation/multivariate_van_trees.mac does that case, and the structure is not the only thing
+   that changes: the scalar floor is a PRODUCT of a curvature and an information, while the
    multivariate floor is a TRACE that interleaves them -- so the price of confounding stops being a
    ratio and becomes an ALIGNMENT between the directions information is lost in and the directions
    the optimal action depends on.
@@ -15,7 +14,7 @@
      (A) the regret identity, for any symmetric invertible curvature -- no linearisation anywhere;
      (B) trace against a PSD weight is nonnegative, hence monotone in the PSD order, which is what
          turns the matrix van Trees inequality into a scalar regret bound;
-     (C) the scalar floor as the 1x1 case, recovering Result 10's constant unchanged;
+     (C) the scalar floor as the 1x1 case, recovering the Cramer-Rao constant unchanged;
      (D) a direction the action cannot see contributes exactly nothing -- the knife edge stops
          being a point and becomes a rank condition;
      (E) the diagonal plant, where the floor is a SUM of per-channel Result-10 constants, and the
@@ -141,7 +140,7 @@ Proof.
   unfold form in *. lra.
 Qed.
 
-(* ===== (C) THE SCALAR CASE, AND RESULT 10'S CONSTANT ===== *)
+(* ===== (C) THE SCALAR CASE, AND THE CRAMER-RAO CONSTANT ===== *)
 
 Definition scalar_constant (rr b xt : R) : R := xt ^ 2 * (rr - b ^ 2) ^ 2 / (rr + b ^ 2) ^ 3.
 
@@ -228,8 +227,8 @@ Proof.
 Qed.
 
 (* One corner: a confounded direction the action does not depend on is EXACTLY free. In the
-   diagonal plant that happens at the scalar knife edge rr = b2^2, where Result 57(d)'s vanishing
-   sensitivity zeroes the whole second weight. *)
+   diagonal plant that happens at the scalar knife edge rr = b2^2, where action_van_trees.v's
+   vanishing sensitivity zeroes the whole second weight. *)
 Lemma the_knife_edge_makes_a_confounded_direction_free :
   forall b2 x2 : R, b2 <> 0 -> scalar_constant (b2 ^ 2) b2 x2 = 0.
 Proof.
@@ -246,7 +245,7 @@ Proof.
 Qed.
 
 (* The other corner is the scalar model: one direction, so the factor is the full k -- which is
-   exactly Result 10's V_exp/V_conf, and the reason a scalar plant cannot see the alignment. *)
+   exactly the Cramer-Rao V_exp/V_conf, and the reason a scalar plant cannot see the alignment. *)
 Lemma a_single_direction_pays_the_full_factor :
   forall w2 k : R, 0 < w2 -> (0 + k * w2) / (0 + w2) = k.
 Proof.

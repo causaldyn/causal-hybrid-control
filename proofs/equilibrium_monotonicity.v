@@ -1,14 +1,14 @@
-(* Rocq (GLOBAL monotonicity of the congestion equilibrium map): Result 39 (b) bounds
-   ||(I - S')^{-1}|| at ONE point, and says so -- "Both numbers are LOCAL ... the global version
-   would need strong monotonicity of F(x) = x - S(x) and is NOT proved here". This is that missing
-   step, at n = 2 where the algebra is concrete and every claim is checkable.
+(* Rocq (GLOBAL monotonicity of the congestion equilibrium map): equilibrium_transfer.v bounds
+   ||(I - S')^{-1}|| at ONE point, a LOCAL statement; the global version needs strong monotonicity
+   of F(x) = x - S(x). This is that missing step, at n = 2 where the algebra is concrete and every
+   claim is checkable.
 
    F' = I + kappa*J with J = diag(s) - s s^T. J is a covariance matrix, so its quadratic form is a
    variance and is nonnegative EVERYWHERE, not merely at the equilibrium: F is 1-strongly monotone
    globally (`ambient_modulus_is_one`). The constant 1 cannot be improved, because J annihilates the
    constants (`ambient_modulus_attained`) -- a direction mass conservation forbids, which is why the
    tangent-space modulus `tangent_bound` is strictly larger. `inverse_lipschitz_from_monotone` is the
-   step from strong monotonicity to a FINITE-perturbation displacement bound, which is what §39 (b)'s
+   step from strong monotonicity to a FINITE-perturbation displacement bound, which is what the local
    implicit-function derivative could not supply. validation/equilibrium_monotonicity.mac carries the
    general-n identities; z3 and cvc5 both return unsat on the n = 3 negation. *)
 
@@ -86,7 +86,7 @@ Lemma tangent_bound_attained :
   var2 (1/2) (1/2) 1 (-1) = 2 * (1/2) ^ 2 * (1 ^ 2 + (-1) ^ 2).
 Proof. unfold var2. lra. Qed.
 
-(* The step §39 (b) could not take. Strong monotonicity plus Cauchy-Schwarz gives
+(* The step the local bound could not take. Strong monotonicity plus Cauchy-Schwarz gives
    mu*||x-y||^2 <= <F(x)-F(y), x-y> <= ||F(x)-F(y)||*||x-y||, and dividing by ||x-y|| bounds the
    equilibrium displacement by the operator perturbation for FINITE perturbations, not only
    infinitesimal ones. At mu = 1 the bound is one-for-one. *)

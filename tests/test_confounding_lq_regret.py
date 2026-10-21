@@ -1,6 +1,6 @@
 """chc.regret: confounding-robust LQ regret -- MSM radius through the CE order-doubling.
 
-The §32 confounding half-width becomes a control-regret floor L_reg*Delta^2 that is SECOND order in
+The MSM confounding half-width becomes a control-regret floor L_reg*Delta^2 that is SECOND order in
 the confounding (Rocq ``confounding_lq_regret.v``): control is quadratically more robust than
 estimation.
 """
@@ -55,7 +55,7 @@ def test_regret_sensitivity_is_nonnegative_and_vanishes_at_the_flat_point() -> N
     assert lq_regret_sensitivity(1.0, 1.0, 1.0) == pytest.approx(0.0)
 
 
-# --- Result 36: empirical Delta^2 floor on synthetic confounded data ---
+# --- Empirical Delta^2 floor on synthetic confounded data ---
 
 
 def test_empirical_floor_recovers_the_quadratic_slope() -> None:
@@ -73,7 +73,7 @@ def test_empirical_bias_and_regret_grow_with_confounding() -> None:
     assert all(g[i] <= g[i + 1] for i in range(len(g) - 1))  # ...and larger control regret
 
 
-# --- Multivariate §33: matrix Frobenius lift (order-doubling via §21) ---
+# --- Multivariate floor: matrix Frobenius lift (matrix order-doubling) ---
 
 
 def test_matrix_regret_reduces_to_the_scalar_in_1x1() -> None:

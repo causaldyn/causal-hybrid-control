@@ -116,6 +116,14 @@ def test_no_docs_page_or_derivation_cites_a_research_log_result() -> None:
     assert _labels(pages) == []
 
 
+def test_no_proof_script_or_test_cites_a_research_log_result() -> None:
+    # This file is left out: its docstring and its pattern's own examples spell the labels.
+    shipped = [
+        path for name in ("proofs", "scripts", "tests", "fuzz") for path in _prose(ROOT / name)
+    ]
+    assert _labels(path for path in shipped if path != Path(__file__).resolve()) == []
+
+
 def test_the_label_pattern_tells_a_research_log_result_from_a_published_section() -> None:
     private = (
         "the bound of Result 55 (d)",
