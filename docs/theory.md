@@ -144,6 +144,7 @@ failures, when the tests were first written (names relative to `chc`):
 | `causal_pathway.v` | `pathway` | `test_formal_estimation.py` |
 | `ce_explicit_constants.mac` | `regret.ce_explicit_constant_certificate` | `test_formal_regret_a.py` |
 | `ce_explicit_constants.v` | `regret.ce_explicit_constant_certificate`, `regret.regret_scaling` | `test_formal_regret_a.py, test_formal_regret_c.py` |
+| `ce_gap_cost_difference.mac` | `regret.certainty_equivalence_gap` | `test_formal_regret_b.py` |
 | `channel_bias_bound.mac` | `plan.ChannelSensitivity`, `plan._sensitivity_gamma_star` | `test_formal_seams.py` |
 | `closed_loop_attribution.v` | `dynamics_id.closed_loop_gain_attribution` | `test_formal_estimation.py` |
 | `cluster_fold_leakage.mac` | `regret.cluster_fold_leakage_certificate` | `test_formal_regret_a.py` |

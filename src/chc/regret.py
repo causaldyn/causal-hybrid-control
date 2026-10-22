@@ -69,11 +69,25 @@ def certainty_equivalence_gap(
 
     ``K_hat`` is the LQR-optimal gain for the estimated model ``(a_hat, b_hat)``; the gap is its
     true-plant cost minus the cost of the true-optimal gain. Zero iff the estimate induces the
-    optimal gain; otherwise non-negative (the optimum is optimal).
+    optimal gain; otherwise non-negative (the optimum is optimal). ``+inf`` if ``K_hat`` fails to
+    stabilise the true plant.
+
+    Read as ``x0' D x0``, where ``D = P_K_hat - P*`` solves the Lyapunov equation
+    ``D = (A - B K_hat)' D (A - B K_hat) + dK' (R + B' P* B) dK`` with ``dK = K_hat - K*``
+    (derived in ``validation/ce_gap_cost_difference.mac``). The forcing is positive semi-definite,
+    so the gap is a sum of non-negative terms and keeps its relative accuracy as it shrinks. The
+    difference of the two costs, each of order ``x0' P* x0``, loses every digit once the gap falls
+    below ``eps x0' P* x0``: on a 3-state plant with each entry of ``B`` off by ``1e-8`` it read
+    ``0.0`` against a true ``2.15e-16``, and ``-4.4e-15`` against ``3.1e-15`` at ``3.8e-8``.
     """
     k_hat, _ = dlqr(a_hat, b_hat, q, r)
-    k_star, _ = dlqr(a, b, q, r)
-    return closed_loop_cost(a, b, k_hat, q, r, x0) - closed_loop_cost(a, b, k_star, q, r, x0)
+    k_star, p_star = dlqr(a, b, q, r)
+    a_cl = a - b @ k_hat
+    if np.max(np.abs(np.linalg.eigvals(a_cl))) >= 1.0:
+        return float("inf")
+    dk = k_hat - k_star
+    d = solve_discrete_lyapunov(a_cl.T, dk.T @ (r + b.T @ p_star @ b) @ dk)
+    return float(x0 @ d @ x0)
 
 
 @dataclass(frozen=True)

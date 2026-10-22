@@ -97,6 +97,7 @@ FORMAL_LINKS = {
         "tests": (
             "test_exposure_map_regret_is_the_true_plant_ce_gap",
             "test_exposure_map_regret_obeys_the_four_term_bound",
+            "test_exposure_map_keeps_the_delta_four_slope_below_the_float_floor_of_the_costs",
         ),
     },
     "chc.research.regret.finite_horizon_pl_certificate": {
@@ -150,6 +151,10 @@ FORMAL_LINKS = {
     "chc.research.regret.lq_regret_sensitivity": {
         "cites": ("confounding_lq_regret.mac",),
         "tests": ("test_lq_regret_sensitivity_is_the_second_order_regret_coefficient",),
+    },
+    "chc.regret.certainty_equivalence_gap": {
+        "cites": ("ce_gap_cost_difference.mac",),
+        "tests": ("test_ce_gap_matches_the_60_digit_cost_difference_at_small_error",),
     },
     "chc.regret.minimax_action": {
         "cites": ("minimax_lq.mac", "minimax_lq.v"),
@@ -558,6 +563,39 @@ def test_exposure_map_regret_obeys_the_four_term_bound(lo, hi, n):
     assert np.all(curve.wbottleneck_regret <= 4 * cc * (2 * d**4 + d**2) * (1 + 1e-15))
     assert curve.full_slope == pytest.approx(4.0, abs=0.15)
     assert curve.wbottleneck_slope == pytest.approx(2.0, abs=0.15)
+
+
+# x0' (P_K - P*) x0 on EXPOSURE_PLANT with B off by delta^2 in every entry, at 60 digits as the
+# plain difference of the two costs (validation/ce_gap_cost_difference.mac)
+CE_GAP_60_DIGITS = {
+    1e-4: 2.15015436137472060903541379034443876488313774408030616947793e-16,
+    2e-4: 3.44024681969165298221113260929571016443092032730758859156209e-15,
+    1e-3: 2.15015109215437149343558910490133088723473546623486571130481e-12,
+    2e-3: 3.44022589678420009404726464459109637269382227885214306202935e-11,
+}
+
+
+@pytest.mark.parametrize("delta", sorted(CE_GAP_60_DIGITS))
+def test_ce_gap_matches_the_60_digit_cost_difference_at_small_error(delta):
+    """ce_gap_cost_difference.mac: the gap is x0' D x0 with D forced by dK' S dK, never 0 or < 0.
+
+    The gain difference is about 0.76 delta^2 and each DARE gain carries an absolute error of a
+    few eps, so the gap's relative error grows as eps/delta^2; 1e-14/delta^2 is 45 eps/delta^2.
+    The difference of the two float costs read 0.0 at delta = 1e-4 and was 6.5e-5 off at 2e-3.
+    """
+    a, b, q, r, x0 = EXPOSURE_PLANT
+    gap = core_regret.certainty_equivalence_gap(a, b, q, r, a, b + delta**2, x0)
+    assert gap == pytest.approx(CE_GAP_60_DIGITS[delta], rel=1e-14 / delta**2, abs=0.0)
+
+
+def test_exposure_map_keeps_the_delta_four_slope_below_the_float_floor_of_the_costs():
+    """exposure_map_c2.mac: at delta in [1e-4, 2e-3] the fully orthogonal regret falls to 2e-16,
+    below eps times the cost; it stays positive and the log-log fit still reads 4 and 2."""
+    curve = R.exposure_map_certificate(delta_lo=1e-4, delta_hi=2e-3, n_delta=10)
+    assert np.all(curve.full_regret > 0.0)
+    assert np.all(np.diff(curve.full_regret) > 0.0)
+    assert curve.full_slope == pytest.approx(4.0, abs=1e-3)
+    assert curve.wbottleneck_slope == pytest.approx(2.0, abs=1e-2)
 
 
 # ------------------------------------------------------------------------------ ensemble control

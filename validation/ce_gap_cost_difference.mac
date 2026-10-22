@@ -1,0 +1,84 @@
+/* The certainty-equivalence gap without a cancellation (chc.regret.certainty_equivalence_gap).
+
+   The gap J(K) - J(K*) of a gain K on the true plant (A, B) is x0' (P_K - P*) x0. Written as the
+   difference of two costs, each of order one, it loses every digit once the gap falls below
+   eps*J*: on a 3-state plant with each entry of B off by delta^2 the float difference reads 0,
+   -1.8e-15 and -4.4e-15 at delta = 1e-4, 1.4e-4, 1.9e-4, against true gaps of 2.2e-16, 8.1e-16
+   and 3.1e-15.
+
+   The cost-difference identity: with S = R + B' P* B and K* = S^-1 B' P* A (P* the DARE solution),
+
+       P_K - P* = (A - B K)' (P_K - P*) (A - B K) + (K - K*)' S (K - K*),
+
+   so D = P_K - P* solves a Lyapunov equation whose forcing (K - K*)' S (K - K*) is positive
+   semi-definite. The gap x0' D x0 is then a sum of non-negative terms: no subtraction of costs.
+
+   (i) checks the identity symbolically on generic matrices (n, m = 2, 1; 2, 2; 3, 1), with Q
+   eliminated through the DARE; (ii) computes the gap on the exposure-map plant at 60 digits as the
+   plain difference x0' P_K x0 - x0' P* x0, the reference the float code is tested against, and
+   checks the cost-difference form against it (they agree to 1e-42, at about 44 significant
+   digits of the gap).
+   Maxima is the source of truth. */
+display2d : false$
+
+/* ---- (i) the identity, with Q = P - A'PA + K*' S K* (the DARE) and B'PA = S K* ---- */
+check_identity(n, m) := block([scalarmatrixp : false, A, B, P, R, K, S, Ks, Q, res],
+    A : genmatrix(lambda([i, j], concat(a, i, j)), n, n),
+    B : genmatrix(lambda([i, j], concat(b, i, j)), n, m),
+    P : genmatrix(lambda([i, j], concat(p, min(i, j), max(i, j))), n, n),
+    R : genmatrix(lambda([i, j], concat(r, min(i, j), max(i, j))), m, m),
+    K : genmatrix(lambda([i, j], concat(k, i, j)), m, n),
+    S : R + transpose(B) . P . B,
+    Ks : invert(S) . transpose(B) . P . A,
+    Q : P - transpose(A) . P . A + transpose(Ks) . S . Ks,
+    /* P_K - P* = D solves D = Acl' D Acl + Q + K'RK + Acl' P Acl - P; the identity says the
+       forcing Q + K'RK + Acl' P Acl - P equals (K - K*)' S (K - K*). */
+    res : Q + transpose(K) . R . K + transpose(A - B . K) . P . (A - B . K) - P
+          - transpose(K - Ks) . S . (K - Ks),
+    ratsimp(res))$
+for nm in [[2, 1], [2, 2], [3, 1]] do block([res : apply(check_identity, nm)],
+    print("identity residual n, m =", nm, ":", res,
+          if every(lambda([x], is(x = 0)), flatten(args(res))) then "(ok)" else "(FAIL)"))$
+
+/* ---- (ii) 60-digit reference on the exposure-map plant ---- */
+fpprec : 60$
+A : bfloat(matrix([1, 1/10, 0], [0, 95/100, 1/10], [0, 0, 9/10]))$
+B0 : bfloat(matrix([1/2], [1], [7/10]))$
+Qm : bfloat(ident(3))$
+R : bfloat(1/2)$
+x0 : bfloat(matrix([1], [1/2], [3/10]))$
+tol : bfloat(10^(-58))$
+maxabs(M) := lmax(map(abs, flatten(args(M))))$
+
+/* DARE by value iteration (linear convergence at rate rho(A - B K*)^2) */
+dare_gain(Bm) := block([P : Qm, Pn, S, K, it : 0],
+    do (S : R + (transpose(Bm) . P . Bm),
+        K : (transpose(Bm) . P . A) / S,
+        Pn : Qm + transpose(A) . P . A - S * transpose(K) . K,
+        it : it + 1,
+        if maxabs(Pn - P) < tol then return(0),
+        P : Pn),
+    [K, Pn, it])$
+
+/* X = Acl' X Acl + F on the TRUE plant (A, B0), by fixed-point iteration */
+lyap(K, F) := block([Acl : A - B0 . K, P : F, Pn],
+    do (Pn : F + transpose(Acl) . P . Acl,
+        if maxabs(Pn - P) < tol then return(0),
+        P : Pn),
+    Pn)$
+
+[Kstar, Pstar, itstar] : dare_gain(B0)$
+Jstar : (transpose(x0) . Pstar . x0)$
+print("J* (60 digits) =", Jstar, " value iterations =", itstar)$
+e3 : bfloat(matrix([1], [1], [1]))$
+/* the reference is the plain difference of the two costs; the cost-difference form, forced by
+   dK' S dK with S = R + B0' P* B0, must agree with it to the working precision */
+Sstar : R + (transpose(B0) . Pstar . B0)$
+for d in [bfloat(10^(-4)), bfloat(2*10^(-4)), bfloat(10^(-3)), bfloat(2*10^(-3))] do block(
+    [Kh, dK, gap, form],
+    Kh : first(dare_gain(B0 + d^2 * e3)),
+    gap : (transpose(x0) . lyap(Kh, Qm + R * transpose(Kh) . Kh) . x0) - Jstar,
+    dK : Kh - Kstar,
+    form : transpose(x0) . lyap(Kh, Sstar * transpose(dK) . dK) . x0,
+    print("delta =", d, " gap =", gap, " cost-difference form / gap - 1 =", form / gap - 1,
+          if abs(form / gap - 1) < bfloat(10^(-30)) then "(ok)" else "(FAIL)"))$
