@@ -7,6 +7,16 @@ still change).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`certainty_equivalence_gap` read the gap as a difference of two closed-loop costs**, and lost
+  every digit below the rounding of the cost: it read 0.0 and -4.4e-15 where the gap is 2.15e-16
+  and 3.4e-15, and 6.5e-5 of it at a gain error of 2e-3. It now solves the Lyapunov equation forced
+  by `dK'(R + B'P*B)dK`, a sum of non-negative terms, to 1.1e-7 relative at 2.15e-16
+  (`validation/ce_gap_cost_difference.mac`). `exposure_map_certificate` and
+  `multivariate_interference_certificate` read their slope of 4 down to an error of 1e-4, where
+  they took the logarithm of zero and of negative gaps.
+
 ## [0.20.0] — 2026-10-22
 
 ### Added
