@@ -12,7 +12,7 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
-from hypothesis import assume, given, settings
+from hypothesis import assume, example, given, settings
 from hypothesis import strategies as st
 from scipy.integrate import solve_ivp
 from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
@@ -211,7 +211,10 @@ def _exact_cost_gap(u, u_opt, b, xt, rr) -> float:
 
 def _exploration_constants(b=1.0, rr=0.5, xt=1.0, sigma=0.7, i0=1.0, eta=0.6):
     a = b * b + rr
-    du = _u_star(complex(b, 1e-30), xt, rr).imag / 1e-30  # complex step: exact to rounding
+    # du*/db = xt (rr - b^2) / (b^2 + rr)^2 in exact rationals: the complex step read its imaginary
+    # part as 1e-30 (1 + rr) - 2e-30, which rounds to 0 at rr within an ulp of b^2 = 1
+    fb, frr = Fraction(b), Fraction(rr)
+    du = float(Fraction(xt) * (frr - fb * fb) / (fb * fb + frr) ** 2)
     return a, a * du * du, eta / sigma**2, i0
 
 
@@ -445,6 +448,7 @@ def test_self_consistent_mass_at_a_constant_cap_is_the_quadratic_root(
     sigma=st.floats(0.2, 2.0),
     eta=st.floats(0.05, 1.0),
 )
+@example(horizon=10, cap=1.0, b=1.0, rr=0.9999999999999999, sigma=1.0, eta=0.5)
 def test_capped_policy_cost_is_the_materialised_schedule_cost(
     horizon: int, cap: float, b: float, rr: float, sigma: float, eta: float
 ) -> None:
