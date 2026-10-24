@@ -9,8 +9,12 @@ shared-state DML, arXiv 2504.08836). Three failure modes, each a real baseline:
 
 * **predictive / MOPO** fits an outcome model on the confounded logs -- confounding inflates the
   response of already-busy zones, so it over-allocates to them (where drivers only cannibalise).
-* **naive causal** de-confounds per zone (backdoor on demand) but assumes SUTVA -- it allocates by
-  local uplift, double-counting drivers the market cannot supply (predicts a lift it never gets).
+* **naive causal** adjusts each zone for its own demand (a backdoor) but assumes SUTVA -- it
+  allocates by local uplift, double-counting drivers the market cannot supply (predicts a lift it
+  never gets). The adjustment removes part of the confounding, not all: the logging policy splits
+  one budget by every zone's demand, so a zone's incentive also follows the others' demand, which
+  draws drivers from it too. Against the logs rerun with incentives that do not follow demand, it
+  removed 28-91 % of the predictive response's excess on 30 markets (median 63 %).
 * **CHC** de-confounds *and* plans through the structural equilibrium (``chc.games``) with an
   offline-pessimism margin (a Wasserstein/DRO-style shrink by the estimate's influence-function SE),
   so cannibalisation is built in and extrapolation is not trusted.
