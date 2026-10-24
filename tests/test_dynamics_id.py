@@ -1994,7 +1994,15 @@ def test_clusters_move_the_error_and_nothing_else(integrator: str) -> None:
     for fit in (rows, clustered):
         assert fit._lever_errors is not None
         assert fit._lever_errors.tolist() == [[fit.channel_error]]
-    moved = {"channel_error", "_lever_errors", "_channel_blocks", "influence", "clusters"}
+    moved = {
+        "channel_error",
+        "_lever_errors",
+        "_channel_blocks",
+        "_drift_inherited",
+        "_drift_inherited_error",
+        "influence",
+        "clusters",
+    }
     arrays = {
         "residual",
         "representer",
@@ -2490,6 +2498,8 @@ def test_periods_move_the_error_and_nothing_else(integrator: str) -> None:
             "channel_error",
             "_lever_errors",
             "_channel_blocks",
+            "_drift_inherited",
+            "_drift_inherited_error",
             "periods",
         }:
             assert getattr(serial, field.name) == getattr(rows, field.name), field.name
