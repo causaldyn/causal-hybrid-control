@@ -1,6 +1,8 @@
 # ADR 0128 — The research paths go, three names say what they hold, and text periods are declared
 
 **Status:** accepted, 2026-10-21. Carries out ADR 0117's removal; amends ADR 0058 (text periods).
+Extended by ADR 0130: three more names renamed in 0.21.0, and `to_json` stops writing
+`identification_radius` at 1.0.
 
 ## Context
 
