@@ -19,6 +19,8 @@ ADR 0128 renamed three names that said more than their values. Three more said m
   so where `Psi'` and `M` move over the prior a Bayes action goes below the value: at `b = 0`,
   with a prior of SD 1 and five unit-information observations, the floor is 0.333 and the
   posterior's Bayes action regrets 0.075. The name reads as a floor under every estimator.
+  `MultivariateVanTreesCurve.floor` holds the same value at the curve's reference plant, beside
+  its `bayes_floor`, the floor over the prior.
 - **The row `predictive`** of `PricingTask` and `InventoryTask` is the least-squares fit that
   leaves the logged confounder out, beside `predictive-all`, the fit on every logged column. Both
   rows are predictive fits. The label does not say what the row leaves out, and the README, the
@@ -49,9 +51,11 @@ keeps working. A reader of a JSON key cannot be warned, and nothing said when th
     the old function, which warns again when it is called. The new names do not join the top
     level. Since 0.19.0 a research name lives in `chc.research` alone, as
     `local_highprob_regret_certificate` does.
-- **`MultivariateActionFloor.floor` is renamed `local_floor`.** The old name is a property that
+- **`MultivariateActionFloor.floor` is renamed `local_floor`,** and so is
+  `MultivariateVanTreesCurve.floor`: one value has one name. Each old name is a property that
   warns and returns it: `MultivariateActionFloor.floor is renamed local_floor and leaves in 1.0:
-  it is read at the plant supplied, and a Bayes action can go below it`.
+  it is read at the plant supplied, and a Bayes action can go below it`, and on the curve `it is
+  read at the reference plant, and bayes_floor is the floor over the prior`.
 - **The row `predictive` is renamed `predictive-omitted`, with no alias.** A dictionary key cannot
   warn, and `chc.research` may change in any release, so reading `predictive` from a task's
   results is a `KeyError`. `leaderboard` and `leaderboard_multiseed` widen their name column to
@@ -67,10 +71,11 @@ keeps working. A reader of a JSON key cannot be warned, and nothing said when th
 ## Consequences
 
 - A caller of an old function, or of `floor`, is warned at the line that reads it, and the warning
-  names the new one. A caller that builds a `MultivariateActionFloor` by keyword passes
-  `local_floor=`: the constructor does not take `floor=`. The library builds it, and nothing in it,
-  its tests or notebooks built one by keyword. An object pickled before 0.21.0 unpickles, but
-  holds `floor` alone, and reads under neither name.
+  names the new one. A caller that builds a `MultivariateActionFloor` or a
+  `MultivariateVanTreesCurve` by keyword passes `local_floor=`: the constructors do not take
+  `floor=`. The library builds both, and nothing in it, its tests or notebooks built one by
+  keyword. An object pickled before 0.21.0 unpickles, but holds `floor` alone, and reads under
+  neither name.
 - A reader of a task's results by the key `predictive` fails at once. The bench's Track D labels
   each row `f"{task}/{r.controller}"`, so it prints `pricing/predictive-omitted` and
   `inventory/predictive-omitted` from 0.21.0 on, and its stored leaderboards keep the old label

@@ -4,8 +4,9 @@ Each old name said more than its value is: a channel's standard error read as an
 "identification radius", a regret to second order read as "regret bounds", and a band that holds
 only where the regret's curvature is constant read as a high-probability certificate (0.20.0); the
 same second-order regret, scalar and matrix, read as the regret itself, and a van Trees floor read
-at the plant supplied as the floor (0.21.0). Each is renamed to what it is, and its old name serves
-the same value with a `DeprecationWarning` naming the new one.
+at one plant as the floor, on the action floor and on the van Trees curve (0.21.0). Each is
+renamed to what it is, and its old name serves the same value with a `DeprecationWarning` naming
+the new one.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from chc.research.regret import (
     confounding_robust_lq_second_order_regret_matrix,
     local_highprob_regret_certificate,
     multivariate_action_floor,
+    multivariate_van_trees_certificate,
 )
 
 
@@ -150,3 +152,14 @@ def test_the_local_floor_reads_under_its_old_name_with_a_warning() -> None:
     ):
         old = floor.floor
     assert old == floor.local_floor == pytest.approx(1.0 / 3.0, rel=1e-12, abs=0.0)
+
+
+def test_the_van_trees_curve_s_local_floor_reads_under_its_old_name_with_a_warning() -> None:
+    curve = multivariate_van_trees_certificate(draws=4000)
+    with pytest.warns(
+        DeprecationWarning,
+        match=r"^MultivariateVanTreesCurve\.floor is renamed local_floor and leaves in 1\.0: it is "
+        r"read at the reference plant, and bayes_floor is the floor over the prior$",
+    ):
+        old = curve.floor
+    assert old == curve.local_floor > 0.0

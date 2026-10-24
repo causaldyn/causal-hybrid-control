@@ -489,10 +489,11 @@ def multivariate_action_floor(
     regret of 0.075 (0.12 to 0.76 of the floor on six such priors near ``b = 0``).
     :func:`multivariate_van_trees_certificate`'s ``bayes_floor`` averages ``Psi'`` over the prior.
 
-    What the scalar model cannot express is in :attr:`alignment`. The floor splits over the
-    eigendirections of the information as ``sum_i (Psi' v_i)' M (Psi' v_i) / lambda_i``, so
-    confounding -- which lowers ``lambda_i`` anisotropically -- is paid only in proportion to how
-    much the optimal action leans on the directions it damages. Its price is therefore a
+    What the scalar model cannot express is in :attr:`MultivariateActionFloor.spectral_alignment`.
+    The floor splits over the eigendirections of the information as
+    ``sum_i (Psi' v_i)' M (Psi' v_i) / lambda_i``, so confounding -- which lowers ``lambda_i``
+    anisotropically -- is paid only in proportion to how much the optimal action leans on the
+    directions it damages. Its price is therefore a
     ``Psi'``-weighted mean of the per-direction factors, equal to the full factor only when the
     damaged direction carries all the weight and exactly ``1`` at the other corner (STEP 6b). A
     scalar plant has one direction, so it always sits at the first corner and reports
@@ -586,7 +587,7 @@ def multivariate_action_floor(
 class MultivariateVanTreesCurve:
     """The matrix-effect van Trees floor, and the alignment a scalar plant hides."""
 
-    floor: float  # tr(M Psi' G^-1 Psi') at the reference plant
+    local_floor: float  # tr(M Psi' G^-1 Psi') at the reference plant: LOCAL, as bayes_floor is not
     scalar_agreement: float  # relative gap between the 1x1 floor and the scalar Cramer-Rao form
     channel_sum_agreement: float  # ... and between the 2x2 floor and h1 C1 + h2 C2 (STEP 7c)
     sensitivity_residual: float  # closed-form Psi' against a central finite difference
@@ -600,6 +601,17 @@ class MultivariateVanTreesCurve:
     worst_single_direction: float  # 1 + (k-1) a_max/sum(a): the most one direction can ever cost
     knife_edge_weight: float  # the weight a channel at rr = b^2 carries (== 0)
     live_channel_weight: float  # ... against the other channel's, which is not zero
+
+    @property
+    def floor(self) -> float:
+        """``local_floor`` under the name it had before 0.21.0, which leaves in 1.0."""
+        warnings.warn(
+            "MultivariateVanTreesCurve.floor is renamed local_floor and leaves in 1.0: it is read "
+            "at the reference plant, and bayes_floor is the floor over the prior",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.local_floor
 
 
 def multivariate_van_trees_certificate(
