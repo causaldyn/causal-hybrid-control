@@ -9,8 +9,12 @@ shared-state DML, arXiv 2504.08836). Three failure modes, each a real baseline:
 
 * **predictive / MOPO** fits an outcome model on the confounded logs -- confounding inflates the
   response of already-busy zones, so it over-allocates to them (where drivers only cannibalise).
-* **naive causal** de-confounds per zone (backdoor on demand) but assumes SUTVA -- it allocates by
-  local uplift, double-counting drivers the market cannot supply (predicts a lift it never gets).
+* **naive causal** adjusts each zone for its own demand (a backdoor) but assumes SUTVA -- it
+  allocates by local uplift, double-counting drivers the market cannot supply (predicts a lift it
+  never gets). The adjustment removes part of the confounding, not all: the logging policy splits
+  one budget by every zone's demand, so a zone's incentive also follows the others' demand, which
+  draws drivers from it too. Against the logs rerun with incentives that do not follow demand, it
+  removed 28-91 % of the predictive response's excess on 30 markets (median 63 %).
 * **CHC** de-confounds *and* plans through the structural equilibrium (``chc.games``) with an
   offline-pessimism margin (a Wasserstein/DRO-style shrink by the estimate's influence-function SE),
   so cannibalisation is built in and extrapolation is not trusted.
@@ -20,12 +24,13 @@ equilibrium :func:`fit_equilibrium` estimates from the logs, passed as ``equilib
 never through the simulator's own base demand, attractiveness and equilibrium map, which no log
 supplies: through those, a response of zero planned as close to the oracle as the de-confounded
 one, so the comparison measured knowing the equilibrium. The SUTVA baselines get no such
-structure. The plan's value is the fitted equilibrium's: on five markets the de-confounded
-response's tilt moved the share of the best plan's lift by -0.006 +- 0.013 on 400 blocks against
-a response of zero, and by -0.114 +- 0.028 on 50. Only where the market lies outside the fitted
-class, its attractiveness fixed while the demand moves, did the tilt carry value: 0.77 of the
-lift against 0.41, over 100 logs of 400 blocks. The fit warns on such a market, and the
-planner refuses a fit whose drivers do not tell an incentive from none (ADR 0123).
+structure. The plan's value is the fitted equilibrium's: on 30 markets the de-confounded
+response's tilt moved the share of the best plan's lift by -0.027 +- 0.016 on 400 blocks against
+a response of zero (mean +- standard error; -0.18 to +0.21), and by -0.064 +- 0.024 on 50 (-0.36
+to +0.17). Only where the market lies outside the fitted class, its attractiveness fixed while
+the demand moves, did the tilt carry value on average: 0.77 of the lift against 0.41, over 100
+logs of 400 blocks. The fit warns on such a market, and the planner refuses a fit whose drivers do
+not tell an incentive from none (ADR 0123).
 
 Everything is differentiable and reuses the equilibrium solver in :mod:`chc.games`.
 """

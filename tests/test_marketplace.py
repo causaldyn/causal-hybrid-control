@@ -39,14 +39,57 @@ def env() -> dict:
     }
 
 
-def test_confounded_calibration_biases_toward_demand(env: dict) -> None:
-    demand, _ = env["market"]._base()
-    pred = calibrate_predictive(env["logs"]).marginal
-    naive = calibrate_naive_causal(env["logs"]).marginal
-    pred_corr = float(jnp.corrcoef(pred, demand)[0, 1])
-    naive_corr = float(jnp.corrcoef(naive, demand)[0, 1])
-    assert pred_corr > 0.25  # confounding: the logging policy chased demand, inflating busy zones
-    assert abs(naive_corr) < 0.2  # backdoor on demand de-confounds the response
+def _rerun(market: SharedStateMarket, logs: dict, u: jax.Array) -> dict:
+    """The logged blocks under the incentives ``u``: each keeps its demand, the attractiveness that
+    moves with it and its completions noise, and its drivers settle anew."""
+    base_demand, base_attract = market._base()
+    attract = base_attract * logs["demand"] / base_demand
+    settle = jax.vmap(market._equilibrium)
+    noise = logs["y"] - jnp.minimum(logs["demand"], settle(attract, logs["u"]))
+    y = jnp.minimum(logs["demand"], settle(attract, u)) + noise
+    return {"u": u, "demand": logs["demand"], "y": y}
+
+
+def test_the_logging_policy_s_chase_of_demand_confounds_the_responses(env: dict) -> None:
+    """The reference is a response no log gives: the naive-causal regression on the logged blocks
+    rerun with each block's incentives another block's, which no longer follow its demand. Against
+    it the predictive response reads high, the logging policy having chased demand. Adjusting each
+    zone for its own demand removes part of that, not all: the policy splits one budget by a
+    softmax of every zone's demand, so a zone's incentive also follows the others' demand, which
+    draws drivers from it too. Rerun with each zone's incentive chasing its own logged demand and
+    another block's elsewhere, where adjusting for its own demand is complete, the naive-causal
+    response still reads above that rerun's. The test was the responses' correlation with demand,
+    the naive-causal one's near zero, which is no test: the randomised response follows demand, and
+    over seeds 0-29 the naive-causal one read 0.2 or more in size on 15.
+
+    Over seeds 0-29 in float64 the predictive excess read 0.30 to 0.54, the share of it the
+    adjustment keeps 0.09 to 0.72, the excess over the complete adjustment 0.13 to 0.30 and the
+    randomised response's correlation with demand 0.39 to 0.87. Each bound is their mean less or
+    plus three SDs, rounded outward."""
+    market, logs = env["market"], env["logs"]
+    demand, _ = market._base()
+    total = logs["aggregate"][:, :1]
+
+    def chase(chased: jax.Array) -> jax.Array:
+        """generate_logs's logging policy: the block's total, split by a softmax of demand."""
+        return total * jax.nn.softmax(market.confounding * chased, axis=1)
+
+    # the twelve-term sum and two products round to at most about 8 epsilons; twice that
+    rtol = 16 * float(jnp.finfo(logs["u"].dtype).eps)
+    np.testing.assert_allclose(chase(logs["demand"]), logs["u"], rtol=rtol, atol=0.0)
+    order = np.random.default_rng(0).permutation(logs["u"].shape[0])
+    randomised = calibrate_naive_causal(_rerun(market, logs, logs["u"][order])).marginal
+    complete = []
+    for zone in range(market.n_zones):
+        chased = logs["demand"][order].at[:, zone].set(logs["demand"][:, zone])
+        complete.append(calibrate_naive_causal(_rerun(market, logs, chase(chased))).marginal[zone])
+    predictive = calibrate_predictive(logs).marginal
+    naive = calibrate_naive_causal(logs).marginal
+    excess = float(jnp.mean(predictive - randomised))
+    assert excess > 0.25
+    assert float(jnp.mean(naive - randomised)) < 0.88 * excess
+    assert float(jnp.mean(naive - jnp.stack(complete))) > 0.07
+    assert float(jnp.corrcoef(randomised, demand)[0, 1]) > 0.28
 
 
 def test_sutva_planners_capture_almost_none_of_the_oracle_lift(env: dict) -> None:
