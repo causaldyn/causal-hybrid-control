@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.20.1] — 2026-10-24
+
 ### Fixed
 
 - **`certainty_equivalence_gap` read the gap as a difference of two closed-loop costs**, and lost
@@ -7550,6 +7552,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.20.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.20.1
 [0.20.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.20.0
 [0.19.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.19.0
 [0.18.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.18.0
