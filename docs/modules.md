@@ -422,14 +422,16 @@ that lift exactly what the world's media lift, for `allocate_geos` to plan on.
 confounded switchback logs where SUTVA fails. The equilibrium-aware allocation plans through a
 congestion equilibrium `fit_equilibrium` estimates from the logs, the drivers' sensitivity, the
 crowding and their total and each zone's attractiveness per unit of demand, and through a W-DRO
-pessimism tilt on the response (ADR 0114). On 400 blocks it wins 89–100 % of the best plan's lift
-over no incentive on five markets, 59–96 % on 50. That share is the fitted equilibrium's: through
-it, the de-confounded response's tilt moves the share by −0.006 ± 0.013 on 400 blocks against a
-response of zero, and by −0.114 ± 0.028 on 50. On markets outside the fitted class, whose
-attractiveness stays put while the demand moves, the tilt carried value: 0.77 of the lift against
-0.41 with a response of zero, over 100 logs of 400 blocks, and the fit warns there (ADR 0123). A fit
-on logs whose incentives do not move the completions is refused. The SUTVA allocations, MOPO-style
-and naive causal, capture little of the lift, and on some markets less than no incentive at all.
+pessimism tilt on the response (ADR 0114). On 400 blocks it wins 77–100 % of the best plan's lift
+over no incentive on 30 markets (median 94 %), 52–100 % on 50 (median 85 %). That share is the
+fitted equilibrium's: through it, the de-confounded response's tilt moves the share by
+−0.027 ± 0.016 on 400 blocks against a response of zero (mean ± standard error over the 30; from
+−0.18 to +0.21), and by −0.064 ± 0.024 on 50 (from −0.36 to +0.17). On markets outside the fitted
+class, whose attractiveness stays put while the demand moves, the tilt carried value: 0.77 of the
+lift against 0.41 with a response of zero, over 100 logs of 400 blocks, and the fit warns there
+(ADR 0123). A fit on logs whose incentives do not move the completions is refused. The SUTVA
+allocations, MOPO-style and naive causal, capture a median of 0 % and 36 % of the lift on 400
+blocks (at most 30 % and 79 %), and on 15 and 7 of the 30 markets less than no incentive at all.
 The planner requires the fitted equilibrium: through the simulator's own it landed near the oracle
 whatever response it was given, which measures knowing the equilibrium, not de-confounding.
 
