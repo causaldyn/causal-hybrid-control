@@ -66,11 +66,21 @@ default call with constraints at such a `gamma`, which runs today, raises once t
 - An Euler fit with an adjustment set reads a different drift and a narrower drift error than in
   0.20: its plans move, by the table above. Its channel and the channel's error do not.
 - From 0.22.0 a default `prescribe` call reads the absolute radius where it holds constraints, and
-  its held plan pays for it: in the worlds above the median held task cost moved from 4.502 to
-  4.519 well-specified, 4.170 to 4.705 at saturation 1, 5.364 to 7.101 at dead time 1 and 4.520 to
-  5.543 under the persistent disturbance, and the rounds more often ended on their budget
-  (`max_iterations`), every step still certified. Under the hidden confounder the `"rk4"` cost of
-  2.875 was that of a plan the plant left the set on.
+  its held plan mostly pays for it. The median held task cost over the six logs, every step
+  certified under either integrator:
+
+  | world | `"rk4"`, relative radius | `"euler"`, absolute radius |
+  |---|---|---|
+  | well-specified | 4.502 | 4.519 |
+  | hidden confounder 0.4 | 2.875, a plan the plant left the set on | 4.418 |
+  | sine drift | 4.690 | 4.933 |
+  | saturation 1 | 4.170 | 4.705 |
+  | dead time 1 | 5.364 | 7.101 |
+  | demand AR(1) 0.8 | 4.533 | 4.439 |
+  | disturbance AR(1) | 4.520 | 5.543 |
+
+  The held rounds ended on their budget (`max_iterations`) on 13 logs of 42 under `"euler"`, six
+  of them under the hidden confounder, and on none under `"rk4"`.
 - On a plant in continuous time the Euler fit reads the step's map, not the field. On the heating
   notebook's room at `dt` of one hour, the heater's effect reads 0.97 to 0.98 °C an hour per kW,
   the hour's own effect `(1 - e^-k)/k = 0.975`, where the `"rk4"` fit reads the law's 1.00, and the
