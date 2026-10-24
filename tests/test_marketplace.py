@@ -2,6 +2,11 @@
 SUTVA fails, so the predictive (MOPO) and naive-causal planners capture little of the oracle's lift,
 while the CHC allocation, which plans through an equilibrium fitted from the logs, recovers most of
 it.
+
+The thresholds are read on one market, ``SharedStateMarket(seed=0)``, among the hardest for the
+SUTVA planners. Over markets 0-29, at either precision, the CHC allocation had the least regret of
+the three on every one, and realised more completions than the naive one on every one; the naive
+plan won a median of 0.36 of the lift in float64, up to 0.79.
 """
 
 import jax
@@ -97,7 +102,8 @@ def test_sutva_planners_capture_almost_none_of_the_oracle_lift(env: dict) -> Non
     pred_alloc = sutva_allocation(market, calibrate_predictive(env["logs"]), radius=1.0)
     naive_alloc = sutva_allocation(market, calibrate_naive_causal(env["logs"]), radius=1.0)
     lift = oracle - base  # the completions the oracle wins over doing nothing
-    # SUTVA over-allocates into zones whose drivers only cannibalise -> captures <30% (often < 0)
+    # SUTVA over-allocates into zones whose drivers only cannibalise: on this market both plans
+    # win less than no incentive; the naive one stays under 0.3 of the lift on half of markets 0-29
     assert market.value(pred_alloc) - base < 0.3 * lift
     assert market.value(naive_alloc) - base < 0.3 * lift
 
@@ -108,6 +114,8 @@ def test_chc_recovers_the_oracle_where_baselines_do_not(env: dict) -> None:
     chc = pessimistic_equilibrium_allocation(market, shared, radius=1.0, equilibrium=env["fitted"])
     naive = sutva_allocation(market, calibrate_naive_causal(env["logs"]), radius=1.0)
     pred = sutva_allocation(market, calibrate_predictive(env["logs"]), radius=1.0)
+    # the least regret of the three, as on every one of markets 0-29
+    assert market.value(chc) > max(market.value(naive), market.value(pred))
     # through an equilibrium fitted from the logs: 0.083 short in float32, 0.106 in float64
     assert oracle - market.value(chc) < 0.3
     assert oracle - market.value(naive) > 0.8  # SUTVA leaves large regret on the table
@@ -116,7 +124,7 @@ def test_chc_recovers_the_oracle_where_baselines_do_not(env: dict) -> None:
 
 def test_the_planner_refuses_to_plan_without_a_fitted_equilibrium(env: dict) -> None:
     """Handed no equilibrium, the planner went through the simulator's own, which no log supplies,
-    and planned as close to the oracle from a response of zero as from the de-confounded one: the
+    and planned as close to the oracle from a response of zero as from the adjusted one: the
     comparison measured knowing the equilibrium. It now refuses, and names the fit."""
     market = env["market"]
     with pytest.raises(TypeError, match=r"equilibrium=fit_equilibrium\(logs\)"):
@@ -231,7 +239,8 @@ def test_naive_over_predicts_while_chc_delivers_more(env: dict) -> None:
     )
     # the naive per-zone (additive) model predicts a lift the equilibrium never realises...
     assert interference_bias(market, naive_resp, naive_alloc) > 1.0
-    # ...and CHC, planning through that equilibrium, realises strictly more completions than naive
+    # ...and CHC, planning through that equilibrium, realises strictly more completions than naive:
+    # 3.40 more on this market in float32, 1.24 in float64, and from 0.02 to 3.40 over markets 0-29
     assert market.value(chc_alloc) > market.value(naive_alloc) + 1.0
 
 
@@ -353,7 +362,7 @@ def test_the_calibrated_response_reads_the_same_with_a_column_far_from_zero(
 ) -> None:
     """Each zone's regression has an intercept, so a column's origin carries no information.
     Shifted by a thousand of its spreads, the incentive moved the first zone's predictive response
-    to 0.658 where it reads 0.823, the demand its de-confounded one to 0.542 where 0.359, and the
+    to 0.658 where it reads 0.823, the demand its naive-causal one to 0.542 where 0.359, and the
     aggregate its shared-state one to 0.519 where 0.577, as the ridge was on the intercept too; in
     millionths of their units as well, they read 0, 0.823 and 0.359. A ridge scaled by each
     column's mean square moves them as far or further. Solved about the columns' means, the shift

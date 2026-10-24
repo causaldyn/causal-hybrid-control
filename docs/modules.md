@@ -424,7 +424,7 @@ congestion equilibrium `fit_equilibrium` estimates from the logs, the drivers' s
 crowding and their total and each zone's attractiveness per unit of demand, and through a W-DRO
 pessimism tilt on the response (ADR 0114). On 400 blocks it wins 77–100 % of the best plan's lift
 over no incentive on 30 markets (median 94 %), 52–100 % on 50 (median 85 %). That share is the
-fitted equilibrium's: through it, the de-confounded response's tilt moves the share by
+fitted equilibrium's: through it, the adjusted response's tilt moves the share by
 −0.027 ± 0.016 on 400 blocks against a response of zero (mean ± standard error over the 30; from
 −0.18 to +0.21), and by −0.064 ± 0.024 on 50 (from −0.36 to +0.17). On markets outside the fitted
 class, whose attractiveness stays put while the demand moves, the tilt carried value: 0.77 of the
@@ -433,7 +433,7 @@ lift against 0.41 with a response of zero, over 100 logs of 400 blocks, and the 
 allocations, MOPO-style and naive causal, capture a median of 0 % and 36 % of the lift on 400
 blocks (at most 30 % and 79 %), and on 15 and 7 of the 30 markets less than no incentive at all.
 The planner requires the fitted equilibrium: through the simulator's own it landed near the oracle
-whatever response it was given, which measures knowing the equilibrium, not de-confounding.
+whatever response it was given, which measures knowing the equilibrium, not the response.
 
 **The zones × time plant the marketplace loop runs on** (`zones`), control-affine by construction:
 idle supply, open requests and an incentive stock per zone; an incentive and a price per zone as

@@ -1,6 +1,7 @@
 # ADR 0123 — A fitted equilibrium is tested before it is planned through
 
-**Status:** accepted, 2026-10-21. Amends ADR 0114.
+**Status:** accepted, 2026-10-21. Amends ADR 0114. Amended 2026-10-24: on the fitted class the
+tilt costs share, most in short logs, where this record said it added nothing.
 
 ## Context
 
@@ -45,9 +46,11 @@ Measured in float64, on five markets, logs of 50 and 400 blocks:
 | incentives shuffled, 50 blocks | 16 of 20 | −4.3 to 1.26 |
 
 - A misspecified market is warned of, and its fit is still planned through. On those markets the
-  de-confounded response's tilt carried value: 0.77 of the best plan's lift against 0.41 with a
-  response of zero, over 100 logs of 400 blocks. On the fitted class it added nothing
-  (−0.006 ± 0.013 on 400 blocks, −0.114 ± 0.028 on 50). So the tilt stays.
+  adjusted response's tilt carried value: 0.77 of the best plan's lift against 0.41 with a
+  response of zero, over 100 logs of 400 blocks. On the fitted class it cost share: −0.006 ± 0.013
+  on 400 blocks and −0.114 ± 0.028 on 50 over five markets, −0.027 ± 0.016 and −0.064 ± 0.024 over
+  30 (mean ± standard error). The tilt stays as a hedge: where the fit is right it costs a few
+  hundredths of the lift, most in short logs, and where the fit is wrong it gained 0.36 of it.
 - A fit with no incentive response is refused, not planned. A caller that planned through one
   now gets a `ValueError`.
 - Each fit is solved twice, with and without the incentives. This doubles its cost.

@@ -15,16 +15,17 @@ shared-state DML, arXiv 2504.08836). Three failure modes, each a real baseline:
   one budget by every zone's demand, so a zone's incentive also follows the others' demand, which
   draws drivers from it too. Against the logs rerun with incentives that do not follow demand, it
   removed 28-91 % of the predictive response's excess on 30 markets (median 63 %).
-* **CHC** de-confounds *and* plans through the structural equilibrium (``chc.games``) with an
-  offline-pessimism margin (a Wasserstein/DRO-style shrink by the estimate's influence-function SE),
-  so cannibalisation is built in and extrapolation is not trusted.
+* **CHC** adjusts each zone for its own demand and the shared exposure *and* plans through the
+  structural equilibrium (``chc.games``) with an offline-pessimism margin (a Wasserstein/DRO-style
+  shrink by the estimate's influence-function SE), so cannibalisation is built in and
+  extrapolation is not trusted.
 
 What the comparison measures: :func:`pessimistic_equilibrium_allocation` plans through the
 equilibrium :func:`fit_equilibrium` estimates from the logs, passed as ``equilibrium=`` (ADR 0114),
 never through the simulator's own base demand, attractiveness and equilibrium map, which no log
-supplies: through those, a response of zero planned as close to the oracle as the de-confounded
+supplies: through those, a response of zero planned as close to the oracle as the adjusted
 one, so the comparison measured knowing the equilibrium. The SUTVA baselines get no such
-structure. The plan's value is the fitted equilibrium's: on 30 markets the de-confounded
+structure. The plan's value is the fitted equilibrium's: on 30 markets the adjusted
 response's tilt moved the share of the best plan's lift by -0.027 +- 0.016 on 400 blocks against
 a response of zero (mean +- standard error; -0.18 to +0.21), and by -0.064 +- 0.024 on 50 (-0.36
 to +0.17). Only where the market lies outside the fitted class, its attractiveness fixed while
@@ -194,13 +195,26 @@ def calibrate_predictive(logs: dict[str, Array]) -> ExposureResponse:
 
 
 def calibrate_naive_causal(logs: dict[str, Array]) -> ExposureResponse:
-    """Backdoor per zone: adjust for demand (de-confound) but assume SUTVA (no shared state)."""
+    """Backdoor per zone: adjust each zone for its own demand, and assume SUTVA (no shared state).
+
+    The adjustment leaves the confounding that runs through the other zones' demand (see the
+    module).
+    """
     return _calibrate(logs, ("demand",))
 
 
 def calibrate_shared_state(logs: dict[str, Array]) -> ExposureResponse:
-    """AIPW-style shared-state calibration: de-confound *and* control the shared exposure aggregate,
-    so the marginal is the direct response net of the cannibalisation the aggregate absorbs.
+    """Shared-state calibration: adjust each zone for its own demand *and* the shared exposure
+    aggregate, the block's total incentive, so the marginal reads the zone's response at a fixed
+    total, net of the cannibalisation the total absorbs.
+
+    It is not de-confounded. A block's incentives are its total split by a softmax of every zone's
+    demand, so at a fixed total and a fixed own demand a zone's incentive moves only with the other
+    zones' demand, which draws drivers from it too. Holding the total takes out the randomised
+    budget and keeps that part. Against its logs rerun with incentives that do not follow demand, it
+    read 0.20 to 0.59 higher on 30 markets at either precision, where :func:`calibrate_naive_causal`
+    read up to 0.33 higher. :func:`pessimistic_equilibrium_allocation` reads it only through its
+    tilt, ``-min(max(marginal, 0), radius * se)``.
     """
     return _calibrate(logs, ("demand", "aggregate"))
 
@@ -461,7 +475,7 @@ def pessimistic_equilibrium_allocation(
 ) -> Array:
     """CHC allocation: plan the budget *through* the congestion equilibrium (``chc.games``) so the
     driver-conservation (cannibalisation) channel the SUTVA baselines assume away is structural. The
-    de-confounded response gates the plan through a W-DRO pessimism tilt (``radius * SE``): where
+    adjusted response gates the plan through a W-DRO pessimism tilt (``radius * SE``): where
     the offline estimate is weak or unsupported, the incentive is discounted rather than trusted.
 
     ``equilibrium`` is the one planned through, and is required: :func:`fit_equilibrium`'s,
