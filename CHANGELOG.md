@@ -7,6 +7,78 @@ still change).
 
 ## [Unreleased]
 
+### Changed
+
+- **More names say what they hold** (ADR 0130). `confounding_robust_lq_regret` and
+  `confounding_robust_lq_regret_matrix` are `confounding_robust_lq_second_order_regret` and
+  `confounding_robust_lq_second_order_regret_matrix`: they return `L_reg (eps + Delta)^2`, which the
+  exact worst regret exceeds by 0.9 % at `Gamma = 1` and by 5–8 % at `Gamma` 1.5–5.
+  `MultivariateActionFloor.floor` and `MultivariateVanTreesCurve.floor` are `local_floor`: the
+  floor is read at one plant, and a Bayes action can go below it (0.075 against 0.333 at `b = 0`).
+- **The benchmark row that leaves the logged confounder out is `predictive-omitted`**, beside
+  `predictive-all`, in `PricingTask` and `InventoryTask`. There is no alias: reading `"predictive"`
+  from a task's results is a `KeyError`. `leaderboard` and `leaderboard_multiseed` widen the name
+  column to the longest name, 14 at the least. No number moves.
+- **The quickstart, the README and the start-here notebook pass `integrator="euler"`**: their logs
+  are weekly panels stepped by their one-step map. The quickstart's trustworthy prefix stays 3
+  steps, its barrier's `gamma` now a level of the channel's sensitivity model. The heating notebook
+  passes `integrator="rk4"`, since its room follows a law in continuous time, and the scripts that
+  recorded measurements under `rk4` pass it too.
+- **The marketplace's shares and its tilt are read over 30 markets**, not five: on 400 blocks the
+  equilibrium-aware plan wins 77–100 % of the best plan's lift (median 94 %), 52–100 % on 50
+  (median 85 %), and against a response of zero the tilt moves that share by −0.027 ± 0.016 and
+  −0.064 ± 0.024. ADR 0123, which said the tilt added nothing on the fitted class, now says it
+  costs share there, most in short logs, and stays as a hedge against a misspecified market.
+
+### Deprecated
+
+- **`prescribe`'s default integrator becomes `"euler"` in 0.22.0** (ADR 0129). Not given, it is
+  `"rk4"`, and a `FutureWarning` says so. The Euler fit gives the barrier an absolute radius: where
+  an unrecorded confounder moved the channel from 0.8 to about 0.41, held at `gamma = 2`, the `rk4`
+  fit's relative radius certified all 15 steps on six logs of six, and the plant left the set on
+  each (least margin -0.023 to -0.077); the Euler fit's absolute radius certified all 15 at margins
+  +0.378 to +0.415. Its held plans mostly pay for that: the median held task cost rose in five of
+  the six worlds whose plant the `rk4` plan kept in the set (7.10 against 5.36 under a dead time,
+  4.70 against 4.17 at a saturating response) and fell under a persistent demand (4.44 against
+  4.53); the rounds ended on their budget on 13 logs of 42. From 0.22.0 a default call with
+  constraints at `gamma` at or past `(3 + sqrt 5)/2` raises. Pass `integrator="rk4"` to keep the
+  current fit, or `"euler"` to plan by the map now.
+- The old names of the two regret functions and of the two `floor` fields warn with a
+  `DeprecationWarning` and leave in 1.0. At 1.0 `DecisionCertificate.to_json` stops writing
+  `identification_radius`, and its `schema_version` moves to 3.
+
+### Fixed
+
+- **The Euler fit holds the adjustment set in its drift** (ADR 0129), as the `rk4` fit does: each
+  covariate that is not a driver joins the drift regression in the nuisances' basis, held over the
+  step, about its mean on the log, and leaves the returned field. On `x' = x + (-0.7 x + 0.8 u + z)`
+  a confounder leaning on the state by 0.5 set the decay at -0.195 over 60 logs of 1000 transitions,
+  its interval covering -0.7 on none (now -0.700, covering on 93 %); drawn apart from the state, it
+  left the drift's error 99 times as wide. The channel and its error do not move. On the
+  misspecification suite's plant the Euler plan's median regret fell from 0.990 to 0.0112 under a
+  persistent demand (`rk4`: 0.0113) and from 0.0142 to 0.0018 well specified (`rk4`: 0.0018).
+- **The tube reads what an Euler field inherits at the log's mean action** (ADR 0131): the mean of
+  the adjustment set's push on the log, and the channel's error carried through the drift
+  regression's target. The push's spread in the drift's residual had covered both. Holding the
+  push took it out, and at a state 2.5 of the log's spreads from its mean the drift's miss read
+  1.80 of its standard error in root mean square, `+-1.96` of it holding 0.72 of 40 logs; it now
+  reads 1.06, holding 0.97. `drift_error` keeps its meaning, the regression's own error. A `"rk4"`
+  fit reads as before.
+- **The marketplace no longer calls its adjusted responses de-confounded.** The logging policy
+  splits one budget by a softmax of every zone's demand, so a zone adjusted for its own demand
+  keeps the confounding that runs through the others'. Against its logs rerun with incentives that
+  do not follow demand, `calibrate_naive_causal` read up to 0.33 higher over 30 markets, and
+  `calibrate_shared_state` 0.20 to 0.59: holding the block's total incentive takes out its
+  randomised budget and keeps the part that follows the other zones' demand. The planner reads
+  the response only through its tilt. The test that read a response's correlation with demand
+  near zero as no confounding reads the responses against that rerun.
+
+### Notes
+
+- `LoggerCheck`, read as a stop, removed failed claims no more often than it refused sound ones in
+  any of nine worlds of 200 panels, eight with a wrong graph (one-sided Fisher p 0.64 to 1, size
+  0.058); its docstring and ADR 0028 say so. It stays an experimental report.
+
 ## [0.20.1] — 2026-10-24
 
 ### Fixed
