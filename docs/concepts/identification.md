@@ -28,9 +28,10 @@ Three limits, stated before the code is:
 - Only the **channel** `B_θ` is interventional. The drift `a_θ` is fitted on the remainder, so it
   absorbs whatever the omitted confounder contributes in-sample: an *observational-conditional*
   drift. Planning is unbiased in the direction the optimiser moves; the predicted trajectory *level*
-  still shifts if the confounder's distribution does. Under `integrator="rk4"` the adjustment set
-  joins the drift regression, held over each step, because RK4 carries the drift into the channel;
-  there the drift is conditional on the adjustment set at its mean on the log.
+  still shifts if the confounder's distribution does. The adjustment set joins the drift
+  regression, held over each step, under either integrator, so the drift is conditional on it at
+  its mean on the log; under `integrator="rk4"` a push left out would reach the channel as well,
+  because RK4 carries the drift into it.
 - The residual must be **control-affine** (`ControlAffineResidual`). A general `r_θ(x, u)` has no
   partialling-out moment and gets no guarantee here.
 - With no adjustment set and no instrument nothing in the log identifies the channel, unless the

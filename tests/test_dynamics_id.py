@@ -3469,6 +3469,44 @@ def test_the_rk4_fit_holds_a_covariate_s_push_in_the_nuisances_basis() -> None:
     assert 0.7 < float(np.std(channels_array, ddof=1) / np.mean(errors_array)) < 1.4
 
 
+def _euler_pushed_log(seed: int, n: int, correlation: float, noise: float = 0.01):
+    """``x' = x + (-0.7 x + 0.8 u + z)``, the Euler map at ``dt = 1``, logged as
+    :func:`_pushed_log` logs: the confounder pushes the state and leans on it by ``correlation``."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(n, 1))
+    z = correlation * x + math.sqrt(1 - correlation**2) * rng.normal(size=(n, 1))
+    u = 0.9 * z + 0.4 * rng.normal(size=(n, 1))
+    x_next = x + (-0.7 * x + 0.8 * u + z) + noise * rng.normal(size=(n, 1))
+    data = {"x": x, "u": u, "z": z, "x_next": x_next}
+    return {key: jnp.asarray(value) for key, value in data.items()}
+
+
+@pytest.mark.parametrize("correlation", [0.5, 0.0])
+def test_the_euler_fit_holds_a_covariate_s_push_in_the_drift(correlation: float) -> None:
+    """Left out of the Euler drift, a confounder's push that leans on the state by 0.5 set the
+    decay at -0.146 for -0.700 on this log, and one drawn apart from the state left the drift's
+    error 99 times the noise's over 60 logs. Held in the drift, as under ``rk4``, the decay lands
+    within its error, which is the noise's over the state's spread given the confounder,
+    ``0.01 / sqrt(1000 (1 - rho^2))``; the returned field leaves the push out."""
+    fit = fit_causal_residual(
+        _ZERO,
+        _euler_pushed_log(0, 1000, correlation),
+        1.0,
+        adjust_for=("z",),
+        integrator="euler",
+        channel_degree=0,
+    )
+    assert fit._drift_blocks is not None
+    error = float(np.sqrt(fit._drift_blocks[0, 1, 1]))
+    noise_error = 0.01 / math.sqrt(1000 * (1 - correlation**2))
+    assert 0.5 * noise_error < error < 2.0 * noise_error
+    assert abs(float(np.asarray(fit.residual.drift)[0, 1]) + 0.7) < 4.0 * error
+    assert fit.driver_gain is None
+    # what the field leaves of the log is the push it does not carry, beside the noise
+    assert fit.integrator_defect is not None
+    assert fit.integrator_defect > 10 * 0.01
+
+
 def test_an_unconfounded_empty_set_is_fitted_as_identified() -> None:
     """A randomised lever needs no adjustment, and a graph proves it: the fit is the orthogonal
     one on the state alone, with its error, where the observational fit read the same channel and
