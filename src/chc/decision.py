@@ -4164,17 +4164,21 @@ def _state_noise(
 
 def _field_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
     """The fitted field's error over the log, a standard error: the channel's at each lever's
-    ``reach`` (:func:`_model_error`), and the drift's own at the log's states and mean action,
-    ``drift_error``, in quadrature. Its root mean square over the log's rows is what the tube
-    reads at each planned state (:func:`_field_errors`), and the plan is solved with it.
+    ``reach`` (:func:`_model_error`), and the field's at the log's states and mean action, in
+    quadrature. Its root mean square over the log's rows is what the tube reads at each planned
+    state (:func:`_field_errors`), and the plan is solved with it.
 
     The drift absorbed the channel at the log's mean action (ADR 0091), so the field's error at an
-    action is the drift's error there plus the channel's times the action's distance from it.
-    Read at that centre the two are uncorrelated to first order, as an intercept read at the
-    regressor's mean is with its slope, and so add in quadrature. Up to 0.17.0 the tube carried the
-    channel's part alone: on the quickstart 0.016, where the drift's is 0.039, the demand the fit
-    adjusts for and the plan does not forecast being in the drift's residual (ADR 0096). A fit with
-    no channel error carries no tube, the drift's error with it.
+    action is its error there plus the channel's times the action's distance from it. The error at
+    the mean action is the drift regression's own, ``drift_error``, and on an Euler fit what it
+    inherits (ADR 0131): the channel's error, which reaches the drift through the regression's
+    target where the log's actions lean on the state, and the error of the adjustment set's push at
+    its mean on the log, which the intercept holds. The inherited part shares the channel's error
+    with the channel's part at an action; the tube adds them in quadrature as it adds the rest, and
+    does not read that cross term. Up to 0.17.0 the tube carried the channel's part alone: on the
+    quickstart 0.016, where the drift's is 0.039, the demand the fit adjusts for and the plan does
+    not forecast being in the drift's residual (ADR 0096). A fit with no channel error carries no
+    tube, the drift's error with it.
 
     The tube bounds the gap's Euclidean norm over the states, so each part is the scale of that
     norm: ``drift_error``, a root mean over the states, times the root of their number.
@@ -4182,7 +4186,10 @@ def _field_error(fit: CausalDynamicsFit, reach: NDArray[np.float64]) -> float:
     channel = _model_error(fit, reach)
     if fit._lever_errors is None or fit.drift_error is None:
         return channel
-    return math.hypot(channel, math.sqrt(fit.residual.channel.shape[0]) * fit.drift_error)
+    drift = fit.drift_error
+    if fit._drift_inherited_error is not None:
+        drift = math.hypot(drift, fit._drift_inherited_error)
+    return math.hypot(channel, math.sqrt(fit.residual.channel.shape[0]) * drift)
 
 
 def _field_errors(
@@ -4206,19 +4213,25 @@ def _field_errors(
     the plan at its late steps (ADR 0104). A fit that keeps no blocks reads its root means at
     every step. Each part is the scale of the error's Euclidean norm over the states, as
     :func:`_field_error` reads it (ADR 0100): the drift's mean variance over the states' blocks,
-    one every state shares under Euler, times their number.
+    one every state shares under Euler, times their number. What an Euler fit's field inherits
+    (``CausalDynamicsFit._drift_inherited``, ADR 0131) is read at the same state and added to it,
+    the largest over the channel's covariances.
     """
     channel = _model_errors(fit, reach, states)
     if fit._lever_errors is None or fit.drift_error is None:
         return channel
     count = fit.residual.channel.shape[0]
+    drivers = np.asarray(drivers, dtype=np.float64)
     if fit._drift_blocks is None:
         return np.hypot(channel, math.sqrt(count) * fit.drift_error)
-    features = np.concatenate(
-        [_features(states, fit.residual.degree), np.asarray(drivers, dtype=np.float64)], axis=1
-    )
-    variances = np.einsum("kf,gfh,kh->kg", features, fit._drift_blocks, features)
-    return np.hypot(channel, np.sqrt(count * np.maximum(np.mean(variances, axis=1), 0.0)))
+    features = np.concatenate([_features(states, fit.residual.degree), drivers], axis=1)
+    variances = np.mean(np.einsum("kf,gfh,kh->kg", features, fit._drift_blocks, features), axis=1)
+    if fit._drift_inherited is not None:
+        top = max(fit.residual.degree, fit.residual.channel_degree)
+        lifted = np.concatenate([_features(states, top), drivers], axis=1)
+        inherited = np.einsum("kf,rgfh,kh->rkg", lifted, fit._drift_inherited, lifted)
+        variances = variances + np.max(np.mean(inherited, axis=2), axis=0)
+    return np.hypot(channel, np.sqrt(count * np.maximum(variances, 0.0)))
 
 
 def _model_errors(

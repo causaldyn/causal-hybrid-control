@@ -328,6 +328,17 @@ class CausalDynamicsFit:
     # ``rk4``, that ``drift_error`` reads at the log's rows as a root mean over the blocks. The tube
     # reads it at the plan's own states (``chc.decision._field_errors``).
     _drift_blocks: np.ndarray | None = dataclasses.field(default=None, repr=False, compare=False)
+    # (r, n, F', F'), set on an identified Euler fit (ADR 0131): the error the field at the log's
+    # mean action inherits beyond ``_drift_blocks``, one block per channel covariance and state, in
+    # the features of the larger of the two degrees, then the drivers. The drift regression reads
+    # its target at the fitted channel, so the channel's error reaches the field where the log's
+    # actions lean on the state; and the intercept holds the adjustment set's push at its mean on
+    # the log. The tube reads it beside ``_drift_blocks``, and ``_drift_inherited_error``, its
+    # largest root mean at the log's rows, beside ``drift_error``.
+    _drift_inherited: np.ndarray | None = dataclasses.field(default=None, repr=False, compare=False)
+    _drift_inherited_error: float | None = dataclasses.field(
+        default=None, repr=False, compare=False
+    )
     # Set on an identified Euler fit whose channel is least squares on the action residuals (no
     # instrument, no weight, every direction moved): the matrix its moment solved, which
     # :func:`channel_region` reads.
@@ -884,6 +895,61 @@ def _channel_blocks(covariance: Array, channel_shape: tuple[int, ...]) -> Array:
     entries, features = channel_shape[0] * channel_shape[1], channel_shape[2]
     every = jnp.arange(entries)
     return covariance.reshape(entries, features, entries, features)[every, :, every, :]
+
+
+def _inherited_blocks(
+    spreads: Sequence[Array],
+    actions: Array,
+    states: Array,
+    design: Array,
+    carried: int,
+    pushed: Array,
+    ridge: float,
+    degree: int,
+    channel_degree: int,
+) -> tuple[np.ndarray, float]:
+    """``(r, n, F', F')``, one block per covariance in ``spreads`` and per state, and their largest
+    read at the log's rows: the error the field at the log's mean action inherits beyond the drift
+    regression's own, in the features of the larger of ``degree`` and ``channel_degree``, then the
+    drivers, ``design``'s columns after the drift's features up to ``carried``.
+
+    The regression reads its target at the fitted channel, so a channel error ``e`` moves the field
+    at the mean action ``u_bar`` by ``e' (g(x, u_bar) - Gamma' phi(x))``, ``g`` the channel's
+    regressors and ``Gamma`` the regression's weight on them: nothing where the log's actions are
+    apart from the design, as ADR 0091 reads the field, and the channel's error times the actions'
+    lean on the state and the drivers where they are not. And the intercept holds the adjustment
+    set's push, ``pushed`` ``(N, n)``, at its mean on the log, which is off the plant's by the
+    mean's own error, its mean square over ``N``, the rows counted independent as the drift
+    regression's own error counts them.
+    """
+    rows, count = states.shape
+    features = np.asarray(
+        jax.vmap(control_affine_features, in_axes=(0, None))(states, max(degree, channel_degree))
+    )
+    own = control_affine_features(states[0], degree).shape[0]
+    drivers = np.asarray(design[:, own:carried], dtype=np.float64)
+    raw = _channel_design(actions, states, channel_degree)
+    gamma = np.asarray(_ridge_weight(design, ridge)[:carried] @ raw, dtype=np.float64)
+    size = raw.shape[1]
+    per_lever = size // actions.shape[1]
+    # h(x, d) = lift' [features(x); d]: the channel's own value at the mean action, less Gamma's
+    lift = np.zeros((features.shape[1] + drivers.shape[1], size))
+    for lever, mean in enumerate(np.asarray(jnp.mean(actions, axis=0), dtype=np.float64)):
+        lift[np.arange(per_lever), lever * per_lever + np.arange(per_lever)] = mean
+    lift[:own] -= gamma[:own]
+    lift[features.shape[1] :] -= gamma[own:]
+    mean_square = np.sum(np.asarray(pushed, dtype=np.float64) ** 2, axis=0) / rows**2
+    blocks = np.zeros((len(spreads), count, lift.shape[0], lift.shape[0]))
+    for r, spread in enumerate(spreads):
+        covariance = np.asarray(spread, dtype=np.float64)
+        for state in range(count):
+            span = slice(state * size, (state + 1) * size)
+            blocks[r, state] = lift @ covariance[span, span] @ lift.T
+            blocks[r, state, 0, 0] += mean_square[state]
+    at_rows = np.concatenate([features, drivers], axis=1)
+    moment = at_rows.T @ at_rows / rows
+    reads = np.einsum("rgab,ba->rg", blocks, moment).mean(axis=1)
+    return blocks, math.sqrt(max(float(np.max(reads)), 0.0))
 
 
 def _channel_errors(
@@ -2156,6 +2222,17 @@ def fit_causal_residual(
             sensitivity[: channel.size], score, regressor.shape[1], codes, steps
         )
         channel_error, lever_errors, channel_blocks = _channel_errors(spreads, channel.shape, phi_c)
+        inherited, inherited_error = _inherited_blocks(
+            spreads,
+            u,
+            x,
+            design,
+            carried,
+            pushes @ remainder[carried:],
+            ridge,
+            degree,
+            channel_degree,
+        )
         own_map = sensitivity[: channel.size]
         least_squares = instrument_action is None and row_weight is None and split is None
         fit = dataclasses.replace(
@@ -2163,6 +2240,8 @@ def fit_causal_residual(
             channel_error=channel_error,
             _lever_errors=lever_errors,
             _channel_blocks=channel_blocks,
+            _drift_inherited=inherited,
+            _drift_inherited_error=inherited_error,
             _channel_gram=_ChannelGram(
                 matrix=np.asarray(regressor.T @ regressor + ridge * penalty, dtype=np.float64),
                 ridge=np.asarray(ridge * jnp.diag(penalty), dtype=np.float64),
