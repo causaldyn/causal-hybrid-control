@@ -1,6 +1,9 @@
 # ADR 0028 — Asking the panel what the logger read
 
-**Status:** proposed, 2026-09-30.
+**Status:** proposed, 2026-09-30. Measured 2026-10-24: read as a stop on a wrong graph, over 200
+replicates in each of nine worlds, the flag removed failed claims no more often than it refused
+sound ones in any world (one-sided Fisher p 0.64 to 1; size 0.058). It stays an experimental
+report, not a stop.
 
 ## Context
 

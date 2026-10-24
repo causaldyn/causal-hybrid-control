@@ -442,6 +442,12 @@ class LoggerCheck:
     chased demand was flagged on every panel while the estimate's mean error stayed within 0.56 of
     its standard error; one that kept half its last incentive was flagged too, and its estimate sat
     1.13 standard errors high (ADR 0028).
+
+    Read as a stop, it is no check of the graph. Over 200 panels of that size in each of nine
+    worlds, eight of them a wrong graph (a confounder left out, a mediator turned into a parent, a
+    collider made a parent, a lever's effect denied), stopping where it fired removed failed claims
+    no more often than it refused sound ones in any world (one-sided Fisher p 0.64 to 1), and it
+    fired on 0.058 of the true graph's panels. It reports on the logger; it does not guard the plan.
     """
 
     levers: tuple[str, ...]  # the rows of ``test``'s arrays
