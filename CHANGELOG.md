@@ -7,6 +7,8 @@ still change).
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-10-24
+
 ### Changed
 
 - **More names say what they hold** (ADR 0130). `confounding_robust_lq_regret` and
@@ -7624,6 +7626,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.21.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.21.0
 [0.20.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.20.1
 [0.20.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.20.0
 [0.19.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.19.0
