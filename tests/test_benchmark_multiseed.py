@@ -33,14 +33,14 @@ def test_ci_brackets_the_mean_for_every_controller(results: list) -> None:
 
 def test_causal_controller_beats_predictive_with_separated_intervals(results: list) -> None:
     by_name = {r.controller: r for r in results}
-    causal, predictive = by_name["causal-CHC"], by_name["predictive"]
+    causal, predictive = by_name["causal-CHC"], by_name["predictive-omitted"]
     assert causal.regret_hi < predictive.regret_lo  # the win survives across seeds, not luck
 
 
 def test_leaderboard_multiseed_sorts_by_mean_regret_and_shows_cis(results: list) -> None:
     lines = leaderboard_multiseed(results).splitlines()
     assert "95% CI" in lines[0]  # header advertises the interval
-    assert lines[-1].startswith("predictive")  # the worst mean regret sorts last
+    assert lines[-1].startswith("predictive-omitted")  # the worst mean regret sorts last
     assert "[" in lines[-1]  # each row prints a CI
     assert "]" in lines[-1]
 
@@ -48,9 +48,25 @@ def test_leaderboard_multiseed_sorts_by_mean_regret_and_shows_cis(results: list)
 def test_a_five_digit_regret_keeps_its_interval_apart() -> None:
     """The pricing task's predictive regret over 12 seeds filled the interval's column and ran into
     it: ``13734.15[13732.55, 13735.31]``."""
-    row = MultiSeedResult("predictive", 13734.15, 13732.55, 13735.31, 1.2, 1.0, 12)
+    row = MultiSeedResult("predictive-omitted", 13734.15, 13732.55, 13735.31, 1.2, 1.0, 12)
     line = leaderboard_multiseed([row]).splitlines()[1]
     assert line.split()[1:4] == ["13734.15", "[13732.55,", "13735.31]"]
+
+
+def test_a_long_controller_name_keeps_its_interval_under_its_heading() -> None:
+    """The name column was 14 wide, so ``predictive-omitted``, 18 letters, pushed its row's
+    numbers four places right of their headings. Every column but the names is right-aligned at a
+    fixed width, so the columns line up exactly when every line is as long as the header."""
+    rows = [
+        MultiSeedResult("oracle", 0.0, 0.0, 0.0, 0.0, 0.0, 12),
+        MultiSeedResult("predictive-omitted", 13734.15, 13732.48, 13735.81, 1.2, 1.0, 12),
+    ]
+    lines = leaderboard_multiseed(rows).splitlines()
+    assert [len(line) for line in lines] == [len(lines[0])] * 3
+    # names that fit in 14 print the table as before
+    assert leaderboard_multiseed(rows[:1]).splitlines()[0] == (
+        "controller        regret                95% CI    ood  seeds"
+    )
 
 
 def test_confounding_robust_win_separates_across_seeds() -> None:

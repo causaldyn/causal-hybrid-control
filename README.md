@@ -37,23 +37,23 @@ On a confounded log, fitting the action's effect without the logged confounder f
 `JAX_ENABLE_X64=1` the costs read 4.61 and 13736.84, the regret 13732.23):
 
 ```text
-controller            cost      regret    viol     ood
-predictive-all        4.59       -0.00    0.00    0.00
-causal-CHC            4.59       -0.00    0.00    0.00
-oracle                4.59        0.00    0.00    0.00
-predictive        13740.08    13735.49    0.97    1.00
+controller                cost      regret    viol     ood
+predictive-all            4.59       -0.00    0.00    0.00
+causal-CHC                4.59       -0.00    0.00    0.00
+oracle                    4.59        0.00    0.00    0.00
+predictive-omitted    13740.08    13735.49    0.97    1.00
 ```
 
 The causal controller matches the oracle, and so does `predictive-all`, a least-squares fit on every
 logged column. Here that is the right adjustment: the one confounder is logged, and no logged column
-is a mediator or a collider. `predictive` leaves the confounder out, so its regret is
+is a mediator or a collider. `predictive-omitted` leaves the confounder out, so its regret is
 omitted-variable bias. It drives the state the wrong way (`x → -20` for a target of `+2`), violates
 the constraint on 97 % of steps (`viol`) and acts entirely outside the logged actions (`ood`). The
 size of that regret is set mostly by the action box, `[-10, 10]`: with `[-2.5, 2.5]` it is 1388.50.
 What the comparison shows is the price of leaving a confounder out. Which columns to adjust for is
 what the causal graph you state decides, and a regression on every column is right only when, as
 here, none of them is a mediator or a collider. That is one seed of the pricing task in notebook 5;
-over 12 seeds the predictive controller's regret is `13734.15 [13732.48, 13735.81]` and
+over 12 seeds `predictive-omitted`'s regret is `13734.15 [13732.48, 13735.81]` and
 `predictive-all`'s is `-0.00 [-0.00, 0.00]`
 ([benchmarks](https://causaldyn.github.io/causal-hybrid-control/benchmarks/)).
 
