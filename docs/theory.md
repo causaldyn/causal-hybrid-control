@@ -151,11 +151,11 @@ failures, when the tests were first written (names relative to `chc`):
 | `cluster_fold_leakage.v` | `regret.cluster_fold_leakage_certificate` | `test_formal_regret_a.py` |
 | `clustered_van_trees.v` | `regret.clustered_lower_bound_certificate` | `test_formal_regret_a.py` |
 | `composition_transfer.mac` | `regret.composition_transfer_certificate` | `test_formal_regret_a.py` |
-| `composition_transfer.v` | `regret.composition_transfer_certificate`, `regret.confounding_robust_lq_regret_matrix`, `regret.multivariate_transfer_certificate` | `test_formal_regret_a.py, test_formal_regret_c.py` |
+| `composition_transfer.v` | `regret.composition_transfer_certificate`, `regret.confounding_robust_lq_second_order_regret_matrix`, `regret.multivariate_transfer_certificate` | `test_formal_regret_a.py, test_formal_regret_c.py` |
 | `confounded_turnpike.mac` | `regret.confounded_turnpike_certificate` | `test_formal_regret_a.py` |
 | `confounded_turnpike.v` | `regret.confounded_turnpike_certificate` | `test_formal_regret_a.py` |
 | `confounding_lq_regret.mac` | `regret.lq_regret_sensitivity` | `test_formal_regret_b.py` |
-| `confounding_lq_regret.v` | `regret.confounding_robust_lq_regret` | `test_formal_regret_a.py` |
+| `confounding_lq_regret.v` | `regret.confounding_robust_lq_second_order_regret` | `test_formal_regret_a.py` |
 | `confounding_robust_control.mac` | `regret.confounding_robust_control` | `test_formal_regret_a.py` |
 | `confounding_robust_control.v` | `regret.asymmetric_control_improvement`, `regret.confounding_robust_control` | `test_formal_regret_a.py` |
 | `confounding_robust_cvar.mac` | `uncertainty.confounding_robust_inflation` | `test_formal_control.py` |

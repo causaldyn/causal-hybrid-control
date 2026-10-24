@@ -1212,13 +1212,13 @@ def test_multivariate_van_trees_prices_an_alignment_where_the_scalar_floor_price
         information=np.diag(spectrum),
         directions=channels,
     )
-    assert diagonal.floor == pytest.approx(
+    assert diagonal.local_floor == pytest.approx(
         scalar_constant(1.0, x[0]) / spectrum[0] + scalar_constant(0.4, x[1]) / spectrum[1],
         rel=1e-12,
         abs=0.0,
     )
     assert float(diagonal.direction_floors.sum()) == pytest.approx(
-        diagonal.floor, rel=1e-12, abs=0.0
+        diagonal.local_floor, rel=1e-12, abs=0.0
     )
 
     # 2. the hand-derived Jacobian is CHECKED, not trusted -- including on a rectangular plant,
@@ -1271,7 +1271,7 @@ def test_multivariate_van_trees_prices_an_alignment_where_the_scalar_floor_price
             action_weight=control,
             target=x,
             information=information,
-        ).floor
+        ).local_floor
 
     reference = floor_at(base_information)
     for _ in range(20):
@@ -1984,7 +1984,7 @@ def test_the_multivariate_action_floor_is_local_and_a_bayes_action_goes_below_it
         action_weight=np.array([[rr]]),
         target=np.ones(1),
         information=np.array([[information]]),
-    ).floor
+    ).local_floor
     assert floor == pytest.approx(2.0 / information, rel=1e-12, abs=0.0)
     rng = np.random.default_rng(0)
     b = prior_sd * rng.standard_normal(200_000)

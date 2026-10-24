@@ -33,9 +33,9 @@ from chc.research.regret import (
     composition_transfer_certificate,
     confounded_turnpike_certificate,
     confounding_robust_control,
-    confounding_robust_lq_regret,
     confounding_robust_lq_regret_certificate,
-    confounding_robust_lq_regret_matrix,
+    confounding_robust_lq_second_order_regret,
+    confounding_robust_lq_second_order_regret_matrix,
     conjugate_time_certificate,
     constrained_ce_regret_certificate,
     lq_regret_sensitivity,
@@ -157,7 +157,7 @@ FORMAL_LINKS = {
             "test_confounding_robust_control_shift_has_the_sign_of_the_asymmetry",
         ),
     },
-    "chc.research.regret.confounding_robust_lq_regret": {
+    "chc.research.regret.confounding_robust_lq_second_order_regret": {
         "cites": ("confounding_lq_regret.v",),
         "tests": (
             "test_confounding_lq_regret_is_the_leading_term_of_the_exact_regret",
@@ -165,7 +165,7 @@ FORMAL_LINKS = {
             "test_confounding_lq_regret_third_order_excess_is_as_documented",
         ),
     },
-    "chc.research.regret.confounding_robust_lq_regret_matrix": {
+    "chc.research.regret.confounding_robust_lq_second_order_regret_matrix": {
         "cites": ("composition_transfer.v",),
         "tests": (
             "test_matrix_lq_regret_order_doubles_and_is_bracketed_by_the_curvature",
@@ -1096,7 +1096,7 @@ def test_confounding_lq_regret_is_the_leading_term_of_the_exact_regret(
     # the next term's share of the quadratic one is the shift over the distance to the knife edge
     scale = 1e-3 * min(math.sqrt(effort), effect, abs(effort - effect**2))
     e1, e2 = scale * eps, scale * eps * share
-    bound = confounding_robust_lq_regret(l_fd, e1, e2)
+    bound = confounding_robust_lq_second_order_regret(l_fd, e1, e2)
     exact = _regret_at(effect, effort, target, e1 + e2)
     assert bound == pytest.approx(exact, rel=0.05, abs=1e-30)
 
@@ -1113,14 +1113,14 @@ def test_confounding_lq_regret_floor_is_quadratic_monotone_and_below_linear(
 ) -> None:
     """confounding_lq_regret.v: the floor is quadratic, monotone in the width, below linear."""
     lo, hi = sorted((d1, d2))
-    assert confounding_robust_lq_regret(l_reg, eps, lo) <= confounding_robust_lq_regret(
-        l_reg, eps, hi
+    assert confounding_robust_lq_second_order_regret(
+        l_reg, eps, lo
+    ) <= confounding_robust_lq_second_order_regret(l_reg, eps, hi)
+    assert confounding_robust_lq_second_order_regret(l_reg, 0.0, 2.0 * lo) == pytest.approx(
+        4.0 * confounding_robust_lq_second_order_regret(l_reg, 0.0, lo), rel=1e-14, abs=1e-300
     )
-    assert confounding_robust_lq_regret(l_reg, 0.0, 2.0 * lo) == pytest.approx(
-        4.0 * confounding_robust_lq_regret(l_reg, 0.0, lo), rel=1e-14, abs=1e-300
-    )
-    assert confounding_robust_lq_regret(l_reg, 0.0, lo) <= l_reg * lo
-    assert confounding_robust_lq_regret(l_reg, eps, 0.0) == pytest.approx(
+    assert confounding_robust_lq_second_order_regret(l_reg, 0.0, lo) <= l_reg * lo
+    assert confounding_robust_lq_second_order_regret(l_reg, eps, 0.0) == pytest.approx(
         l_reg * eps**2, rel=1e-14, abs=0.0
     )
 
@@ -1155,8 +1155,8 @@ def test_matrix_lq_regret_order_doubles_and_is_bracketed_by_the_curvature(
     g = rng.normal(size=(n, n))
     h = g @ g.T
     stat, conf = rng.normal(size=(n, m)), rng.normal(size=(n, m))
-    base = confounding_robust_lq_regret_matrix(h, stat, conf)
-    scaled = confounding_robust_lq_regret_matrix(h, delta**p * stat, delta**p * conf)
+    base = confounding_robust_lq_second_order_regret_matrix(h, stat, conf)
+    scaled = confounding_robust_lq_second_order_regret_matrix(h, delta**p * stat, delta**p * conf)
     assert scaled == pytest.approx(delta ** (2 * p) * base, rel=1e-12, abs=1e-300)
     e = stat + conf
     ev = np.linalg.eigvalsh(h)
@@ -1171,10 +1171,12 @@ def test_matrix_lq_regret_order_doubles_and_is_bracketed_by_the_curvature(
 @given(l_reg=st.floats(0.0, 10.0), eps=st.floats(-1.0, 1.0), d=st.floats(-1.0, 1.0))
 def test_matrix_lq_regret_reduces_to_the_scalar_one(l_reg: float, eps: float, d: float) -> None:
     """composition_transfer.v: the 1x1 matrix regret is the scalar L (eps + Delta)^2."""
-    got = confounding_robust_lq_regret_matrix(
+    got = confounding_robust_lq_second_order_regret_matrix(
         np.array([[l_reg]]), np.array([[eps]]), np.array([[d]])
     )
-    assert got == pytest.approx(confounding_robust_lq_regret(l_reg, eps, d), rel=1e-14, abs=1e-300)
+    assert got == pytest.approx(
+        confounding_robust_lq_second_order_regret(l_reg, eps, d), rel=1e-14, abs=1e-300
+    )
 
 
 # ---------------------------------------------------------------- conjugate time

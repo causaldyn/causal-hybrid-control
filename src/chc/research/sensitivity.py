@@ -22,9 +22,10 @@ The pipeline, estimate -> sensitivity radius -> robust control -> validation:
    box), the sharp worst-case effect is a CVaR mixture; :func:`confounding_robust_inflation` /
    :func:`msm_worst_case_mean` give the radius inflation, :func:`confounding_robust_radius` widens a
    pessimism radius (never optimistic, tight at ``Gamma=1``, monotone).
-2. **Regret floor.** :func:`confounding_robust_lq_regret` -- the confounding effect-bias
-   becomes a control-regret floor SECOND order in the bias (:func:`lq_regret_sensitivity` for the
-   toy ``L_reg``; :func:`confounding_robust_lq_regret_matrix` for the multivariate Frobenius lift).
+2. **Regret floor.** :func:`confounding_robust_lq_second_order_regret` -- the confounding
+   effect-bias becomes a control-regret floor SECOND order in the bias
+   (:func:`lq_regret_sensitivity` for the toy ``L_reg``;
+   :func:`confounding_robust_lq_second_order_regret_matrix` for the multivariate Frobenius lift).
 3. **Robust controller.** :func:`confounding_robust_control` -- under an ASYMMETRIC loss
    (over/under-shoot) the radius shifts the gain (sign dichotomy) and beats certainty-equivalence
    (:func:`certainty_equivalence_control`); :func:`asymmetric_control_improvement` is the piecewise
@@ -103,12 +104,21 @@ from chc.research.regret import (
     confounding_robust_control,
     confounding_robust_control_benchmark,
     confounding_robust_control_certificate,
-    confounding_robust_lq_regret,
-    confounding_robust_lq_regret_matrix,
+    confounding_robust_lq_second_order_regret,
+    confounding_robust_lq_second_order_regret_matrix,
     confounding_robust_tracking_benchmark,
     confounding_robust_tracking_loop,
     lq_regret_sensitivity,
     worst_case_asymmetric_loss,
+)
+
+# The names the two regret functions had before 0.21.0, served until 1.0 and left out of
+# ``__all__``: each warns when called, naming its new name.
+from chc.research.regret import (
+    confounding_robust_lq_regret as confounding_robust_lq_regret,
+)
+from chc.research.regret import (
+    confounding_robust_lq_regret_matrix as confounding_robust_lq_regret_matrix,
 )
 from chc.uncertainty import (
     ConfoundingRobustCertificate,
@@ -159,8 +169,8 @@ __all__ = [
     "confounding_robust_control_benchmark",
     "confounding_robust_control_certificate",
     "confounding_robust_inflation",
-    "confounding_robust_lq_regret",
-    "confounding_robust_lq_regret_matrix",
+    "confounding_robust_lq_second_order_regret",
+    "confounding_robust_lq_second_order_regret_matrix",
     "confounding_robust_radius",
     "confounding_robust_tracking_benchmark",
     "confounding_robust_tracking_loop",
