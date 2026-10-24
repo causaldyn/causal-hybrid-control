@@ -27,6 +27,7 @@ prescribe(
     tolerance=0.5,
     x0=[zone],
     adjustment=graph,
+    integrator="rk4",  # the room follows a law in continuous time
 )  # the naive arm passes adjustment=()
 ```
 
@@ -197,6 +198,7 @@ prescribe(
     tolerance=0.5,
     x0=[zone],
     adjustment=graph,
+    integrator="rk4",  # the room follows a law in continuous time
 )  # the naive arm passes adjustment=()
 ```
 
