@@ -177,7 +177,11 @@ plt.show()
 #   `hold_constraints=True` the planner holds it, as far as its model of the room can tell;
 # - the **horizon**: how many hourly steps to plan;
 # - the **adjustment**: what else to account for when it estimates the heater's effect. There is
-#   no default, because "nothing" is itself a claim about the world.
+#   no default, because "nothing" is itself a claim about the world;
+# - the **integrator**: how one step of the model is read. The room follows a law in continuous
+#   time, so `integrator="rk4"` fits that law and plans by its RK4 steps, and the heater's effect
+#   comes out in °C per hour, as `b` is. The other choice, `"euler"`, fits the hour-to-hour map
+#   itself, which is the right reading for a panel of weeks or days.
 #
 # Tonight we let the room cool to a lower temperature while everyone sleeps, a *set-back*, and we
 # want it warm again by morning.
@@ -202,6 +206,7 @@ decision = dict(
     dt=1.0,  # one step is one hour
     tolerance=1.0,  # how far, in °C, we accept the plan's forecast to be off
     x0=jnp.array([START]),
+    integrator="rk4",  # the room follows a law in continuous time
 )
 print(f"room now ({clock[0]}): {START} °C")
 print(f"comfort band: {BAND[0]} to {BAND[1]} °C;  heater: 0 to {HEATER_MAX} kW, unit_cost {PRICE}")

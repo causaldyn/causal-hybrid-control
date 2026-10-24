@@ -2,7 +2,8 @@
 
 **Status:** accepted, 2026-10-19. Supersedes the refusal of `prescribe(integrator="euler")` made
 earlier in the 0.19.0 cycle: the fit and the plan still never read two maps, and `"euler"` now
-plans by the map it fits.
+plans by the map it fits. Amended by ADR 0129 (2026-10-24): `"rk4"` is the default until 0.22.0,
+and `"euler"` from then.
 
 ## Context
 

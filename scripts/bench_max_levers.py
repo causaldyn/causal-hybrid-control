@@ -95,6 +95,7 @@ class Instance:
             known=self.known,
             x0=None if self.x0 is None else jnp.asarray(self.x0),
             max_levers=max_levers,
+            integrator="rk4",
         )
 
 
@@ -683,6 +684,7 @@ def fingerprint() -> dict[str, str]:
             horizon=pool.horizon,
             dt=pool.dt,
             **kwargs,
+            integrator="rk4",
         )
         out[label] = _digest(result)
     case_study = prescribe(
@@ -695,6 +697,7 @@ def fingerprint() -> dict[str, str]:
         horizon=mix.horizon,
         dt=mix.dt,
         tolerance=1.0,
+        integrator="rk4",
     )
     out["marketing mix, as run_marketing_mix plans it"] = _digest(case_study)
     return out

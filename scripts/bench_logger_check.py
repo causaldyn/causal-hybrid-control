@@ -429,6 +429,7 @@ def _prescription(push: float):
             horizon=3,
             dt=DT,
             tolerance=0.5,
+            integrator="rk4",
         )
     return _PRESCRIPTIONS[push]
 

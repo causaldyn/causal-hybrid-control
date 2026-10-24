@@ -117,6 +117,7 @@ class AR1(Plant):
             horizon=self.horizon,
             dt=self.dt,
             tolerance=0.4,
+            integrator="rk4",
         )
 
 
@@ -159,6 +160,7 @@ class Bilinear(Plant):
             horizon=self.horizon,
             dt=self.dt,
             tolerance=0.4,
+            integrator="rk4",
         )
 
 
@@ -201,6 +203,7 @@ class Quickstart(Plant):
             horizon=self.horizon,
             dt=self.dt,
             tolerance=0.5,
+            integrator="rk4",
         )
 
 

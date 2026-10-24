@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import types
+import warnings
 from decimal import Decimal
 from importlib import metadata
 from typing import Any
@@ -3234,6 +3235,20 @@ def test_prescribe_plans_by_the_step_it_fits(integrator: str) -> None:
             path.append(path[-1] + DT * np.asarray(field(k * DT, jnp.asarray(path[-1]), u)))
         expected = np.stack(path)
     np.testing.assert_allclose(np.asarray(plan.trajectory), expected, rtol=1e-12, atol=1e-14)
+
+
+def test_prescribe_warns_that_its_default_integrator_becomes_euler() -> None:
+    """Not given, the integrator is ``"rk4"``, and a ``FutureWarning`` says that from 0.22.0 it is
+    ``"euler"``; given, either value plans by its map without the warning."""
+    panel, graph = _panel(n_units=20), CausalGraph.from_edges(EDGES)
+    with pytest.warns(FutureWarning, match="from 0.22.0 the default is 'euler'"):
+        result = _prescribe(panel, graph)
+    assert (result.model_fit.integrator, result.run.integrator) == ("rk4", "rk4")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        for integrator in ("rk4", "euler"):
+            given = _prescribe(panel, graph, integrator=integrator)
+            assert (given.model_fit.integrator, given.run.integrator) == (integrator, integrator)
 
 
 def test_aware_dates_held_as_objects_are_read_on_their_own_wall_clock() -> None:

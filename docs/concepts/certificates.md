@@ -103,6 +103,9 @@ design record is
   `radius="relative"` asks for it; `radius="absolute"` refuses a fit that gives none. The
   certificate's `radius_model` says which
   ([ADR 0125](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0125-prescribe-reads-the-fit-s-absolute-radius-by-default.md)).
+  `prescribe` fits by `rk4` when no integrator is given, with a `FutureWarning`: from 0.22.0 its
+  default is `"euler"`, whose fit gives the absolute radius
+  ([ADR 0129](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0129-the-euler-fit-holds-the-adjustment-set-and-becomes-prescribe-s-default.md)).
   The radius is `(Γ-1)/(Γ+1)·cvar_gap` times the channel's operator norm at the plan's first
   state: `cvar_gap` is a share of the channel, 1 by default, so `Γ*` and the certified steps read
   the same in any units of the state or of the levers

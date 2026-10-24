@@ -73,6 +73,7 @@ class AR1Two(AR1):
             horizon=self.horizon,
             dt=self.dt,
             tolerance=0.4,
+            integrator="rk4",
         )
 
 

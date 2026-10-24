@@ -157,7 +157,8 @@ panel = Panel.from_frame(logs, unit="region", time="week", seed=0)
 #   (`unit_cost`);
 # - the target: `supply` at 1.0, each week's miss costing its square;
 # - a limit: `wait` at most 0.5;
-# - 15 weeks of plan, and an error of 0.5 the plan may make before it stops being trusted.
+# - 15 weeks of plan, and an error of 0.5 the plan may make before it stops being trusted;
+# - a log of weeks, so the fit and the plan read its week-to-week map (`integrator="euler"`).
 
 # %%
 decision = dict(
@@ -167,6 +168,7 @@ decision = dict(
     horizon=15,
     dt=DT,
     tolerance=0.5,
+    integrator="euler",
 )
 prescription = prescribe(panel, adjustment=graph, **decision)
 print(prescription.report())

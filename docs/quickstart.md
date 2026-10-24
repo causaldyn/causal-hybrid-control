@@ -68,12 +68,13 @@ Read the first report by its two axes, which are kept apart on purpose:
 - **Identification** is about the data and the graph: whether an adjustment set exists, which one
   was used, and the channel's standard error.
 - **Certification** is about model error and the barrier: the error tube's certified horizon, over
-  the plan's RK4 steps, holding the plant's own one-step error on the log and the fitted field's
-  standard error, read at its studentised quantile, together with probability 0.95 at each step; the
-  steps whose predicted states clear the constraint at the level of the marginal sensitivity model
-  the plan was audited at (`gamma`, when a bound is given), checked pointwise; and `gamma*`, the
-  largest level at which every step along the plan's path still has an admissible action that
-  meets the barrier, a ceiling for the problem along that path rather than for the plan.
+  the plan's steps by the map the fit read, holding the plant's own one-step error on the log and
+  the fitted field's standard error, read at its studentised quantile, together with probability
+  0.95 at each step; the steps whose predicted states clear the constraint at the level of the
+  marginal sensitivity model the plan was audited at (`gamma`, when a bound is given), checked
+  pointwise; and `gamma*`, the largest level at which every step along the plan's path still has
+  an admissible action that meets the barrier, a ceiling for the problem along that path rather
+  than for the plan.
 
 The **trustworthy prefix** is the part of the schedule that survives *both* — the number an
 operator can act on. A plan can be fully certified against a channel nothing identifies, which is a

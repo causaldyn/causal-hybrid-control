@@ -88,6 +88,7 @@ out = prescribe(
     horizon=15,
     dt=0.1,
     tolerance=0.5,
+    integrator="euler",  # a weekly panel: fit and plan by its one-step map
     levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
     target=Target("supply", value=1.0),
     constraints=[Constraint("wait", hi=0.5)],

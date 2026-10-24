@@ -158,7 +158,7 @@ def prescription(log: dict[str, np.ndarray], call: str, seed: int) -> Any:
         "x0": jnp.asarray([float(log["zone"][-1])]),
     }
     if call == "first":
-        decided = prescribe(panel, target=Target("zone", value=21.0), **common)
+        decided = prescribe(panel, target=Target("zone", value=21.0), **common, integrator="rk4")
     else:
         from chc import Constraint, Driver
 
@@ -173,6 +173,7 @@ def prescription(log: dict[str, np.ndarray], call: str, seed: int) -> Any:
                 Driver("solar", float(log["solar"][-1]) * held),
             ],
             **common,
+            integrator="rk4",
         )
     return decided
 

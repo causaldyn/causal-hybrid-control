@@ -2,7 +2,8 @@
 
 **Status:** accepted, 2026-10-21. Amends ADR 0111: `prescribe` no longer keeps the relative margin
 where its fit gives an absolute radius. Makes ADR 0091's tolerance of one unit of the state the
-default of `causal_plan` and `RecedingHorizon`.
+default of `causal_plan` and `RecedingHorizon`. Amended by ADR 0129 (2026-10-24): from 0.22.0 the
+default fit is Euler's, which gives the absolute radius.
 
 ## Context
 

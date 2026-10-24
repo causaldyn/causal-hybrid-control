@@ -65,6 +65,7 @@ for assumption in (
         horizon=15,
         dt=DT,
         tolerance=0.5,
+        integrator="euler",  # a weekly panel: fit and plan by its one-step map
     )
     print(out.report(), end="\n\n")
 # --8<-- [end:prescribe]

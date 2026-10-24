@@ -1834,7 +1834,7 @@ def prescribe(
     x0: ArrayLike | None = None,
     folds: int = 2,
     seed: int = 0,
-    integrator: Integrator = "rk4",
+    integrator: Integrator | None = None,
     drivers: Sequence[Driver] = (),
     neighbours: Mapping[Any, Iterable[Any]] | str | None = None,
     clusters: str | None = None,
@@ -2000,7 +2000,12 @@ def prescribe(
             genuinely discrete-time (a weekly budget is not a sample of an ODE) and the one-step
             map *is* the model. Where the log keeps less than 0.27 of a mode from one step to the
             next, no field stepped by RK4 reproduces it, RK4's growth factor being never smaller,
-            and the ``"rk4"`` fit raises.
+            and the ``"rk4"`` fit raises. Not given, it is ``"rk4"``, and a ``FutureWarning`` says
+            that from 0.22.0 it is ``"euler"`` (ADR 0129): the Euler fit reads the log's one-step
+            map, which a panel of periods records, holds the adjustment set in its drift as the
+            ``"rk4"`` fit does, and gives ``radius="auto"`` the absolute radius, where an
+            ``"rk4"`` fit gives only the relative one. Pass either value to keep its reading
+            without the warning.
         drivers: exogenous columns the plan can forecast but not move, each with its forecast over
             the horizon (:class:`Driver`). They are fitted into the drift jointly with the states
             (:func:`~chc.dynamics_id.fit_causal_residual`), and the plan is made against the
@@ -2111,6 +2116,16 @@ def prescribe(
         raise DecisionError("hold_constraints was set, but no constraint was given to hold")
     if not 0.0 < dt < math.inf:
         raise DecisionError(f"dt={dt} is not a step, which is finite and positive")
+    if integrator is None:
+        warnings.warn(
+            "prescribe fits and plans by 'rk4' when no integrator is given; from 0.22.0 the "
+            "default is 'euler' (ADR 0129), the log's one-step map, which gives the barrier an "
+            "absolute radius where the rk4 fit gives a relative one. Pass integrator='rk4' to "
+            "keep this fit, or integrator='euler' to plan by the map now.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        integrator = "rk4"
     if integrator not in ("rk4", "euler"):
         raise DecisionError(
             f"integrator={integrator!r} is neither 'rk4', for a log sampled from a plant in "

@@ -219,6 +219,7 @@ def run_pendulum(*, episodes: int = 20, steps: int = 100, seed: int = 0) -> Pend
             tolerance=TOLERANCE,
             x0=jnp.asarray(HANGING),
             seed=seed,
+            integrator="rk4",
         )
         schedule = None if prescription.plan is None else prescription.schedule.magnitudes
         return Reading(name, prescription, None if schedule is None else audit(schedule))
