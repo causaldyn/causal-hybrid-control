@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import functools
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -87,15 +87,15 @@ class PricingTask:
     path's noise 0.29 less; neither is open to a controller. A controller can therefore land a
     little below the oracle on one path.
 
-    Two predictive rows read the same log. ``predictive`` regresses the next state on the state and
-    the action alone, so the logged confounder ``z`` is left out and its push is read as the
-    action's: an omitted-variable bias that flips the effect's sign. ``predictive-all`` regresses on
-    every logged column, ``z`` and ``w`` included. Here that is the right adjustment, because the
-    one confounder is logged and no logged column is a mediator or a collider, so it lands where
-    ``causal-CHC`` does. The task prices leaving a logged confounder out; it does not separate
-    adjustment from a regression on every column. The predictive regret's size is set mostly by the
-    action box: its controller pushes the wrong way until the box stops it, and with the box at
-    ``[-2.5, 2.5]`` instead of ``[-10, 10]`` its regret is about a tenth.
+    Two predictive rows read the same log. ``predictive-omitted`` regresses the next state on the
+    state and the action alone, so the logged confounder ``z`` is left out and its push is read as
+    the action's: an omitted-variable bias that flips the effect's sign. ``predictive-all``
+    regresses on every logged column, ``z`` and ``w`` included. Here that is the right adjustment,
+    because the one confounder is logged and no logged column is a mediator or a collider, so it
+    lands where ``causal-CHC`` does. The task prices leaving a logged confounder out; it does not
+    separate adjustment from a regression on every column. ``predictive-omitted``'s regret is set
+    mostly by the action box: its controller pushes the wrong way until the box stops it, and with
+    the box at ``[-2.5, 2.5]`` instead of ``[-10, 10]`` its regret is about a tenth.
     """
 
     x0: float = 0.0
@@ -153,8 +153,8 @@ class PricingTask:
 
         The CHC controller uses the pluggable ``estimator`` (default ``BackdoorOLS``, the linear
         adjustment); pass ``DoubleML()`` / ``EconMLDoubleML()`` to swap the causal backend. The
-        predictive baselines stay fixed least-squares fits: ``predictive`` on the state and the
-        action alone, ``predictive-all`` on every logged column.
+        predictive baselines stay fixed least-squares fits: ``predictive-omitted`` on the state and
+        the action alone, ``predictive-all`` on every logged column.
         """
         estimator = estimator or BackdoorOLS()
         system = ConfoundedLinearSystem(kappa=self.kappa)
@@ -168,7 +168,7 @@ class PricingTask:
         controllers = {
             "oracle": system.b_true,
             "causal-CHC": float(estimator.estimate(data, covariates=("x", "z")).effect),
-            "predictive": float(estimate_control_effect(data, adjust_for=())),
+            "predictive-omitted": float(estimate_control_effect(data, adjust_for=())),
             "predictive-all": float(estimate_control_effect(data, adjust_for=_LOGGED_COVARIATES)),
         }
         return [
@@ -190,7 +190,7 @@ class InventoryTask:
     at their own fractile costs 5.7e-5 less in float64, an order that reads the draws it is scored
     on.
 
-    As in :class:`PricingTask`, ``predictive`` leaves the logged confounder out and
+    As in :class:`PricingTask`, ``predictive-omitted`` leaves the logged confounder out and
     ``predictive-all`` regresses on every logged column, which here is the right adjustment and
     lands where ``causal-CHC`` does.
     """
@@ -218,7 +218,8 @@ class InventoryTask:
         """Estimate demand response (oracle / causal / predictive) and score the induced order.
 
         ``estimator`` is the pluggable causal backend for the CHC order (default ``BackdoorOLS``).
-        ``predictive`` and ``predictive-all`` are the least-squares fits of :meth:`PricingTask.run`.
+        ``predictive-omitted`` and ``predictive-all`` are the least-squares fits of
+        :meth:`PricingTask.run`.
         """
         estimator = estimator or BackdoorOLS()
         system = ConfoundedLinearSystem(a=0.0, b_true=1.0, c=2.0, kappa=self.kappa)
@@ -238,7 +239,7 @@ class InventoryTask:
         controllers = {
             "oracle": system.b_true,
             "causal-CHC": float(estimator.estimate(data, covariates=("x", "z")).effect),
-            "predictive": float(estimate_control_effect(data, adjust_for=())),
+            "predictive-omitted": float(estimate_control_effect(data, adjust_for=())),
             "predictive-all": float(estimate_control_effect(data, adjust_for=_LOGGED_COVARIATES)),
         }
         results = []
@@ -951,11 +952,18 @@ class DelayOscillationTask:
         ]
 
 
+def _name_width(names: Iterable[str]) -> int:
+    """The name column's width: 14, or the longest name, whose row would otherwise push its
+    numbers out from under their headings."""
+    return max([14, *(len(name) for name in names)])
+
+
 def leaderboard(results: list[TaskResult]) -> str:
     """Format task results as a table sorted by regret (best first)."""
-    header = f"{'controller':<14}{'cost':>12}{'regret':>12}{'viol':>8}{'ood':>8}"
+    width = _name_width(r.controller for r in results)
+    header = f"{'controller':<{width}}{'cost':>12}{'regret':>12}{'viol':>8}{'ood':>8}"
     rows = [
-        f"{r.controller:<14}{r.cost:>12.2f}{r.regret:>12.2f}"
+        f"{r.controller:<{width}}{r.cost:>12.2f}{r.regret:>12.2f}"
         f"{r.constraint_violations:>8.2f}{r.ood_rate:>8.2f}"
         for r in sorted(results, key=lambda r: r.regret)
     ]
@@ -1016,9 +1024,10 @@ def run_multiseed(task: BenchmarkTask, seeds: Sequence[int]) -> list[MultiSeedRe
 
 def leaderboard_multiseed(results: list[MultiSeedResult]) -> str:
     """Format multi-seed results sorted by mean regret (best first), with their 95% CIs."""
-    header = f"{'controller':<14}{'regret':>10}{'95% CI':>22}{'ood':>7}{'seeds':>7}"
+    width = _name_width(r.controller for r in results)
+    header = f"{'controller':<{width}}{'regret':>10}{'95% CI':>22}{'ood':>7}{'seeds':>7}"
     rows = [
-        f"{r.controller:<14}{r.regret_mean:>10.2f}"
+        f"{r.controller:<{width}}{r.regret_mean:>10.2f}"
         f"{f'[{r.regret_lo:.2f}, {r.regret_hi:.2f}]':>22}{r.ood_mean:>7.2f}{r.n_seeds:>7d}"
         for r in sorted(results, key=lambda r: r.regret_mean)
     ]

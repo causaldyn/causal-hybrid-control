@@ -133,14 +133,14 @@ board.round(2)
 
 # %% [markdown]
 # **Read it off the table:** `causal-CHC` matches the oracle (regret ≈ 0, no constraint violations, no
-# out-of-support actions), while `predictive` is catastrophic on *every* axis — huge regret, violates the
-# safe-state constraint most of the time, and acts entirely outside the logged support.
+# out-of-support actions), while `predictive-omitted` is catastrophic on *every* axis — huge regret,
+# violates the safe-state constraint most of the time, and acts entirely outside the logged support.
 #
-# `predictive` regresses on the state and the action alone, so it leaves the logged confounder out.
-# `predictive-all`, a predictive fit on every logged column, lands with `causal-CHC`: the one
-# confounder is logged and no column is a mediator or a collider, so a regression on all of them is
-# the right adjustment here. What the table prices is leaving a confounder out; the graph's job is
-# to say which columns belong in the regression.
+# `predictive-omitted` regresses on the state and the action alone, so it leaves the logged
+# confounder out. `predictive-all`, a predictive fit on every logged column, lands with
+# `causal-CHC`: the one confounder is logged and no column is a mediator or a collider, so a
+# regression on all of them is the right adjustment here. What the table prices is leaving a
+# confounder out; the graph's job is to say which columns belong in the regression.
 #
 # ### Takeaway
 # Prediction ≠ decision. Under confounding, optimising control against a predictive model is not just

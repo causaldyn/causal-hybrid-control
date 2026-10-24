@@ -435,12 +435,12 @@ def test_multivariate_action_floor_is_the_trace_against_an_independent_jacobian(
     jac = _difference_jacobian(effect, state_weight, action_weight, target)
     curvature = effect.T @ state_weight @ effect + action_weight
     floor = float(np.trace(curvature @ jac @ np.linalg.solve(information, jac.T)))
-    assert out.floor == pytest.approx(floor, rel=1e-6, abs=0.0)
+    assert out.local_floor == pytest.approx(floor, rel=1e-6, abs=0.0)
     lam, vec = np.linalg.eigh(information)
     mapped = jac @ vec
     shares = np.einsum("ij,ik,kj->j", mapped, curvature, mapped) / lam
     assert out.direction_floors == pytest.approx(shares, rel=1e-5, abs=1e-12 * floor)
-    assert out.direction_floors.sum() == pytest.approx(out.floor, rel=1e-12, abs=0.0)
+    assert out.direction_floors.sum() == pytest.approx(out.local_floor, rel=1e-12, abs=0.0)
 
 
 @SETTINGS
@@ -484,8 +484,10 @@ def test_multivariate_action_floor_is_antitone_in_the_information(
         "action_weight": action_weight,
         "target": target,
     }
-    less = multivariate_action_floor(information=information, **kwargs).floor
-    more = multivariate_action_floor(information=information + extra @ extra.T, **kwargs).floor
+    less = multivariate_action_floor(information=information, **kwargs).local_floor
+    more = multivariate_action_floor(
+        information=information + extra @ extra.T, **kwargs
+    ).local_floor
     assert more <= less * (1.0 + 1e-12)
 
 
@@ -504,13 +506,13 @@ def test_multivariate_action_floor_ignores_a_blind_direction(seed: int, loss: fl
         "action_weight": action_weight,
         "target": target,
     }
-    base = multivariate_action_floor(information=np.eye(2), **kwargs).floor
+    base = multivariate_action_floor(information=np.eye(2), **kwargs).local_floor
     cut_blind = np.eye(2) - (1.0 - 1.0 / loss) * np.outer(blind, blind)
     cut_seen = np.eye(2) - (1.0 - 1.0 / loss) * np.outer(seen, seen)
-    assert multivariate_action_floor(information=cut_blind, **kwargs).floor == pytest.approx(
+    assert multivariate_action_floor(information=cut_blind, **kwargs).local_floor == pytest.approx(
         base, rel=1e-8, abs=0.0
     )
-    assert multivariate_action_floor(information=cut_seen, **kwargs).floor == pytest.approx(
+    assert multivariate_action_floor(information=cut_seen, **kwargs).local_floor == pytest.approx(
         loss * base, rel=1e-8, abs=0.0
     )
 
@@ -523,7 +525,7 @@ def test_multivariate_action_floor_is_local_as_its_docstring_says() -> None:
         effect=np.array([[0.0]]), state_weight=np.eye(1), action_weight=np.array([[rr]]),
         target=np.array([xt]), information=np.array([[n_obs + 1.0 / prior_sd**2]]),
     )  # fmt: skip
-    assert out.floor == pytest.approx(1.0 / 3.0, rel=1e-12, abs=0.0)
+    assert out.local_floor == pytest.approx(1.0 / 3.0, rel=1e-12, abs=0.0)
     post_var = 1.0 / (n_obs + 1.0 / prior_sd**2)
     nodes, weights = hermegauss(80)
     weights = weights / weights.sum()
@@ -536,7 +538,7 @@ def test_multivariate_action_floor_is_local_as_its_docstring_says() -> None:
             weights @ (curv * action**2) - (weights @ (curv * action)) ** 2 / (weights @ curv)
         )
     assert risk == pytest.approx(0.075, abs=5e-4)
-    assert risk < out.floor
+    assert risk < out.local_floor
 
 
 def test_multivariate_action_floor_refuses_an_indefinite_curvature() -> None:

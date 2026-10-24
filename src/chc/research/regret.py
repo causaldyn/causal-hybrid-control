@@ -384,7 +384,7 @@ class MultivariateActionFloor:
     does not depend on contributes exactly nothing however badly it is identified.
     """
 
-    floor: float  # tr(M Psi' G^-1 Psi') at the plant supplied: a LOCAL floor (see the function)
+    local_floor: float  # tr(M Psi' G^-1 Psi') at the plant supplied: LOCAL (see the function)
     optimal_action: Vector  # u*(theta) at the plant supplied
     curvature: Matrix  # M = B'QB + R, the exact second derivative of the regret in action space
     sensitivity: Matrix  # Psi' = du*/dtheta, q x d
@@ -392,6 +392,17 @@ class MultivariateActionFloor:
     direction_floors: Vector  # each eigendirection's share of the floor; they sum to it
     spectral_alignment: Vector  # (Psi' v)' M (Psi' v) per eigendirection, in that same order
     direction_alignment: Vector  # the same weight per SUPPLIED direction: diag(Psi' M Psi')
+
+    @property
+    def floor(self) -> float:
+        """``local_floor`` under the name it had before 0.21.0, which leaves in 1.0."""
+        warnings.warn(
+            "MultivariateActionFloor.floor is renamed local_floor and leaves in 1.0: it is read "
+            "at the plant supplied, and a Bayes action can go below it",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.local_floor
 
 
 def _finite(**arrays: NDArray[np.float64]) -> None:
@@ -469,10 +480,10 @@ def multivariate_action_floor(
     which at ``p = q = 1`` is ``(b^2+rr) psi'(b)^2 / G`` -- the scalar Cramer-Rao constant,
     unchanged (STEP 4c, residual 0).
 
-    The floor is LOCAL. Van Trees bounds the Bayes risk by ``E_lambda[Psi']``, the sensitivity
-    averaged over the prior, and the trace step needs one ``M`` for every plant; here both are read
-    at the plant supplied. It bounds every estimator only as far as ``Psi'`` and ``M`` hold still
-    over the prior. Where they move, a Bayes
+    The floor, ``local_floor``, is LOCAL. Van Trees bounds the Bayes risk by ``E_lambda[Psi']``,
+    the sensitivity averaged over the prior, and the trace step needs one ``M`` for every plant;
+    here both are read at the plant supplied. It bounds every estimator only as far as ``Psi'``
+    and ``M`` hold still over the prior. Where they move, a Bayes
     estimator goes below it: a scalar plant at ``b = 0``, ``rr = 0.5``, ``x_t = 1``, a prior of SD 1
     and five unit-information observations has a floor of 0.333, and the posterior's Bayes action a
     regret of 0.075 (0.12 to 0.76 of the floor on six such priors near ``b = 0``).
@@ -665,7 +676,7 @@ def multivariate_van_trees_certificate(
         directions=channels,
     )
     channel_sum = constant(b1, x[0]) / spectrum[0] + constant(b2, x[1]) / spectrum[1]
-    channel_agreement = abs(diagonal.floor / channel_sum - 1.0)
+    channel_agreement = abs(diagonal.local_floor / channel_sum - 1.0)
 
     # 1b. and the 1x1 case, against the scalar Cramer-Rao closed form
     scalar = multivariate_action_floor(
@@ -675,7 +686,7 @@ def multivariate_van_trees_certificate(
         target=x[:1],
         information=np.array([[spectrum[0]]]),
     )
-    scalar_agreement = abs(scalar.floor / (constant(b1, x[0]) / spectrum[0]) - 1.0)
+    scalar_agreement = abs(scalar.local_floor / (constant(b1, x[0]) / spectrum[0]) - 1.0)
 
     # 1c. the hand-derived Jacobian, against a finite difference on the FULL vec(B) family
     rng = np.random.default_rng(seed)
@@ -744,7 +755,7 @@ def multivariate_van_trees_certificate(
             action_weight=control_weight,
             target=x,
             information=cut,
-        ).floor
+        ).local_floor
 
     reference = multivariate_action_floor(
         effect=dense,
@@ -752,7 +763,7 @@ def multivariate_van_trees_certificate(
         action_weight=control_weight,
         target=x,
         information=isotropic,
-    ).floor
+    ).local_floor
     # eigh sorts ASCENDING, so the last column is the direction the action leans on most and the
     # first spans the kernel of Psi' -- the two arms are read off the ends, never off an index.
     weighted = full.sensitivity.T @ full.curvature @ full.sensitivity
@@ -771,7 +782,7 @@ def multivariate_van_trees_certificate(
         directions=channels,
     )
     return MultivariateVanTreesCurve(
-        diagonal.floor,
+        diagonal.local_floor,
         scalar_agreement,
         channel_agreement,
         sensitivity_residual,
@@ -4956,7 +4967,7 @@ def lq_regret_sensitivity(effect: float, effort: float, target: float) -> float:
     return target**2 * (effort - effect**2) ** 2 / (effect**2 + effort) ** 3
 
 
-def confounding_robust_lq_regret(
+def confounding_robust_lq_second_order_regret(
     regret_sensitivity: float, stat_error: float, confounding_halfwidth: float
 ) -> float:
     """Second-order confounding-robust LQ regret ``L_reg*(eps + Delta)^2`` (the formula is Rocq's
@@ -4980,7 +4991,23 @@ def confounding_robust_lq_regret(
     return regret_sensitivity * (stat_error + confounding_halfwidth) ** 2
 
 
-def confounding_robust_lq_regret_matrix(
+def confounding_robust_lq_regret(
+    regret_sensitivity: float, stat_error: float, confounding_halfwidth: float
+) -> float:
+    """:func:`confounding_robust_lq_second_order_regret` under the name it had before 0.21.0,
+    which leaves in 1.0: it is the regret to second order, not a bound on the worst regret."""
+    warnings.warn(
+        "confounding_robust_lq_regret is renamed confounding_robust_lq_second_order_regret and "
+        "leaves in 1.0: it is the regret to second order, not a bound on the worst regret",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return confounding_robust_lq_second_order_regret(
+        regret_sensitivity, stat_error, confounding_halfwidth
+    )
+
+
+def confounding_robust_lq_second_order_regret_matrix(
     curvature: Matrix, stat_error: Matrix, confounding: Matrix
 ) -> float:
     """Matrix confounding-robust LQ regret ``tr(E^T H E)``, ``E = stat + confounding``.
@@ -4993,12 +5020,28 @@ def confounding_robust_lq_regret_matrix(
     matrix ``E``, the regret is the quadratic form ``tr(E^T H E) = O(||E||_F^2)``. The confounding
     floor (``stat = 0``) is ``tr(Delta^T H Delta)`` -- SECOND order in the Frobenius norm of the
     matrix confounding half-width, the same second-order robustness as the scalar floor. Reduces to
-    :func:`confounding_robust_lq_regret` in the ``1x1`` case, and is a second-order term as that is,
-    not a bound on the worst regret.
+    :func:`confounding_robust_lq_second_order_regret` in the ``1x1`` case, and is a second-order
+    term as that is, not a bound on the worst regret.
     """
     e = np.asarray(stat_error, dtype=np.float64) + np.asarray(confounding, dtype=np.float64)
     h = np.asarray(curvature, dtype=np.float64)
     return float(np.trace(e.T @ h @ e))
+
+
+def confounding_robust_lq_regret_matrix(
+    curvature: Matrix, stat_error: Matrix, confounding: Matrix
+) -> float:
+    """:func:`confounding_robust_lq_second_order_regret_matrix` under the name it had before
+    0.21.0, which leaves in 1.0: it is the regret to second order, not a bound on the worst
+    regret."""
+    warnings.warn(
+        "confounding_robust_lq_regret_matrix is renamed "
+        "confounding_robust_lq_second_order_regret_matrix and leaves in 1.0: it is the regret to "
+        "second order, not a bound on the worst regret",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return confounding_robust_lq_second_order_regret_matrix(curvature, stat_error, confounding)
 
 
 @dataclass(frozen=True)
@@ -5041,10 +5084,9 @@ def confounding_robust_lq_regret_certificate(
     then maps each ``Gamma`` to its confounding half-width via the MSM inflation and checks the
     second-order regret is monotone, recovers the statistical regret at ``Gamma=1``, and floors at
     ``Delta^2``. ``second_order_regrets`` holds that second-order regret, which the exact one
-    exceeds (see
-    :func:`confounding_robust_lq_regret`). Only the first of ``ok``'s four gates is a measurement:
-    the other three hold by the algebra of ``L_reg (eps + Delta)^2`` whatever the plant, its
-    ``floor_quadratic_ratio`` being ``(2 Delta)^2 / Delta^2``.
+    exceeds (see :func:`confounding_robust_lq_second_order_regret`). Only the first of ``ok``'s
+    four gates is a measurement: the other three hold by the algebra of ``L_reg (eps + Delta)^2``
+    whatever the plant, its ``floor_quadratic_ratio`` being ``(2 Delta)^2 / Delta^2``.
     """
     from chc.uncertainty import (
         confounding_robust_inflation,  # MSM half-width; local to keep JAX out
@@ -5061,11 +5103,12 @@ def confounding_robust_lq_regret_certificate(
     order_doubling_ratio = exact / (l_reg * delta**2)
 
     halfwidths = [confounding_robust_inflation(cvar_gap, 0.0, g) for g in gammas]
-    bounds = [confounding_robust_lq_regret(l_reg, stat_error, d) for d in halfwidths]
-    statistical = confounding_robust_lq_regret(l_reg, stat_error, 0.0)
+    bounds = [confounding_robust_lq_second_order_regret(l_reg, stat_error, d) for d in halfwidths]
+    statistical = confounding_robust_lq_second_order_regret(l_reg, stat_error, 0.0)
 
-    base = confounding_robust_lq_regret(l_reg, 0.0, cvar_gap)  # pure-confounding floor at width=gap
-    doubled = confounding_robust_lq_regret(l_reg, 0.0, 2.0 * cvar_gap)
+    # the pure-confounding floor at width = gap
+    base = confounding_robust_lq_second_order_regret(l_reg, 0.0, cvar_gap)
+    doubled = confounding_robust_lq_second_order_regret(l_reg, 0.0, 2.0 * cvar_gap)
     floor_ratio = doubled / base
 
     monotone = all(bounds[i] <= bounds[i + 1] + 1e-15 for i in range(len(bounds) - 1))

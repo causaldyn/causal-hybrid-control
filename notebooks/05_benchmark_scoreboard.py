@@ -16,10 +16,10 @@
 #
 # The newsvendor orders stock once and pays for both leftovers and shortages. The CHC controller is
 # `causal-CHC` on pricing and inventory: it adjusts for the confounder. On support-shift it is
-# `pessimistic`: it penalises actions outside the logged support. The naive baseline is `predictive`
-# (an unadjusted fit) or `greedy` (it trusts the model everywhere). On pricing and inventory a second
-# predictive row, `predictive-all`, regresses on every logged column; the one confounder is logged
-# and no column is a mediator or a collider, so it lands with `causal-CHC`.
+# `pessimistic`: it penalises actions outside the logged support. The naive baseline is
+# `predictive-omitted` (an unadjusted fit) or `greedy` (it trusts the model everywhere). On pricing
+# and inventory a second predictive row, `predictive-all`, regresses on every logged column; the one
+# confounder is logged and no column is a mediator or a collider, so it lands with `causal-CHC`.
 #
 # Metrics per controller: **cost**, **regret** (`cost − oracle_cost`, lower is better), **constraint
 # violations**, and **out-of-support action rate**.
@@ -42,7 +42,11 @@ TASKS = {
 }
 # the "CHC" controller and the naive baseline differ per task; name them so we can compare fairly
 CHC_OF = {"pricing": "causal-CHC", "inventory": "causal-CHC", "support-shift": "pessimistic"}
-BASE_OF = {"pricing": "predictive", "inventory": "predictive", "support-shift": "greedy"}
+BASE_OF = {
+    "pricing": "predictive-omitted",
+    "inventory": "predictive-omitted",
+    "support-shift": "greedy",
+}
 
 rows = []
 for task_name, task in TASKS.items():

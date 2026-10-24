@@ -45,11 +45,13 @@ def test_pricing_benchmark_ranks_causal_above_predictive() -> None:
 
     assert results["oracle"].regret == 0.0  # oracle vs itself
     assert results["causal-CHC"].regret < 1.0  # near-oracle
-    assert results["predictive"].regret > 100.0  # catastrophic
+    assert results["predictive-omitted"].regret > 100.0  # catastrophic
 
     assert results["causal-CHC"].constraint_violations == 0.0  # stays in the safe set
-    assert results["predictive"].constraint_violations > 0.0  # diverges out of it
-    assert results["predictive"].ood_rate > results["causal-CHC"].ood_rate  # slams the actuator OOD
+    assert results["predictive-omitted"].constraint_violations > 0.0  # diverges out of it
+    assert (
+        results["predictive-omitted"].ood_rate > results["causal-CHC"].ood_rate
+    )  # slams the actuator OOD
 
 
 @pytest.mark.parametrize("task", [PricingTask(), InventoryTask()], ids=["pricing", "inventory"])
@@ -63,36 +65,66 @@ def test_a_predictive_fit_on_every_logged_column_lands_where_the_adjusted_one_do
     assert every.regret == pytest.approx(causal.regret, rel=0.0, abs=1e-3)
     assert every.constraint_violations == causal.constraint_violations
     assert every.ood_rate == causal.ood_rate
-    assert results["predictive"].regret > 100.0 * max(abs(every.regret), 1e-3)
+    assert results["predictive-omitted"].regret > 100.0 * max(abs(every.regret), 1e-3)
 
 
 def test_leaderboard_is_sorted_by_regret() -> None:
     lines = leaderboard(PricingTask().run()).splitlines()
     assert lines[0].startswith("controller")
-    assert lines[-1].split()[0] == "predictive"  # worst regret is last (unambiguous)
+    assert lines[-1].split()[0] == "predictive-omitted"  # worst regret is last (unambiguous)
     assert lines[1].split()[0] in {"oracle", "causal-CHC"}  # a near-oracle controller ranks first
+
+
+@pytest.mark.parametrize("task", [PricingTask(), InventoryTask()], ids=["pricing", "inventory"])
+def test_the_row_that_leaves_the_logged_confounder_out_is_named_for_it(task) -> None:
+    """Before 0.21.0 the row was ``predictive``, beside ``predictive-all``, which regresses on
+    every logged column. A row's label is a dictionary key and cannot warn, so the old label is
+    gone: reading it is a ``KeyError``."""
+    results = {r.controller: r for r in task.run()}
+    assert list(results) == ["oracle", "causal-CHC", "predictive-omitted", "predictive-all"]
+    with pytest.raises(KeyError):
+        _ = results["predictive"]
+
+
+def test_a_long_controller_name_keeps_its_numbers_under_their_headings() -> None:
+    """The name column was 14 wide, so ``predictive-omitted``, 18 letters, pushed its row's
+    numbers four places right of their headings. Every column but the names is right-aligned at a
+    fixed width, so the columns line up exactly when every line is as long as the header."""
+    rows = [
+        TaskResult("oracle", 4.59, 0.0, 0.0, 0.0),
+        TaskResult("predictive-omitted", 13740.08, 13735.49, 0.97, 1.0),
+    ]
+    lines = leaderboard(rows).splitlines()
+    assert [len(line) for line in lines] == [len(lines[0])] * 3
+    assert lines[2].split() == ["predictive-omitted", "13740.08", "13735.49", "0.97", "1.00"]
+    # names that fit in 14 print the table as before
+    assert leaderboard(rows[:1]).splitlines()[0] == (
+        "controller            cost      regret    viol     ood"
+    )
 
 
 def test_pricing_benchmark_runs_over_a_pluggable_estimator() -> None:
     """The control loop consumes a swappable causal backend, not a hardwired estimator."""
     results = {r.controller: r for r in PricingTask().run(estimator=DoubleML())}
     assert results["causal-CHC"].regret < 1.0  # the DoubleML backend also lands near-oracle
-    assert results["predictive"].regret > 100.0  # naive baseline is unchanged
+    assert results["predictive-omitted"].regret > 100.0  # naive baseline is unchanged
 
 
 def test_no_confounding_predictive_is_fine() -> None:
     """Honesty: with no confounding (kappa=0), predictive is near-oracle too."""
     results = {r.controller: r for r in PricingTask(kappa=0.0).run()}
-    assert results["predictive"].regret < 1.0
-    assert results["predictive"].constraint_violations == 0.0
+    assert results["predictive-omitted"].regret < 1.0
+    assert results["predictive-omitted"].constraint_violations == 0.0
 
 
 def test_inventory_benchmark_ranks_causal_above_predictive() -> None:
     results = {r.controller: r for r in InventoryTask().run()}
     assert results["oracle"].regret == 0.0
     assert results["causal-CHC"].regret < 0.2  # near oracle
-    assert results["predictive"].regret > 0.5  # confounded demand estimate costs more
-    assert results["predictive"].constraint_violations > 0.5  # frequent stockouts (under-orders)
+    assert results["predictive-omitted"].regret > 0.5  # confounded demand estimate costs more
+    assert (
+        results["predictive-omitted"].constraint_violations > 0.5
+    )  # frequent stockouts (under-orders)
     assert results["causal-CHC"].constraint_violations < 0.4  # near the optimal newsvendor fractile
 
 
