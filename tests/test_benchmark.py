@@ -314,7 +314,7 @@ def test_causal_dynamics_identification_beats_prediction_error_fitting() -> None
     """
     results = {r.controller: r for r in CausalDynamicsTask().run()}
     assert results["oracle"].regret == 0.0
-    assert results["causal-id"].regret < 0.05  # measured 0.014
+    assert results["causal-id"].regret < 0.05  # measured 0.0076
     assert results["causal-iv"].regret < 0.3  # measured 0.131 — identified, but noisier
     assert results["mse-id"].regret > 1.0  # measured 6.20 against a 6.10 oracle cost
     assert results["causal-iv"].regret < 0.1 * results["mse-id"].regret

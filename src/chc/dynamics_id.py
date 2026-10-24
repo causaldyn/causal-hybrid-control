@@ -560,8 +560,8 @@ def _chosen_sieve(
 
 def _held_pushes(columns: Array, degree: int, knots: int | None, powers: bool = True) -> Array:
     """``(N, q)``: the pushes ``columns`` make on the rate in the nuisances' own basis, for the
-    drift regression under ``rk4`` -- the sieve's columns in them alone, at ``degree`` 1 at the
-    least, about their means on the log, in an orthonormal basis of their span."""
+    drift regression -- the sieve's columns in them alone, at ``degree`` 1 at the least, about
+    their means on the log, in an orthonormal basis of their span."""
     if columns.shape[1] == 0:
         return columns
     raw = _sieve_columns(columns, max(degree, 1), knots, powers)[:, 1:]
