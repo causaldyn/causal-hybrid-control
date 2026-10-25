@@ -74,7 +74,7 @@ def _prescribe(panel: Panel, **kwargs):
         adjustment=["demand"],
         horizon=10,
         dt=DT,
-        **kwargs,
+        **{"integrator": "rk4", **kwargs},
     )
 
 

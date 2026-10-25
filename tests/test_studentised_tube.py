@@ -193,6 +193,7 @@ def test_one_state_s_tube_is_the_noise_s_radius_and_t_times_the_field_s_in_quadr
         dt=dt,
         horizon=horizon,
         tolerance=10.0,
+        integrator="rk4",
     )
     plan, fit, certificate = decided.plan, decided.model_fit, decided.certificate
     assert plan is not None
@@ -242,6 +243,7 @@ def test_two_states_place_the_field_s_error_along_the_noise_s_widest_direction()
         dt=dt,
         horizon=horizon,
         tolerance=10.0,
+        integrator="rk4",
     )
     plan, fit = decided.plan, decided.model_fit
     assert decided.certificate.tube_mode == "exact"
@@ -394,6 +396,7 @@ def test_the_tube_reads_the_same_in_any_units_of_the_state() -> None:
             dt=0.5,
             horizon=6,
             tolerance=10.0 * unit,
+            integrator="rk4",
         )
         assert decided.plan.uncertainty_tube is not None
         tubes.append(np.asarray(decided.plan.uncertainty_tube) / unit)
@@ -414,6 +417,7 @@ def test_rk4_steps_the_same_field_through_its_own_matrices() -> None:
         dt=0.5,
         horizon=6,
         tolerance=10.0,
+        integrator="rk4",
     )
     plan, fit, certificate = decided.plan, decided.model_fit, decided.certificate
     assert plan.uncertainty_tube is not None

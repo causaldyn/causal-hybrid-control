@@ -257,7 +257,7 @@ def _prescribe(log: dict[str, np.ndarray], **kwargs: object):
         adjustment=CausalGraph.from_edges([("z", "u"), ("z", "x"), ("u", "x")]),
         dt=0.5,
         x0=[float(log["x"][-1])],
-        **kwargs,  # type: ignore[arg-type]
+        **{"integrator": "rk4", **kwargs},  # type: ignore[arg-type]
     )
 
 
@@ -358,6 +358,7 @@ def test_a_fit_with_no_channel_error_reads_no_noise_and_trusts_no_step() -> None
         horizon=4,
         tolerance=10.0,
         x0=[float(log["x"][-1])],
+        integrator="rk4",
     )
     assert decided.model_fit.channel_error is None
     certificate = decided.certificate

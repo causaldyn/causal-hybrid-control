@@ -812,6 +812,7 @@ ENTRIES = (
             horizon=3,
             adjustment=("demand",),
             x0=a["x0"],
+            integrator="rk4",
         ),
         _named("x0"),
         decision.DecisionError,
@@ -1583,6 +1584,7 @@ def test_the_logger_check_reads_a_boolean_parent_of_a_lever_as_its_zeros_and_one
             horizon=2,
             dt=0.1,
             tolerance=0.5,
+            integrator="rk4",
         ).logger_check
 
     flags = check(bool)

@@ -176,6 +176,7 @@ def _prescribe(lo: float, hi: float, target: float):
         adjustment=GRAPH,
         horizon=8,
         dt=DT,
+        integrator="rk4",
     )
 
 

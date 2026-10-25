@@ -100,6 +100,7 @@ def prescription() -> chc.Prescription:
         horizon=HORIZON,
         dt=DT,
         tolerance=0.5,
+        integrator="rk4",
     )
 
 

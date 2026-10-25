@@ -78,6 +78,7 @@ def _prescribe(policy: str) -> Prescription:
         dt=DT,
         tolerance=0.5,
         x0=jnp.ones(1),
+        integrator="rk4",
     )
 
 
@@ -274,6 +275,7 @@ def test_a_rule_written_in_single_precision_reads_back_to_the_bit_in_single_prec
             dt=DT,
             tolerance=0.5,
             x0=jnp.ones(1),
+            integrator="rk4",
         )
         run, path = prescription.policy(), _path(prescription)
         record = json.loads(json.dumps(run.to_json(), allow_nan=False))

@@ -156,10 +156,13 @@ def ask(
     *,
     box: float = 2.0,
     constraints: tuple[Constraint, ...] = (Constraint("wait", hi=0.5),),
+    integrator: str = "rk4",
     **options: object,
 ) -> Prescription:
     """``prescribe`` on one log of ``world``: steer supply to 1 from rest, by default with wait at
-    most 0.5, a bound the plan never comes near."""
+    most 0.5, a bound the plan never comes near. Fitted and planned by ``"rk4"`` unless asked
+    otherwise: the suite's floors were measured under it, before ``prescribe``'s default became
+    ``"euler"``."""
     panel = Panel.from_frame(world.log(seed), unit="unit", time="time", seed=0)
     return prescribe(
         panel,
@@ -171,6 +174,7 @@ def ask(
         dt=DT,
         tolerance=0.5,
         x0=np.zeros(2),
+        integrator=integrator,  # type: ignore[arg-type]
         **options,  # type: ignore[arg-type]
     )
 

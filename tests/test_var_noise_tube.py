@@ -254,6 +254,7 @@ def _decide(logs: dict[str, np.ndarray]):
         horizon=15,
         dt=_DT,
         tolerance=0.5,
+        integrator="rk4",
     )
 
 

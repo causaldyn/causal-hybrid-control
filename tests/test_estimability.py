@@ -95,7 +95,7 @@ def _prescribe(policy: str, *, scale: float = 1.0, **kwargs: object) -> Prescrip
         dt=DT,
         tolerance=0.5,
         x0=jnp.ones(1),
-        **kwargs,  # type: ignore[arg-type]
+        **{"integrator": "rk4", **kwargs},  # type: ignore[arg-type]
     )
 
 
@@ -289,6 +289,7 @@ def _state_in(policy: str, units: float) -> Prescription:
         dt=DT,
         tolerance=0.5 * units,
         x0=jnp.full(1, units),
+        integrator="rk4",
     )
 
 
@@ -348,6 +349,7 @@ def _lever_in(policy: str, units: float) -> Prescription:
         dt=DT,
         tolerance=0.5,
         x0=jnp.ones(1),
+        integrator="rk4",
     )
 
 
@@ -646,6 +648,7 @@ def test_whether_a_reach_is_a_lever_s_own_reads_the_same_in_any_units(scale: flo
         dt=DT,
         tolerance=0.5,
         x0=jnp.ones(1),
+        integrator="rk4",
     )
     assert result.reach() == {"u1": None, "u2": None}
 

@@ -87,7 +87,7 @@ def _prescribe(max_levers: int | None, levers: list[Lever] | None = None, **kwar
         horizon=12,
         dt=DT,
         max_levers=max_levers,
-        **kwargs,  # type: ignore[arg-type]
+        **{"integrator": "rk4", **kwargs},  # type: ignore[arg-type]
     )
 
 
@@ -259,6 +259,7 @@ def _held_towards_calm_wait(
         dt=DT,
         x0=x0,
         max_levers=max_levers,
+        integrator="rk4",
     )
 
 
@@ -407,6 +408,7 @@ def test_the_cap_bounds_the_set_and_a_larger_cap_never_costs_more_than_the_certi
             horizon=8,
             dt=DT,
             max_levers=max_levers,
+            integrator="rk4",
         )
 
     small, large = select(cap), select(cap + 1)

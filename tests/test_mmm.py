@@ -164,6 +164,7 @@ def test_the_rk4_fit_holds_the_season_s_push_and_reads_the_incremental_returns()
         known=adstock_dynamics(jnp.array(system.theta)),
         horizon=2,
         dt=DT,
+        integrator="rk4",
     )
     states = np.stack([logs[SALES], *[logs[name] for name in system.adstock_columns]], axis=1)
     channel = np.asarray(jax.vmap(result.model_fit.residual.control_channel)(jnp.asarray(states)))
@@ -300,6 +301,7 @@ def test_the_case_study_reaches_a_decision_in_under_ten_lines() -> None:
         horizon=6,
         dt=DT,
         tolerance=1.0,
+        integrator="rk4",
     )
     assert out.schedule.magnitudes.shape == (6, 3)
     assert "Prescription for `sales`" in out.report()

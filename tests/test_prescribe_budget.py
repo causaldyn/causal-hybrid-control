@@ -36,6 +36,7 @@ def _prescribe(panel: Panel, budgets: tuple[PeriodBudget, ...] = ()) -> Prescrip
         dt=1.0,
         tolerance=1.0,
         budgets=budgets,
+        integrator="rk4",
     )
 
 

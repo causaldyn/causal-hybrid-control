@@ -306,6 +306,7 @@ def test_prescribe_carries_its_tube_by_the_slope_at_each_planned_action() -> Non
         x0=[float(log["x"][-1])],
         horizon=horizon,
         tolerance=10.0,
+        integrator="rk4",
     )
     plan, fit, certificate = decided.plan, decided.model_fit, decided.certificate
     assert plan is not None
@@ -382,6 +383,7 @@ def test_a_field_whose_slope_moves_with_the_state_keeps_the_norm_bound() -> None
         "dt": 0.5,
         "x0": [float(log["x"][-1])],
         "horizon": 6,
+        "integrator": "rk4",
     }
     panel = Panel.from_frame(log, unit="unit", time="time", seed=0)
     bent = prescribe(panel, known=_Bent(), tolerance=10.0, **common)  # type: ignore[arg-type]
@@ -440,6 +442,7 @@ def _quickstart(logs: dict[str, np.ndarray], wait_units: float = 1.0):
         horizon=15,
         dt=_DT,
         tolerance=0.5,
+        integrator="rk4",
     )
 
 

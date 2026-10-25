@@ -159,6 +159,7 @@ def _decide(
         dt=DT,
         tolerance=0.5 * state_in,
         x0=jnp.full(1, state_in),
+        integrator="rk4",
     )
 
 
@@ -1031,6 +1032,7 @@ def _two_states(supply_in: float, wait_in: float) -> Prescription:
         horizon=5,
         dt=DT,
         tolerance=0.5 * supply_in,
+        integrator="rk4",
     )
 
 

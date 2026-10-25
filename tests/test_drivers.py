@@ -390,7 +390,7 @@ def _prescribe(panel: Panel, **kwargs: object):
         adjustment=CausalGraph.from_edges(EDGES),
         dt=DT,
         x0=jnp.array([X0]),
-        **kwargs,  # type: ignore[arg-type]
+        **{"integrator": "rk4", **kwargs},  # type: ignore[arg-type]
     )
 
 
@@ -473,6 +473,7 @@ def test_prescribe_states_all_three_things_l8_1_could_not(panel: Panel) -> None:
         dt=DT,
         x0=jnp.array([X0]),
         drivers=[Driver("outdoor", _forecast())],
+        integrator="rk4",
     )
     assert result.certificate.identification == "identified"
     assert result.plan is not None
@@ -520,7 +521,13 @@ def test_a_driver_whose_column_the_transitions_hold_in_another_role_is_refused()
     }
     noise = np.random.default_rng(1).normal(size=heat.size)
     beside = Panel.from_frame({**frame, "outdoor_next": noise}, unit="unit", time="time")
-    kwargs = {"levers": [LEVER], "target": TARGET, "horizon": HORIZON, "dt": DT}
+    kwargs = {
+        "levers": [LEVER],
+        "target": TARGET,
+        "horizon": HORIZON,
+        "dt": DT,
+        "integrator": "rk4",
+    }
     with pytest.raises(
         DecisionError,
         match="the driver 'outdoor' a period on would be read as 'outdoor_next', which already "
