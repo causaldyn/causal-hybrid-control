@@ -69,14 +69,15 @@ def _euler_path(field, x0, actions, dt: float = 1.0) -> np.ndarray:
 
 
 def test_a_log_that_barely_persists_is_fitted_and_planned_by_its_one_step_map() -> None:
-    """The rk4 fit raises on the log and names the remedy. The Euler fit reads the map: the
-    channel 0.5 within four of its standard errors, the decay ``0.1 - 1``. The plan is the Euler
-    map's rollout of the fitted field, 0.995 at its first step where RK4's rollout of the same
-    field reads 0.656, and its tube is carried by the field's own step matrices."""
+    """The rk4 fit raises on the log and names the remedy. The Euler fit, the default since 0.22
+    (ADR 0129), reads the map: the channel 0.5 within four of its standard errors, the decay
+    ``0.1 - 1``. The plan is the Euler map's rollout of the fitted field, 0.995 at its first step
+    where RK4's rollout of the same field reads 0.656, and its tube is carried by the field's own
+    step matrices."""
     panel = _log(0.1, seed=0)
     with pytest.raises(ValueError, match=r"prescribe\(integrator='euler'\)"):
-        _decide(panel)
-    decided = _decide(panel, integrator="euler")
+        _decide(panel, integrator="rk4")
+    decided = _decide(panel)
     fit, plan, certificate = decided.model_fit, decided.plan, decided.certificate
     assert plan is not None
     assert fit.integrator == "euler"
@@ -100,10 +101,10 @@ def test_a_log_that_barely_persists_is_fitted_and_planned_by_its_one_step_map() 
     assert math.isfinite(certificate.regret_bound)
 
 
-def test_a_log_sampled_from_a_slow_plant_is_still_planned_by_rk4() -> None:
-    """The default is unchanged: on a log that keeps 0.8 a period the rk4 fit converges, and its
-    plan is RK4's rollout of the fitted field, not the Euler map's."""
-    decided = _decide(_log(0.8, seed=1))
+def test_a_log_sampled_from_a_slow_plant_is_planned_by_rk4_when_asked() -> None:
+    """Asked for, the rk4 fit converges on a log that keeps 0.8 a period, and its plan is RK4's
+    rollout of the fitted field, not the Euler map's."""
+    decided = _decide(_log(0.8, seed=1), integrator="rk4")
     plan, fit = decided.plan, decided.model_fit
     assert plan is not None
     assert fit.integrator == "rk4"

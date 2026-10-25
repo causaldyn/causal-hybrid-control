@@ -2003,12 +2003,9 @@ def prescribe(
             genuinely discrete-time (a weekly budget is not a sample of an ODE) and the one-step
             map *is* the model. Where the log keeps less than 0.27 of a mode from one step to the
             next, no field stepped by RK4 reproduces it, RK4's growth factor being never smaller,
-            and the ``"rk4"`` fit raises. Not given, it is ``"rk4"``, and a ``FutureWarning`` says
-            that from 0.22.0 it is ``"euler"`` (ADR 0129): the Euler fit reads the log's one-step
-            map, which a panel of periods records, holds the adjustment set in its drift as the
-            ``"rk4"`` fit does, and gives ``radius="auto"`` the absolute radius, where an
-            ``"rk4"`` fit gives only the relative one. Pass either value to keep its reading
-            without the warning.
+            and the ``"rk4"`` fit raises. Not given, it is ``"euler"`` (ADR 0129): the Euler fit
+            gives the barrier an absolute radius, a bound on the channel's error, where an
+            ``"rk4"`` fit gives only a relative one. Up to 0.21 it was ``"rk4"``.
         drivers: exogenous columns the plan can forecast but not move, each with its forecast over
             the horizon (:class:`Driver`). They are fitted into the drift jointly with the states
             (:func:`~chc.dynamics_id.fit_causal_residual`), and the plan is made against the
@@ -2119,15 +2116,7 @@ def prescribe(
     if not 0.0 < dt < math.inf:
         raise DecisionError(f"dt={dt} is not a step, which is finite and positive")
     if integrator is None:
-        warnings.warn(
-            "prescribe fits and plans by 'rk4' when no integrator is given; from 0.22.0 the "
-            "default is 'euler' (ADR 0129), the log's one-step map, which gives the barrier an "
-            "absolute radius where the rk4 fit gives a relative one. Pass integrator='rk4' to "
-            "keep this fit, or integrator='euler' to plan by the map now.",
-            FutureWarning,
-            stacklevel=2,
-        )
-        integrator = "rk4"
+        integrator = "euler"
     if integrator not in ("rk4", "euler"):
         raise DecisionError(
             f"integrator={integrator!r} is neither 'rk4', for a log sampled from a plant in "
@@ -4443,7 +4432,7 @@ def _step_noise(
     from, and the tube is then not evaluated: up to 0.18.0 it read 0, a tube holding white noise
     where the noise may persist. Where the log has no noise they are 0, which moves nothing.
     ``labels`` are :func:`_transitions`' group, period and unit of each transition. The defect is
-    the fit's integrator's, ``rk4`` by default, the step the plan rolls out by."""
+    the fit's integrator's, the step the plan rolls out by."""
     assert fit.defect is not None  # every fit keeps its defect
     error = dt * np.asarray(fit.defect, dtype=np.float64)
     covariance = error.T @ error / error.shape[0]

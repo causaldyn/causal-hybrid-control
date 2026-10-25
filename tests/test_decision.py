@@ -145,7 +145,7 @@ def _prescribe(panel: Panel, adjustment: object, **kwargs: object):
         horizon=15,
         dt=DT,
         tolerance=0.5,
-        **kwargs,  # type: ignore[arg-type]
+        **{"integrator": "rk4", **kwargs},  # type: ignore[arg-type]
     )
 
 
@@ -259,7 +259,7 @@ def _prescribe_policy(logs: dict[str, np.ndarray], levers: list[Lever], **kwargs
         horizon=3,
         dt=DT,
         tolerance=0.5,
-        **kwargs,  # type: ignore[arg-type]
+        **{"integrator": "rk4", **kwargs},  # type: ignore[arg-type]
     )
 
 
@@ -619,6 +619,7 @@ def test_omitting_the_tolerance_switches_the_tube_off_rather_than_setting_it_to_
         adjustment=graph,
         horizon=8,
         dt=DT,
+        integrator="rk4",
     )
     assert without.certificate.certificate_status == "not_evaluated"
     assert without.certificate.certified_horizon is None
@@ -727,6 +728,7 @@ def test_the_tube_holds_the_gap_its_model_error_opens_on_a_growing_field() -> No
         dt=dt,
         tolerance=10.0,
         x0=jnp.zeros(1),
+        integrator="rk4",
     )
     assert result.plan is not None
     assert result.plan.uncertainty_tube is not None
@@ -872,6 +874,7 @@ def test_with_one_lever_the_tube_s_rate_error_is_the_channel_s_error_at_its_dist
         dt=dt,
         tolerance=10.0,
         x0=jnp.zeros(1),
+        integrator="rk4",
     )
     fit = result.model_fit
     assert fit.channel_error is not None
@@ -958,6 +961,7 @@ def test_a_state_in_the_middle_of_a_two_sided_bound_is_audited_rather_than_skipp
         dt=DT,
         tolerance=0.5,
         x0=jnp.zeros(2),
+        integrator="rk4",
     )
     assert result.certificate.barrier_certified_steps is not None
     assert result.certificate.gamma_star is not None
@@ -1026,6 +1030,7 @@ def test_a_band_is_priced_and_held_by_each_bound_s_own_condition() -> None:
             dt=DT,
             tolerance=0.5,
             x0=jnp.zeros(1),
+            integrator="rk4",
         )
 
     priced, held = decide(False), decide(True)
@@ -1056,6 +1061,7 @@ def test_reach_prices_a_lever_by_its_box_and_not_by_its_coefficient_alone() -> N
         adjustment=graph,
         horizon=5,
         dt=DT,
+        integrator="rk4",
     )
     narrow = prescribe(
         panel,
@@ -1064,6 +1070,7 @@ def test_reach_prices_a_lever_by_its_box_and_not_by_its_coefficient_alone() -> N
         adjustment=graph,
         horizon=5,
         dt=DT,
+        integrator="rk4",
     )
     assert abs(wide.reach()["incentive"]) > 10 * abs(narrow.reach()["incentive"])
     assert "incentive" in wide.explain()
@@ -1086,6 +1093,7 @@ def _on_two_scales() -> tuple[Prescription, Prescription]:
         horizon=15,
         dt=DT,
         tolerance=0.5,
+        integrator="rk4",
     )
     return here, there
 
@@ -1356,6 +1364,7 @@ def test_a_lever_named_twice_or_as_a_state_is_refused(names: dict, match: str) -
             horizon=15,
             dt=DT,
             tolerance=0.5,
+            integrator="rk4",
             **decision,  # type: ignore[arg-type]
         )
 
@@ -1603,6 +1612,7 @@ def _small(panel: Panel | None = None, **kwargs: object) -> Prescription:
             "constraints": [Constraint("wait", hi=0.5)],
             "adjustment": CausalGraph.from_edges(EDGES),
             "tolerance": 0.5,
+            "integrator": "rk4",
             **kwargs,
         },
     )
@@ -2084,6 +2094,7 @@ def test_no_gamma_is_stated_where_no_bound_was_audited() -> None:
         dt=DT,
         tolerance=0.5,
         gamma=1.5,
+        integrator="rk4",
     )
     assert result.certificate.barrier_certified_steps is None
     assert result.certificate.gamma is None
@@ -2106,7 +2117,13 @@ def test_the_arguments_that_cannot_mean_anything_are_refused() -> None:
     graph = CausalGraph.from_edges(EDGES)
     with pytest.raises(ValueError, match="at least one lever"):
         prescribe(
-            panel, levers=[], target=Target("supply", 1.0), adjustment=graph, horizon=3, dt=DT
+            panel,
+            levers=[],
+            target=Target("supply", 1.0),
+            adjustment=graph,
+            horizon=3,
+            dt=DT,
+            integrator="rk4",
         )
     with pytest.raises(KeyError, match="not in the panel"):
         prescribe(
@@ -2116,6 +2133,7 @@ def test_the_arguments_that_cannot_mean_anything_are_refused() -> None:
             adjustment=graph,
             horizon=3,
             dt=DT,
+            integrator="rk4",
         )
     with pytest.raises(ValueError, match=r"constrained more than once: \['wait'\]"):
         prescribe(
@@ -2126,6 +2144,7 @@ def test_the_arguments_that_cannot_mean_anything_are_refused() -> None:
             adjustment=graph,
             horizon=3,
             dt=DT,
+            integrator="rk4",
         )
     with pytest.raises(ValueError, match="no constraint was given to hold"):
         prescribe(
@@ -2136,6 +2155,7 @@ def test_the_arguments_that_cannot_mean_anything_are_refused() -> None:
             adjustment=graph,
             horizon=3,
             dt=DT,
+            integrator="rk4",
         )
     with pytest.raises(ValueError, match="above hi"):
         Lever("incentive", lo=1.0, hi=-1.0)
@@ -2164,6 +2184,7 @@ def test_a_rate_limit_moves_the_schedule_rather_than_annotating_it() -> None:
         horizon=15,
         dt=DT,
         tolerance=0.5,
+        integrator="rk4",
     )
     held = np.abs(np.diff(np.asarray(capped.schedule.magnitudes)[:, 0]))
     assert held.max() <= cap + 1e-9
@@ -2188,6 +2209,7 @@ def test_a_budget_is_priced_apart_from_the_rate_limit_held_beside_it() -> None:
             dt=DT,
             tolerance=0.5,
             budgets=[PeriodBudget(np.ones(1), amount, 15)],
+            integrator="rk4",
         )
 
     def cost(amount: float) -> float:
@@ -2257,6 +2279,7 @@ def test_a_schedule_is_steered_for_before_it_moves() -> None:
             horizon=horizon,
             dt=DT,
             tolerance=0.5,
+            integrator="rk4",
         )
 
     def against_schedule(result: Prescription) -> float:
@@ -2304,6 +2327,7 @@ def test_held_constraints_move_the_schedule_rather_than_fail_its_audit(
             horizon=15,
             dt=DT,
             tolerance=0.5,
+            integrator="rk4",
         )
 
     audited = decide(False)
@@ -2337,6 +2361,7 @@ def test_a_replanning_loop_compiles_nothing_after_its_first_held_prescription() 
             horizon=15,
             dt=DT,
             tolerance=0.5,
+            integrator="rk4",
         )
 
     jax.clear_caches()
@@ -2383,6 +2408,7 @@ def test_a_bound_on_the_target_is_held_on_its_own_coordinate() -> None:
             horizon=15,
             dt=DT,
             tolerance=0.5,
+            integrator="rk4",
         )
 
     priced, held = decide(False), decide(True)
@@ -2565,6 +2591,7 @@ def test_a_mis_specified_decision_and_an_unidentified_one_are_different_types() 
             adjustment=CausalGraph.from_edges(EDGES),
             horizon=3,
             dt=DT,
+            integrator="rk4",
         )
     blocked = _prescribe(
         _panel(n_units=40, n_periods=8), CausalGraph.from_edges(EDGES, latent=("demand",))
@@ -2773,7 +2800,7 @@ def test_a_step_or_a_tolerance_that_is_no_number_is_refused_before_the_fit(
             target=Target("supply", value=1.0),
             adjustment=CausalGraph.from_edges(EDGES),
             horizon=5,
-            **{"dt": DT, "tolerance": 0.5, **kwargs},  # type: ignore[arg-type]
+            **{"dt": DT, "tolerance": 0.5, "integrator": "rk4", **kwargs},  # type: ignore[arg-type]
         )
 
 
@@ -3018,6 +3045,7 @@ def test_a_constrained_state_whose_channel_is_confounded_leaves_the_effect_unide
         horizon=5,
         dt=DT,
         tolerance=0.5,
+        integrator="rk4",
     )
     assert result.certificate.identification == "not_identified"
     assert result.plan is None
@@ -3278,18 +3306,25 @@ def test_prescribe_plans_by_the_step_it_fits(integrator: str) -> None:
     np.testing.assert_allclose(np.asarray(plan.trajectory), expected, rtol=1e-12, atol=1e-14)
 
 
-def test_prescribe_warns_that_its_default_integrator_becomes_euler() -> None:
-    """Not given, the integrator is ``"rk4"``, and a ``FutureWarning`` says that from 0.22.0 it is
-    ``"euler"``; given, either value plans by its map without the warning."""
+def test_prescribe_fits_and_plans_by_euler_by_default() -> None:
+    """Not given (``None``, the default), the integrator is ``"euler"``, with no warning, and the
+    plan is the one ``integrator="euler"`` gives (ADR 0129); given, either value plans by its map.
+    Up to 0.21 the default was ``"rk4"``, with a ``FutureWarning`` that named the change."""
+    assert inspect.signature(prescribe).parameters["integrator"].default is None
     panel, graph = _panel(n_units=20), CausalGraph.from_edges(EDGES)
-    with pytest.warns(FutureWarning, match="from 0.22.0 the default is 'euler'"):
-        result = _prescribe(panel, graph)
-    assert (result.model_fit.integrator, result.run.integrator) == ("rk4", "rk4")
     with warnings.catch_warnings():
         warnings.simplefilter("error", FutureWarning)
-        for integrator in ("rk4", "euler"):
-            given = _prescribe(panel, graph, integrator=integrator)
-            assert (given.model_fit.integrator, given.run.integrator) == (integrator, integrator)
+        result = _prescribe(panel, graph, integrator=None)
+        given = {name: _prescribe(panel, graph, integrator=name) for name in ("rk4", "euler")}
+    assert result.plan is not None
+    assert (result.model_fit.integrator, result.run.integrator) == ("euler", "euler")
+    for integrator, prescription in given.items():
+        assert prescription.model_fit.integrator == integrator
+        assert prescription.run is not None
+        assert prescription.run.integrator == integrator
+    euler = given["euler"].plan
+    assert euler is not None
+    np.testing.assert_array_equal(np.asarray(result.plan.actions), np.asarray(euler.actions))
 
 
 def test_aware_dates_held_as_objects_are_read_on_their_own_wall_clock() -> None:
@@ -3352,6 +3387,7 @@ def test_a_plan_that_acts_outside_the_lever_s_logged_range_says_so(caplog) -> No
         dt=0.5,
         tolerance=0.5,
         x0=jnp.zeros(1),
+        integrator="rk4",
     )
     assert result.plan is not None
     [record] = [r for r in caplog.records if getattr(r, "chc_event", "") == "lever_range"]
