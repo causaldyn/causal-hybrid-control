@@ -84,7 +84,7 @@ documented, and what is not built yet. Every name below is importable from `chc`
 
 - **The error tube.** `CausalPlan.certificate_status` and `CausalPlan.certified_actions` say how
   far ahead the model's error and the plant's own noise keep the plan inside tolerance, over the
-  plan's RK4 steps. The model's part is a bound where the per-step error supplied is one, and a
+  plan's steps, by its integrator's map. The model's part is a bound where the per-step error supplied is one, and a
   scale where it is a standard error, as under `prescribe`; the noise's holds at each step with
   probability 0.95. See [the scopes](concepts/certificates.md#scopes).
 - **`certify_safety`.** Where along a finished plan's predicted path a barrier's guarantee survives

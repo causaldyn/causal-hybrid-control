@@ -5,6 +5,10 @@ default fit reads the relative radius): from 0.22.0 `prescribe` fits and plans b
 Amended by ADR 0132 (2026-10-25): a `gamma` at or past `(3 + sqrt 5)/2` no longer raises under
 the absolute radius.
 
+*2026-10-25:* the flip shipped in 0.22.0. `integrator=None` fits and plans by `"euler"`, with no
+warning; the `FutureWarning` is gone. The refusal at `gamma >= (3 + sqrt 5)/2` that the
+Consequences name never shipped with it (ADR 0132).
+
 ## Context
 
 `fit_causal_residual` fits by `"euler"` by default and `prescribe` by `"rk4"` (ADR 0118). Two
