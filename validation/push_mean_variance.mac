@@ -1,0 +1,82 @@
+/* The variance of the adjustment set's push at its mean on the log, which the fitted intercept
+   holds, and the cosines that read it on a persistent log.
+
+   The field leaves the push at its mean on the log, so the intercept carries the push's gain times
+   that mean, which is off the plant's by the mean's own sampling error. Read from rows taken as
+   independent it is sum pushed^2 / N^2; on a log whose push persists the mean's variance is the
+   long-run one, which the cosines of the periods read (Lazarus, Lewis, Stock and Watson 2018):
+   c_j = sum_i w_ji pushed_i, w_ji = sqrt(2/nu) cos(pi j (i + 1/2)/P), j = 1..nu, and sum_j c_j^2
+   estimates the variance of the push's sum.
+
+   Checked here:
+   (1) a stationary AR(1) series of unit variance:
+       N Var(z_bar) = 1 + 2 sum_{k<N} (1 - k/N) rho^k
+                    = (1 + rho)/(1 - rho) - 2 rho (1 - rho^N)/(N (1 - rho)^2),
+       symbolic at N = 1..8; its limit (1 + rho)/(1 - rho), 9 at rho = 0.8, and 8.8 at N = 200:
+       rows read as independent read 1/8.8 of the mean's variance there;
+   (2) each cosine sums to nothing over a span of P periods without gaps, by telescoping
+       2 sin(t) cos((2 i + 1) t) = sin((2 i + 2) t) - sin(2 i t) at t = pi j/(2 P): a centred
+       push's projections are the uncentred push's, so the mean the intercept takes moves none of
+       them; and sum_i w_ji^2 = P/nu, so on independent rows of unit variance the read's mean is P,
+       the sum's variance; both also at bigfloat sample points;
+   (3) on the AR(0.8) push at N = P = 200, nu = 13, the read's mean is 0.781 of N^2 Var(z_bar):
+       the cosines' known shortfall at a fixed nu on a short persistent log, which the t(nu) the
+       tube is read at does not make up.
+*/
+display2d : false$
+ratprint : false$
+fpprec : 40$
+/* a check that fails stops the batch with "-- an error.", which validation/run_all.sh reads */
+vanishes(label, x) := if is(x = 0) then print(label, "= 0") else error(label, "is not zero:", x)$
+holds(label, claim) := if is(claim) then print(label, "(PASS)") else error(label, "(FAIL)")$
+
+/* (1) */
+lrv(n) := 1 + 2*sum((1 - k/n)*rho^k, k, 1, n - 1)$
+closed(n) := (1 + rho)/(1 - rho) - 2*rho*(1 - rho^n)/(n*(1 - rho)^2)$
+for n : 1 thru 8 do
+  vanishes(sconcat("(1) N = ", n, ": N Var(z_bar) - its closed form"), ratsimp(lrv(n) - closed(n)))$
+/* the double sum itself: N^2 Var(z_bar) = sum_{i,k} rho^|i - k| */
+for n : 1 thru 6 do
+  vanishes(sconcat("(1) N = ", n, ": sum_{i,k} rho^|i-k| - N (N Var(z_bar))"),
+           ratsimp(sum(sum(rho^abs(i - k), k, 1, n), i, 1, n) - n*lrv(n)))$
+/* the gap to the limit is -2 rho (1 - rho^N)/(N (1 - rho)^2), at most 2 rho/(N (1 - rho)^2) in
+   size for 0 <= rho < 1, so it closes as 1/N (read without limit(), which asks rho's sign) */
+vanishes("(1) closed(N) - (1 + rho)/(1 - rho) + 2 rho (1 - rho^N)/(N (1 - rho)^2)",
+         ratsimp(closed(n) - (1 + rho)/(1 - rho) + 2*rho*(1 - rho^n)/(n*(1 - rho)^2)))$
+vanishes("(1) (1 + rho)/(1 - rho) at rho = 4/5, less 9", subst(rho = 4/5, (1 + rho)/(1 - rho)) - 9)$
+vanishes("(1) N Var(z_bar) at N = 200, rho = 4/5, less 44/5 + (4/5)^200/5",
+         ratsimp(subst(rho = 4/5, closed(200)) - (44/5 + (4/5)^200/5)))$
+at200 : bfloat(subst(rho = 4/5, closed(200)))$
+print("(1) N Var(z_bar) at N = 200, rho = 0.8:", at200)$
+holds("(1) that is 8.8 to 1e-20", is(abs(at200 - 8.8b0) < 1b-20))$
+
+/* (2) the telescoping steps, s = i t for a whole i, so every angle is a whole combination of s
+   and t, which trigexpand expands in full */
+vanishes("(2) 2 sin t cos((2i + 1) t) - (sin((2i + 2) t) - sin(2 i t))",
+         trigsimp(ev(2*sin(t)*cos(2*s + t) - (sin(2*s + 2*t) - sin(2*s)), trigexpand : true)))$
+vanishes("(2) cos((2i + 1) t)^2 - (1 + cos(2 (2i + 1) t))/2",
+         trigsimp(ev(cos(2*s + t)^2 - (1 + cos(4*s + 2*t))/2, trigexpand : true)))$
+/* so sum_{i<P} cos((2i + 1) t) = sin(2 P t)/(2 sin t), nothing at t = pi j/(2P), 0 < j < 2P;
+   and sum_{i<P} cos((2i + 1) t)^2 = P/2 + sin(4 P t)/(4 sin(2 t)), P/2 at 0 < j < P */
+declare(j, integer)$
+vanishes("(2) sin(2 P t) at t = pi j/(2 P), j declared whole", sin(%pi*j))$
+vanishes("(2) sin(4 P t) at t = pi j/(2 P), j declared whole", sin(2*%pi*j))$
+remove(j, integer)$
+cosine(nu, P, jj, i) := sqrt(2/nu)*cos(%pi*jj*(i + 1/2)/P)$
+worst_sum : 0b0$ worst_square : 0b0$
+for jj : 1 thru 7 do (
+  worst_sum : max(worst_sum, abs(bfloat(sum(cosine(7, 8, jj, i), i, 0, 7)))),
+  worst_square : max(worst_square, abs(bfloat(sum(cosine(7, 8, jj, i)^2, i, 0, 7)) - 8/7)))$
+print("(2) P = 8, nu = 7: largest |sum_i w_ji|", worst_sum, "; largest |sum_i w_ji^2 - P/nu|", worst_square)$
+holds("(2) both below 1e-35", is(worst_sum < 1b-35) and is(worst_square < 1b-35))$
+
+/* (3) the read's mean on the AR(0.8) push, sum_j w_j' Sigma w_j against 1' Sigma 1, in floats:
+   Sigma_ik = rho^|i - k|, so w' Sigma w = sum_d rho^|d| sum_i w_i w_{i+d} */
+P : 200$ nu : 13$ r : 0.8$
+wv : makelist(makelist(float(cosine(nu, P, jj, i)), i, 0, P - 1), jj, 1, nu)$
+lag(v, d) := sum(v[i]*v[i + d], i, 1, P - d)$
+quadratic(v) := lag(v, 0) + 2*sum(r^d*lag(v, d), d, 1, P - 1)$
+read : sum(quadratic(wv[jj]), jj, 1, nu)$
+whole : P*float(subst(rho = r, closed(P)))$
+print("(3) N = 200, nu = 13, rho = 0.8: the read's mean over N^2 Var(z_bar):", read/whole)$
+holds("(3) 0.7809 < that < 0.7819", is(0.7809 < read/whole) and is(read/whole < 0.7819))$

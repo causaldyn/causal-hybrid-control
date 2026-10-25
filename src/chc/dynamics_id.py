@@ -171,6 +171,47 @@ class _ChannelGram:
     __hash__ = None  # type: ignore[assignment]
 
 
+@dataclass(frozen=True, eq=False)
+class _FieldTerms:
+    """What the error of the fitted field at a state ``x`` and an action ``u`` is read from, to
+    first order, for each state ``s``: ``f_s(x, u) = phi(x)' r_s + g(x, u)' c_s``, ``phi`` the
+    drift's features then the drivers, ``g(x, u)`` the channel's regressors ``u (x) psi(x)``,
+    ``r_s`` the drift regression's coefficients and ``c_s`` the channel's. A channel error ``e``
+    moves the drift by ``-projection[s] e``, so the field's error is ``phi' d_s + L_s' e`` with
+    ``L_s = e_s (x) g(x, u) - projection[s]' phi``: the channel's error times the action's distance
+    from the log's projected action, one term (Frisch and Waugh 1933). ``d_s`` is the drift's own
+    error, conditional on the channel, ``cross`` its covariance with ``e``, and the intercept holds
+    the adjustment set's push at its mean on the log, off the plant's by ``push``'s variance:
+
+        Var f_s = phi' drift[s] phi + L_s' channel L_s + 2 L_s' cross[:, s] phi + push[s].
+
+    ``channel``, ``(r, n q, n q)``, is the channel's covariance, each of the reads its error takes
+    the largest of; ``projection``, ``(n, C, n q)``, the drift's ``C`` carried coefficients' move
+    with the channel's, under ``rk4`` through the fixed point's drift block (Murphy and Topel
+    1985); ``drift``, ``(r', G, C, C)``, one block every state shares or one a state;
+    ``cross``, ``(r', n q, n, C)``; ``push``, ``(r', n)``. ``r'`` is 1 where the drift's side is
+    pooled over the rows, as without clusters or periods, and ``r`` where it is read as the
+    channel's is. ``states`` ``(N, n)`` and ``drivers`` ``(N, d)`` are the log's rows, which the
+    field's error over the log is read at. Equal where every array is."""
+
+    mean_action: np.ndarray
+    projection: np.ndarray
+    channel: np.ndarray
+    drift: np.ndarray
+    cross: np.ndarray
+    push: np.ndarray
+    states: np.ndarray
+    drivers: np.ndarray
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _FieldTerms) and all(
+            np.array_equal(getattr(self, field.name), getattr(other, field.name))
+            for field in dataclasses.fields(self)
+        )
+
+    __hash__ = None  # type: ignore[assignment]
+
+
 @dataclass(frozen=True)
 class CausalDynamicsFit:
     """A fitted causal residual next to what is and is not known about it.
@@ -219,7 +260,11 @@ class CausalDynamicsFit:
     # marketing-mix plant, 3.4x the drift's scatter over noise draws. Under ``rk4`` it goes through
     # the drift's block of the RK4 map's gain, and the map couples the drift to the channel it is
     # conditional on: on a log the model class fits, the drift scattered 1.26x it at
-    # ``theta*dt = 0.7`` over 400 seeds, against 1.02x under Euler.
+    # ``theta*dt = 0.7`` over 400 seeds, against 1.02x under Euler. Where the fit is given
+    # ``clusters`` or ``periods`` it is read as ``channel_error`` is, from the regression's scores,
+    # its weight on each row times the row's residual, summed within each cluster or projected on
+    # the periods' cosines, the largest read of their reads; up to 0.21.0 it pooled the residuals
+    # as if each row were independent there too.
     drift_error: float | None
     action_residual_variance: (
         float  # overlap proxy: 0 => a deterministic policy, nothing to regress
@@ -324,21 +369,19 @@ class CausalDynamicsFit:
     # rows. The tube reads them at the plan's own states (``chc.decision._field_errors``).
     _channel_blocks: np.ndarray | None = dataclasses.field(default=None, repr=False, compare=False)
     # (G, F, F), set with ``drift_error``: the covariance of the drift regression's coefficients,
-    # its features then its drivers, one block every state shares under Euler, one a state under
-    # ``rk4``, that ``drift_error`` reads at the log's rows as a root mean over the blocks. The tube
-    # reads it at the plan's own states (``chc.decision._field_errors``).
+    # its features then its drivers, one block every state shares under Euler without clusters or
+    # periods, one a state otherwise, that ``drift_error`` reads at the log's rows as a root mean
+    # over the blocks, the largest read's where it takes several.
     _drift_blocks: np.ndarray | None = dataclasses.field(default=None, repr=False, compare=False)
-    # (r, n, F', F'), set on an identified Euler fit (ADR 0131): the error the field at the log's
-    # mean action inherits beyond ``_drift_blocks``, one block per channel covariance and state, in
-    # the features of the larger of the two degrees, then the drivers. The drift regression reads
-    # its target at the fitted channel, so the channel's error reaches the field where the log's
-    # actions lean on the state; and the intercept holds the adjustment set's push at its mean on
-    # the log. The tube reads it beside ``_drift_blocks``, and ``_drift_inherited_error``, its
-    # largest root mean at the log's rows, beside ``drift_error``.
-    _drift_inherited: np.ndarray | None = dataclasses.field(default=None, repr=False, compare=False)
-    _drift_inherited_error: float | None = dataclasses.field(
-        default=None, repr=False, compare=False
-    )
+    # Set on an identified fit, under either integrator (ADR 0131, ADR 0133): what the tube reads
+    # the field's error from at any state and any action of the box, ``chc.decision._field_errors``.
+    # The drift regression reads its target at the fitted channel, so the channel's error reaches
+    # the field through the drift where the log's actions lean on the state, and the channel's
+    # part and that part are one term, priced from the log's projected action; under ``rk4`` the
+    # fixed point also moves the channel with the drift's own error, which they share. The
+    # intercept holds the adjustment set's push at its mean on the log, its error read as the
+    # channel's is; without clusters or periods that read counts the rows as independent.
+    _field_terms: _FieldTerms | None = dataclasses.field(default=None, repr=False, compare=False)
     # Set on an identified Euler fit whose channel is least squares on the action residuals (no
     # instrument, no weight, every direction moved): the matrix its moment solved, which
     # :func:`channel_region` reads.
@@ -897,59 +940,119 @@ def _channel_blocks(covariance: Array, channel_shape: tuple[int, ...]) -> Array:
     return covariance.reshape(entries, features, entries, features)[every, :, every, :]
 
 
-def _inherited_blocks(
-    spreads: Sequence[Array],
+def _field_terms(
+    covariances: Sequence[Array],
+    channel_map: Array,
+    conditional: Array,
+    projection: Array,
+    pooled: ArrayLike,
+    noise: Array,
+    score: Array,
+    residual: Array,
+    pushed: Array,
     actions: Array,
     states: Array,
-    design: Array,
+    drivers: Array,
     carried: int,
-    pushed: Array,
-    ridge: float,
-    degree: int,
-    channel_degree: int,
-) -> tuple[np.ndarray, float]:
-    """``(r, n, F', F')``, one block per covariance in ``spreads`` and per state, and their largest
-    read at the log's rows: the error the field at the log's mean action inherits beyond the drift
-    regression's own, in the features of the larger of ``degree`` and ``channel_degree``, then the
-    drivers, ``design``'s columns after the drift's features up to ``carried``.
+    clusters: np.ndarray | None,
+    periods: np.ndarray | None,
+) -> _FieldTerms:
+    """:class:`_FieldTerms`, the field's first-order error, of a fit whose channel's covariance
+    reads are ``covariances``, ``(n q, n q)`` each.
 
-    The regression reads its target at the fitted channel, so a channel error ``e`` moves the field
-    at the mean action ``u_bar`` by ``e' (g(x, u_bar) - Gamma' phi(x))``, ``g`` the channel's
-    regressors and ``Gamma`` the regression's weight on them: nothing where the log's actions are
-    apart from the design, as ADR 0091 reads the field, and the channel's error times the actions'
-    lean on the state and the drivers where they are not. And the intercept holds the adjustment
-    set's push, ``pushed`` ``(N, n)``, at its mean on the log, which is off the plant's by the
-    mean's own error, its mean square over ``N``, the rows counted independent as the drift
-    regression's own error counts them.
-    """
+    ``channel_map`` ``(n q, N, n)`` is the channel's weight on each row's rate and
+    ``conditional`` ``(D n, N, n)`` the drift regression's, the channel held, each state's ``D``
+    coefficients beside the others': every ``n``-th, from the state's. Under Euler the latter is
+    the regression's own weight; under ``rk4`` both go through the fixed point, the drift's through
+    the drift's block of its Newton matrix. ``projection`` ``(D n, n q)`` is how far a channel
+    error moves the drift's coefficients, the regression reading its target at the fitted
+    channel: ``Gamma = W G``, ``W`` the regression's weight and ``G`` the channel's regressors on
+    the log, the same for each state's own channel under Euler, and under ``rk4`` that less the
+    RK4 map's own move of the target with the channel, through the drift's block. The first
+    ``carried`` of a state's coefficients are the field's, its features then its drivers; the rest
+    hold the adjustment set's push, whose value the field leaves at its mean on the log.
+
+    Without ``clusters`` or ``periods`` the drift's side is pooled, as ``drift_error`` pools it:
+    ``pooled`` is that covariance's ``(G, C, C)`` blocks, ``noise`` ``(n,)`` the noise each
+    state's residual pools, the drift's covariance with the channel is ``sum_i M_i noise W_i'``,
+    nothing under Euler but for cross-fitting (Frisch and Waugh 1933), and the push's mean has the
+    variance its rows give independent, ``sum pushed^2 / N^2``. With them, the channel's scores,
+    ``M_i`` times the moment's ``score``, the drift's, ``W_i`` times its own ``residual``, and the
+    push, ``pushed`` ``(N, n)``, are summed within each cluster or projected on the periods'
+    cosines together, each at its own small-sample factor ``N / (N - k)`` for its ``k``
+    coefficients a state, ``k = 1`` for a mean, so each part reads as it would alone and their
+    cross-covariance between them: the long-run variance of the push's mean (Lazarus, Lewis, Stock
+    and Watson 2018), which under an AR(0.8) push is about ``(1 + 0.8) / (1 - 0.8) = 9`` times what
+    its rows read independent (``validation/push_mean_variance.mac``)."""
     rows, count = states.shape
-    features = np.asarray(
-        jax.vmap(control_affine_features, in_axes=(0, None))(states, max(degree, channel_degree))
+    size = channel_map.shape[0]
+    features = conditional.shape[0] // count
+
+    def by_state(matrix: np.ndarray) -> np.ndarray:
+        """``(n q, D n)`` to ``(n q, n, C)``: each state's carried coefficients."""
+        return matrix.reshape(size, features, count).transpose(0, 2, 1)[:, :, :carried]
+
+    if clusters is None and periods is None:
+        cross = np.einsum(
+            "ais,s,dis->ad",
+            np.asarray(channel_map, dtype=np.float64),
+            np.asarray(noise, dtype=np.float64),
+            np.asarray(conditional, dtype=np.float64),
+        )
+        crosses = by_state(cross)[None]
+        drifts = np.asarray(pooled, dtype=np.float64)[None]
+        pushes = (np.sum(np.asarray(pushed, dtype=np.float64) ** 2, axis=0) / rows**2)[None]
+    else:
+        q = size // count
+        stacked = jnp.concatenate(
+            [
+                jnp.einsum("ais,is->ia", channel_map, score)
+                * math.sqrt(_small_sample(rows, q, None)),
+                jnp.einsum("dis,is->id", conditional, residual)
+                * math.sqrt(_small_sample(rows, features, None)),
+                pushed * math.sqrt(_small_sample(rows, 1, None)),
+            ],
+            axis=1,
+        )
+        joints = [
+            np.asarray(joint, dtype=np.float64)
+            for joint in _score_spreads(stacked, 0, clusters, periods)
+        ]
+        drift = slice(size, size + features * count)
+        every = np.arange(count)
+        crosses = np.stack([by_state(joint[:size, drift]) for joint in joints])
+        drifts = np.stack(
+            [
+                joint[drift, drift].reshape(features, count, features, count)[:, every, :, every][
+                    :, :carried, :carried
+                ]
+                for joint in joints
+            ]
+        )
+        pushes = np.stack(
+            [np.diag(joint[drift.stop :, drift.stop :]) / rows**2 for joint in joints]
+        )
+    return _FieldTerms(
+        mean_action=np.asarray(jnp.mean(actions, axis=0), dtype=np.float64),
+        projection=np.asarray(projection, dtype=np.float64)
+        .reshape(features, count, size)
+        .transpose(1, 0, 2)[:, :carried],
+        channel=np.stack([np.asarray(covariance, dtype=np.float64) for covariance in covariances]),
+        drift=drifts,
+        cross=crosses,
+        push=pushes,
+        states=np.asarray(states, dtype=np.float64),
+        drivers=np.asarray(drivers, dtype=np.float64),
     )
-    own = control_affine_features(states[0], degree).shape[0]
-    drivers = np.asarray(design[:, own:carried], dtype=np.float64)
-    raw = _channel_design(actions, states, channel_degree)
-    gamma = np.asarray(_ridge_weight(design, ridge)[:carried] @ raw, dtype=np.float64)
-    size = raw.shape[1]
-    per_lever = size // actions.shape[1]
-    # h(x, d) = lift' [features(x); d]: the channel's own value at the mean action, less Gamma's
-    lift = np.zeros((features.shape[1] + drivers.shape[1], size))
-    for lever, mean in enumerate(np.asarray(jnp.mean(actions, axis=0), dtype=np.float64)):
-        lift[np.arange(per_lever), lever * per_lever + np.arange(per_lever)] = mean
-    lift[:own] -= gamma[:own]
-    lift[features.shape[1] :] -= gamma[own:]
-    mean_square = np.sum(np.asarray(pushed, dtype=np.float64) ** 2, axis=0) / rows**2
-    blocks = np.zeros((len(spreads), count, lift.shape[0], lift.shape[0]))
-    for r, spread in enumerate(spreads):
-        covariance = np.asarray(spread, dtype=np.float64)
-        for state in range(count):
-            span = slice(state * size, (state + 1) * size)
-            blocks[r, state] = lift @ covariance[span, span] @ lift.T
-            blocks[r, state, 0, 0] += mean_square[state]
-    at_rows = np.concatenate([features, drivers], axis=1)
-    moment = at_rows.T @ at_rows / rows
-    reads = np.einsum("rgab,ba->rg", blocks, moment).mean(axis=1)
-    return blocks, math.sqrt(max(float(np.max(reads)), 0.0))
+
+
+def _drift_reads(terms: _FieldTerms, design: Array) -> tuple[float, np.ndarray]:
+    """``drift_error`` and the blocks it is read off where the drift's side is read as the
+    channel's is: the largest of :func:`_error_at_rows`' reads of ``terms.drift`` at ``design``,
+    the log's rows of the drift's carried columns, and that read's blocks."""
+    reads = [_error_at_rows(jnp.asarray(blocks), design) for blocks in terms.drift]
+    largest = int(np.argmax(reads))
+    return reads[largest], terms.drift[largest]
 
 
 def _channel_errors(
@@ -1680,10 +1783,12 @@ def fit_causal_residual(
             instead. The channel's covariance then sums each cluster's scores over its transitions
             and states before squaring them, CR1 with the factor ``G / (G - 1) (N - 1) / (N - k)``
             over ``G`` clusters and ``k`` coefficients a state, so it holds whatever the dependence
-            within a cluster; and a reader of ``influence`` sums its rows the same way. ``None``
-            takes every transition as independent of the rest, its states summed first since they
-            may share its noise, which a log of units followed over time breaks wherever the model
-            leaves out something that persists: the transitions of one unit then share it. The
+            within a cluster; and a reader of ``influence`` sums its rows the same way, as
+            ``drift_error`` and the error of the adjustment set's push at its mean on the log, which
+            the tube reads, are read (ADR 0133). ``None`` takes every transition as independent of
+            the rest, its states summed first since they may share its noise, which a log of units
+            followed over time breaks wherever the model leaves out something that persists: the
+            transitions of one unit then share it. The
             estimate does not move; only its error does. On panels of 5 to 80 units whose noise
             persists within each unit, a 5 % test of a zero channel rejects 12.25 % to 35 % of the
             time row by row and 4 % to 14 % by unit: CR1 still over-rejects with few clusters
@@ -1702,7 +1807,8 @@ def fit_causal_residual(
             them, the equal-weighted cosine estimate with ``nu`` the most whole cosines at or
             below ``0.4 T^(2/3)`` for ``T`` distinct periods (Lazarus, Lewis, Stock and Watson
             2018), at the rows' factor ``N / (N - k)``, and a reader of ``influence`` sums its
-            rows the same way. Summed within each period first, it holds whatever the dependence
+            rows the same way, as ``drift_error`` and the error of the push's mean on the log are
+            read (ADR 0133). Summed within each period first, it holds whatever the dependence
             between one period's transitions, as between units that share a shock (Driscoll and
             Kraay 1998). A test read off it is sized against ``t(nu)``
             (:attr:`CausalDynamicsFit.error_cosines`). ``None`` takes the transitions as
@@ -2172,8 +2278,48 @@ def fit_causal_residual(
         drift_blocks = drift_covariance.reshape(rows, states, rows, states)[
             :, every_state, :, every_state
         ][:, :carried, :carried]
+        channel_covariances = [covariance[:size, :size] for covariance in covariances]
         channel_error, lever_errors, channel_blocks = _channel_errors(
-            [covariance[:size, :size] for covariance in covariances], channel.shape, phi_c
+            channel_covariances, channel.shape, phi_c
+        )
+        # The field's error beyond the drift's own, through the fixed point. A channel error d_c
+        # moves the drift's rows by -K_rr^-1 (Gamma - W Y_c) d_c: the regression reads its target
+        # at the fitted channel, and the RK4 map moves that target with the channel too. And the
+        # map moves the channel with the drift's own error, which the two then share: the drift's
+        # rows depend on the channel through the step, so the cross term Frisch--Waugh sets to
+        # nothing under Euler is not nothing here.
+        weight = _ridge_weight(design, ridge)
+        direct = drift_direct(size)[size:]
+        conditional = (
+            drift_unit[:, None]
+            * jnp.linalg.solve(drift_newton, direct.reshape(drift_size, -1) / drift_unit[:, None])
+        ).reshape(direct.shape)
+        lean = jnp.einsum("fa,st->fsta", weight @ raw, jnp.eye(states)).reshape(drift_size, size)
+        moved = jnp.einsum("fi,isq->fsq", weight, sensitivity[:, :, :size])
+        projection = drift_unit[:, None] * jnp.linalg.solve(
+            drift_newton, (lean - moved.reshape(drift_size, size)) / drift_unit[:, None]
+        )
+        terms = _field_terms(
+            channel_covariances,
+            carry(fit_map)[:size],
+            conditional,
+            projection,
+            drift_blocks,
+            noise,
+            score,
+            own_defect,
+            pushes @ theta[size:].reshape(rows, states)[carried:],
+            u,
+            x,
+            design[:, phi_x.shape[1] : carried],
+            carried,
+            codes,
+            steps,
+        )
+        drift_error, drift_read = (
+            (_error_at_rows(drift_blocks, design[:, :carried]), drift_blocks)
+            if codes is None and steps is None
+            else _drift_reads(terms, design[:, :carried])
         )
         return (
             dataclasses.replace(
@@ -2181,8 +2327,9 @@ def fit_causal_residual(
                 channel_error=channel_error,
                 _lever_errors=lever_errors,
                 _channel_blocks=channel_blocks,
-                drift_error=_error_at_rows(drift_blocks, design[:, :carried]),
-                _drift_blocks=np.asarray(drift_blocks, dtype=np.float64),
+                drift_error=drift_error,
+                _drift_blocks=np.asarray(drift_read, dtype=np.float64),
+                _field_terms=terms,
                 influence=_influence(
                     carry(fit_map),
                     score,
@@ -2222,17 +2369,37 @@ def fit_causal_residual(
             sensitivity[: channel.size], score, regressor.shape[1], codes, steps
         )
         channel_error, lever_errors, channel_blocks = _channel_errors(spreads, channel.shape, phi_c)
-        inherited, inherited_error = _inherited_blocks(
+        # The regression reads its target at the fitted channel, so a channel error d_c moves each
+        # state's drift by -Gamma d_c, Gamma = W G its weight on the channel's regressors
+        # (ADR 0131).
+        states = x.shape[1]
+        weight = _ridge_weight(design, ridge)
+        residual = y - fitted - design @ remainder
+        assert fit._drift_blocks is not None  # an identified fit keeps them
+        terms = _field_terms(
             spreads,
+            sensitivity[: channel.size],
+            drift_direct(channel.size)[channel.size :],
+            jnp.einsum("fa,st->fsta", weight @ raw, jnp.eye(states)).reshape(-1, channel.size),
+            fit._drift_blocks,
+            # the noise _ols_blocks pools over the rows and the states
+            jnp.full(
+                (states,),
+                jnp.sum(residual**2) / (max(x.shape[0] - design.shape[1], 1) * states),
+            ),
+            score,
+            residual,
+            pushes @ remainder[carried:],
             u,
             x,
-            design,
+            design[:, phi_x.shape[1] : carried],
             carried,
-            pushes @ remainder[carried:],
-            ridge,
-            degree,
-            channel_degree,
+            codes,
+            steps,
         )
+        if codes is not None or steps is not None:
+            drift_error, drift_read = _drift_reads(terms, design[:, :carried])
+            fit = dataclasses.replace(fit, drift_error=drift_error, _drift_blocks=drift_read)
         own_map = sensitivity[: channel.size]
         least_squares = instrument_action is None and row_weight is None and split is None
         fit = dataclasses.replace(
@@ -2240,8 +2407,7 @@ def fit_causal_residual(
             channel_error=channel_error,
             _lever_errors=lever_errors,
             _channel_blocks=channel_blocks,
-            _drift_inherited=inherited,
-            _drift_inherited_error=inherited_error,
+            _field_terms=terms,
             _channel_gram=_ChannelGram(
                 matrix=np.asarray(regressor.T @ regressor + ridge * penalty, dtype=np.float64),
                 ridge=np.asarray(ridge * jnp.diag(penalty), dtype=np.float64),
@@ -2942,7 +3108,12 @@ class PersistenceCheck:
     noise does not depend on the past. Where the noise persists within a unit and a lever persists
     too, the state is a common effect of the past lever and the past noise, so given the state this
     period's lever and noise move together, and the channel is biased by an amount its error does
-    not cover (ADR 0064).
+    not cover (ADR 0064). And a fit given neither ``clusters`` nor ``periods`` reads the error of
+    its drift and of the adjustment set's push at its mean on the log, which the tube carries,
+    from its rows taken as independent: where the push persists as AR(0.8), that read of the
+    mean's variance is 1/8.8 of the mean's own at 200 rows, 1/9 on a long log (ADR 0133).
+    Given either, both are read from the
+    clusters' sums or the periods' cosines, as the channel's error is.
     """
 
     correlation: float  # lag-1, pooled over the pairs and the states, each state in its own units

@@ -54,6 +54,20 @@ FORMAL_LINKS = {
             "test_field_scale_holds_two_states_at_its_level",
         ),
     },
+    "chc.decision._field_errors": {
+        "cites": ("rk4_inherited.mac", "tube_projected_action.mac"),
+        "tests": (
+            "test_field_terms_tube.py::test_the_field_s_error_is_the_delta_method_through_the_one_step_map",
+            "test_field_terms_tube.py::test_two_levers_read_the_box_s_vertex_farthest_from_the_projected_action",
+        ),
+    },
+    "chc.dynamics_id._field_terms": {
+        "cites": ("push_mean_variance.mac",),
+        "via": "fit_causal_residual",
+        "tests": (
+            "test_field_terms_tube.py::test_the_field_s_error_is_the_delta_method_through_the_one_step_map",
+        ),
+    },
     "chc.evaluation": {
         "cites": ("dr_logged_weights.mac", "mis_model_error.mac"),
         "tests": ("test_mis_reads_the_model_s_cost_and_dr_removes_its_first_order_error",),

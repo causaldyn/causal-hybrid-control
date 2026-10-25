@@ -52,7 +52,7 @@ def test_the_tube_holds_where_the_action_reaches_the_plant_late() -> None:
     """Two periods of dead time: the channel the log reads is near zero (0.02 for 0.8), so the plan
     barely acts. The tube holds the plant on average over the logs, 0.950 at its weakest step over
     64, but not on each log: one log's share has a standard deviation of 0.077 there, sixteen
-    times the runs' binomial error, so 16 logs read 0.936 and the floor is 0.892."""
+    times the runs' binomial error, so 16 logs read 0.937 and the floor is 0.892."""
     logs = range(16)
     held, _, _ = tube_coverage(World(dead_time=2), logs, RUNS)
     assert held.min() >= _floor(0.077, logs), np.round(held, 3)
@@ -83,7 +83,8 @@ def test_the_tube_holds_its_level_under_a_persistent_confounder() -> None:
     of the 0.0016 short is the VAR(1)'s reading of an error that is AR(0.8) plus white (ADR 0105).
     Here the floor counts the logs, not the runs: one log's share has a standard deviation of
     0.0166 at step 13 over those 256 logs, where 2000 runs alone give 0.0049, so a floor sized by
-    the runs turns on a last digit (these 16 logs read 0.94628 against its 0.94634)."""
+    the runs turned on a last digit: these 16 logs read 0.94628 against its 0.94634 up to 0.21.0,
+    and 0.9483 since the push's mean on the log is read across the unit's periods (ADR 0133)."""
     logs = range(16)
     held, _, warned = tube_coverage(World(demand_persistence=0.8), logs, RUNS)
     assert held.min() >= _floor(0.0166, logs) or np.mean(warned) >= 0.9, (np.round(held, 4), warned)
@@ -93,10 +94,10 @@ def test_the_noise_read_s_error_is_what_holds_the_tube_under_a_persistent_confou
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The floor above cannot tell the tube from one that drops its noise read's error: that tube
-    held 0.9444 at its weakest step, inside the floor's three errors of 0.0166 over 16 logs. So the
+    held 0.9465 at its weakest step, inside the floor's three errors of 0.0166 over 16 logs. So the
     same 16 logs and the same runs are read again with the read's error left out, and the two
     tubes are compared run for run: the read's error widens the tube at every step, by 0.0007 to
-    0.0023 of coverage here, and lifts the weakest step from 0.9444 to 0.9463."""
+    0.0024 of coverage here, and lifts the weakest step from 0.9465 to 0.9483."""
     world, logs = World(demand_persistence=0.8), range(16)
     held, _, _ = tube_coverage(world, logs, RUNS)
     monkeypatch.setattr(decision, "_noise_read", lambda *args, **kwargs: None)
@@ -107,7 +108,7 @@ def test_the_noise_read_s_error_is_what_holds_the_tube_under_a_persistent_confou
 
 def test_persistent_noise_is_held_or_warned_of() -> None:
     """An unlogged disturbance on supply, sd 2, AR(0.9), beside white demand: the fit absorbs part
-    of it into the drift, and the tube falls to 0.899 at step 5 (0.918 at step 1). The channel's
+    of it into the drift, and the tube falls to 0.902 at step 5 (0.918 at step 1). The channel's
     residual persists within units, and a ``tube`` warning says the tube's level is not assured
     on each of the four logs. One log's share has a standard deviation of 0.018."""
     held, _, warned = tube_coverage(World(disturbance=2.0, disturbance_persistence=0.9), LOGS, RUNS)
@@ -116,14 +117,14 @@ def test_persistent_noise_is_held_or_warned_of() -> None:
 
 def test_the_trustworthy_steps_hold_under_a_drift_outside_the_polynomial() -> None:
     """Supply's own drift is ``-0.3 sin(2 s)``, which the fit reads by a polynomial of degree 1.
-    Over the trustworthy steps, 2 or 3 per log, the tube holds: 0.952 at its weakest. Over the
+    Over the trustworthy steps, 2 or 3 per log, the tube holds: 0.950 at its weakest. Over the
     first two steps one log's share has a standard deviation of 0.0065, so the floor is 0.940."""
     held, trusted, _ = tube_coverage(World(sine_drift=True), LOGS, RUNS)
     assert held[: min(trusted)].min() >= _floor(0.0065, LOGS), np.round(held, 3)
 
 
 def test_the_whole_tube_holds_or_warns_under_a_drift_outside_the_polynomial() -> None:
-    """Past the trustworthy steps the plant leaves the tube more often than it says, 0.876 at
+    """Past the trustworthy steps the plant leaves the tube more often than it says, 0.888 at
     step 15, and a ``tube`` warning says the tube's level is not assured on each of the four
     logs. One log's share has a standard deviation of 0.019."""
     held, _, warned = tube_coverage(World(sine_drift=True), LOGS, RUNS)

@@ -80,62 +80,73 @@ def _two_state_log(seed: int, periods: int) -> dict[str, np.ndarray]:
 def _read_at(
     fit: CausalDynamicsFit,
     log: dict[str, np.ndarray],
-    reach: np.ndarray,
+    box: tuple[np.ndarray, np.ndarray],
     at: np.ndarray,
     dt: float,
 ) -> np.ndarray:
-    """The field's error at each of the ``(H, 1)`` states ``at``, read here from an Euler fit on
-    the one-state ``log`` without the tube's reader, its push ``z`` held linearly. The drift's: its
-    own least squares' standard error at each state, ``sigma^2 phi' (X'X)^-1 phi`` on the field's
-    features ``phi = [1, x]``, ``X = [1, x, z]`` the regression's design on the log's rows and
-    ``sigma^2`` its residual's mean square over ``N - F``; and what the field inherits at the log's
-    mean action ``u_bar``: the channel's coefficients' covariance carried by ``u_bar I - Gamma``,
-    ``Gamma`` the regression's coefficients on the channel's regressors ``u [1, x]``, and on the
-    intercept the push's mean square over ``N^2``. The channel's: its coefficients' covariance
-    read at the state, its root mean over the log's rows the channel's error the fit reports at
-    ``reach``. The two in quadrature."""
+    """The field's error at each of the ``(H, 1)`` states ``at``, the largest over the box's two
+    ends, read here from an Euler fit on the one-state ``log`` without the tube's reader. The
+    channel is ``c' u [1, x]``, least squares of the rate's residual on ``R = u_res [1, x]``, both
+    residuals taken on ``[1, x, z]`` (one fold, no ridge); the drift least squares on ``[1, x]``
+    and the push ``z - z_bar`` of the rate less the channel's part. Each row moves the channel by
+    its weight in ``(R'R)^-1 R' M`` times ``e``, ``M`` the residual maker and ``e`` the moment's
+    residual, and the drift, the channel held, by ``(D'D)^-1 D_i r_i``, ``r`` its own regression's
+    residual; so the field at ``(x, u)`` moves by the drift's at ``[1, x]`` and the channel's at
+    ``u [1, x] - Gamma' [1, x]``, ``Gamma`` the drift regression's coefficients on the channel's
+    regressors: the channel's error at the action's distance from the log's projected action.
+    Over the log's 60 periods the sums of those moves and of the push are projected on 6 cosines
+    of the periods, each part at its own ``N / (N - k)``; the push's mean on the log is the
+    intercept's error beside them."""
     assert fit.integrator == "euler"
-    assert fit._channel_blocks is not None
     states, actions = log["x"][:-1], log["u"][:-1]
+    rows = states.size
     push = log["z"][:-1] - np.mean(log["z"][:-1])
-    features = np.stack([np.ones_like(states), states], 1)
-    design = np.concatenate([features, push[:, None]], 1)
-    regressors = actions[:, None] * features
-    channel_coefficients = np.asarray(fit.residual.channel, dtype=np.float64)[0, 0]
-    target = (log["x"][1:] - states) / dt - regressors @ channel_coefficients
-    gram = np.linalg.inv(design.T @ design)
-    coefficients = gram @ design.T @ target
-    residual = target - design @ coefficients
-    sigma2 = np.sum(residual**2) / (design.shape[0] - design.shape[1])
-    points = np.concatenate([np.ones((len(at), 1)), np.asarray(at)], 1)
-    own = sigma2 * np.einsum("kf,fh,kh->k", points, gram[:2, :2], points)
-    (blocks,) = fit._channel_blocks  # one covariance: one unit's cosines
-    (covariance,) = blocks  # one state, one lever
-    gamma = (gram @ design.T @ regressors)[:2]
-    carried = points @ (np.mean(actions) * np.eye(2) - gamma)
-    inherited = np.einsum("kf,fh,kh->k", carried, covariance, carried)
-    inherited += coefficients[2] ** 2 * np.sum(push**2) / len(push) ** 2
-
-    def channel(rows: np.ndarray) -> np.ndarray:
-        variances = np.einsum("kf,efh,kh->ke", rows, blocks, rows)
-        return reach[0] * np.sqrt(np.mean(variances, 1))
-
-    at_rows = channel(features)
-    assert math.sqrt(np.mean(at_rows**2)) == pytest.approx(
-        _model_error(fit, reach), rel=1e-10, abs=0.0
+    rate = (log["x"][1:] - states) / dt
+    nuisance = np.stack([np.ones(rows), states, log["z"][:-1]], 1)
+    residual_of = np.eye(rows) - nuisance @ np.linalg.pinv(nuisance)
+    features = np.stack([np.ones(rows), states], 1)
+    regressors = (residual_of @ actions)[:, None] * features
+    moment = np.linalg.solve(regressors.T @ regressors, regressors.T)
+    channel = moment @ (residual_of @ rate)
+    score = residual_of @ rate - regressors @ channel
+    np.testing.assert_allclose(
+        np.asarray(fit.residual.channel, dtype=np.float64)[0, 0], channel, rtol=1e-9, atol=0.0
     )
-    return np.hypot(channel(points), np.sqrt(own + inherited))
+    design = np.concatenate([features, push[:, None]], 1)
+    weight = np.linalg.solve(design.T @ design, design.T)
+    raw = actions[:, None] * features
+    drift = weight @ (rate - raw @ channel)
+    residual = rate - raw @ channel - design @ drift
+    gamma = (weight @ raw)[:2]
+    frequencies = np.arange(1, 7)[:, None]
+    cosines = math.sqrt(2.0 / 6) * np.cos(math.pi * frequencies * (np.arange(rows) + 0.5) / rows)
+    on_channel = cosines @ (moment @ residual_of * score).T  # (6, 2)
+    on_drift = cosines @ (weight * residual).T[:, :2]
+    on_push = cosines @ (drift[2] * push)
+    channel_factor, drift_factor, mean_factor = (rows / (rows - k) for k in (2, 3, 1))
+    errors = []
+    for state in np.asarray(at)[:, 0]:
+        phi = np.array([1.0, state])
+        largest = -math.inf
+        for action in (box[0][0], box[1][0]):
+            lift = action * phi - gamma.T @ phi
+            moves = (
+                math.sqrt(channel_factor) * on_channel @ lift
+                + math.sqrt(drift_factor) * on_drift @ phi
+            )
+            largest = max(largest, float(moves @ moves))
+        errors.append(largest + mean_factor * on_push @ on_push / rows**2)
+    return np.sqrt(errors)
 
 
 def test_the_field_s_error_at_a_state_is_the_euler_fit_s_own_standard_error_there() -> None:
-    """Fitted as Euler's map, the drift is least squares on ``[1, x]`` and the adjustment set's
-    push, and its error at a state is that regression's standard error there and what the field
-    inherits at the log's mean action: the channel's error, which reaches the drift through the
-    regression's target, and the push's mean on the log, which the intercept holds. The channel's
-    is its coefficients' covariance read at the state. Read without the tube's reader, the two in
-    quadrature are what the tube reads at each of the states a plan of 8 steps starts from, and the
-    plan heads away from the log's states: its late steps read more error than the rows' root
-    mean."""
+    """Fitted as Euler's map, the field's error at a state and an action is the channel's at the
+    action's distance from the log's projected action, the drift's own beside it, the covariance
+    the two share and the push's mean on the log, which the intercept holds; given the periods,
+    every part is read off the cosines of the periods. Read without the tube's reader they are
+    what the tube reads at each of the states a plan of 8 steps starts from, the largest over the
+    box's ends, and the plan heads away from the log's states: its late steps read more error than
+    the rows' root mean square."""
     log = _one_state_log(5, 61)
     known = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
     fit = fit_causal_residual(
@@ -150,18 +161,21 @@ def test_the_field_s_error_at_a_state_is_the_euler_fit_s_own_standard_error_ther
         adjust_for=("z",),
         periods=np.arange(60),
         integrator="euler",
-        # the push held linearly, as the reading by hand holds it
+        # one fold, a linear nuisance basis and no ridge, as the reading by hand holds them
         nuisance_degree=1,
         nuisance_knots=None,
+        folds=1,
+        ridge=0.0,
     )
     mean = float(np.mean(log["u"][:-1]))
     reach = np.array([max(abs(-2.0 - mean), abs(2.0 - mean))])
+    box = (np.array([-2.0]), np.array([2.0]))
     away = np.linspace(float(np.mean(log["x"])), 3.0, 8)[:, None]
-    errors = _read_at(fit, log, reach, away, 0.5)
+    errors = _read_at(fit, log, box, away, 0.5)
     np.testing.assert_allclose(
-        _field_errors(fit, reach, away, np.zeros((8, 0))), errors, rtol=1e-6, atol=0.0
+        _field_errors(fit, reach, away, np.zeros((8, 0)), box), errors, rtol=1e-9, atol=0.0
     )
-    assert np.all(errors[-3:] > _field_error(fit, reach))
+    assert np.all(errors[-3:] > _field_error(fit, reach, box))
 
 
 def test_one_state_s_tube_is_the_noise_s_radius_and_t_times_the_field_s_in_quadrature() -> None:
@@ -195,7 +209,10 @@ def test_one_state_s_tube_is_the_noise_s_radius_and_t_times_the_field_s_in_quadr
     reach = np.array([max(abs(-2.0 - mean), abs(2.0 - mean))])
     assert _cosine_count(60) == 6
     nu = 6.0
-    errors = _field_errors(fit, reach, np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0)))
+    box = (np.array([-2.0]), np.array([2.0]))
+    errors = _field_errors(
+        fit, reach, np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0)), box
+    )
     field = _linear_tube(slopes, errors, dt)
     noise = _noise_tube(slopes, np.array([[certificate.tube_noise**2]]), carried, dt, horizon)
     expected = np.sqrt(noise**2 + (t.ppf(0.975, nu) * field) ** 2)
@@ -239,7 +256,10 @@ def test_two_states_place_the_field_s_error_along_the_noise_s_widest_direction()
     reach = np.array([max(abs(-2.0 - mean), abs(2.0 - mean))])
     kappa = t.ppf(0.975, float(_cosine_count(120))) / norm.ppf(0.975)
     assert _field_scale(fit) == pytest.approx(kappa, rel=1e-12, abs=0.0)
-    errors = _field_errors(fit, reach, np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0)))
+    box = (np.array([-2.0]), np.array([2.0]))
+    errors = _field_errors(
+        fit, reach, np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0)), box
+    )
     field = _linear_tube(slopes, errors, dt)
     error = dt * np.asarray(fit.defect, dtype=np.float64)
     covariance = error.T @ error / error.shape[0]
@@ -347,7 +367,8 @@ def _fit(channel: float, drift: float | None, rows: int) -> CausalDynamicsFit:
 def test_the_scale_reads_the_channel_s_degrees_of_freedom() -> None:
     """The field's error is read at the degrees of freedom of the channel's: its cosines on one
     unit (six on 60 transitions, ADR 0075), its clusters less one on many; the drift's error,
-    read from residuals taken as independent, does not raise them, however large its share."""
+    read from the same cosines or clusters (ADR 0133), does not raise them, however large its
+    share."""
     for channel, drift in ((0.2, 0.1), (0.2, None), (0.01, 1.0)):
         assert _field_scale(_fit(channel, drift, 60)) == pytest.approx(
             t.ppf(0.975, 6.0) / norm.ppf(0.975), rel=1e-12, abs=0.0
@@ -408,13 +429,14 @@ def test_rk4_steps_the_same_field_through_its_own_matrices() -> None:
     mean = float(np.mean(log["u"][:-1]))
     reach = np.array([max(abs(-2.0 - mean), abs(2.0 - mean))])
     rows = log["x"][:-1, None]
-    at_rows = _field_errors(fit, reach, rows, np.zeros((rows.shape[0], 0)))
+    box = (np.array([-2.0]), np.array([2.0]))
+    at_rows = _field_errors(fit, reach, rows, np.zeros((rows.shape[0], 0)), box)
     assert math.sqrt(np.mean(at_rows**2)) == pytest.approx(
-        _field_error(fit, reach), rel=1e-10, abs=0.0
+        _field_error(fit, reach, box), rel=1e-10, abs=0.0
     )
     planned = np.asarray(plan.trajectory)[:-1]
-    errors = _field_errors(fit, reach, planned, np.zeros((6, 0)))
-    assert np.all(errors[-2:] > _field_error(fit, reach))
+    errors = _field_errors(fit, reach, planned, np.zeros((6, 0)), box)
+    assert np.all(errors[-2:] > _field_error(fit, reach, box))
     field = _linear_tube(slopes, errors, 0.5)
     noise = _noise_tube(slopes, np.array([[certificate.tube_noise**2]]), carried, 0.5, 6)
     scale = _field_scale(fit)
@@ -430,12 +452,13 @@ def test_the_field_s_error_far_from_the_log_is_read_at_its_own_standard_error() 
     """Over 40 logs of 200 transitions of ``x' = -0.5 x + u + 0.8 z``, fitted as Euler's map, the
     fitted field's error at a state 2.5 of the log's spreads from its mean, scaled by the standard
     error read there, has a root mean square near one, the drift's at the log's mean action and the
-    channel's alike: 1.06 and 1.29. The drift's reads what the field inherits as well as its own
-    regression's error: the channel's error, which reaches the drift where the log's action leans
-    on the state, as ``u`` does here by -0.5, and the push's mean on the log. Without that it read
-    1.80, ``+-1.96`` holding 0.72 of the logs. Scaled by their root means over the log's rows, as
-    the tube read them up to 0.18.0, they read 3.4 and 2.3 times as far: the error grows away from
-    the log's states."""
+    channel's alike: 1.09 and 1.29 (1.06 and 1.29 up to 0.21.0, the drift's own error and the
+    push's mean read from rows taken as independent). The drift's reads what the field inherits
+    as well as its own regression's error: the channel's error, which reaches the drift where the
+    log's action leans on the state, as ``u`` does here by -0.5, and the push's mean on the log.
+    Without that it read 1.80, ``+-1.96`` holding 0.72 of the logs. Scaled by their root means
+    over the log's rows, as the tube read them up to 0.18.0, they read 3.8 and 2.3: the error
+    grows away from the log's states."""
     dt, rows = 0.2, 200
     known = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
     drift, channel, drift_rows, channel_rows = [], [], [], []
@@ -503,8 +526,9 @@ def test_a_fit_that_keeps_no_covariances_reads_its_root_means_at_every_state() -
 def test_under_rk4_each_state_s_drift_error_reads_its_own_block() -> None:
     """Under ``rk4`` the drift's covariance is one block a state, and its error at a state is the
     scale of the Euclidean norm over them, their mean variance times their number (ADR 0100), as
-    the tube reads ``drift_error`` over the log's rows: on two states, the drift's part read at
-    each row has the root mean square ``sqrt(2)`` times ``drift_error`` over the rows."""
+    the tube reads ``drift_error`` over the log's rows: on two states, the drift's own part read
+    at each row, without the channel's error, the covariance the two share or the push's mean, has
+    the root mean square ``sqrt(2)`` times ``drift_error`` over the rows."""
     log = _two_state_log(3, 241)
     states = np.stack([log["x1"], log["x2"]], 1)
     known = LinearDynamics(jnp.zeros((2, 2)), jnp.zeros((2, 1)))
@@ -526,7 +550,16 @@ def test_under_rk4_each_state_s_drift_error_reads_its_own_block() -> None:
     assert fit._drift_blocks is not None
     assert fit._drift_blocks.shape[0] == 2
     assert not np.allclose(fit._drift_blocks[0], fit._drift_blocks[1], rtol=0.1, atol=0.0)
-    drift = _field_errors(fit, np.zeros(1), states[:-1], np.zeros((240, 0)))
+    terms = fit._field_terms
+    assert terms is not None
+    alone = dataclasses.replace(
+        terms,
+        channel=np.zeros_like(terms.channel),
+        cross=np.zeros_like(terms.cross),
+        push=np.zeros_like(terms.push),
+    )
+    own = dataclasses.replace(fit, _field_terms=alone)
+    drift = _field_errors(own, np.zeros(1), states[:-1], np.zeros((240, 0)))
     assert math.sqrt(np.mean(drift**2)) == pytest.approx(
         math.sqrt(2.0) * fit.drift_error, rel=1e-10, abs=0.0
     )

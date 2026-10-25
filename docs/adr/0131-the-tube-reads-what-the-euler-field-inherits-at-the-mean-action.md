@@ -1,7 +1,10 @@
 # ADR 0131 — The tube reads what the Euler field inherits at the log's mean action
 
 **Status:** accepted, 2026-10-24. Amends ADR 0091 (the drift absorbs the channel at the log's mean
-action) and ADR 0104 (the field's error at the plan's states), for Euler fits.
+action) and ADR 0104 (the field's error at the plan's states), for Euler fits. Amended by ADR 0133,
+2026-10-25: the inherited part and the channel's part are one term, priced from the log's projected
+action, with no quadrature; `rk4` fits read theirs through the fixed point, the cross term with
+it; and given clusters or periods the push's mean is read from them. `_drift_inherited` is gone.
 
 ## Context
 

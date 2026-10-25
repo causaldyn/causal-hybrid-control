@@ -435,7 +435,8 @@ def test_the_tube_reads_the_drift_s_error_at_the_forecast_it_plans_against(panel
     reach = np.array([max(abs(-3.0 - mean), abs(3.0 - mean))])
     reads = 0.5 * (forecast[:-1] + forecast[1:])
     states = np.asarray(plan.trajectory, dtype=np.float64)[:-1]
-    errors = _field_errors(fit, reach, states, reads[:, None])
+    box = (np.array([-3.0]), np.array([3.0]))
+    errors = _field_errors(fit, reach, states, reads[:, None], box)
     slopes = _slopes(problem.model, problem.x0)(np.asarray(plan.actions, dtype=np.float64))
     units, times = np.asarray(columns["unit"]), np.asarray(columns["time"])
     read = _noise_read(fit, DT, np.stack([units[~last], times[~last], units[~last]], 1))
@@ -454,7 +455,7 @@ def test_the_tube_reads_the_drift_s_error_at_the_forecast_it_plans_against(panel
         return np.hypot(noise, scale * _linear_tube(slopes, errors, DT))
 
     np.testing.assert_allclose(plan.uncertainty_tube, tube(errors), rtol=1e-10, atol=0.0)
-    elsewhere = tube(_field_errors(fit, reach, states, forecast[:-1, None]))
+    elsewhere = tube(_field_errors(fit, reach, states, forecast[:-1, None], box))
     assert np.max(np.abs(elsewhere - tube(errors))[1:] / tube(errors)[1:]) > 1e-6
 
 

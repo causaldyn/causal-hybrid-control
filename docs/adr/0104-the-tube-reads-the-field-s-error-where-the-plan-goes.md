@@ -1,7 +1,9 @@
 # ADR 0104 — The tube reads the field's error where the plan goes, at its studentised quantile
 
 **Status:** accepted, 2026-10-19. Amends the field's part of `prescribe`'s tube (ADR 0096, ADR
-0100) and the context of ADR 0099.
+0100) and the context of ADR 0099. Amended by ADR 0133, 2026-10-25: given clusters or periods, the
+drift's own error and the push's mean are read from them, as the channel's error is, the
+alternative rejected below; the degrees of freedom stay the channel's.
 
 ## Context
 

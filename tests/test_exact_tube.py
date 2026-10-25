@@ -250,10 +250,10 @@ def _fit(errors: np.ndarray | None, drift_error: float | None) -> CausalDynamics
 
 
 def test_the_field_s_error_adds_the_drift_s_own_to_the_channel_s_in_quadrature() -> None:
-    """The drift absorbed the channel at the log's mean action, so the field's error at an action
-    is the drift's there plus the channel's times the distance: read at that centre they are
-    uncorrelated to first order, and add in quadrature. A fit with no channel error carries no
-    tube, whatever its drift's error."""
+    """A fit that keeps no field terms, as one built without its covariances, reads the field's
+    error at an action as the drift's at the log's mean action and the channel's times the
+    distance from there, in quadrature, as the tube read every fit up to 0.21.0. A fit with no
+    channel error carries no tube, whatever its drift's error."""
     errors = np.array([[3.0, 0.0], [0.0, 1.0], [1.0, 2.0]])
     reach = np.array([2.0, 5.0])
     channel = _model_error(_fit(errors, None), reach)
@@ -320,7 +320,8 @@ def test_prescribe_carries_its_tube_by_the_slope_at_each_planned_action() -> Non
     )
     mean = float(np.mean(log["u"][:-1]))
     distance = np.array([max(abs(-2.0 - mean), abs(2.0 - mean))])
-    error = _field_error(fit, distance)
+    box = (np.array([-2.0]), np.array([2.0]))
+    error = _field_error(fit, distance, box)
     assert error > _model_error(fit, distance)
     noise = np.array([[certificate.tube_noise**2]])
     assert certificate.tube_autoregression is not None
@@ -328,9 +329,11 @@ def test_prescribe_carries_its_tube_by_the_slope_at_each_planned_action() -> Non
     # one state: the noise's radius and the field's error at its studentised quantile
     scale = _field_scale(fit) * math.sqrt(chi2.ppf(0.95, 1))
     # read at the state each step starts from, the log's root mean square of it the fit's
-    errors = _field_errors(fit, distance, np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0)))
+    errors = _field_errors(
+        fit, distance, np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0)), box
+    )
     rows = log["x"][:-1, None]
-    at_rows = _field_errors(fit, distance, rows, np.zeros((rows.shape[0], 0)))
+    at_rows = _field_errors(fit, distance, rows, np.zeros((rows.shape[0], 0)), box)
     assert math.sqrt(np.mean(at_rows**2)) == pytest.approx(error, rel=1e-10, abs=0.0)
     field = _linear_tube(slopes, errors, dt)
     expected = np.hypot(_noise_tube(slopes, noise, persistence, dt, horizon), scale * field)

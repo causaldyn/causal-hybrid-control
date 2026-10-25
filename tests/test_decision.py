@@ -855,7 +855,8 @@ def test_with_one_lever_the_tube_s_rate_error_is_the_channel_s_error_at_its_dist
     box's far side is below zero, 3 and the mean apart, and the plan's tube carries it; up to the
     fix it carried the largest action from zero, 3, which the drift's absorbing the channel at the
     log's mean action does not read (ADR 0091). The tube is carried by the field's slope at each
-    planned action, and the drift's own error joins the channel's in quadrature (ADR 0096)."""
+    planned action (ADR 0096), and reads the field's error over the box itself, the channel's at
+    each end's distance from the log's projected action with the drift's own (ADR 0133)."""
     horizon, dt = 4, 1.0
     panel = _growing_panel()
     columns = panel.columns
@@ -889,11 +890,16 @@ def test_with_one_lever_the_tube_s_rate_error_is_the_channel_s_error_at_its_dist
     persistence = np.asarray(carried)
     assert fit.drift_error is not None
     slopes = _slopes(problem.model, problem.x0)(np.asarray(plan.actions, dtype=np.float64))
-    error = math.hypot(fit.channel_error * distance, fit.drift_error)
-    assert _field_error(fit, np.array([distance])) == pytest.approx(error, rel=1e-15, abs=0.0)
-    # read at the state each step starts from (ADR 0104)
+    box = (np.array([-3.0]), np.array([1.0]))
+    terms = fit._field_terms
+    assert terms is not None
+    at_rows = _field_errors(fit, np.array([distance]), terms.states, terms.drivers, box)
+    assert _field_error(fit, np.array([distance]), box) == pytest.approx(
+        math.sqrt(float(np.mean(at_rows**2))), rel=1e-12, abs=0.0
+    )
+    # read at the state each step starts from (ADR 0104), the largest over the box (ADR 0133)
     errors = _field_errors(
-        fit, np.array([distance]), np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0))
+        fit, np.array([distance]), np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0)), box
     )
     field = _linear_tube(slopes, errors, dt)
     # the noise with its read's own error, the units' spread and the mean's (ADR 0105)

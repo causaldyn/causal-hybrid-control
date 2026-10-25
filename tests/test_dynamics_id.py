@@ -1973,6 +1973,44 @@ def test_the_clustered_error_is_cr1_by_hand() -> None:
     assert fit.channel_error == pytest.approx(math.sqrt(variance), rel=1e-9, abs=0.0)
 
 
+def _drift_scores(data: dict[str, jax.Array], dt: float) -> tuple[np.ndarray, np.ndarray]:
+    """Each row's move of the drift's coefficients on ``[1, x]``, the channel held, on an Euler fit
+    by own-sample partialling-out on a linear basis with no ridge: ``(D'D)^-1 D_i r_i``,
+    ``D = [1, x, z - z_bar]`` the drift regression's design, ``r`` its residual; and the rows'
+    features ``[1, x]``."""
+    x, z, u = (np.asarray(data[name])[:, 0] for name in ("x", "z", "u"))
+    rows = x.size
+    y = (np.asarray(data["x_next"])[:, 0] - x) / dt
+    basis = np.column_stack([np.ones(rows), x, z])
+    projector = basis @ np.linalg.pinv(basis)
+    u_res, y_res = u - projector @ u, y - projector @ y
+    channel = u_res @ y_res / (u_res @ u_res)
+    design = np.column_stack([np.ones(rows), x, z - np.mean(z)])
+    target = y - channel * u
+    weight = np.linalg.solve(design.T @ design, design.T)
+    residual = target - design @ (weight @ target)
+    return (weight * residual).T[:, :2], np.column_stack([np.ones(rows), x])
+
+
+def test_the_clustered_drift_error_is_cr1_by_hand() -> None:
+    """Given clusters, the drift regression's error is read as the channel's is: each row moves its
+    coefficients by ``(D'D)^-1 D_i r_i``, so ``drift_error`` is CR1's over the clusters' summed
+    scores, ``G / (G - 1) (N - 1) / (N - k)`` for the regression's ``k`` columns, read at the log's
+    rows as a root mean. Up to 0.21.0 it pooled the residuals as if every row were independent
+    (ADR 0133)."""
+    rows = 300
+    data = _clustered_log(rows, seed=5)
+    labels = np.array([f"g{g:02d}" for g in np.random.default_rng(1).integers(0, 30, rows)])
+    fit = fit_causal_residual(_known, data, 0.1, **CLUSTERED, ridge=0.0, clusters=labels)
+    scores, features = _drift_scores(data, 0.1)
+    _, codes = np.unique(labels, return_inverse=True)
+    summed = np.stack([np.bincount(codes, weights=column) for column in scores.T], 1)
+    groups = summed.shape[0]
+    covariance = groups / (groups - 1) * (rows - 1) / (rows - 3) * summed.T @ summed
+    expected = math.sqrt(np.mean(np.einsum("ia,ab,ib->i", features, covariance, features)))
+    assert fit.drift_error == pytest.approx(expected, rel=1e-9, abs=0.0)
+
+
 @pytest.mark.parametrize("integrator", ["euler", "rk4"])
 def test_clusters_move_the_error_and_nothing_else(integrator: str) -> None:
     data = _clustered_log(400, seed=6)
@@ -1989,7 +2027,8 @@ def test_clusters_move_the_error_and_nothing_else(integrator: str) -> None:
     np.testing.assert_array_equal(clustered.moment_residual, rows.moment_residual)
     np.testing.assert_array_equal(clustered._parameter_size, rows._parameter_size)
     np.testing.assert_array_equal(clustered.defect, rows.defect)
-    np.testing.assert_array_equal(clustered._drift_blocks, rows._drift_blocks)
+    # the drift's error is read as the channel's is, from the clusters' sums (ADR 0133)
+    assert clustered.drift_error != rows.drift_error
     # the one lever's error is the channel's, and moves with it
     for fit in (rows, clustered):
         assert fit._lever_errors is not None
@@ -1998,8 +2037,9 @@ def test_clusters_move_the_error_and_nothing_else(integrator: str) -> None:
         "channel_error",
         "_lever_errors",
         "_channel_blocks",
-        "_drift_inherited",
-        "_drift_inherited_error",
+        "drift_error",
+        "_drift_blocks",
+        "_field_terms",
         "influence",
         "clusters",
     }
@@ -2010,7 +2050,6 @@ def test_clusters_move_the_error_and_nothing_else(integrator: str) -> None:
         "unmoved",
         "_parameter_size",
         "defect",
-        "_drift_blocks",
     }
     for field in dataclasses.fields(CausalDynamicsFit):
         if field.name not in moved | arrays:
@@ -2464,6 +2503,25 @@ def test_one_unit_s_error_is_the_equal_weighted_cosine_estimate_by_hand() -> Non
     assert fit.channel_error == pytest.approx(math.sqrt(variance), rel=1e-9, abs=0.0)
 
 
+def test_one_unit_s_drift_error_is_the_equal_weighted_cosine_estimate_by_hand() -> None:
+    """Given its periods, the drift regression's error is read as the channel's is: ``N / (N - k)``
+    times the squared projections of its rows' scores ``(D'D)^-1 D_i r_i`` on 17 cosines of the
+    periods summed, for 300 transitions, whatever the periods' offset, gap or order, read at the
+    log's rows as a root mean. Up to 0.21.0 it pooled the residuals as if every row were
+    independent (ADR 0133)."""
+    rows = 300
+    data = _clustered_log(rows, seed=5)
+    labels = 40 + np.concatenate([np.arange(150), np.arange(160, 310)])
+    labels = labels[np.random.default_rng(2).permutation(rows)]
+    fit = fit_causal_residual(_known, data, 0.1, **CLUSTERED, ridge=0.0, periods=labels)
+    scores, features = _drift_scores(data, 0.1)
+    projected = _cosine_weights(labels, 17) @ scores
+    covariance = rows / (rows - 3) * projected.T @ projected
+    expected = math.sqrt(np.mean(np.einsum("ia,ab,ib->i", features, covariance, features)))
+    assert fit.error_cosines == 17
+    assert fit.drift_error == pytest.approx(expected, rel=1e-9, abs=0.0)
+
+
 @pytest.mark.parametrize("integrator", ["euler", "rk4"])
 def test_periods_move_the_error_and_nothing_else(integrator: str) -> None:
     data = _clustered_log(400, seed=6)
@@ -2474,6 +2532,8 @@ def test_periods_move_the_error_and_nothing_else(integrator: str) -> None:
     assert (serial.error_cosines, rows.error_cosines, rows.periods) == (21, None, None)
     assert serial.periods is not None
     assert serial.periods.tolist() == list(range(400))
+    # the drift's error is read as the channel's is, across the periods' cosines (ADR 0133)
+    assert serial.drift_error != rows.drift_error
     # each row's influence is the rows' own, factor and all: a reader sums it across the periods
     arrays = (
         "influence",
@@ -2482,7 +2542,6 @@ def test_periods_move_the_error_and_nothing_else(integrator: str) -> None:
         "unmoved",
         "_parameter_size",
         "defect",
-        "_drift_blocks",
     )
     for name in arrays:
         np.testing.assert_array_equal(getattr(serial, name), getattr(rows, name))
@@ -2498,8 +2557,9 @@ def test_periods_move_the_error_and_nothing_else(integrator: str) -> None:
             "channel_error",
             "_lever_errors",
             "_channel_blocks",
-            "_drift_inherited",
-            "_drift_inherited_error",
+            "drift_error",
+            "_drift_blocks",
+            "_field_terms",
             "periods",
         }:
             assert getattr(serial, field.name) == getattr(rows, field.name), field.name

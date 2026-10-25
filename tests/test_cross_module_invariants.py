@@ -402,31 +402,28 @@ def _tube_at(
 ) -> np.ndarray:
     """The tube the plan's noise and persistence and its carriage carry: under ``exact`` the
     field's slope at each of ``actions``, the plan's own where omitted, under ``bound`` the plan's
-    own rate. Each lever's error is read off each covariance and priced at ``reach``, summed in
-    quadrature over the levers and scaled to the Euclidean norm over the states, the largest read
-    taken, and the drift's own error, so scaled, added in quadrature (ADR 0096). The noise
+    own rate. The field's error is read at each state a step starts from, the largest over the
+    problem's box of the levers, its root mean square over the log's rows the error the plan is
+    solved with (ADR 0133); ``reach``, each lever's largest distance from its logged mean the box
+    allows, is what a fit that keeps no field terms prices each lever's error at. The noise
     carries its read's own error over the log's hundred units of fourteen transitions (ADR 0105)."""
     plan = result.plan
     assert plan is not None
     problem = plan._problem
     assert problem is not None
-    errors = result.model_fit._lever_errors
-    drift_error = result.model_fit.drift_error
-    assert errors is not None
-    assert drift_error is not None
-    rates = errors * reach
-    count = result.model_fit.residual.channel.shape[0]
-    error = math.hypot(
-        float(np.max(np.sqrt(count * np.sum(rates * rates, axis=1)))),
-        math.sqrt(count) * drift_error,
+    box = (np.asarray(problem.u_lo, dtype=np.float64), np.asarray(problem.u_hi, dtype=np.float64))
+    terms = result.model_fit._field_terms
+    assert terms is not None
+    at_rows = _field_errors(result.model_fit, reach, terms.states, terms.drivers, box)
+    assert _field_error(result.model_fit, reach, box) == pytest.approx(
+        math.sqrt(float(np.mean(at_rows**2))), rel=1e-12, abs=0.0
     )
-    assert _field_error(result.model_fit, reach) == pytest.approx(error, rel=1e-12, abs=0.0)
     # read at the state each step starts from, rolled out under ``actions`` (ADR 0104)
     along = np.asarray(plan.actions if actions is None else actions, dtype=np.float64)
     states = np.asarray(rollout(problem.model, problem.x0, jnp.asarray(along), DT))
     if actions is None:
         np.testing.assert_allclose(states, plan.trajectory, rtol=1e-12, atol=1e-12)
-    error = _field_errors(result.model_fit, reach, states[:-1], np.zeros((HORIZON, 0)))
+    error = _field_errors(result.model_fit, reach, states[:-1], np.zeros((HORIZON, 0)), box)
     noise, carried = result.certificate.tube_noise, result.certificate.tube_autoregression
     assert noise is not None
     assert carried is not None
