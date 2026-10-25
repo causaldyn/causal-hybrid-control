@@ -60,17 +60,25 @@ def _fitted_channel(model: HybridDynamics, x: Array) -> float:
 
 
 def test_the_factor_and_its_inverse() -> None:
-    """``kappa(Gamma) = (Gamma-1)/sqrt(3 Gamma - Gamma^2 - 1)``: 0 at 1, 1 at 2, unbounded at
-    ``(3 + sqrt 5)/2``, and ``level_at`` its inverse (``channel_bias_bound.mac`` STEP 3)."""
-    limit = (3.0 + math.sqrt(5.0)) / 2.0
+    """``kappa(Gamma) = (Gamma-1)/sqrt(2 Gamma - 1)``: 0 at 1, ``1/sqrt 3`` at 2, 4/3 at 5, finite
+    at every finite level, and ``level_at`` its inverse, ``1 + k^2 + k sqrt(1 + k^2)``, whose
+    ``Gamma`` at ``kappa = 1`` is ``2 + sqrt 2`` (``channel_bias_bound.mac`` STEP 3). Up to 0.21
+    the factor was ``(Gamma-1)/sqrt(3 Gamma - Gamma^2 - 1)``: 1 at 2, and infinite from
+    ``(3 + sqrt 5)/2`` on."""
     assert ChannelSensitivity.factor(1.0) == 0.0
-    assert ChannelSensitivity.factor(2.0) == pytest.approx(1.0, rel=1e-15, abs=0.0)
-    assert ChannelSensitivity.factor(limit) == math.inf
-    assert ChannelSensitivity.factor(3.0) == math.inf
-    for gamma in (1.0, 1.01, 1.5, 2.0, 2.5, 2.6):
-        back = ChannelSensitivity.level_at(ChannelSensitivity.factor(gamma))
+    assert ChannelSensitivity.factor(2.0) == pytest.approx(1.0 / math.sqrt(3.0), rel=1e-15, abs=0.0)
+    assert ChannelSensitivity.factor(5.0) == pytest.approx(4.0 / 3.0, rel=1e-15, abs=0.0)
+    assert ChannelSensitivity.level_at(1.0) == pytest.approx(
+        2.0 + math.sqrt(2.0), rel=1e-15, abs=0.0
+    )
+    old = (3.0 + math.sqrt(5.0)) / 2.0
+    for gamma in (1.0, 1.01, 1.5, 2.0, 2.5, old, 3.0, 10.0, 1e6, 1e300):
+        kappa = ChannelSensitivity.factor(gamma)
+        assert math.isfinite(kappa)
+        back = ChannelSensitivity.level_at(kappa)
         assert back == pytest.approx(gamma, rel=1e-12, abs=0.0)
-    assert ChannelSensitivity.level_at(math.inf) == limit
+    assert ChannelSensitivity.factor(math.inf) == math.inf
+    assert ChannelSensitivity.level_at(math.inf) == math.inf
     with pytest.raises(ValueError, match="sensitivity level"):
         ChannelSensitivity.factor(0.5)
 
@@ -147,7 +155,7 @@ def test_gamma_star_is_the_level_whose_radius_the_step_just_absorbs() -> None:
     audit = certify_safety(plan, model, _ceiling, _DT, u_max=5.0, sensitivity=sensitivity)
     finite = [g for g in audit.step_gamma_star if math.isfinite(g)]
     assert finite
-    assert all(1.0 < g < (3.0 + math.sqrt(5.0)) / 2.0 for g in finite)
+    assert all(g > 1.0 for g in finite)
     step = audit.step_gamma_star.index(min(finite))
     state = plan.trajectory[step]
     channel = abs(_fitted_channel(model, state))
@@ -178,15 +186,24 @@ def test_the_radius_is_read_at_each_step_s_state() -> None:
     assert widest > near
 
 
-def test_a_level_past_the_limit_bounds_nothing_and_is_refused() -> None:
+def test_every_finite_level_has_a_radius_and_an_infinite_one_is_refused() -> None:
+    """At no finite level are the levers a function of the confounder: a share ``1/Gamma`` of their
+    law does not read it. So a level past ``(3 + sqrt 5)/2``, which up to 0.21 was refused as
+    unbounded, reads a finite radius, wider at each level; only ``inf`` is refused."""
     fit = _confounded_fit(0, 1.5, -3.0)
     sensitivity = ChannelSensitivity.from_fit(fit)
     model = HybridDynamics(known=_KNOWN, residual=fit.residual)
     plan = causal_plan(model, jnp.zeros(1), _COST, _DT, 5, -5.0, 5.0)
-    with pytest.raises(ValueError, match="at or past"):
-        BarrierConstraint(_ceiling, gamma=2.7, sensitivity=sensitivity)
-    with pytest.raises(ValueError, match="at or past"):
-        certify_safety(plan, model, _ceiling, _DT, gamma=2.7, sensitivity=sensitivity)
+    widths = [sensitivity.radius(jnp.zeros(1), gamma) for gamma in (2.5, 2.7, 10.0, 1e6)]
+    assert all(math.isfinite(width) for width in widths)
+    assert widths == sorted(widths)
+    BarrierConstraint(_ceiling, gamma=2.7, sensitivity=sensitivity)
+    audit = certify_safety(plan, model, _ceiling, _DT, gamma=2.7, sensitivity=sensitivity)
+    assert audit.radius == pytest.approx(widths[1], rel=1e-9, abs=0.0)  # ||grad h|| = 1
+    with pytest.raises(ValueError, match="no level"):
+        certify_safety(plan, model, _ceiling, _DT, gamma=math.inf, sensitivity=sensitivity)
+    with pytest.raises(ValueError, match="finite"):
+        BarrierConstraint(_ceiling, gamma=math.inf, sensitivity=sensitivity)
 
 
 def test_a_fit_without_a_least_squares_channel_has_no_sensitivity() -> None:

@@ -1,0 +1,123 @@
+/* The barrier's room: the least h a plant within e of a state can have, and the bound the
+   certificate reads.
+
+   Setting (chc.plan._barrier_room, _room_curvature, _audit, _HeldBarrier.shortfall). A plant
+   whose path is within e of the model's state x is at x + d, ||d|| <= e. The certificate reads
+   the room
+
+       h(x) - ||grad h(x)|| e - kappa e^2 / 2,   kappa >= lambda_max(-grad^2 h) on the ball,
+
+   and certifies the state where it is not negative. By Taylor's theorem with the integral
+   remainder, h(x + d) >= h(x) + grad h' d - kappa ||d||^2 / 2 on the ball, whose least over
+   ||d|| <= e is the room: so the room is at most the least h, and a state it certifies keeps
+   every such plant in the set. Up to 0.21 the room was h - ||grad h|| e alone, exact on an
+   affine h and above the least h on one that bends down.
+
+     STEP 1  a quadratic h, symbolic: h(x + d) less its bound is d'(H + kappa I) d / 2, H + kappa I
+             has no negative eigenvalue at kappa = lambda_max(-H), and the bound's least over the
+             ball is the room.
+     STEP 2  the disk 1 - ||x||^2: kappa = 2, the room is 1 - (||x|| + e)^2, the least h itself;
+             the first-order room exceeds it by e^2.
+     STEP 3  the ellipse 1 - x' diag(4, 1) x at x = (3/10, 1/5), e = 1/10: the least h by the
+             trust region's secular equation and by a search of the circle, the room below it, the
+             first-order room above it.
+     STEP 4  a convex h, ||x||^2 - 1/4 at (3/5, 3/10): kappa = 0, the first-order room, which is
+             already at most the least h.
+     STEP 5  the integrator of the test: h = 1 - x^2 at x = 13/20, e = 2/5. The first-order room
+             certifies the state; the room reads the plant at x + e, h = -41/400.
+*/
+display2d : false$
+fpprec : 30$
+
+/* ===== STEP 1: a quadratic h ===== */
+print("=== STEP 1: h(x + d) >= h + g'd - kappa ||d||^2 / 2 on a quadratic h ===")$
+H : matrix([p, q], [q, r])$
+g : matrix([g1], [g2])$
+d : matrix([d1], [d2])$
+hq(dd) := h0 + (transpose(g) . dd) + (transpose(dd) . H . dd) / 2$
+lower(dd, kap) := h0 + (transpose(g) . dd) - kap * (transpose(dd) . dd) / 2$
+gap1 : ratsimp(hq(d) - lower(d, kap) - (transpose(d) . (H + kap * ident(2)) . d) / 2)$
+print("STEP 1a h(x + d) - bound - d'(H + kappa I) d / 2 =", gap1)$
+print("STEP 1a", if gap1 = 0 then "(PASS)" else "(FAIL)")$
+/* at kappa = lambda_max(-H) = -lambda_min(H), H + kappa I has determinant 0 and trace
+   sqrt((p - r)^2 + 4 q^2) >= 0: its eigenvalues are 0 and that, none negative */
+kmax : -(p + r - sqrt((p - r)^2 + 4*q^2)) / 2$
+shifted : H + kmax * ident(2)$
+det1b : ratsimp(expand(determinant(shifted)))$
+tr1b : ratsimp(shifted[1, 1] + shifted[2, 2])$
+print("STEP 1b determinant and trace of H + lambda_max(-H) I:", det1b, tr1b)$
+print("STEP 1b", if det1b = 0 and ratsimp(tr1b - sqrt((p - r)^2 + 4*q^2)) = 0
+      then "(PASS: its eigenvalues are 0 and sqrt((p - r)^2 + 4 q^2), none negative)"
+      else "(FAIL)")$
+/* the bound's least over ||d|| <= e: both of its terms are least at d = -e g/||g|| */
+ng : sqrt(g1^2 + g2^2)$
+dstar : -e * g / ng$
+assume(e > 0, g1 > 0)$
+least1 : radcan(lower(dstar, kap) - (h0 - ng * e - kap * e^2 / 2))$
+print("STEP 1c the bound at -e g/||g|| less h - ||g|| e - kappa e^2 / 2:", least1)$
+/* no point of the ball does better: g'd >= -||g|| ||d|| (Cauchy-Schwarz), -kappa ||d||^2 / 2 >=
+   -kappa e^2 / 2 at kappa >= 0; checked at sample points */
+sample1 : [h0 = 1, g1 = 3/2, g2 = -1, kap = 3/4, e = 1/2]$
+dirs : makelist(matrix([cos(2*%pi*k/24)], [sin(2*%pi*k/24)]), k, 0, 23)$
+excess1(dd) := float(subst(sample1, lower(dd, kap) - (h0 - ng * e - kap * e^2 / 2)))$
+worst1 : lmin(flatten(makelist(makelist(excess1(rr * u), rr, [0, 1/8, 1/4, 3/8, 1/2]), u, dirs)))$
+print("STEP 1c the least of bound - room over 24 directions x 5 sizes:", worst1)$
+print("STEP 1c", if least1 = 0 and worst1 >= -1e-12 then "(PASS)" else "(FAIL)")$
+
+/* ===== STEP 2: the disk ===== */
+print("=== STEP 2: h = 1 - ||x||^2, kappa = 2: the room is the least h ===")$
+assume(s > 0)$
+/* x = s (1, 0) without loss: the disk is round */
+room2 : (1 - s^2) - 2 * s * e - 2 * e^2 / 2$
+exact2 : 1 - (s + e)^2$
+first2 : (1 - s^2) - 2 * s * e$
+print("STEP 2 room - exact =", expand(room2 - exact2), "; first order - exact =",
+      expand(first2 - exact2))$
+print("STEP 2", if expand(room2 - exact2) = 0 and expand(first2 - exact2 - e^2) = 0
+      then "(PASS: the room is exact, the first-order room e^2 above)" else "(FAIL)")$
+
+/* ===== STEP 3: the ellipse ===== */
+print("=== STEP 3: h = 1 - x' diag(4, 1) x at (3/10, 1/5), e = 1/10 ===")$
+P : matrix([4, 0], [0, 1])$
+x3 : matrix([3/10], [1/5])$
+e3 : 1/10$
+h3(y) := 1 - (transpose(y) . P . y)$
+grad3 : -2 * P . x3$
+ngrad3 : sqrt(grad3[1, 1]^2 + grad3[2, 1]^2)$
+kap3 : 2 * 4$  /* lambda_max(-grad^2 h) = lambda_max(2 P) */
+/* the worst d of the trust region: d(mu) = (mu I - P)^-1 P x on the circle, mu > 4 */
+dl(mu) := invert(mu * ident(2) - P) . P . x3$
+mu3 : find_root(sqrt(dl(mu)[1, 1]^2 + dl(mu)[2, 1]^2) - e3, mu, 4.0001, 200)$
+exact3 : float(h3(x3 + dl(mu3)))$
+search3 : lmin(makelist(float(h3(x3 + e3 * matrix([cos(2*%pi*k/20000)],
+                                                  [sin(2*%pi*k/20000)]))), k, 0, 19999))$
+room3 : float(h3(x3) - ngrad3 * e3 - kap3 * e3^2 / 2)$
+first3 : float(h3(x3) - ngrad3 * e3)$
+print("STEP 3 least h: secular", exact3, "search", search3, "; room", room3, "; first order",
+      first3)$
+print("STEP 3", if abs(exact3 - search3) < 1e-8 and room3 <= exact3 and first3 > exact3
+      then "(PASS: room <= least h < first-order room)" else "(FAIL)")$
+
+/* ===== STEP 4: a convex h ===== */
+print("=== STEP 4: h = ||x||^2 - 1/4 at (3/5, 3/10), e = 1/10: kappa = 0 ===")$
+x4 : matrix([3/5], [3/10])$
+h4(y) := (transpose(y) . y) - 1/4$
+kap4 : max(0, -2)$  /* lambda_max(-2 I) clipped at 0 */
+room4 : float(h4(x4) - 2 * sqrt(x4[1, 1]^2 + x4[2, 1]^2) * e3 - kap4 * e3^2 / 2)$
+search4 : lmin(makelist(float(h4(x4 + e3 * matrix([cos(2*%pi*k/20000)],
+                                                 [sin(2*%pi*k/20000)]))), k, 0, 19999))$
+print("STEP 4 room", room4, "least h", search4)$
+print("STEP 4", if kap4 = 0 and room4 <= search4 then "(PASS: the first-order room is a bound)"
+      else "(FAIL)")$
+
+/* ===== STEP 5: the test's integrator ===== */
+print("=== STEP 5: h = 1 - x^2 at x = 13/20, e = 2/5 = (8/13)(13/20) ===")$
+x5 : 13/20$  e5 : (8/13) * (13/20)$
+first5 : (1 - x5^2) - 2 * x5 * e5$
+room5 : first5 - 2 * e5^2 / 2$
+plant5 : 1 - (x5 + e5)^2$
+print("STEP 5 first-order room", first5, "room", room5, "plant at x + e", plant5)$
+print("STEP 5", if e5 = 2/5 and first5 = 23/400 and room5 = -41/400 and plant5 = room5
+      then "(PASS)" else "(FAIL)")$
+
+print("the barrier's room: STEP 1-5")$

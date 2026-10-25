@@ -40,6 +40,7 @@ from chc.decision import (
     _field_error,
     _field_errors,
     _field_scale,
+    _margins,
     _noise_read,
     _rate,
     _slopes,
@@ -50,7 +51,7 @@ from chc.graph import CausalGraph
 from chc.integrate import rollout
 from chc.mpc import PeriodBudget
 from chc.panel import Panel
-from chc.plan import _row_prices, _Ruled, causal_plan, plan_regret_bound
+from chc.plan import _row_prices, _Ruled, causal_plan, certify_safety, plan_regret_bound
 from chc.response import (
     Channel,
     DelayedAdstock,
@@ -546,6 +547,76 @@ def test_the_tube_reads_the_same_wherever_a_lever_s_zero_is(
     assert other.plan.certified_horizon == one.plan.certified_horizon
 
 
+@pytest.mark.parametrize("levers_at", [(3.0, 0.0), (0.0, -50.0), (100.0, 0.0)])
+@pytest.mark.parametrize(("policy", "floor"), [("free", 0.2), ("state", 0.2), ("free", 0.8)])
+def test_the_barrier_audit_of_a_plan_reads_the_same_wherever_a_lever_s_zero_is(
+    policy: str, floor: float, levers_at: tuple[float, float]
+) -> None:
+    """One plan, its actions moved with each lever's zero, audited on the fit of each log at
+    ``gamma = 1.5``, the log's mean action as ``centre`` and each lever's largest distance from it
+    as ``u_max``, as ``prescribe`` audits (ADR 0132). The fit's drift holds the channel at the
+    log's mean action, so the action set, the spread and the deviation tube read from there, and
+    the audit is the same: its certified steps, each step's ``gamma*`` and the tube. Read from each
+    lever's zero, the same plan on ``free``'s log bounded to ``[0.2, 1.1]``, ``u1``'s zero moved
+    by 100, cleared no step of three where it clears three, and ``gamma*`` read 1.05 where it
+    reads ``inf``."""
+    one = _decide(policy, floor=floor)
+    other = _decide(policy, levers_at=levers_at, floor=floor)
+    assert one.plan is not None
+    assert other.plan is not None
+    margins = _margins(("y",), [Constraint("y", lo=floor, hi=1.1)])
+    audits = []
+    for result, at in ((one, (0.0, 0.0)), (other, levers_at)):
+        problem = result.plan._problem  # type: ignore[union-attr]
+        assert problem is not None
+        lo = np.asarray(problem.u_lo, dtype=np.float64)
+        hi = np.asarray(problem.u_hi, dtype=np.float64)
+        # a lever held at its mean logged level is held, and read from, prescribe's own reading
+        # of that mean, which the moved plan keeps
+        held = jnp.asarray(lo == hi)
+        actions = jnp.where(
+            held,
+            jnp.asarray(lo, one.plan.actions.dtype),
+            one.plan.actions + jnp.asarray(at, one.plan.actions.dtype),
+        )
+        plan = replace(
+            one.plan, actions=actions, trajectory=rollout(problem.model, problem.x0, actions, DT)
+        )
+        centre = np.where(lo == hi, lo, _logged_mean(policy, levers_at=at))
+        reach = np.maximum(np.abs(lo - centre), np.abs(hi - centre))
+        audits.append(
+            certify_safety(plan, problem.model, margins, DT, gamma=1.5, u_max=reach, centre=centre)
+        )
+    assert audits[1].certified_steps == audits[0].certified_steps
+    np.testing.assert_allclose(
+        audits[1].step_gamma_star, audits[0].step_gamma_star, rtol=1e-4, atol=0.0
+    )
+    np.testing.assert_allclose(audits[1].deviation, audits[0].deviation, rtol=1e-4, atol=1e-7)
+
+
+def test_gamma_star_reads_the_same_wherever_a_lever_s_zero_is() -> None:
+    """ADR 0091's example: ``free``'s log bounded to ``[0.2, 1.1]``, ``u1``'s zero moved by 100,
+    the log and the box with it. ``prescribe`` reads the barrier from the log's mean action, so
+    ``gamma*`` is ``inf`` there, as on the unmoved log, where read from each lever's zero it was
+    1.04. The plan itself moves, its price being read from the lever's zero: it holds ``u1`` at
+    its box's low end, a push whose own action fails the condition, so it clears no step, as it
+    cleared none read from the zero."""
+    one = _decide("free", floor=0.2).certificate
+    other = _decide("free", levers_at=(100.0, 0.0), floor=0.2).certificate
+    assert one.gamma_star == math.inf
+    assert other.gamma_star == math.inf
+
+
+def test_a_held_barrier_clears_every_step_wherever_a_lever_s_zero_is() -> None:
+    """``state``'s log, the bounds ``[0.2, 1.1]`` held in the solve, ``u1``'s zero moved by 100,
+    the log and the box with it: the held condition reads each action from the log's mean action,
+    as the audit does, and every step clears."""
+    one = _decide("state", floor=0.2, hold=True).certificate
+    other = _decide("state", levers_at=(100.0, 0.0), floor=0.2, hold=True).certificate
+    assert one.barrier_certified_steps == HORIZON
+    assert other.barrier_certified_steps == HORIZON
+
+
 def test_a_plan_whose_every_box_is_pinned_has_no_regret() -> None:
     """Every action fixed by its box: no move is feasible, so the bound is 0, certified, whatever
     the cost's curvature."""
@@ -699,7 +770,7 @@ def test_gamma_star_and_the_barrier_s_steps_read_the_same_in_any_units(
     """The state bounded to ``[0.8, 1.1]`` and audited at ``gamma = 1.5``. The identification radius
     was ``(gamma-1)/(gamma+1)`` times a gap of 1 in the channel's units, which are the state's per
     the levers': with the levers in thousands or the state in thousandths, gamma* read 1.0014
-    where it reads 10.9 and the barrier cleared none of the two steps it clears; the other way,
+    where it reads 10.5 and the barrier cleared none of the two steps it clears; the other way,
     every level. The gap is now a share of the channel's own size."""
     one = _decide("free", floor=0.8).certificate
     other = _decide("free", levers_in=levers_in, state_in=state_in, floor=0.8).certificate
@@ -736,7 +807,7 @@ def test_gamma_star_and_the_barrier_s_steps_read_the_same_in_any_units_of_each_l
     one number, the largest action of either box, and one ball in the levers' units: bounded to
     ``[0.2, 1.1]``, ``free``'s and ``together``'s barrier cleared three steps of three, and none
     with ``u1`` in thousands or ``u2`` in thousandths, so the trusted steps fell from two to none;
-    on ``state``'s log ``gamma*`` read 118 where it reads 6.17. It now reads each lever in units of
+    on ``state``'s log ``gamma*`` read 118 where it reads 11.8. It now reads each lever in units of
     its own largest action."""
     one = _decide(policy, floor=floor).certificate
     other = _decide(policy, levers_in=levers_in, floor=floor).certificate

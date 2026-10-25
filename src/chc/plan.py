@@ -1242,7 +1242,16 @@ def _multiplier_range(
 Barrier = Callable[[Array], Array] | tuple[Callable[[Array], Array], ...]
 """``h``, safe where ``h >= 0``; or a tuple of them, safe where each is, each its own condition."""
 
-_GAMMA_LIMIT = (3.0 + math.sqrt(5.0)) / 2.0  # where (Gamma-1)^2/Gamma reaches 1
+RoomModel = Literal["affine", "quadratic", "bounded", "first_order"]
+"""How the barrier's room, the least ``h`` a plant within the deviation of a state can have, is
+read: ``affine``, an ``h`` whose Hessian and third derivative are zero along the path, exactly;
+``quadratic``, one whose Hessian is one matrix there and whose third derivative is zero, less the
+curvature that matrix gives, exactly on a ball and a bound otherwise; ``bounded``, less the
+caller's ``curvature``, a bound wherever that is; ``first_order``, an ``h`` that is neither, with
+no ``curvature`` given, to first order in the deviation only."""
+
+# the order in which several barriers' rooms read as one: the weakest names them all
+_ROOM_ORDER: tuple[RoomModel, ...] = ("affine", "quadratic", "bounded", "first_order")
 
 
 @dataclass(frozen=True, eq=False)
@@ -1252,20 +1261,33 @@ class ChannelSensitivity:
 
     The model: given the state and the adjustment set, a hidden confounder ``Z`` moves the levers'
     density by a factor within ``[1/Gamma, Gamma]`` (the continuous marginal sensitivity model,
-    Jesson et al. 2022), and nothing bounds how much of the rate's noise ``Z`` carries. Then the
-    share of an action residual's variance ``Z`` explains is at most ``rho^2 = (Gamma-1)^2/Gamma``,
-    and the least-squares channel on the action residuals is biased by at most
+    Jesson et al. 2022), and nothing bounds how much of the rate's noise ``Z`` carries. The factor's
+    lower side alone splits the joint law of the levers and ``Z`` into ``1/Gamma`` of the product of
+    their two laws and ``1 - 1/Gamma`` of a law with the same two marginals, so no function of the
+    levers correlates with one of ``Z`` beyond ``1 - 1/Gamma`` (their maximal correlation, Rényi
+    1959), and the share of an action residual's variance ``Z`` explains is at most
+    ``rho^2 = (1 - 1/Gamma)^2``. The share is sharp: a lever of two values that takes the
+    confounder's sign with probability ``1 - 1/(2 Gamma)`` reaches it. The bound reads ``Gamma``
+    only through ``rho``, so a lever whose maximal correlation with the confounder is ``rho`` reads
+    as ``Gamma = 1/(1 - rho)``: a Gaussian one, whose density ratio no finite level bounds, as
+    ``1/(1 - sqrt(R^2))``, ``R^2`` the share of its action residual the confounder explains. The
+    least-squares channel on
+    the action residuals is then biased by at most
 
         ``||(B_hat(x) - B(x)) D||_2 <= kappa(Gamma) * confounding * nu(x)``,
-        ``kappa(Gamma) = (Gamma-1) / sqrt(3 Gamma - Gamma^2 - 1)``,
+        ``kappa(Gamma) = (Gamma-1) / sqrt(2 Gamma - 1)``,
 
     at every state ``x`` (``validation/channel_bias_bound.mac``), where ``confounding`` is
     ``sqrt(lambda_max(R'R))``, ``R`` the fit's moment residual, and
     ``nu(x)^2 = lambda_max(D Phi(x)' V^-1 Phi(x) D)``, ``V`` the channel's design on the action
     residuals ``gram``, ``Phi(x) a`` the design row of an action ``a`` at ``x`` and ``D`` each
-    lever's largest action over the largest (:func:`certify_safety`'s ``u_max``). The bound grows
-    without limit as ``Gamma`` reaches ``(3 + sqrt 5)/2``: from there the levers may be a function
-    of the confounder, and no channel is identified. Beside the bias the channel scatters by
+    lever's largest action over the largest (:func:`certify_safety`'s ``u_max``). The bound is
+    finite at every finite level and grows as ``sqrt(Gamma / 2)``: a share ``1/Gamma`` of the
+    levers' law does not read the confounder, so at no finite level are they a function of it, and
+    the bound is met, not only approached, by the two-valued lever with all the rate's noise from
+    ``Z``. Up to 0.21 the share was ``(Gamma-1)^2/Gamma``, ``Gamma`` times this one, read off each
+    value of ``Z`` alone, so ``kappa`` was wider by 1.05 to 4.0 at ``Gamma`` 1.1 to 2.5 and every
+    level from ``(3 + sqrt 5)/2`` on was refused. Beside the bias the channel scatters by
     ``sampling * nu(x)``, ``sampling`` the norm of :func:`chc.dynamics_id.channel_region`'s radii
     at ``level``. The radius at ``x`` is
 
@@ -1336,26 +1358,26 @@ class ChannelSensitivity:
 
     @staticmethod
     def factor(gamma: float) -> float:
-        """``kappa(Gamma)``: the bias per unit of ``confounding * nu(x)``; ``inf`` from
-        ``Gamma = (3 + sqrt 5)/2`` on.
+        """``kappa(Gamma) = (Gamma-1)/sqrt(2 Gamma - 1)``: the bias per unit of
+        ``confounding * nu(x)``, finite at every finite ``Gamma``; ``inf`` at ``inf``.
 
         Raises:
             ValueError: on a ``gamma`` below 1 or not a number, which is no sensitivity level.
         """
         if not gamma >= 1.0:
             raise ValueError(f"gamma is a sensitivity level and must be >= 1, got {gamma}")
-        spread = 3.0 * gamma - gamma * gamma - 1.0
-        return (gamma - 1.0) / math.sqrt(spread) if spread > 0.0 else math.inf
+        if gamma == math.inf:
+            return math.inf
+        # sqrt(2) sqrt(Gamma - 1/2) is sqrt(2 Gamma - 1) without its overflow past 9e307, which read
+        # a factor of 0 there
+        return (gamma - 1.0) / (math.sqrt(2.0) * math.sqrt(gamma - 0.5))
 
     @staticmethod
     def level_at(factor: float) -> float:
-        """The ``Gamma`` whose :meth:`factor` is ``factor``: below ``(3 + sqrt 5)/2``."""
-        if factor == math.inf:
-            return _GAMMA_LIMIT
+        """The ``Gamma`` whose :meth:`factor` is ``factor``, ``1 + k^2 + k sqrt(1 + k^2)``: 1 at 0,
+        and ``inf`` where it passes the float range."""
         square = factor * factor
-        return (2.0 + 3.0 * square + factor * math.sqrt(4.0 + 5.0 * square)) / (
-            2.0 * (1.0 + square)
-        )
+        return 1.0 + square + factor * math.sqrt(1.0 + square)
 
     def radius(self, state: ArrayLike, gamma: float, u_max: ArrayLike | None = None) -> float:
         """``Delta(x, Gamma)`` at ``state``, the levers read in units of their own largest action
@@ -1387,14 +1409,13 @@ class _ChannelWidth(eqx.Module):
         dtype: jnp.dtype,
     ) -> _ChannelWidth:
         """Raises:
-        ValueError: on a ``gamma`` at or past ``(3 + sqrt 5)/2``, whose bias is unbounded, or a
-            ``gram`` whose size is not the levers' times the channel's features."""
+        ValueError: on an infinite ``gamma``, at which the bias is unbounded, or a ``gram`` whose
+            size is not the levers' times the channel's features."""
         kappa = ChannelSensitivity.factor(gamma)
         if not math.isfinite(kappa):
             raise ValueError(
-                f"gamma={gamma} is at or past (3 + sqrt 5)/2 = {_GAMMA_LIMIT:.6f}: under the "
-                "channel's sensitivity model the levers may then be a function of the confounder, "
-                "and no radius bounds the channel"
+                f"gamma={gamma} is no level the channel's sensitivity model bounds: the bias it "
+                "allows grows without limit with gamma"
             )
         if sensitivity.gram.shape[0] % levers:
             raise ValueError(
@@ -1456,8 +1477,8 @@ class BarrierConstraint:
 
     ``sensitivity`` (:class:`ChannelSensitivity`) replaces the radius's share of the channel by an
     absolute radius at each step's predicted state, as :func:`certify_safety` reads it, held in the
-    solve at the same steps; ``gamma`` must then be below ``(3 + sqrt 5)/2``. :func:`chc.prescribe`
-    passes its fit's own where the fit gives one (ADR 0125).
+    solve at the same steps. :func:`chc.prescribe` passes its fit's own where the fit gives one
+    (ADR 0125).
 
     ``u_box``, ``(u_lo, u_hi)`` with one number per lever, is the box the audit after the solve
     reads ``gamma_star`` on; ``None`` reads it on the box the plan is solved in. A solve in a
@@ -1465,12 +1486,21 @@ class BarrierConstraint:
     leaves out at zero -- is then audited as if planned on all of them, with the same box as
     ``u_max``.
 
+    ``centre``, one number per lever, is the action the channel's error is read from, as
+    :func:`certify_safety` reads it, ``u_max`` then each lever's largest distance from it;
+    ``None`` reads it from zero. :func:`chc.prescribe` passes the log's mean action (ADR 0132).
+
+    ``curvature`` bounds how far each barrier bends down within the deviation of the path, as
+    :func:`certify_safety` reads it; ``None`` reads it from the barrier where that is affine or
+    quadratic (:data:`RoomModel`), at the path the solve starts from.
+
     Raises:
         ValueError: on a ``gamma`` below 1 or not finite, which is not a sensitivity level, a
             ``cvar_gap`` not positive or not finite, which scales no radius, a ``u_max`` with an
-            entry negative or nan, or none positive, which is no action's size, or an empty
-            tuple of barriers, which holds nothing -- here, rather than after the solve that would
-            have used them; or, with a ``sensitivity``, a ``gamma`` at or past ``(3 + sqrt 5)/2``.
+            entry negative or nan, or none positive, which is no action's size, a ``centre`` with
+            an entry not a finite number, which is no action, a ``curvature`` negative or not
+            finite, which bounds no bend, or an empty tuple of barriers, which holds nothing --
+            here, rather than after the solve that would have used them.
     """
 
     barrier: Barrier
@@ -1480,12 +1510,18 @@ class BarrierConstraint:
     u_max: tuple[float, ...] | None = None
     u_box: tuple[tuple[float, ...], tuple[float, ...]] | None = None
     sensitivity: ChannelSensitivity | None = None
+    centre: tuple[float, ...] | None = None
+    curvature: float | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.barrier, tuple) and not self.barrier:
             raise ValueError("an empty tuple of barriers holds no condition")
         if self.u_max is not None:
             object.__setattr__(self, "u_max", tuple(float(v) for v in _reach(self.u_max)))
+        if self.centre is not None:
+            object.__setattr__(self, "centre", tuple(float(v) for v in _centre(self.centre)))
+        if self.curvature is not None:
+            object.__setattr__(self, "curvature", _bend(self.curvature))
         if self.u_box is not None:
             lo, hi = (tuple(float(v) for v in np.ravel(end)) for end in self.u_box)
             object.__setattr__(self, "u_box", (lo, hi))
@@ -1498,11 +1534,6 @@ class BarrierConstraint:
             raise ValueError(
                 "cvar_gap must be positive and finite to scale a sensitivity radius, got "
                 f"{self.cvar_gap}"
-            )
-        if self.sensitivity is not None and not self.gamma < _GAMMA_LIMIT:
-            raise ValueError(
-                f"gamma={self.gamma} is at or past (3 + sqrt 5)/2 = {_GAMMA_LIMIT:.6f}, where the "
-                "channel's sensitivity model bounds no bias, and no condition can be held"
             )
 
 
@@ -1822,10 +1853,15 @@ def _plan(
         )
     covariance = _noise_covariance(noise, square[0])
     persistence = _noise_persistence(noise_persistence, covariance)
-    authority = float(np.max(np.maximum(np.abs(np.asarray(u_lo)), np.abs(np.asarray(u_hi)))))
+    # the largest action, read from the one the channel's error is read from
+    origin = 0.0 if barrier is None or barrier.centre is None else np.asarray(barrier.centre)
+    authority = float(
+        np.max(np.maximum(np.abs(np.asarray(u_lo) - origin), np.abs(np.asarray(u_hi) - origin)))
+    )
     if barrier is not None and not authority > 0.0:
         raise ValueError(
-            f"a barrier needs a box that admits a nonzero action; the largest is {authority}"
+            "a barrier needs a box that admits a nonzero action, read from its centre; the "
+            f"largest is {authority}"
         )
 
     first = None
@@ -1981,6 +2017,8 @@ def _plan(
         if barrier.u_box is None
         else (jnp.asarray(barrier.u_box[0]), jnp.asarray(barrier.u_box[1])),
         barrier.sensitivity,
+        barrier.centre,
+        barrier.curvature,
     )
     return replace(plan, safety=audit), multipliers
 
@@ -1993,11 +2031,12 @@ class _HeldBarrier(eqx.Module):
     ``rest`` carries the uncertainty penalty the plan may already have.
 
     Each barrier holds two conditions at every step, the two the audit certifies a step by beyond
-    ``h >= 0`` where the plan starts: the barrier condition, and ``h - ||grad h|| e >= 0`` at the
-    step's next state, ``e`` the deviation tube a plant whose channel is in the set can reach
-    (:func:`_deviation_tube`), where its path would otherwise leave the set: between the points the
-    condition is read at, or away from the model's states, which it is read at. The shortfall, and
-    the multipliers with it, have those two columns per barrier, in turn,
+    ``h >= 0`` where the plan starts: the barrier condition, and
+    ``h - ||grad h|| e - kappa e^2 / 2 >= 0`` at the step's next state, ``e`` the deviation tube a
+    plant whose channel is in the set can reach (:func:`_deviation_tube`) and ``kappa`` the
+    barrier's ``curvature`` (:func:`_barrier_room`), where its path would otherwise leave the set:
+    between the points the condition is read at, or away from the model's states, which it is read
+    at. The shortfall, and the multipliers with it, have those two columns per barrier, in turn,
     ``(steps, 2 * barriers)``. Each column is multiplied by its ``factors`` entry: a condition's,
     the largest condition's scale over its own; a next state's, the same scale over the largest
     ``|h|`` along the path; so one back-off and one penalty read every column alike, whatever the
@@ -2022,20 +2061,26 @@ class _HeldBarrier(eqx.Module):
     paths: Array | None = None
     # the radius at each step's state where a ChannelSensitivity sets it; None, ``delta`` at each
     width: _ChannelWidth | None = None
+    # per lever, the action the channel's error is read from; None, zero
+    centre: Array | None = None
+    # per barrier, the curvature its room at a next state is read less (_barrier_room); None, zeros
+    curvature: Array | None = None
     rest: PenaltyModel | None = None
     rest_weight: float = eqx.field(static=True, default=0.0)
 
     def shortfall(self, states: Array, actions: Array) -> Array:
-        """Per step and barrier, ``-alpha h - (a + <w, u> - d ||u||)`` and ``-(h - ||grad h|| e)``
-        at the step's next state, ``e`` the deviation tube there (:func:`_deviation_tube`), each
-        times its factor: positive where the audit fails."""
+        """Per step and barrier, ``-alpha h - (a + <w, u> - d ||D^+ (u - c)||)`` and
+        ``-(h - ||grad h|| e - kappa e^2 / 2)`` at the step's next state, ``e`` the deviation tube
+        there (:func:`_deviation_tube`) and ``kappa`` the barrier's ``curvature``, each times its
+        factor: positive where the audit fails."""
         reached = self._next_states(states, actions)
         deviation = _deviation_tube(
-            self.model, states, actions, self.dt, self._delta(states), self.inverse
+            self.model, states, actions, self.dt, self._delta(states), self.inverse, self.centre
         )[1:]
         columns = []
         for index, barrier in enumerate(self._barriers()):
-            left = -_barrier_room(barrier, reached, deviation)
+            bend = 0.0 if self.curvature is None else self.curvature[index]
+            left = -_barrier_room(barrier, reached, deviation, bend)
             if self.paths is not None:
                 left = jnp.where(self.paths[:, index] > 0.0, left, -jnp.inf)
             columns += [self._shortfall(barrier, states, actions), left]
@@ -2057,7 +2102,7 @@ class _HeldBarrier(eqx.Module):
             self.model, barrier, states, actions, self.dt
         )
         return -self.alpha * h_values - _guaranteed(
-            drift, channel, grad_norm, actions, self._delta(states), self.inverse
+            drift, channel, grad_norm, actions, self._delta(states), self.inverse, self.centre
         )
 
     def _delta(self, states: Array) -> Array:
@@ -2084,7 +2129,9 @@ class _HeldBarrier(eqx.Module):
             self.model, barrier, states, actions, self.dt
         )
         push = jnp.einsum("km,km->k", channel, actions)
-        spread = self._delta(states) * grad_norm * _norm(_shaped(actions, self.inverse))
+        spread = (
+            self._delta(states) * grad_norm * _norm(_shaped(actions, self.inverse, self.centre))
+        )
         return jnp.max(jnp.abs(self.alpha * h_values) + jnp.abs(drift) + jnp.abs(push) + spread)
 
     def penalty_trajectory(self, xs: Array, us: Array) -> Array:
@@ -2207,11 +2254,16 @@ def _hold_barrier(
     blocks = _constraint_blocks(constraints, lo, hi, actions.dtype, disjoint=True)
     several = isinstance(barrier.barrier, tuple)
     columns = (2 * len(barrier.barrier),) if several else (2,)
+    start_path = _trajectory(model, x0, actions, dt)
     shape, inverse = None, None
+    centre = None if barrier.centre is None else _centre(barrier.centre, actions.shape[1])
+    origin = 0.0 if centre is None else centre
     if barrier.u_max is not None:
         reach = _reach(barrier.u_max, actions.shape[1])
         shape, inverse, _ = _action_shape(reach)
-        moved = np.max(np.maximum(np.abs(np.asarray(lo)), np.abs(np.asarray(hi))), axis=0)
+        moved = np.max(
+            np.maximum(np.abs(np.asarray(lo) - origin), np.abs(np.asarray(hi) - origin)), axis=0
+        )
         if inverse is not None:
             _act_within(reach, moved > 0.0, "the box lets it move")
     held = _HeldBarrier(
@@ -2229,6 +2281,14 @@ def _hold_barrier(
         if barrier.sensitivity is None
         else _ChannelWidth.build(
             barrier.sensitivity, actions.shape[1], shape, barrier.gamma, actions.dtype
+        ),
+        centre=None if centre is None else jnp.asarray(centre, actions.dtype),
+        curvature=jnp.asarray(
+            [
+                _room_curvature(one, start_path, barrier.curvature)[0]
+                for one in (barrier.barrier if several else (barrier.barrier,))
+            ],
+            actions.dtype,
         ),
         multipliers=jnp.zeros(actions.shape[:1] + columns, actions.dtype),
         weight=jnp.asarray(1.0, actions.dtype),
@@ -2676,8 +2736,8 @@ class SafetyCertificate:
     """
 
     barrier_values: Array  # h(x_k) along the nominal trajectory, k = 0 .. horizon-1
-    # a_k + <w_k, u_k> - d_k*||u_k||, the worst case AT the plan; with several barriers, the one
-    # with the least room's at each step, as is ``required``
+    # a_k + <w_k, u_k> - d_k ||D^+ (u_k - c)||, the worst case AT the plan; with several barriers,
+    # the one with the least room's at each step, as is ``required``
     guaranteed_derivative: Array
     required: Array  # -alpha * h(x_k); certification asks guaranteed >= required
     # bool per step: the condition holds, and the path is in the safe set at the step's state and
@@ -2694,8 +2754,11 @@ class SafetyCertificate:
     radius_model: Literal["relative", "absolute"]
     # e_0 .. e_H: how far the path of a plant whose channel is within the radius of the model's
     # can be from the model's predicted states under the plan's actions; a step is certified only
-    # where h less ||grad h|| times it is not negative at the step's state and at the next
+    # where h less ||grad h|| times it, and less half the barrier's curvature times its square, is
+    # not negative at the step's state and at the next
     deviation: Array
+    # how that room is read (:data:`RoomModel`); with several barriers, the weakest's
+    room_model: RoomModel = "first_order"
 
 
 def _norm(vectors: Array) -> Array:
@@ -2761,15 +2824,24 @@ def _guaranteed(
     actions: Array,
     delta: float | Array,
     inverse: Array | NDArray[np.float64] | None = None,
+    centre: Array | NDArray[np.float64] | None = None,
 ) -> Array:
-    """``a + <w, u> - d ||D^+ u||``, ``d = delta ||grad h||``: the worst case at the planned action,
-    ``D^+`` the levers' ``inverse`` (:func:`_action_shape`), the identity where it is None."""
-    spread = delta * grad_norm * _norm(_shaped(actions, inverse))
+    """``a + <w, u> - d ||D^+ (u - c)||``, ``d = delta ||grad h||``: the worst case at the planned
+    action, ``D^+`` the levers' ``inverse`` (:func:`_action_shape`), the identity where it is None,
+    and ``c`` the action the channel's error is read from, zero where it is None."""
+    spread = delta * grad_norm * _norm(_shaped(actions, inverse, centre))
     return drift + jnp.einsum("km,km->k", channel, actions) - spread
 
 
-def _shaped(actions: Array, inverse: Array | NDArray[np.float64] | None) -> Array:
-    return actions if inverse is None else actions * jnp.asarray(inverse, actions.dtype)
+def _shaped(
+    actions: Array,
+    inverse: Array | NDArray[np.float64] | None,
+    centre: Array | NDArray[np.float64] | None = None,
+) -> Array:
+    """``D^+ (u - c)`` per action: each action less ``centre``, as it is where that is None, times
+    ``inverse``, as it is where that is None."""
+    moved = actions if centre is None else actions - jnp.asarray(centre, actions.dtype)
+    return moved if inverse is None else moved * jnp.asarray(inverse, actions.dtype)
 
 
 def _spectral(matrix: Array) -> Array:
@@ -2811,18 +2883,22 @@ def _deviation_tube(
     dt: float,
     delta: float | Array,
     inverse: Array | NDArray[np.float64] | None = None,
+    centre: Array | NDArray[np.float64] | None = None,
 ) -> Array:
     """``e_0 .. e_H``: how far from the model's states ``states`` (``x_0 .. x_{H-1}``) the path of a
     plant whose channel is within ``delta`` of the model's at each step can be, stepped by the same
     one-step map under the same ``actions``:
 
-        ``e_{k+1} = ||dF/dx|| e_k + ||dF/dc|| delta_k ||D^+ u_k||``,  ``e_0 = 0``
+        ``e_{k+1} = ||dF/dx|| e_k + ||dF/dc|| delta_k ||D^+ (u_k - c)||``,  ``e_0 = 0``
 
-    (:func:`_step_gains`), ``D^+`` the levers' ``inverse``. On a model affine in the state with a
-    channel error that does not move with it, it bounds the gap, and on one state, one lever and
-    actions of one sign the plant at the radius's edge reaches it
-    (``validation/barrier_deviation_tube.mac``); elsewhere it reads the map's slope and the radius
-    at the model's state, a bound to first order in the gap."""
+    (:func:`_step_gains`), ``D^+`` the levers' ``inverse`` and ``c`` the ``centre``, the action the
+    channel's error is read from, zero where it is None: a plant whose drift is the model's at
+    ``c`` differs from it at ``u`` by the channel's error times ``u - c``. On a model affine in the
+    state with a channel error that does not move with it, it bounds the gap, and on one state,
+    one lever and ``u_k - c`` of one sign the plant at the radius's edge reaches it
+    (``validation/barrier_deviation_tube.mac``). Where the model is not affine in the state, or
+    the channel's error moves with it, it reads the map's slope and the radius at the model's
+    state, a bound to first order in the gap only."""
     steps = states.shape[0]
     radii = jnp.broadcast_to(jnp.asarray(delta, states.dtype), (steps,))
 
@@ -2831,7 +2907,7 @@ def _deviation_tube(
         growth, gain, taken = jax.vmap(lambda t, x, u: _step_gains(model, t, x, u, dt))(
             times, states, actions
         )
-        pushes = gain * radii * _norm(_shaped(taken, inverse))
+        pushes = gain * radii * _norm(_shaped(taken, inverse, centre))
 
         def carry(gap: Array, step: tuple[Array, Array]) -> tuple[Array, Array]:
             rate, push = step
@@ -2855,15 +2931,71 @@ def _deviation_tube(
 _compiled_tube = eqx.filter_jit(_deviation_tube)
 
 
-def _barrier_room(barrier: Callable[[Array], Array], states: Array, deviation: Array) -> Array:
-    """``h(x_k) - ||grad h(x_k)|| e_k`` at each state: the least ``h`` a plant ``e_k`` from ``x_k``
-    can have, exactly on an affine ``h`` and to first order in ``e_k`` otherwise."""
+def _barrier_room(
+    barrier: Callable[[Array], Array],
+    states: Array,
+    deviation: Array,
+    curvature: float | Array = 0.0,
+) -> Array:
+    """``h(x_k) - ||grad h(x_k)|| e_k - kappa e_k^2 / 2`` at each state: at most the least ``h`` a
+    plant ``e_k`` from ``x_k`` can have where ``kappa`` bounds ``lambda_max(-grad^2 h)`` within
+    ``e_k`` of ``x_k`` (Taylor's theorem), so exactly on an affine ``h`` at ``kappa = 0`` and on a
+    ball's quadratic at its own; at ``kappa = 0`` on a curved ``h``, to first order in ``e_k`` only.
+    Without the last term a disk's room was ``e_k^2`` above the least ``h``
+    (``validation/barrier_room.mac``)."""
 
     def scalar_h(x: Array) -> Array:
         return jnp.squeeze(barrier(x))
 
     values = jax.vmap(scalar_h)(states)
-    return values - _norm(jax.vmap(jax.grad(scalar_h))(states)) * deviation
+    slope = _norm(jax.vmap(jax.grad(scalar_h))(states)) * deviation
+    return values - slope - 0.5 * curvature * deviation * deviation
+
+
+@eqx.filter_jit
+def _barrier_derivatives(barrier: Callable[[Array], Array], states: Array) -> tuple[Array, Array]:
+    """``grad^2 h`` and ``grad^3 h`` at each state."""
+
+    def scalar_h(x: Array) -> Array:
+        return jnp.squeeze(barrier(x))
+
+    hessian = jax.hessian(scalar_h)
+    return jax.vmap(hessian)(states), jax.vmap(jax.jacfwd(hessian))(states)
+
+
+def _room_curvature(
+    barrier: Callable[[Array], Array], states: Array, bound: float | None
+) -> tuple[float, RoomModel]:
+    """``kappa``, what the room at ``states`` is read less (:func:`_barrier_room`), and what it is
+    (:data:`RoomModel`): ``bound`` where given; else 0 on an ``h`` whose Hessian and third
+    derivative are zero at every state, ``lambda_max(-grad^2 h)`` clipped at 0 on one whose Hessian
+    is one matrix there and whose third derivative is zero, a quadratic's, and 0 otherwise, the
+    room then first order. An ``h`` that is a quadratic only at those states is the caller's to
+    bound by ``bound``."""
+    if bound is not None:
+        return bound, "bounded"
+    hessians, third = (
+        np.asarray(part, dtype=np.float64) for part in _barrier_derivatives(barrier, states)
+    )
+    if np.any(third != 0.0) or np.any(hessians != hessians[:1]):  # nan compares unequal
+        return 0.0, "first_order"
+    if not np.any(hessians):
+        return 0.0, "affine"
+    return max(float(np.linalg.eigvalsh(-hessians[0])[-1]), 0.0), "quadratic"
+
+
+def _bend(curvature: float) -> float:
+    """A caller's ``curvature``, checked: a finite number not negative.
+
+    Raises:
+        ValueError: otherwise, since no bend has such a bound.
+    """
+    bend = float(curvature)
+    if not 0.0 <= bend < math.inf:
+        raise ValueError(
+            f"curvature={bend} bounds no bend of the barrier: it is a finite number not negative"
+        )
+    return bend
 
 
 def _reach(u_max: ArrayLike, levers: int | None = None) -> NDArray[np.float64]:
@@ -2885,6 +3017,22 @@ def _reach(u_max: ArrayLike, levers: int | None = None) -> NDArray[np.float64]:
             "and one is positive at least"
         )
     return reach
+
+
+def _centre(centre: ArrayLike, levers: int | None = None) -> NDArray[np.float64]:
+    """The action the channel's error is read from, checked: a finite number per lever, one per
+    lever where ``levers`` is given.
+
+    Raises:
+        ValueError: otherwise, since no action is such a point.
+    """
+    point = np.asarray(centre, dtype=np.float64)
+    if point.ndim != 1 or (levers is not None and point.shape[0] != levers):
+        expected = "one per lever" if levers is None else f"{levers}, one per lever"
+        raise ValueError(f"centre has shape {point.shape}; an action is {expected}")
+    if not np.isfinite(point).all():
+        raise ValueError(f"centre={point.tolist()} is no action: each entry is a finite number")
+    return point
 
 
 def _act_within(reach: NDArray[np.float64], moved: NDArray[np.bool_], where: str) -> None:
@@ -2931,6 +3079,8 @@ def certify_safety(
     cvar_gap: float = 1.0,
     u_max: ArrayLike | None = None,
     sensitivity: ChannelSensitivity | None = None,
+    centre: ArrayLike | None = None,
+    curvature: float | None = None,
 ) -> SafetyCertificate:
     """Price a plan's barrier guarantee against a partially identified control effect.
 
@@ -2938,8 +3088,8 @@ def certify_safety(
     logs the effect matrix is only set-identified, and given an **operator-norm** identification
     radius ``||B_hat - B||_op <= Delta`` the channel ``w = B^T grad h`` is pinned within
     ``d = Delta * ||grad h||``, so the guaranteed barrier derivative at action ``u`` drops to
-    ``a + <w, u> - d*||u||`` (:mod:`chc.barrier`). This walks the nominal trajectory and reports
-    where that guarantee survives.
+    ``a + <w, u> - d*||u - c||`` (:mod:`chc.barrier`), ``c`` the action the drift was fitted at
+    (``centre``). This walks the nominal trajectory and reports where that guarantee survives.
 
     Args:
         barrier: ``h(x)``, safe where ``h >= 0``. Differentiated with :func:`jax.grad`, so it must
@@ -2987,7 +3137,7 @@ def certify_safety(
             the ball of radius ``U`` they read with ``u_max = U``, bit for bit. A lever whose
             number is 0 has no action in the set, and the plan must not move it. A number ``inf``,
             a free side's, leaves no units to read that lever by, and the audit reads the levers'
-            own units, as ``u_max = inf`` does. The set is symmetric about zero: where the
+            own units, as ``u_max = inf`` does. The set is symmetric about ``centre``: where the
             levers' box is not, it admits actions the box does not, and ``gamma_star`` read on it
             can name a level no admissible action holds. :func:`causal_plan` and
             :func:`chc.prescribe` read it on their box as well.
@@ -2998,14 +3148,33 @@ def certify_safety(
             given a hidden confounder moves by a factor within ``[1/gamma, gamma]``, at the
             sensitivity's ``level``. ``gamma = 1`` is then the sampling error alone, not exact
             identification, and ``gamma_star`` is each step's largest ``gamma`` under that model:
-            below ``(3 + sqrt 5)/2``, or ``inf`` where the drift alone keeps the step. On logs
-            whose levers follow a confounder at ``gamma = 1.5``, a plan held and certified under
-            the fit's own sensitivity at that level kept the true plant in the set over its
-            certified steps on 20 logs of 20, on a stable drift and on an unstable one (ADR 0111,
-            ADR 0119). ``gamma`` must be below ``(3 + sqrt 5)/2``. The certificate's
-            ``radius_model`` reads ``"absolute"`` with a ``sensitivity`` and ``"relative"``
-            without one. :func:`chc.prescribe` passes its fit's own by default, where the fit
-            gives one (ADR 0125).
+            finite, or ``inf`` where the drift alone keeps the step. On logs whose levers follow a
+            confounder at ``gamma = 1.5``, a plan held and certified under the fit's own
+            sensitivity at that level kept the true plant in the set over its certified steps on
+            20 logs of 20, on a stable drift and on an unstable one (ADR 0111, ADR 0119). The
+            certificate's ``radius_model`` reads ``"absolute"`` with a ``sensitivity`` and
+            ``"relative"`` without one. :func:`chc.prescribe` passes its fit's own by default,
+            where the fit gives one (ADR 0125).
+        centre: the action, one number per lever, every action is read from: the channel's
+            error moves the field by an action's distance from it, and the action set,
+            ``u_max`` and an action's norm are measured from it, ``||D^+ (u - c)||``. A fit
+            regresses the drift on the log's actions, so its drift holds the channel at the log's
+            mean action, and there the field's error is the drift's alone (ADR 0091): pass that
+            mean, and the audit reads the same wherever a lever's zero is
+            (``validation/barrier_centred.mac``). None reads every
+            action from zero, as up to 0.21, which a fit's drift does not hold: on a log of one
+            state and two levers, ``u1``'s zero moved by 100, its log and box with it, read
+            ``gamma_star`` 1.04 and certified no step of three where it read ``inf`` and certified
+            three. :func:`chc.prescribe` passes the log's mean action (ADR 0132).
+        curvature: ``kappa``, a bound on ``lambda_max(-grad^2 h)`` at every point within the
+            deviation of the plan's path: how far ``h`` bends down there, so the room at a state
+            ``e`` from it is read as ``h - ||grad h|| e - kappa e^2 / 2``, at most the least ``h``
+            a plant there can have. None reads it from ``h``: 0 on an affine ``h``, and the
+            largest eigenvalue of ``-grad^2 h`` on a quadratic one, whose Hessian is one matrix;
+            on any other ``h`` the room is then read as on an affine one, to first order in
+            ``e`` only. The certificate's ``room_model`` says which (:data:`RoomModel`). On a
+            disk ``1 - ||x||^2`` the room read to first order was ``e^2`` above the least ``h``:
+            a step whose plant could reach ``h = -0.10`` was certified (ADR 0132).
 
     Assumes the plant is control-affine, and checks it: the condition reads the drift and the
     channel at zero action, so a model whose field, seen through ``grad h``, is not affine in the
@@ -3020,18 +3189,19 @@ def certify_safety(
     exact absolute radius of 0.1004 on a drift of 0.3, a plan certified on all 60 steps by the
     condition alone took the plant at the radius's edge to ``h = -0.132``, and on an integrator at
     ``dt = 1`` one certified on all 12 took it to ``h = -0.5``. So a step is certified where the
-    condition holds at its state and ``h - ||grad h|| e >= 0`` at its state and at the next, ``e``
-    the deviation tube ``e_{k+1} = ||dF/dx|| e_k + ||dF/dc|| Delta_k ||D^+ u_k||`` that the
-    channel's radius can open between the two paths (``deviation``,
-    ``validation/barrier_deviation_tube.mac``), ``F`` the one-step map, ``c`` an error added to
-    the field. The tube bounds the gap where the model is affine in the state, the channel's error
-    does not move with the state (a relative radius, or a sensitivity of ``channel_degree`` 0) and
-    ``h`` is affine; elsewhere it reads the map's slope, the radius and ``grad h`` at the model's
-    states, and holds to first order in its own width. It is about the channel alone: an error in
-    the drift, and a plant stepped by another map than the model's, are outside it. Reading ``h``
-    at both ends of a step also catches a path that leaves the set between the points the
-    condition is read at: at ``dt = 1`` and ``alpha = 1`` a plan that met it at every step of
-    twelve ended outside the set. Between the steps nothing is read.
+    condition holds at its state and ``h - ||grad h|| e - kappa e^2 / 2 >= 0`` at its state and at
+    the next, ``kappa`` the barrier's ``curvature`` and ``e`` the deviation tube
+    ``e_{k+1} = ||dF/dx|| e_k + ||dF/dc|| Delta_k ||D^+ (u_k - c)||`` that the channel's radius can
+    open between the two paths (``deviation``, ``validation/barrier_deviation_tube.mac``), ``F`` the
+    one-step map, ``c`` an error added to the field. The tube bounds the gap where the model is
+    affine in the state and the channel's error does not move with the state (a relative radius,
+    or a sensitivity of ``channel_degree`` 0); elsewhere it reads the map's slope and the radius at
+    the model's states, and holds to first order in its own width, whatever ``room_model`` says of
+    ``h``. It is about the channel alone: an error in the drift, and a plant stepped by another map
+    than the model's, are outside it. Reading ``h`` at both ends of a step also catches a path that
+    leaves the set between the points the condition is read at: at ``dt = 1`` and ``alpha = 1`` a
+    plan that met it at every step of twelve ended outside the set. Between the steps nothing is
+    read.
 
     Raises:
         ValueError: if ``cvar_gap`` is not positive or not finite, which would make the radius
@@ -3040,12 +3210,27 @@ def certify_safety(
             below 1 or not finite, which is not a sensitivity level; if the actuation budget
             backing ``gamma_star`` is non-positive, which asks how much confounding a controller
             with no authority tolerates; if ``u_max`` per lever has an entry negative or nan,
-            none positive, not one per lever, or a 0 at a lever the plan moves; if a state of the
-            plan's predicted path is not a finite number; if the model is not affine in the
-            action where the condition is read; or, with a ``sensitivity``, if ``gamma`` is at
-            or past ``(3 + sqrt 5)/2`` or the sensitivity's channel has another size.
+            none positive, not one per lever, or a 0 at a lever the plan moves from ``centre``;
+            if ``centre`` is not a finite number per lever; if ``curvature`` is negative or not
+            finite; if a state of the plan's predicted
+            path is not a finite number; if the model is not affine in the action where the
+            condition is read; or, with a ``sensitivity``, if the sensitivity's channel has
+            another size.
     """
-    return _audit(plan, model, barrier, dt, alpha, gamma, cvar_gap, u_max, None, sensitivity)
+    return _audit(
+        plan,
+        model,
+        barrier,
+        dt,
+        alpha,
+        gamma,
+        cvar_gap,
+        u_max,
+        None,
+        sensitivity,
+        centre,
+        curvature,
+    )
 
 
 def _audit(
@@ -3059,20 +3244,36 @@ def _audit(
     u_max: ArrayLike | None,
     box: tuple[Bound, Bound] | None,
     sensitivity: ChannelSensitivity | None = None,
+    centre: ArrayLike | None = None,
+    curvature: float | None = None,
 ) -> SafetyCertificate:
     """:func:`certify_safety`, with ``gamma_star`` read on the actions ``box`` admits too.
 
     ``box`` is the plan's ``(u_lo, u_hi)``, or None for ``u_max``'s set alone. That set is
-    symmetric about zero, so a box that is not -- a lever that may only rise, as spend does --
-    admits less of it: where a step's best action of the set leaves the box, it is drawn back along
-    its ray to the box's edge, and the step's ceiling read at that action's size. On one lever that
-    is the box's best action, so the ceiling is exact; on several it is a lower bound.
+    symmetric about its centre, so a box that is not -- a lever that may only rise, as spend
+    does -- admits less of it: where a step's best action of the set leaves the box, it is drawn
+    back along its ray from the centre to the box's edge, and the step's ceiling read at that
+    action's distance. On one lever that is the box's best action, so the ceiling is exact; on
+    several it is a lower bound.
     """
     if isinstance(barrier, tuple):
         if not barrier:
             raise ValueError("an empty tuple of barriers holds no condition")
         audits = [
-            _audit(plan, model, one, dt, alpha, gamma, cvar_gap, u_max, box, sensitivity)
+            _audit(
+                plan,
+                model,
+                one,
+                dt,
+                alpha,
+                gamma,
+                cvar_gap,
+                u_max,
+                box,
+                sensitivity,
+                centre,
+                curvature,
+            )
             for one in barrier
         ]
         return _every_barrier(audits)
@@ -3086,20 +3287,26 @@ def _audit(
             f"the plan's predicted state {int(np.argmin(finite))} is not a finite number, and no "
             "barrier condition reads there"
         )
+    bend, room_model = _room_curvature(
+        barrier, plan.trajectory, None if curvature is None else _bend(curvature)
+    )
     states, actions = plan.trajectory[:-1], plan.actions
+    # every action is read from the centre: the field's error there is the drift's alone
+    point = None if centre is None else _centre(centre, actions.shape[1])
+    moves = actions if point is None else actions - jnp.asarray(point, actions.dtype)
     shape, inverse = None, None
     if u_max is None or np.ndim(u_max) == 0:
         authority = (
             float(np.asarray(u_max, dtype=np.float64))
             if u_max is not None
-            else float(jnp.max(jnp.linalg.norm(actions, axis=1)))
+            else float(jnp.max(jnp.linalg.norm(moves, axis=1)))
         )
         reach = np.full(actions.shape[1], authority)
     else:
         reach = _reach(u_max, actions.shape[1])
         shape, inverse, authority = _action_shape(reach)
         if inverse is not None:
-            _act_within(reach, np.any(np.asarray(actions) != 0.0, axis=0), "the plan moves it")
+            _act_within(reach, np.any(np.asarray(moves) != 0.0, axis=0), "the plan moves it")
     if sensitivity is None:
         size = _channel_size(model, states[0], actions.shape[1], shape)
         delta: float | Array = confounding_robust_inflation(cvar_gap, 0.0, gamma) * size
@@ -3108,7 +3315,7 @@ def _audit(
         width = _ChannelWidth.build(sensitivity, actions.shape[1], shape, gamma, states.dtype)
         delta = width(states)
     h_values, grad_norm, drift, channel = _barrier_terms(model, barrier, states, actions, dt)
-    guaranteed = _guaranteed(drift, channel, grad_norm, actions, delta, inverse)
+    guaranteed = _guaranteed(drift, channel, grad_norm, actions, delta, inverse, point)
     required = -alpha * h_values
     # The condition is read at the model's states, and a plant whose channel is in the set is
     # elsewhere: under the plan's own actions its path drifts from the model's by up to the
@@ -3122,8 +3329,9 @@ def _audit(
         dt,
         jnp.asarray(delta, states.dtype),
         None if inverse is None else jnp.asarray(inverse, states.dtype),
+        None if point is None else jnp.asarray(point, states.dtype),
     )
-    room = _barrier_room(barrier, plan.trajectory, deviation)
+    room = _barrier_room(barrier, plan.trajectory, deviation, bend)
     certified = (guaranteed >= required) & (room[:-1] >= 0.0) & (room[1:] >= 0.0)
 
     if not authority > 0.0:  # a nan passed `authority <= 0` and priced every step's threshold nan
@@ -3137,14 +3345,29 @@ def _audit(
     )
     if shape is not None:
         unit = unit * jnp.asarray(shape, unit.dtype)
-    budgets = _box_budgets(np.asarray(unit, dtype=np.float64), authority, reach, box)
-    probes = [actions] + (
-        [unit * jnp.asarray(budgets, unit.dtype)[:, None]] if np.isfinite(budgets).all() else []
+    # read from the centre: the box less it bounds the steps along the ray, the best action is the
+    # centre plus that step, and the drift it adds to is the field's at the centre
+    budgets = _box_budgets(
+        np.asarray(unit, dtype=np.float64),
+        authority,
+        reach,
+        box
+        if box is None or point is None
+        else (
+            np.asarray(box[0], dtype=np.float64) - point,
+            np.asarray(box[1], dtype=np.float64) - point,
+        ),
     )
+    if np.isfinite(budgets).all():
+        best = unit * jnp.asarray(budgets, unit.dtype)[:, None]
+        probes = [actions, best if point is None else best + jnp.asarray(point, best.dtype)]
+    else:
+        probes = [actions]
     _refuse_curved(model, barrier, states, probes, dt)
+    at_centre = drift if point is None else drift + channel @ jnp.asarray(point, channel.dtype)
     thresholds = [
         _threshold(float(a), float(c), float(budget), float(alpha * h))
-        for a, c, h, budget in zip(drift, lengths, h_values, budgets, strict=True)
+        for a, c, h, budget in zip(at_centre, lengths, h_values, budgets, strict=True)
     ]
     if sensitivity is None or width is None:
         per_step = tuple(
@@ -3177,6 +3400,7 @@ def _audit(
         radius=float(jnp.max(delta * grad_norm)),
         radius_model="relative" if sensitivity is None else "absolute",
         deviation=deviation,
+        room_model=room_model,
     )
 
 
@@ -3188,8 +3412,9 @@ def _sensitivity_gamma_star(
 
     ``nan`` where the sampling part alone exceeds it, ``1.0`` where it takes all of it, ``inf``
     where the threshold is (the drift alone keeps the step) or the radius cannot reach it (no
-    channel error at the state, or no confounding to scale), and otherwise below
-    ``(3 + sqrt 5)/2`` (``validation/channel_bias_bound.mac`` STEP 3c)."""
+    channel error at the state, or no confounding to scale), and otherwise the level
+    ``1 + k^2 + k sqrt(1 + k^2)`` at ``k = (threshold / unit - sampling) / confounding``
+    (``validation/channel_bias_bound.mac`` STEP 3)."""
     if unit == 0.0:
         return math.inf if threshold >= 0.0 else math.nan
     room = threshold / unit - sensitivity.sampling
@@ -3216,7 +3441,7 @@ def _box_budgets(
     unit: NDArray[np.float64],
     authority: float,
     reach: NDArray[np.float64],
-    box: tuple[Bound, Bound] | None,
+    box: tuple[ArrayLike, ArrayLike] | None,
 ) -> NDArray[np.float64]:
     """Per step, the largest ``t <= authority`` with ``t * unit[k]`` inside ``box``.
 
@@ -3308,6 +3533,7 @@ def _every_barrier(audits: Sequence[SafetyCertificate]) -> SafetyCertificate:
         radius=max(audit.radius for audit in audits),
         radius_model=audits[0].radius_model,  # one sensitivity audits every barrier
         deviation=audits[0].deviation,  # the plant's path, which no barrier moves
+        room_model=max((audit.room_model for audit in audits), key=_ROOM_ORDER.index),
     )
 
 

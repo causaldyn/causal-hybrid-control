@@ -2,7 +2,8 @@
 
 **Status:** accepted, 2026-10-21. Amends ADR 0101 (what a certified step reads), ADR 0111 (what a
 step certified under a sensitivity promises) and ADR 0112 (what the held solve holds at a next
-state).
+state). Amended by ADR 0132, 2026-10-25: the room is `h - ||grad h|| e - κ e²/2`, `κ` the
+barrier's curvature, a bound on a quadratic `h` or under the caller's `curvature`.
 
 ## Context
 

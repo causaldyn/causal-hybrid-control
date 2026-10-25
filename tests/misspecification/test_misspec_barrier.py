@@ -100,12 +100,16 @@ def test_certified_steps_keep_the_plant_safe_where_its_channel_is_in_the_set() -
 
 def test_the_default_absolute_radius_keeps_the_plant_safe_where_its_channel_is_in_it() -> None:
     """The same unrecorded confounder, the log read by Euler, its one-step map: ``prescribe``
-    reads the fit's own sensitivity model by default, and at ``gamma = 2`` its radius at the start,
-    0.52 to 0.55, holds the plant's channel, 0.39 to 0.41 from the fitted one. The plan held there
-    is certified on every step and keeps the plant 0.38 or more below the ceiling. The relative
-    radius at the same level, a third of the fitted channel's size, certified every step of a plan
-    the plant left the set on, by 0.04 to 0.10."""
-    gamma = 2.0
+    reads the fit's own sensitivity model by default. The log's incentive, ``0.9 z + 0.5 q`` and
+    noise of sd 0.5, has half its variance given demand from ``q``: a Gaussian lever, whose
+    maximal correlation with ``q`` is ``sqrt(1/2)``, so it reads at ``gamma = 1/(1 - sqrt(1/2))
+    = 2 + sqrt 2``, where ``kappa = 1``. The radius at the start there, 0.52 to 0.55, holds the
+    plant's channel, 0.39 to 0.41 from the fitted one. The plan held there is certified on every
+    step and keeps the plant 0.39 or more below the ceiling. At ``gamma = 2``, a level the log
+    does not meet, the radius, 0.34 to 0.36, misses the plant's channel, and the relative radius
+    there, a third of the fitted channel's size, certified every step of a plan the plant left
+    the set on, by 0.04 to 0.09. (Up to 0.21 ``kappa`` was 1 at ``gamma = 2``.)"""
+    gamma = 2.0 + math.sqrt(2.0)
     for seed in range(3):
         result = ask(
             World(hidden=0.4),

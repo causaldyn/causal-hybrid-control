@@ -2,7 +2,8 @@
 
 **Status:** accepted, 2026-10-13. Amends the barrier's audit (ADR 0002, ADR 0085) and the rate
 error of `prescribe`'s tube (ADR 0087). Amended by ADR 0096, 2026-10-13: the tube's rate error
-adds the drift's own error, which part 2 left out.
+adds the drift's own error, which part 2 left out. Amended by ADR 0132, 2026-10-25: the barrier
+reads each action from the log's mean action too, which closes the item left open below.
 
 ## Context
 

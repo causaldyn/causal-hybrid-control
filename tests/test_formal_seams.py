@@ -18,7 +18,7 @@ import math
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import assume, given, settings
+from hypothesis import given, settings
 from hypothesis import strategies as st
 from scipy import integrate
 from scipy.optimize import brentq, linprog, minimize
@@ -35,7 +35,9 @@ from chc.integrate import rollout
 from chc.plan import (
     CausalPlan,
     ChannelSensitivity,
+    _barrier_room,
     _deviation_tube,
+    _room_curvature,
     _row_bound,
     _sensitivity_gamma_star,
     certify_safety,
@@ -59,9 +61,18 @@ FORMAL_LINKS = {
     "chc.plan.ChannelSensitivity": {
         "cites": ("channel_bias_bound.mac",),
         "tests": (
-            "test_channel_factor_is_the_bhatia_davis_share",
-            "test_channel_factor_inverts_and_ends_at_the_limit",
+            "test_channel_factor_is_the_sharp_share",
+            "test_no_law_in_the_box_correlates_past_the_sharp_share",
+            "test_channel_factor_inverts_at_every_level",
             "test_channel_radius_bounds_the_bias_of_a_discrete_confounded_law",
+            "test_channel_radius_meets_the_bias_of_the_two_valued_lever",
+        ),
+    },
+    "chc.plan._barrier_room": {
+        "cites": ("barrier_room.mac",),
+        "tests": (
+            "test_a_disk_s_room_is_the_least_h_its_plant_reaches",
+            "test_the_room_of_a_quadratic_barrier_is_at_most_its_least_h",
         ),
     },
     "chc.plan._deviation_tube": {
@@ -72,10 +83,11 @@ FORMAL_LINKS = {
         ),
     },
     "chc.plan.certify_safety": {
-        "cites": ("barrier_deviation_tube.mac",),
+        "cites": ("barrier_centred.mac", "barrier_deviation_tube.mac"),
         "tests": (
             "test_a_step_whose_plant_can_leave_the_set_is_not_certified",
             "test_deviation_tube_is_the_gap_to_the_plant_at_the_radius_s_edge",
+            "test_centred_gamma_star_on_the_exact_two_lever_example",
         ),
     },
     "chc.plan._row_bound": {
@@ -104,7 +116,6 @@ FORMAL_LINKS = {
 }
 
 Z975 = float(norm.ppf(0.975))
-GAMMA_LIMIT = (3.0 + math.sqrt(5.0)) / 2.0
 
 
 # ---- the tube's scale: tube_level.mac ----
@@ -278,51 +289,101 @@ def test_mis_reads_the_model_s_cost_and_dr_removes_its_first_order_error() -> No
 
 
 def _kappa(gamma: float) -> float:
-    """kappa(Gamma) from rho^2 = (Gamma - 1)^2 / Gamma as kappa^2 = rho^2 / (1 - rho^2)."""
-    rho2 = (gamma - 1.0) ** 2 / gamma
-    return math.sqrt(rho2 / (1.0 - rho2))
+    """kappa(Gamma) from rho = 1 - 1/Gamma as kappa^2 = rho^2 / (1 - rho^2), the denominator read
+    as (1 - rho)(1 + rho) with 1 - rho = 1/Gamma, which does not cancel at a large Gamma."""
+    rho = 1.0 - 1.0 / gamma
+    return rho / math.sqrt((1.0 + rho) / gamma)
+
+
+def _maximal_correlation(p: np.ndarray, q: np.ndarray, ratio: np.ndarray) -> float:
+    """The maximal correlation of the discrete law ``p_i q_j ratio_ij``: the second singular value
+    of ``diag(sqrt p) ratio diag(sqrt q)``, whose first is 1 (Renyi 1959)."""
+    scaled = np.sqrt(p)[:, None] * ratio * np.sqrt(q)[None, :]
+    return float(np.linalg.svd(scaled, compute_uv=False)[1])
 
 
 @settings(max_examples=30, deadline=None)
-@given(gamma=st.floats(1.0, 2.6))
-def test_channel_factor_is_the_bhatia_davis_share(gamma) -> None:
-    """channel_bias_bound.mac STEP 1 and 3a: the largest variance of w - 1 over laws of a weight
-    w in [1/Gamma, Gamma] with mean 1, a linear program over a grid holding both ends, is
-    rho^2 = (Gamma - 1)^2 / Gamma; the factor is kappa^2 = rho^2 / (1 - rho^2)."""
-    grid = np.unique(np.concatenate([np.linspace(1.0 / gamma, gamma, 401), [1.0]]))
-    spread = (grid - 1.0) ** 2
-    # HiGHS stops at a vertex whose reduced costs clear its 1e-7 tolerance: costs of 1e-7 at
-    # Gamma near 1 leave rho^2 a fifth short unless the largest is scaled to one.
-    scale = float(spread.max()) or 1.0
+@given(gamma=st.floats(1.0, 50.0))
+def test_channel_factor_is_the_sharp_share(gamma) -> None:
+    """channel_bias_bound.mac STEP 3a and 4a-4b: the lever of two values that takes the
+    confounder's sign with probability 1 - 1/(2 Gamma) has density ratios 1/Gamma and
+    2 - 1/Gamma, inside [1/Gamma, Gamma], and maximal correlation 1 - 1/Gamma with it, the share's
+    root; the factor is kappa^2 = rho^2 / (1 - rho^2) at rho = 1 - 1/Gamma."""
+    agree = 1.0 - 1.0 / (2.0 * gamma)
+    ratio = 2.0 * np.array([[agree, 1.0 - agree], [1.0 - agree, agree]])
+    assert ratio.min() == pytest.approx(1.0 / gamma, rel=1e-14, abs=0.0)
+    assert ratio.max() <= gamma * (1.0 + 1e-15)
+    half = np.full(2, 0.5)
+    assert _maximal_correlation(half, half, ratio) == pytest.approx(
+        1.0 - 1.0 / gamma, rel=1e-12, abs=1e-15
+    )
+    rho2 = (1.0 - 1.0 / gamma) ** 2
+    assert ChannelSensitivity.factor(gamma) == pytest.approx(
+        math.sqrt(rho2 / (1.0 - rho2)), rel=1e-13, abs=0.0
+    )
+
+
+def _vertex(p: np.ndarray, q: np.ndarray, gamma: float, objective: np.ndarray) -> np.ndarray | None:
+    """The density ratio of largest ``sum objective_ij ratio_ij`` among the laws with marginals
+    ``p`` and ``q`` whose ratio is at least ``1/gamma``, a vertex of that polytope."""
+    rows, cols = p.size, q.size
+    equal = [np.kron(np.eye(rows)[i], q) for i in range(rows)]
+    equal += [np.kron(p, np.eye(cols)[j]) for j in range(cols)]
     program = linprog(
-        -spread / scale,
-        A_eq=np.vstack([np.ones_like(grid), grid]),
-        b_eq=[1.0, 1.0],
-        bounds=[(0.0, None)] * grid.size,
+        -objective.ravel(),
+        A_eq=np.array(equal),
+        b_eq=np.ones(rows + cols),
+        bounds=[(1.0 / gamma, None)] * (rows * cols),
         method="highs",
     )
-    assert program.status == 0
-    rho2 = -float(program.fun) * scale
-    assert rho2 == pytest.approx((gamma - 1.0) ** 2 / gamma, rel=1e-9, abs=1e-15)
-    if rho2 < 1.0:
-        assert ChannelSensitivity.factor(gamma) == pytest.approx(
-            math.sqrt(rho2 / (1.0 - rho2)), rel=1e-7, abs=1e-12
-        )
+    return program.x.reshape(rows, cols) if program.status == 0 else None
 
 
 @settings(max_examples=40, deadline=None)
-@given(gamma=st.floats(1.0, GAMMA_LIMIT, exclude_max=True))
-def test_channel_factor_inverts_and_ends_at_the_limit(gamma) -> None:
-    """channel_bias_bound.mac STEP 3b-3d: level_at inverts factor below (3 + sqrt 5)/2, where the
-    factor is infinite and from which on it stays so; G(0) = 1 and G(inf) is the limit."""
+@given(
+    seed=st.integers(0, 2**31 - 1),
+    rows=st.integers(2, 6),
+    cols=st.integers(2, 6),
+    gamma=st.floats(1.01, 20.0),
+)
+def test_no_law_in_the_box_correlates_past_the_sharp_share(seed, rows, cols, gamma) -> None:
+    """channel_bias_bound.mac STEP 1: over discrete laws whose density ratio is at least 1/Gamma,
+    the factor's lower side alone, the maximal correlation never passes 1 - 1/Gamma. The laws read
+    are the polytope's vertices a random objective reaches, then the ones an ascent on the
+    correlation's linearisation at its top singular pair reaches, twenty steps of it, where the
+    largest correlations lie. Up to 0.21 the share's root was (Gamma - 1)/sqrt(Gamma), which no
+    law reaches at any Gamma > 1."""
+    rng = np.random.default_rng(seed)
+    p, q = rng.dirichlet(np.ones(rows)), rng.dirichlet(np.ones(cols))
+    ratio = _vertex(p, q, gamma, rng.normal(size=(rows, cols)))
+    assert ratio is not None  # the product law, ratio 1, is in the polytope
+    sharp = 1.0 - 1.0 / gamma
+    for _ in range(20):
+        assert _maximal_correlation(p, q, ratio) <= sharp + 1e-9
+        scaled = np.sqrt(p)[:, None] * ratio * np.sqrt(q)[None, :]
+        left, _, right = np.linalg.svd(scaled)
+        f, g = left[:, 1] / np.sqrt(p), right[1] / np.sqrt(q)
+        moved = _vertex(p, q, gamma, (p * f)[:, None] * (q * g)[None, :])
+        if moved is None:
+            break
+        ratio = moved
+    assert _maximal_correlation(p, q, ratio) <= sharp + 1e-9
+
+
+@settings(max_examples=40, deadline=None)
+@given(gamma=st.floats(1.0, 1e300))
+def test_channel_factor_inverts_at_every_level(gamma) -> None:
+    """channel_bias_bound.mac STEP 3b-3d: the factor is finite at every finite level, which up to
+    0.21 ended at (3 + sqrt 5)/2, and level_at inverts it there; G(0) = 1, the factor grows as
+    sqrt(Gamma / 2), and inf maps to inf both ways."""
     kappa = ChannelSensitivity.factor(gamma)
-    assume(math.isfinite(kappa) and kappa < 1e6)
-    assert ChannelSensitivity.level_at(kappa) == pytest.approx(gamma, rel=1e-9, abs=0.0)
-    assert ChannelSensitivity.factor(GAMMA_LIMIT) == math.inf
-    assert ChannelSensitivity.factor(GAMMA_LIMIT + gamma) == math.inf
+    assert math.isfinite(kappa)
+    assert ChannelSensitivity.level_at(kappa) == pytest.approx(gamma, rel=1e-12, abs=0.0)
+    if gamma > 1e8:
+        assert kappa == pytest.approx(math.sqrt(gamma / 2.0), rel=1e-7, abs=0.0)
     assert ChannelSensitivity.level_at(0.0) == 1.0
-    assert ChannelSensitivity.level_at(math.inf) == GAMMA_LIMIT
-    assert ChannelSensitivity.level_at(1e12) == pytest.approx(GAMMA_LIMIT, rel=1e-12, abs=0.0)
+    assert ChannelSensitivity.factor(math.inf) == math.inf
+    assert ChannelSensitivity.level_at(math.inf) == math.inf
 
 
 @settings(max_examples=40, deadline=None)
@@ -337,7 +398,7 @@ def test_channel_radius_bounds_the_bias_of_a_discrete_confounded_law(
 ) -> None:
     """channel_bias_bound.mac STEP 1-2 and the summary: on an exact discrete law -- a state x on
     three points, a hidden Z independent of it, the lever u | x, Z whose density ratio to u | x
-    lies in [1/Gamma, Gamma], and the rate's noise g(x, Z) + eta -- the least-squares channel on
+    is at least 1/Gamma, and the rate's noise g(x, Z) + eta -- the least-squares channel on
     the action residuals a = u - E[u | x], with features [1, x], is off by at most the radius at
     every state, read with sampling 0, the design's second moment and the residual's. The radius
     is kappa(Gamma) sqrt(E r^2) times the largest |[1, x] c| over the ellipsoid c'Vc <= 1, read
@@ -352,8 +413,7 @@ def test_channel_radius_bounds_the_bias_of_a_discrete_confounded_law(
     given_hidden = (1.0 - mix) * base[:, None, :] + mix * tilt  # (x, Z, u)
     given_state = np.einsum("z,xzu->xu", p_hidden, given_hidden)
     ratio = given_hidden / given_state[:, None, :]
-    gamma = float(max(ratio.max(), (1.0 / ratio).max()))
-    assume(gamma < 0.99 * GAMMA_LIMIT)
+    gamma = float((1.0 / ratio).max())  # the factor's lower side, all the bound reads
     push = rng.normal(0.0, 1.0, (3, hidden))
     push -= np.einsum("z,xz->x", p_hidden, push)[:, None]  # what the drift does not absorb
     eta2 = float(rng.uniform(0.0, 1.0))
@@ -383,6 +443,31 @@ def test_channel_radius_bounds_the_bias_of_a_discrete_confounded_law(
         assert abs(float(np.array([1.0, x]) @ beta)) <= radius * (1 + 1e-9) + 1e-14
 
 
+@settings(max_examples=30, deadline=None)
+@given(gamma=st.floats(1.0, 50.0), push=st.floats(0.1, 5.0))
+def test_channel_radius_meets_the_bias_of_the_two_valued_lever(gamma, push) -> None:
+    """channel_bias_bound.mac STEP 4c: Z = +-1, the lever u = +-1 taking Z's sign with probability
+    1 - 1/(2 Gamma), and the rate's noise push Z alone. On the exact law, enumerated, the
+    least-squares channel's bias, push (1 - 1/Gamma), is the radius at Gamma read with sampling
+    0, to rounding: the bound cannot be narrowed at any level."""
+    agree = 1.0 - 1.0 / (2.0 * gamma)
+    lever = np.array([1.0, 1.0, -1.0, -1.0])
+    hidden = np.array([1.0, -1.0, 1.0, -1.0])
+    mass = 0.5 * np.where(lever == hidden, agree, 1.0 - agree)  # P(Z) P(u | Z)
+    gram = float(np.sum(mass * lever**2))
+    beta = float(np.sum(mass * lever * push * hidden)) / gram
+    left = float(np.sum(mass * (push * hidden) ** 2)) - beta * gram * beta
+    sensitivity = ChannelSensitivity(
+        gram=np.array([[gram]]),
+        channel_degree=0,
+        sampling=0.0,
+        confounding=math.sqrt(max(left, 0.0)),
+        level=0.95,
+    )
+    assert beta == pytest.approx(push * (1.0 - 1.0 / gamma), rel=1e-12, abs=1e-15)
+    assert sensitivity.radius([0.0], gamma) == pytest.approx(beta, rel=1e-9, abs=1e-12)
+
+
 # ---- the largest certified level: channel_bias_bound.mac STEP 3c ----
 
 
@@ -404,11 +489,14 @@ def test_gamma_star_is_where_the_radius_meets_the_threshold(
 ) -> None:
     """channel_bias_bound.mac STEP 3c: the step's largest Gamma is the root, found by bisection
     on kappa(Gamma) = sqrt(rho^2 / (1 - rho^2)), of unit (sampling + kappa(Gamma) confounding)
-    = threshold, below (3 + sqrt 5)/2; the radius grows in Gamma, so every smaller level holds."""
+    = threshold, finite at every finite threshold; the radius grows in Gamma, so every smaller
+    level holds."""
     threshold = unit * (sampling + room)
     star = _sensitivity_gamma_star(threshold, unit, _sensitivity(sampling, confounding))
-    assert 1.0 < star < GAMMA_LIMIT
-    upper = GAMMA_LIMIT * (1.0 - 1e-12)
+    assert 1.0 < star < math.inf
+    upper = 2.0
+    while unit * (sampling + _kappa(upper) * confounding) <= threshold:
+        upper *= 2.0
     root = brentq(
         lambda g: unit * (sampling + _kappa(g) * confounding) - threshold,
         1.0,
@@ -550,6 +638,197 @@ def test_a_step_whose_plant_can_leave_the_set_is_not_certified() -> None:
     room = 1.0 - np.asarray(plan.trajectory)[:, 0] - np.asarray(audit.deviation)
     np.testing.assert_allclose(room, [1.0, 0.0, -1.0 / 3.0, -4.0 / 9.0], rtol=0.0, atol=1e-15)
     assert audit.certified_steps == 1
+
+
+# ---- the barrier's room: barrier_room.mac ----
+
+
+def test_a_disk_s_room_is_the_least_h_its_plant_reaches() -> None:
+    """barrier_room.mac STEP 5: an integrator at ``dt = 1``, ``h = 1 - x^2``, ``b_hat = 1``, an
+    exact radius of 8/13 and one action 13/20, so the deviation at the next state is 2/5. The room
+    read to first order, ``h - ||grad h|| e = 23/400``, certified the step; the plant at
+    ``b = 21/13`` reaches ``h = -41/400``, which the room less ``kappa e^2 / 2``, ``kappa = 2``,
+    reads exactly, so the step is not certified."""
+    model = LinearDynamics(jnp.zeros((1, 1)), jnp.ones((1, 1)))
+    plan = _hand_plan(model, np.array([[13.0 / 20.0]]), 1.0)
+
+    def disk(x: jnp.ndarray) -> jnp.ndarray:
+        return 1.0 - x[0] ** 2
+
+    audit = certify_safety(
+        plan, model, disk, 1.0, u_max=5.0, sensitivity=_sensitivity(8.0 / 13.0, 0.0)
+    )
+    assert audit.room_model == "quadratic"
+    assert float(audit.deviation[1]) == pytest.approx(0.4, rel=1e-14, abs=0.0)
+    assert bool(audit.guaranteed_derivative[0] >= audit.required[0])
+    plant = LinearDynamics(jnp.zeros((1, 1)), jnp.full((1, 1), 21.0 / 13.0))
+    reached = float(rollout(plant, jnp.zeros(1), plan.actions, 1.0)[1, 0])  # type: ignore[arg-type]
+    room = _barrier_room(disk, plan.trajectory, audit.deviation, 2.0)
+    assert float(disk(jnp.array([reached]))) == pytest.approx(-41.0 / 400.0, rel=1e-13, abs=0.0)
+    assert float(room[1]) == pytest.approx(-41.0 / 400.0, rel=1e-13, abs=0.0)
+    assert audit.certified_steps == 0
+    assert (
+        certify_safety(
+            plan, model, disk, 1.0, u_max=5.0, sensitivity=_sensitivity(0.5, 0.0)
+        ).certified_steps
+        == 1
+    )  # e = 13/40: the plant reaches h = 1 - (39/40)^2 > 0
+
+
+def _trust_region_least(gradient: np.ndarray, hessian: np.ndarray, radius: float) -> float:
+    """The least of ``g'd + d'Hd / 2`` over ``||d|| <= radius``: the trust region's subproblem, by
+    the eigenbasis and a root of its secular equation (More and Sorensen 1983); the hard case,
+    ``g`` orthogonal to the least eigenvector, has measure zero under the draws."""
+    values, vectors = np.linalg.eigh(hessian)
+    along = vectors.T @ gradient
+
+    def step(mu: float) -> np.ndarray:
+        return -along / (values + mu)
+
+    if values[0] > 0.0 and np.linalg.norm(step(0.0)) <= radius:
+        d = step(0.0)
+    else:
+        low = max(0.0, -values[0]) + 1e-14 * (1.0 + abs(values[0]))
+        high = low + 1.0
+        while np.linalg.norm(step(high)) > radius:
+            high *= 2.0
+        mu = brentq(lambda m: np.linalg.norm(step(m)) - radius, low, high, xtol=1e-15)
+        d = step(mu)
+    return float(along @ d + 0.5 * d @ (values * d))
+
+
+@settings(max_examples=60, deadline=None)
+@given(
+    seed=st.integers(0, 2**31 - 1),
+    states=st.integers(1, 3),
+    ball=st.booleans(),
+    radius=st.floats(1e-3, 2.0),
+)
+def test_the_room_of_a_quadratic_barrier_is_at_most_its_least_h(seed, states, ball, radius) -> None:
+    """barrier_room.mac STEP 1-3: on ``h(y) = h0 + g'(y - x) + (y - x)'H(y - x)/2``, ``H`` drawn
+    symmetric, the room at ``x`` with deviation ``e`` is read as quadratic, ``kappa`` the largest
+    eigenvalue of ``-H`` clipped at 0, and is at most the least ``h`` over the ball, the trust
+    region's subproblem; on ``H = -c I``, a ball's, it is that least, to rounding."""
+    rng = np.random.default_rng(seed)
+    centre = rng.normal(size=states)
+    gradient = rng.normal(size=states)
+    if ball:
+        hessian = -abs(float(rng.normal())) * np.eye(states) - 0.1 * np.eye(states)
+    else:
+        square = rng.normal(size=(states, states))
+        hessian = 0.5 * (square + square.T)
+    h0 = float(rng.normal())
+    h_matrix, g_vector, x_vector = (jnp.asarray(v) for v in (hessian, gradient, centre))
+
+    def quadratic(y: jnp.ndarray) -> jnp.ndarray:
+        d = y - x_vector
+        return h0 + g_vector @ d + 0.5 * d @ h_matrix @ d
+
+    path = jnp.asarray(centre[None, :] + rng.normal(size=(3, states)))
+    path = path.at[0].set(x_vector)
+    kappa, model = _room_curvature(quadratic, path, None)
+    assert model == "quadratic"
+    assert kappa == pytest.approx(
+        max(float(np.linalg.eigvalsh(-hessian)[-1]), 0.0), rel=1e-12, abs=1e-15
+    )
+    room = float(_barrier_room(quadratic, path[:1], jnp.array([radius]), kappa)[0])
+    least = h0 + _trust_region_least(gradient, hessian, radius)
+    scale = abs(h0) + np.linalg.norm(gradient) * radius + np.abs(hessian).max() * radius**2
+    assert room <= least + 1e-12 * scale
+    if ball:
+        assert room == pytest.approx(least, rel=0.0, abs=1e-12 * scale)
+
+
+def test_the_room_reads_what_the_barrier_is() -> None:
+    """An affine ``h`` reads ``affine`` and no curvature; a quadratic one its Hessian's; one whose
+    Hessian moves along the path, ``1 - x^4``, ``first_order`` and the room of an affine ``h``,
+    unless a ``curvature`` bounds it; several barriers read as the weakest; a curvature negative
+    or not finite is refused."""
+    model = LinearDynamics(jnp.zeros((1, 1)), jnp.ones((1, 1)))
+    plan = _hand_plan(model, np.array([[0.2], [0.2], [0.2]]), 1.0)
+    path = plan.trajectory
+    assert _room_curvature(_ceiling, path, None) == (0.0, "affine")
+    assert _room_curvature(lambda x: 1.0 - 3.0 * x[0] ** 2, path, None) == (6.0, "quadratic")
+    assert _room_curvature(lambda x: 1.0 + x[0] ** 2, path, None) == (0.0, "quadratic")
+
+    def quartic(x: jnp.ndarray) -> jnp.ndarray:
+        return 1.0 - x[0] ** 4
+
+    assert _room_curvature(quartic, path, None) == (0.0, "first_order")
+    assert _room_curvature(quartic, path, 7.5) == (7.5, "bounded")
+    radius = _sensitivity(0.5, 0.0)
+    loose = certify_safety(plan, model, quartic, 1.0, u_max=5.0, sensitivity=radius)
+    bounded = certify_safety(
+        plan, model, quartic, 1.0, u_max=5.0, sensitivity=radius, curvature=12.0 * 0.9**2
+    )
+    assert (loose.room_model, bounded.room_model) == ("first_order", "bounded")
+    first = _barrier_room(quartic, path, loose.deviation)
+    np.testing.assert_array_equal(
+        np.asarray(_barrier_room(quartic, path, loose.deviation, 0.0)), np.asarray(first)
+    )
+    several = certify_safety(plan, model, (_ceiling, quartic), 1.0, u_max=5.0, sensitivity=radius)
+    assert several.room_model == "first_order"
+    assert certify_safety(plan, model, (_ceiling,), 1.0, u_max=5.0).room_model == "affine"
+    for wrong in (-1.0, math.inf, math.nan):
+        with pytest.raises(ValueError, match="bounds no bend"):
+            certify_safety(plan, model, quartic, 1.0, u_max=5.0, curvature=wrong)
+
+
+# ---- the barrier read from the log's mean action: barrier_centred.mac ----
+
+
+def _centred_example(centre: tuple[float, float] | None, shift: float = 0.0) -> list[float]:
+    """barrier_centred.mac STEP 6's one state and two levers, ``u1``'s zero moved by ``shift``,
+    the action and the centre with it: the step's ``gamma*`` under the relative radius and under
+    the absolute one."""
+    b = jnp.array([[0.3, 8.0 / 15.0]])
+
+    class Shifted(LinearDynamics):
+        def __call__(self, t, x, u):  # type: ignore[no-untyped-def]
+            return self.a_matrix @ x + self.b_matrix @ (u - jnp.array([shift, 0.0]))
+
+    model = Shifted(jnp.array([[-0.5]]), b)
+    actions = jnp.array([[1.0 + shift, 0.5]])
+    plan = CausalPlan(
+        actions=actions,
+        trajectory=rollout(model, jnp.array([0.25]), actions, 0.1),
+        task_cost=0.0,
+        uncertainty_tube=None,
+        certified_horizon=None,
+        solver_status="converged",
+        solver_iterations=0,
+    )
+    moved = None if centre is None else (centre[0] + shift, centre[1])
+    reach = (2.0, 1.5) if centre is not None else (3.0, 1.0)
+    sensitivity = ChannelSensitivity(
+        gram=np.eye(2) / 4.0, channel_degree=0, sampling=0.1, confounding=0.2, level=0.95
+    )
+
+    def ceiling(x: jnp.ndarray) -> jnp.ndarray:
+        return 2.0 * (0.3 - x[0])
+
+    return [
+        certify_safety(
+            plan, model, ceiling, 0.1, gamma=1.5, u_max=reach, sensitivity=one, centre=moved
+        ).step_gamma_star[0]
+        for one in (None, sensitivity)
+    ]
+
+
+@pytest.mark.parametrize("shift", [0.0, 100.0, -7.5])
+def test_centred_gamma_star_on_the_exact_two_lever_example(shift: float) -> None:
+    """barrier_centred.mac STEP 6: x' = -x/2 + (3/10) u1 + (8/15) u2, h = 2 (3/10 - x) at x = 1/4,
+    the log's mean action (1, 1/2) and each lever's largest distance from it (2, 3/2). The
+    threshold is d* = 73/120, so gamma* is 193/47 under the relative radius of gap 1 and
+    1 + k^2 + k sqrt(1 + k^2) at k = 25/96 under the absolute one, sampling 1/10, confounding 1/5
+    and nu = 2: the same wherever u1's zero is. Read from the zero, the box [-1, 3] x [-1, 1]
+    giving (3, 1), the drift at zero alone keeps the step, and gamma* is inf."""
+    k = 25.0 / 96.0
+    relative, absolute = _centred_example((1.0, 0.5), shift)
+    assert relative == pytest.approx(193.0 / 47.0, rel=1e-12, abs=0.0)
+    assert absolute == pytest.approx(1.0 + k * k + k * math.sqrt(1.0 + k * k), rel=1e-12, abs=0.0)
+    assert ChannelSensitivity.factor(absolute) == pytest.approx(k, rel=1e-12, abs=0.0)
+    assert _centred_example(None) == [math.inf, math.inf]
 
 
 # ---- the regret bound over a box and rows: regret_bound_rows.mac ----

@@ -2,6 +2,8 @@
 
 **Status:** accepted, 2026-10-24. Amends ADR 0118 (`"rk4"` stays the default) and ADR 0125 (the
 default fit reads the relative radius): from 0.22.0 `prescribe` fits and plans by `"euler"`.
+Amended by ADR 0132 (2026-10-25): a `gamma` at or past `(3 + sqrt 5)/2` no longer raises under
+the absolute radius.
 
 ## Context
 

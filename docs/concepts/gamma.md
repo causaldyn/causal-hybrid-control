@@ -162,8 +162,13 @@ measured amount of hidden confounding. By default the gap there is a share of th
 its operator norm where the plan starts, so `Γ*` does not move with the units of the state or of
 the levers, and it is a relative margin: the radius never leaves the estimate's own size. Given a
 `ChannelSensitivity`, the radius is absolute instead: the channel's sampling error plus the bias
-a confounder within `[1/Γ, Γ]` on the levers' density can put into a least-squares channel, which
-grows without limit as `Γ` reaches `(3 + √5)/2` ([ADR 0111](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0111-gamma-star-from-a-sensitivity-model-of-the-channel.md)).
+a confounder within `[1/Γ, Γ]` on the levers' density can put into a least-squares channel. That
+bias is `κ(Γ) = (Γ-1)/√(2Γ-1)` per unit of the fit's confounding: a confounder explains at most
+`(1 - 1/Γ)²` of an action's variance, and a lever of two values that takes its sign with
+probability `1 - 1/(2Γ)` explains that much, so the radius is finite at every finite `Γ` and is
+met, not only approached ([ADR 0111](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0111-gamma-star-from-a-sensitivity-model-of-the-channel.md), [ADR 0132](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0132-the-barrier-certificate-is-sharp-centred-and-sound.md)).
+A Gaussian lever whose confounder explains a share `R²` of its variance reads as `Γ = 1/(1 - √R²)`: half,
+as `2 + √2`.
 `prescribe` reads its fit's own by default, where the fit is an Euler fit by adjustment, and the
 relative margin otherwise ([ADR 0125](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0125-prescribe-reads-the-fit-s-absolute-radius-by-default.md)). Once the radius swallows the control channel the
 robust-optimal action is exactly zero: with the sign of the channel unidentified, acting cannot

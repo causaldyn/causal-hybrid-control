@@ -1190,3 +1190,40 @@ def test_rounds_no_projection_holds_keep_their_status(
     assert plan.solver_status == ("max_iterations" if steps == 1 else "infeasible")
     assert plan.safety is not None
     assert plan.safety.certified_steps == 0
+
+
+def test_a_held_disk_keeps_the_plant_at_the_radius_s_edge_in_the_set() -> None:
+    """An integrator pushed toward 1.5 under the disk ``1 - x^2``, an exact radius of 0.3 on the
+    channel held in the solve and audited. Its room is read less ``kappa e^2 / 2``,
+    ``kappa = 2``, at the next states the solve holds and at those the audit reads, so the plant
+    at the radius's edge stays in the set over every certified step. Read to first order, the
+    held plan was certified on all 20 steps and that plant reached ``h = -0.056``."""
+    delta = 0.3
+    sensitivity = plan_module.ChannelSensitivity(
+        gram=np.eye(1), channel_degree=0, sampling=delta, confounding=0.0, level=0.95
+    )
+    cost = QuadraticCost(
+        Q=jnp.eye(1), R=0.01 * jnp.eye(1), Qf=10.0 * jnp.eye(1), x_target=jnp.array([1.5])
+    )
+
+    def disk(x: Array) -> Array:
+        return 1.0 - x[0] ** 2
+
+    integrator = LinearDynamics(jnp.zeros((1, 1)), jnp.ones((1, 1)))
+    plan = causal_plan(
+        integrator,
+        jnp.zeros(1),
+        cost,
+        DT,
+        HORIZON,
+        -2.0,
+        2.0,
+        barrier=BarrierConstraint(disk, sensitivity=sensitivity, u_max=(2.0,)),
+    )
+    assert plan.safety is not None
+    assert plan.safety.room_model == "quadratic"
+    steps = plan.safety.certified_steps
+    assert steps == HORIZON
+    edge = LinearDynamics(jnp.zeros((1, 1)), jnp.full((1, 1), 1.0 + delta))
+    reached = np.asarray(rollout(edge, jnp.zeros(1), plan.actions, DT))[: steps + 1, 0]
+    assert np.all(1.0 - reached**2 >= -1e-9)

@@ -1,0 +1,184 @@
+/* The barrier condition read from the log's mean action: the field's error, the worst case over
+   the channel's radius, the best action of the action set, and the largest certified level.
+
+   Setting (chc.plan.certify_safety with centre=, _audit, _HeldBarrier, _deviation_tube). A fit
+   regresses the drift on the log's actions with the channel held, so its drift holds the
+   channel at the log's mean action u_bar: f_hat(x) = f(x) + (B - B_hat) u_bar + e(x), e the
+   drift's own error. Its field then misses the plant's at an action u by
+
+       e(x) + (B_hat - B)(u - u_bar),
+
+   so the channel's error moves the field by the action's distance from u_bar, not from zero.
+   With the action set ||D^-1 (u - u_bar)|| <= U, D = r/U each lever's largest distance r from
+   u_bar over the largest U, and a radius ||(B_hat - B) D|| <= Delta, the condition at a state is
+
+       a + <w, u> - d ||D^-1 (u - u_bar)|| >= -alpha h,   d = Delta ||grad h||,
+
+   a = grad h . f_hat(x), w = B_hat' grad h, and the best action of the set clears it while
+   d <= dstar = ||D w|| - (-alpha h - a_c)/U, a_c = a + <w, u_bar> the drift at u_bar. Inverted, the
+   largest level is (g + c)/(g - c) at c = dstar/(g S ||grad h||) for the relative radius
+   Delta = (G-1)/(G+1) g S, and 1 + k^2 + k sqrt(1 + k^2) at k = (dstar/(||grad h|| nu) - s)/q for
+   the absolute one Delta = nu (s + kappa(G) q) (channel_bias_bound.mac STEP 3). Every term reads
+   u - u_bar, so a lever's zero moved, its log and box with it, moves nothing.
+
+     STEP 1  the field's error at u is the drift's plus the channel's times u - u_bar.
+     STEP 2  the worst case over ||E D|| <= Delta of grad h . E (u - u_bar) is
+             -Delta ||grad h|| ||D^-1 (u - u_bar)||, met by a rank-one E.
+     STEP 3  the best action of the centred set, u_bar + U D (D w)/||D w||, and its value
+             a_c + (||D w|| - d)_+ U.
+     STEP 4  the threshold dstar and the two closed forms of the largest level, each inverted back.
+     STEP 5  a lever's zero moved by s: a - <w, s>, u_bar + s, u + s and the box + s leave every
+             term the same; read from zero they do not.
+     STEP 6  one state, two levers, rational numbers: the levels the code must read.
+*/
+display2d : false$
+
+/* ===== STEP 1: the field's error ===== */
+print("=== STEP 1: model field - plant field = e + (B_hat - B)(u - u_bar) ===")$
+B : matrix([b11, b12], [b21, b22])$
+Bh : matrix([c11, c12], [c21, c22])$
+u : matrix([u1], [u2])$
+ub : matrix([m1], [m2])$
+f : matrix([f1], [f2])$
+e : matrix([e1], [e2])$
+fhat : f + (B - Bh) . ub + e$
+miss : (fhat + Bh . u) - (f + B . u) - (e + (Bh - B) . (u - ub))$
+print("STEP 1 the miss less e + (B_hat - B)(u - u_bar):", ratsimp(miss))$
+print("STEP 1", if every(lambda([v], v = 0), flatten(args(ratsimp(miss)))) then "(PASS)"
+      else "(FAIL)")$
+
+/* ===== STEP 2: the worst case over the radius ===== */
+print("=== STEP 2: min over ||E D|| <= Delta of g' E v = -Delta ||g|| ||D^-1 v||, rank one ===")$
+g : matrix([g1, g2])$
+v : matrix([v1], [v2])$
+Dm : matrix([d1, 0], [0, d2])$
+Di : matrix([1/d1, 0], [0, 1/d2])$
+s : Di . v$
+ng : sqrt(g1^2 + g2^2)$
+ns : sqrt(s[1, 1]^2 + s[2, 1]^2)$
+/* E D = -Delta g' s' / (||g|| ||s||): one singular value, Delta */
+ED : -Delta * transpose(g) . transpose(s) / (ng * ns)$
+E : ED . Di$
+value : (g . E . v)$
+print("STEP 2a g' E v + Delta ||g|| ||D^-1 v|| at the rank-one E:",
+      radcan(value + Delta * ng * ns))$
+print("STEP 2a", if radcan(value + Delta * ng * ns) = 0 then "(PASS)" else "(FAIL)")$
+gram : transpose(ED) . ED$
+print("STEP 2b trace and determinant of (E D)'(E D): Delta^2 and 0 ->",
+      radcan(gram[1, 1] + gram[2, 2]), radcan(determinant(gram)))$
+print("STEP 2b", if radcan(gram[1, 1] + gram[2, 2] - Delta^2) = 0
+      and radcan(determinant(gram)) = 0 then "(PASS: its operator norm is Delta)" else "(FAIL)")$
+/* the bound itself: g' E v = (g E D)(D^-1 v) >= -||g|| ||E D|| ||D^-1 v|| by Cauchy-Schwarz */
+
+/* ===== STEP 3: the best action of the centred set ===== */
+print("=== STEP 3: max over ||D^-1 (u - u_bar)|| <= U of a + <w, u> - d ||D^-1 (u - u_bar)|| ===")$
+w : matrix([w1], [w2])$
+Dw : Dm . w$
+nDw : sqrt(Dw[1, 1]^2 + Dw[2, 1]^2)$
+phi(uu) := a + (transpose(w) . uu) - d * sqrt((Di . (uu - ub))[1, 1]^2
+                                             + (Di . (uu - ub))[2, 1]^2)$
+assume(U > 0, d1 > 0, d2 > 0)$
+ustar : ub + U * Dm . Dw / nDw$
+best : a + (transpose(w) . ub) + (nDw - d) * U$
+print("STEP 3a phi at u_bar + U D (D w)/||D w|| less a_c + (||D w|| - d) U:",
+      radcan(phi(ustar) - best))$
+print("STEP 3a", if radcan(phi(ustar) - best) = 0 then "(PASS)" else "(FAIL)")$
+/* every other action of the set is no better: phi(u_bar + D r (cos t, sin t)) at sample points */
+sample : [w1 = 3/2, w2 = -1, d1 = 1, d2 = 1/2, m1 = 2/3, m2 = -1/4, a = 1/5, U = 2]$
+gap3 : makelist(makelist(
+         float(subst(append(sample, [d = dd]),
+           best - phi(ub + Dm . matrix([r * cos(2 * %pi * k/12)], [r * sin(2 * %pi * k/12)])))),
+         r, [0, 1/2, 1, 3/2, 2]), k, 0, 11)$
+gap3 : append(gap3, makelist(
+         float(subst(append(sample, [d = dd]), best - phi(ub))), dd, [0, 1/3, 1]))$
+print("STEP 3b the least of best - phi over 12 directions x 5 sizes at d in {0, 1/3, 1}:",
+      lmin(flatten(subst(dd = 1/3, gap3))), lmin(flatten(subst(dd = 0, gap3))))$
+print("STEP 3b", if lmin(flatten(append(subst(dd = 0, gap3), subst(dd = 1/3, gap3),
+                                       subst(dd = 1, gap3)))) >= -1e-12
+      then "(PASS: no action of the set does better)" else "(FAIL)")$
+/* past d = ||D w|| the best action is u_bar itself, worth a_c: the (.)_+ */
+print("STEP 3c phi(u_bar) =", ratsimp(phi(ub)), "= a_c")$
+print("STEP 3c", if ratsimp(phi(ub) - (a + (transpose(w) . ub))) = 0 then "(PASS)" else "(FAIL)")$
+
+/* ===== STEP 4: the threshold and the largest level ===== */
+print("=== STEP 4: d* = ||D w|| - (-alpha h - a_c)/U, and Gamma* by both radii ===")$
+ac : a + (transpose(w) . ub)$
+dstar : nDw - (-alphah - ac) / U$
+print("STEP 4a a_c + (||D w|| - d*) U + alpha h =", radcan(ac + (nDw - dstar) * U + alphah))$
+print("STEP 4a", if radcan(ac + (nDw - dstar) * U + alphah) = 0 then "(PASS)" else "(FAIL)")$
+/* the relative radius d(G) = (G-1)/(G+1) g S n at G* = (g S n + d*)/(g S n - d*) */
+Grel : (gap * S * n + ds) / (gap * S * n - ds)$
+print("STEP 4b (G*-1)/(G*+1) g S n - d* =", ratsimp((Grel - 1)/(Grel + 1) * gap * S * n - ds))$
+print("STEP 4b", if ratsimp((Grel - 1)/(Grel + 1) * gap * S * n - ds) = 0 then "(PASS)"
+      else "(FAIL)")$
+/* the absolute radius d(G) = n nu (s + kappa(G) q) at G* = 1 + k^2 + k sqrt(1 + k^2) */
+kap : (ds / (n * nu) - samp) / conf$
+print("STEP 4c n nu (s + k q) - d* at k = (d*/(n nu) - s)/q:", ratsimp(n * nu * (samp + kap * conf) - ds))$
+Gk : 1 + k^2 + k * sqrt(1 + k^2)$
+kappaof(G) := (G - 1) / sqrt(2*G - 1)$
+/* kappa(G(k))^2 = k^2, and G(k) - 1 >= 0 at k >= 0: kappa(G(k)) = k (channel_bias_bound.mac STEP 3c) */
+back4 : ratsimp(expand((Gk - 1)^2 - k^2 * (2*Gk - 1)), algebraic : true)$
+print("STEP 4c (G(k) - 1)^2 - k^2 (2 G(k) - 1) =", back4)$
+print("STEP 4c", if back4 = 0 and ratsimp(n * nu * (samp + kap * conf) - ds) = 0 then "(PASS)"
+      else "(FAIL)")$
+
+/* ===== STEP 5: a lever's zero moved ===== */
+print("=== STEP 5: a -> a - <w, s>, u_bar -> u_bar + s, u -> u + s, box -> box + s ===")$
+sh : matrix([s1], [s2])$
+lo : matrix([l1], [l2])$
+hi : matrix([h1], [h2])$
+moved_a : a - (transpose(w) . sh)$
+cond(aa, uu, cc) := aa + (transpose(w) . uu) - d * sqrt((Di . (uu - cc))[1, 1]^2
+                                                       + (Di . (uu - cc))[2, 1]^2)$
+diff5a : ratsimp(cond(moved_a, u + sh, ub + sh) - cond(a, u, ub))$
+print("STEP 5a the condition at the planned action, moved less unmoved:", diff5a)$
+print("STEP 5a", if diff5a = 0 then "(PASS)" else "(FAIL)")$
+diff5b : ratsimp((moved_a + (transpose(w) . (ub + sh))) - ac)$
+print("STEP 5b the drift at u_bar, moved less unmoved:", diff5b)$
+print("STEP 5b", if diff5b = 0 then "(PASS)" else "(FAIL)")$
+diff5c : ratsimp(append(flatten(args((lo + sh) - (ub + sh))), flatten(args((hi + sh) - (ub + sh))))
+                 - append(flatten(args(lo - ub)), flatten(args(hi - ub))))$
+print("STEP 5c the box read from u_bar, moved less unmoved:", diff5c)$
+print("STEP 5c", if every(lambda([x], x = 0), diff5c) then "(PASS: reach, budget and dstar the same)"
+      else "(FAIL)")$
+/* read from zero, the moved condition differs by -d (||D^-1 (u + s)|| - ||D^-1 u||) - <w,s> + <w,s> */
+zero5 : ratsimp(cond(moved_a, u + sh, 0 * sh) - cond(a, u, 0 * sh))$
+print("STEP 5d read from zero, moved less unmoved, at u = (1, 0), s = (100, 0), d = 1, d1 = d2 = 1:",
+      float(subst([u1 = 1, u2 = 0, s1 = 100, s2 = 0, d = 1, d1 = 1, d2 = 1], zero5)))$
+print("STEP 5d", if float(subst([u1 = 1, u2 = 0, s1 = 100, s2 = 0, d = 1, d1 = 1, d2 = 1], zero5))
+                    # 0 then "(PASS: the zero's reading moves)" else "(FAIL)")$
+
+/* ===== STEP 6: one state, two levers, the code's numbers ===== */
+print("=== STEP 6: x' = -x/2 + (3/10) u1 + (8/15) u2, h = 2 (3/10 - x) at x0 = 1/4 ===")$
+/* the log's mean action (1, 1/2), boxes [-1, 3] and [-1, 1]: reach (2, 3/2), U = 2, D = (1, 3/4) */
+x0 : 1/4$  hx : 2 * (3/10 - x0)$  gradh : -2$  alpha : 1$
+Bv : [3/10, 8/15]$  mean : [1, 1/2]$  reach : [2, 3/2]$  Uv : 2$  Dv : reach / Uv$
+av : gradh * (-x0/2)$
+wv : gradh * Bv$
+acv : av + wv . mean$
+nDwv : sqrt((Dv[1] * wv[1])^2 + (Dv[2] * wv[2])^2)$
+deficit : -alpha * hx - acv$
+dstarv : nDwv - deficit / Uv$
+Sv : sqrt((Bv[1] * Dv[1])^2 + (Bv[2] * Dv[2])^2)$
+print("STEP 6a a, a_c, ||D w||, deficit, d*, S:", av, acv, nDwv, deficit, dstarv, Sv)$
+print("STEP 6a", if [acv, nDwv, deficit, dstarv, Sv] = [-53/60, 1, 47/60, 73/120, 1/2]
+      then "(PASS)" else "(FAIL)")$
+/* the relative radius, gap 1, ||grad h|| = 2: c = dstar/(g S n) */
+cv : dstarv / (1 * Sv * 2)$
+Grelv : (1 + cv) / (1 - cv)$
+print("STEP 6b gamma* under the relative radius:", Grelv, "=", bfloat(Grelv))$
+print("STEP 6b", if Grelv = 193/47 then "(PASS)" else "(FAIL)")$
+/* the absolute radius: gram diag(1/4, 1/4), so nu^2 = max(D_j^2 / (1/4)) = 4; s = 1/10, q = 1/5 */
+nuv : sqrt(lmax([Dv[1]^2 / (1/4), Dv[2]^2 / (1/4)]))$
+kv : (dstarv / (2 * nuv) - 1/10) / (1/5)$
+Gabsv : subst(k = kv, Gk)$
+fpprec : 30$
+print("STEP 6c nu, k, gamma* under the absolute radius:", nuv, kv, bfloat(Gabsv))$
+print("STEP 6c", if nuv = 2 and kv = 25/96
+      and abs(bfloat(kappaof(Gabsv)) - bfloat(kv)) < 1b-25 then "(PASS)" else "(FAIL)")$
+/* read from zero: reach (3, 1), U = 3, D = (1, 1/3); the drift at zero, 1/4, alone keeps the step */
+print("STEP 6d read from zero, -alpha h - a =", -alpha * hx - av, ": no deficit, gamma* = inf")$
+print("STEP 6d", if -alpha * hx - av < 0 then "(PASS: inf, where the log's mean reads 193/47)"
+      else "(FAIL)")$
+
+print("the barrier read from the log's mean action: STEP 1-6")$

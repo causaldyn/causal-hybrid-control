@@ -148,11 +148,10 @@ def test_an_absolute_radius_asked_of_a_fit_that_gives_none_is_refused() -> None:
     assert "radius='relative'" in str(refused.value)
 
 
-def test_a_level_the_absolute_radius_does_not_bound_is_refused() -> None:
-    """From ``(3 + sqrt 5)/2`` on the sensitivity model bounds no error; the relative radius still
-    reads such a level, and an rk4 fit, which reads the relative one, is not refused."""
-    with pytest.raises(DecisionError, match="radius='relative'"):
-        _ask(gamma=3.0)
+def test_every_finite_level_reads_the_absolute_radius() -> None:
+    """The sensitivity model bounds the error at every finite level; up to 0.21 it bounded none
+    from ``(3 + sqrt 5)/2`` on, and ``prescribe`` refused the absolute radius at such a level."""
+    assert _ask(gamma=3.0).certificate.radius_model == "absolute"
     assert _ask(gamma=3.0, radius="relative").certificate.radius_model == "relative"
     assert _ask(gamma=3.0, integrator="rk4").certificate.radius_model == "relative"
     with pytest.raises(DecisionError, match="none of 'auto'"):

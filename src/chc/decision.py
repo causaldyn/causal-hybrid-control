@@ -94,7 +94,6 @@ from chc.lqr import linearize_continuous, linearize_discrete
 from chc.mpc import PeriodBudget, _period_rows
 from chc.panel import Panel, PanelError, Provenance, _grid_steps, _ordinals, _x64_enabled
 from chc.plan import (
-    _GAMMA_LIMIT,
     BarrierConstraint,
     CausalPlan,
     CertificateStatus,
@@ -1930,18 +1929,20 @@ def prescribe(
             first period, not of the start.
         dt: the time step one panel period represents.
         gamma: the marginal sensitivity model's level the barrier is priced at, passed to
-            :func:`chc.plan.certify_safety` with the ``radius`` below, each lever's largest action
-            as ``u_max``, so ``gamma_star`` and the barrier's certified steps read the same in any
-            units of the state or of each lever (ADR 0085, ADR 0091), and the levers' box, which
-            may be asymmetric. It prices the plan, and changes it only under ``hold_constraints``.
+            :func:`chc.plan.certify_safety` with the ``radius`` below, the log's mean action as
+            ``centre`` and each lever's largest distance from it its box allows as ``u_max``, so
+            ``gamma_star`` and the barrier's certified steps read the same in any units of the
+            state or of each lever and wherever a lever's zero is (ADR 0085, ADR 0091, ADR 0132),
+            and the levers' box, which may be asymmetric. It prices the plan, and changes it only
+            under ``hold_constraints``.
         radius: what the barrier's radius on the channel is; the certificate's ``radius_model``
             and :attr:`RunProvenance.radius` read which one the audit used (ADR 0125).
             ``"absolute"``: the fit's own sensitivity model,
             :meth:`chc.plan.ChannelSensitivity.from_fit` at 0.95, a bound on the channel's error
             read at each planned step's predicted state, its sampling error at ``gamma = 1`` and
             its bias besides at a hidden confounder that moves the levers' density by a factor
-            within ``[1/gamma, gamma]``. The held solve and the audit read the same one, and
-            ``gamma`` must then be below ``(3 + sqrt 5)/2``. It needs a least-squares channel on
+            within ``[1/gamma, gamma]``, finite at every finite ``gamma``. The held solve and the
+            audit read the same one. It needs a least-squares channel on
             the Euler rates (ADR 0111): an ``"euler"`` fit by adjustment, not an instrument's,
             whose log moves every direction of the channel; asked of a fit that gives none, an
             ``"rk4"`` fit's among them, it raises. ``"auto"``, the default: the absolute radius
@@ -2059,8 +2060,7 @@ def prescribe(
             the least, a ``dt`` that is not a finite positive step, an ``integrator`` that is
             neither ``"rk4"`` nor ``"euler"``, a ``tolerance`` that is
             negative or nan, a ``gamma`` below 1 or not finite, which is not a sensitivity level,
-            or, under the absolute radius a fit gives, at or past ``(3 + sqrt 5)/2``, where that
-            radius is unbounded, a ``radius`` other than ``"auto"``, ``"absolute"`` and
+            a ``radius`` other than ``"auto"``, ``"absolute"`` and
             ``"relative"``, or ``"absolute"`` on a fit that gives no absolute radius, a panel with
             no consecutive pair of periods to fit a transition on, a ``cap_per_step``
             on a lever that follows its logged rule or a budget that prices one,
@@ -2548,9 +2548,14 @@ def prescribe(
     u_lo, u_hi = pin(
         jnp.array([lever.lo for lever in levers]), jnp.array([lever.hi for lever in levers])
     )
-    # each lever's largest action, in its units: the barrier's audit reads each lever in units of
-    # its own (ADR 0091)
-    reach = np.asarray(jnp.maximum(jnp.abs(u_lo), jnp.abs(u_hi)), dtype=np.float64)
+    # The barrier reads each action from the log's mean action, where the drift absorbed the
+    # channel, as the tube does (ADR 0132): each lever's largest distance from it the box allows,
+    # in its units, since the audit reads each lever in units of its own (ADR 0091).
+    mean_action = np.array([float(jnp.mean(data["u"][:, i])) for i in range(n_levers)])
+    reach = np.maximum(
+        np.abs(np.asarray(u_lo, dtype=np.float64) - mean_action),
+        np.abs(np.asarray(u_hi, dtype=np.float64) - mean_action),
+    )
     caps = [math.inf if lever.cap_per_step is None else lever.cap_per_step for lever in levers]
     rate = LinearConstraint.rate_limit(horizon, caps)
     relation_rows = tuple(
@@ -2566,7 +2571,7 @@ def prescribe(
 
     margins = _margins(states, constraints)
     sensitivity = (
-        _sensitivity(fit, gamma, radius == "absolute") if margins and radius != "relative" else None
+        _sensitivity(fit, radius == "absolute") if margins and radius != "relative" else None
     )
     held = (
         BarrierConstraint(
@@ -2575,6 +2580,7 @@ def prescribe(
             u_max=tuple(reach.tolist()),
             u_box=(tuple(np.asarray(u_lo).tolist()), tuple(np.asarray(u_hi).tolist())),
             sensitivity=sensitivity,
+            centre=tuple(mean_action.tolist()),
         )
         if hold_constraints
         else None
@@ -2757,7 +2763,9 @@ def prescribe(
     if held is not None:
         safety = plan.safety  # solve() already audited it at the whole box's largest actions
     elif margins:
-        safety = _audit(plan, model, margins, dt, 1.0, gamma, 1.0, reach, (u_lo, u_hi), sensitivity)
+        safety = _audit(
+            plan, model, margins, dt, 1.0, gamma, 1.0, reach, (u_lo, u_hi), sensitivity, mean_action
+        )
     else:
         safety = None
     gap = regret(plan)
@@ -4025,13 +4033,12 @@ def _cost(
     return _RuledCost(Q=q, R=r, Qf=q, x_target=goal, rule=rule)
 
 
-def _sensitivity(fit: CausalDynamicsFit, gamma: float, required: bool) -> ChannelSensitivity | None:
+def _sensitivity(fit: CausalDynamicsFit, required: bool) -> ChannelSensitivity | None:
     """The fit's absolute radius on its channel at 0.95, or None where the fit gives none and none
     is ``required``, which an ``INFO`` record names: the barrier then reads the relative radius.
 
     Raises:
-        DecisionError: on a ``gamma`` at or past ``(3 + sqrt 5)/2``, where the radius is unbounded;
-            or where one is ``required`` and the fit gives none.
+        DecisionError: where one is ``required`` and the fit gives none.
     """
     try:
         sensitivity = ChannelSensitivity.from_fit(fit)
@@ -4049,12 +4056,6 @@ def _sensitivity(fit: CausalDynamicsFit, gamma: float, required: bool) -> Channe
             extra={"chc_event": "radius", "reason": str(refusal)},
         )
         return None
-    if not gamma < _GAMMA_LIMIT:
-        raise DecisionError(
-            f"gamma={gamma} is at or past (3 + sqrt 5)/2 = {_GAMMA_LIMIT:.6f}, where the channel's "
-            "sensitivity model bounds no error and no barrier holds; pass radius='relative' for a "
-            "margin on a share of the fitted channel"
-        )
     return sensitivity
 
 

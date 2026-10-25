@@ -7,15 +7,20 @@
    into the least-squares channel on the action residuals, when the levers' density given Z moves
    by a factor in [1/Gamma, Gamma] (the continuous marginal sensitivity model, Jesson et al. 2022).
 
-     STEP 1  a weight w in [1/Gamma, Gamma] with mean 1 moves a mean-zero, unit-variance X by at
-             most (Gamma-1)/sqrt(Gamma): delta = w - 1 has variance at most (Gamma-1)^2/Gamma
-             (Bhatia-Davis), so the share of X's variance Z explains is rho^2 <= (Gamma-1)^2/Gamma.
+     STEP 1  the splitting: the factor's lower side, p(u|x,z) >= p(u|x)/Gamma, writes the joint law
+             of the levers U and Z given x as P = (1/Gamma) P_U x P_Z + (1 - 1/Gamma) Q, Q a law
+             with P's two marginals.  So E_P[f g] = (1 - 1/Gamma) E_Q[f g] for every centred f(U)
+             and g(Z), and Cauchy-Schwarz under Q bounds the correlation of any function of U with
+             any function of Z by 1 - 1/Gamma (their maximal correlation, Renyi 1959): the share of
+             an action residual's variance Z explains is rho^2 <= (1 - 1/Gamma)^2.  Up to 0.21 the
+             share was (Gamma-1)^2/Gamma, Bhatia-Davis on each value of Z alone: Gamma times this.
      STEP 2  the omitted-variable algebra: the bias beta of the coefficients, with G the design's
              second moment and r the fit's residual, has beta'G beta <= rho^2 (E r^2 + beta'G beta),
              so beta'G beta <= kappa^2 E r^2, kappa^2 = rho^2/(1 - rho^2).
-     STEP 3  kappa(Gamma) = (Gamma-1)/sqrt(3 Gamma - Gamma^2 - 1), finite below Gamma_max =
-             (3 + sqrt 5)/2, and its inverse in closed form.
-     STEP 4  an exact discrete example: the bias of the least-squares slope against the bound.
+     STEP 3  kappa(Gamma) = (Gamma-1)/sqrt(2 Gamma - 1), finite at every Gamma, growing as
+             sqrt(Gamma/2), and its inverse Gamma(k) = 1 + k^2 + k sqrt(1 + k^2).
+     STEP 4  an exact discrete example meets the bound with equality: the share of STEP 1 and the
+             bias of STEP 2, so neither can be narrowed.
 
    Consumed by chc.plan.ChannelSensitivity.
 
@@ -26,31 +31,50 @@ print("================================================================")$
 print("AN ABSOLUTE RADIUS FOR THE CHANNEL UNDER A MARGINAL SENSITIVITY MODEL")$
 print("================================================================")$
 
-/* ===== STEP 1: Bhatia-Davis on the weight ===== */
-print("=== STEP 1: the largest variance of delta = w - 1 on [1/G - 1, G - 1] with mean 0 ===")$
+/* ===== STEP 1: the splitting of the joint law ===== */
+print("=== STEP 1: P = (1/G) P_U x P_Z + (1 - 1/G) Q, Q with P's marginals ===")$
 assume(G > 1)$
-lo1 : 1/G - 1$  hi1 : G - 1$
-/* the two-point law on the ends with mean 0 attains (hi - mean)(mean - lo) = -lo*hi */
-p_hi : -lo1/(hi1 - lo1)$
-two_point_mean : ratsimp(p_hi*hi1 + (1 - p_hi)*lo1)$
-two_point_var : ratsimp(p_hi*hi1^2 + (1 - p_hi)*lo1^2)$
-print("STEP 1a the two-point law on the ends: mean", two_point_mean, " variance", two_point_var)$
-print("STEP 1a", if two_point_mean = 0 and ratsimp(two_point_var - (G - 1)^2/G) = 0 then "(PASS)"
-      else "(FAIL)")$
-/* any law on [lo, hi] with mean 0: E[delta^2] <= E[(hi - delta)(delta - lo)] + E delta^2 ... the
-   Bhatia-Davis inequality Var <= (hi - m)(m - lo); here as the pointwise fact (hi-d)(d-lo) >= 0 */
-bd : expand((hi1 - d)*(d - lo1))$
-print("STEP 1b (hi - d)(d - lo) =", bd, " >= 0 on [lo, hi]; its mean, at E d = 0, is")$
-bd_mean : ratsimp(-lo1*hi1 - dd2)$
-print("        -lo*hi - E d^2 =", bd_mean, " >= 0, so E d^2 <= -lo*hi =", ratsimp(-lo1*hi1))$
-print("STEP 1b", if ratsimp(-lo1*hi1 - (G - 1)^2/G) = 0 then "(PASS)" else "(FAIL)")$
-print("STEP 1c so E[X | Z] = E[X delta_Z] <= sd(X) sd(delta_Z) <= sd(X) (G-1)/sqrt(G), and the")$
-print("        share of X's variance Z explains is rho^2 <= min(1, (G-1)^2/G)")$
+/* A discrete law of two lever values and three confounder values, given x: marginals p, q and the
+   density ratio L(i, j) = P(i, j)/(p_i q_j), whose rows and columns average to 1 (the marginals). */
+p : [p1, 1 - p1]$  q : [q1, q2, 1 - q1 - q2]$
+Lt : genmatrix(lambda([i, j], l[i, j]), 2, 3)$
+/* the marginal constraints, solved for four of the six ratios: l[2, 2] and l[2, 3] stay free, the
+   law's (2 - 1)(3 - 1) degrees of freedom */
+cons : append(makelist(sum(q[j] * Lt[i, j], j, 1, 3) = 1, i, 1, 2),
+              makelist(sum(p[i] * Lt[i, j], i, 1, 2) = 1, j, 1, 2))$
+sol : solve(cons, [l[1, 1], l[1, 2], l[1, 3], l[2, 1]])[1]$
+Ls : subst(sol, Lt)$
+col3 : ratsimp(sum(p[i] * Ls[i, 3], i, 1, 2))$
+print("STEP 1a the third column's mean ratio, implied by the rest:", col3)$
+print("STEP 1a", if col3 = 1 then "(PASS)" else "(FAIL)")$
+/* Q's ratio M = (L - 1/G)/(1 - 1/G): not negative exactly where L >= 1/G, and its marginals are P's */
+Ms : (Ls - 1/G) / (1 - 1/G)$
+qrows : makelist(ratsimp(sum(q[j] * Ms[i, j], j, 1, 3)), i, 1, 2)$
+qcols : makelist(ratsimp(sum(p[i] * Ms[i, j], i, 1, 2)), j, 1, 3)$
+print("STEP 1b Q's row and column means of its ratio:", qrows, qcols)$
+print("STEP 1b", if every(lambda([v], v = 1), append(qrows, qcols)) then "(PASS)" else "(FAIL)")$
+/* E_P[f g] - (1 - 1/G) E_Q[f g] = (1/G) E[f] E[g], zero for a centred f */
+f : [f1, f2]$  g : [g1, g2, g3]$
+EP : sum(sum(p[i] * q[j] * Ls[i, j] * f[i] * g[j], j, 1, 3), i, 1, 2)$
+EQ : sum(sum(p[i] * q[j] * Ms[i, j] * f[i] * g[j], j, 1, 3), i, 1, 2)$
+Ef : sum(p[i] * f[i], i, 1, 2)$  Eg : sum(q[j] * g[j], j, 1, 3)$
+split : ratsimp(EP - (1 - 1/G) * EQ - Ef * Eg / G)$
+print("STEP 1c E_P[fg] - (1 - 1/G) E_Q[fg] - E[f] E[g]/G =", split)$
+print("STEP 1c", if split = 0 then "(PASS)" else "(FAIL)")$
+print("STEP 1d Q holds P's marginals, so for centred f, g Cauchy-Schwarz under Q gives")$
+print("        |E_P fg| = (1 - 1/G) |E_Q fg| <= (1 - 1/G) sd(f) sd(g): the maximal correlation of")$
+print("        U and Z is at most 1 - 1/G, and so is the correlation of X = a'psi(U) with E[X | Z],")$
+print("        so rho^2 = Var E[X | Z] / Var X <= (1 - 1/G)^2.  The lever may be a vector: f reads")$
+print("        any function of all of them.")$
+rho2 : (1 - 1/G)^2$
+old2 : (G - 1)^2/G$
+print("STEP 1e the share up to 0.21, (G-1)^2/G, over this one:", ratsimp(old2/rho2))$
+print("STEP 1e", if ratsimp(old2/rho2 - G) = 0 then "(PASS: G times the sharp share)" else "(FAIL)")$
 
 /* ===== STEP 2: the omitted-variable algebra ===== */
 print("=== STEP 2: beta'G beta <= rho^2 (E r^2 + beta'G beta) gives beta'G beta <= kappa^2 E r^2 ===")$
 /* b = beta'G beta, s = E r^2: b <= rho^2 (s + b)  <=>  b (1 - rho^2) <= rho^2 s */
-lhs2 : ratsimp((rho^2*(s + b) - b) - ((1 - rho^2)*(rho^2/(1 - rho^2)*s - b)))$
+lhs2 : ratsimp((rh^2*(s + b) - b) - ((1 - rh^2)*(rh^2/(1 - rh^2)*s - b)))$
 print("STEP 2a rho^2 (s + b) - b - (1 - rho^2)(kappa^2 s - b) =", lhs2)$
 print("STEP 2a", if lhs2 = 0 then "(PASS)" else "(FAIL)")$
 print("        so with 1 - rho^2 > 0, b <= kappa^2 s exactly when b <= rho^2 (s + b)")$
@@ -62,47 +86,58 @@ print("        E r^2 = E e^2 - 2 beta E[psi e] + beta G beta at beta = E[psi e]/
 print("STEP 2b", if ratsimp(r2_at - (e2 - (c/Gm)*Gm*(c/Gm))) = 0 then "(PASS)" else "(FAIL)")$
 
 /* ===== STEP 3: kappa(Gamma) and its inverse ===== */
-print("=== STEP 3: kappa^2 = rho^2/(1 - rho^2) at rho^2 = (G-1)^2/G ===")$
-rho2 : (G - 1)^2/G$
+print("=== STEP 3: kappa^2 = rho^2/(1 - rho^2) at rho^2 = (1 - 1/G)^2 ===")$
 kappa2 : ratsimp(rho2/(1 - rho2))$
 print("STEP 3a kappa^2 =", kappa2)$
-print("STEP 3a", if ratsimp(kappa2 - (G - 1)^2/(3*G - G^2 - 1)) = 0 then "(PASS)" else "(FAIL)")$
-roots : solve(3*G - G^2 - 1 = 0, G)$
-print("STEP 3b the denominator vanishes at", roots, "; rho^2 = 1 there:",
-      map(lambda([r], ratsimp(subst(r, rho2))), roots))$
-gmax : (3 + sqrt(5))/2$
-print("STEP 3b", if ratsimp(subst(G = gmax, (G - 1)^2 - G)) = 0 then "(PASS)" else "(FAIL)")$
-/* inverse: (1 + k^2) G^2 - (2 + 3 k^2) G + (1 + k^2) = 0, the root >= 1 */
-ginv : (2 + 3*k^2 + k*sqrt(4 + 5*k^2))/(2*(1 + k^2))$
-back : ratsimp(radcan(subst(G = ginv, (G - 1)^2/(3*G - G^2 - 1)) - k^2))$
+print("STEP 3a", if ratsimp(kappa2 - (G - 1)^2/(2*G - 1)) = 0 then "(PASS)" else "(FAIL)")$
+/* the denominator vanishes only at G = 1/2: finite at every level G >= 1 */
+print("STEP 3b 1 - rho^2 =", factor(ratsimp(1 - rho2)), "; zero only at", solve(2*G - 1 = 0, G))$
+print("STEP 3b", if ratsimp(1 - rho2 - (2*G - 1)/G^2) = 0 then "(PASS: no finite level is refused)"
+      else "(FAIL)")$
+/* inverse: G^2 - 2 (1 + k^2) G + (1 + k^2) = 0, the root >= 1 */
+ginv : 1 + k^2 + k*sqrt(1 + k^2)$
+back : ratsimp(radcan(subst(G = ginv, (G - 1)^2/(2*G - 1)) - k^2))$
 print("STEP 3c kappa^2 at G(k) less k^2 =", back)$
 print("STEP 3c", if back = 0 then "(PASS)" else "(FAIL)")$
-print("STEP 3d G(0) =", subst(k = 0, ginv), " and G(k) -> ", limit(ginv, k, inf), " as k -> inf")$
-print("STEP 3d", if subst(k = 0, ginv) = 1 and ratsimp(limit(ginv, k, inf) - gmax) = 0 then "(PASS)"
-      else "(FAIL)")$
-samples : makelist([g, float(sqrt(subst(G = g, kappa2)))], g, [1, 11/10, 3/2, 2, 5/2])$
-print("STEP 3e kappa at G = 1, 1.1, 1.5, 2, 2.5:", samples)$
-print("STEP 3e", if every(lambda([r], r[2] >= 0), samples) and subst(G = 2, kappa2) = 1 then "(PASS)"
-      else "(FAIL)")$
+print("STEP 3d G(0) =", subst(k = 0, ginv), "; G(k) ->", limit(ginv, k, inf),
+      "as k -> inf; kappa^2 / G ->", limit(kappa2/G, G, inf), "as G -> inf")$
+print("STEP 3d", if subst(k = 0, ginv) = 1 and limit(ginv, k, inf) = inf
+      and limit(kappa2/G, G, inf) = 1/2 then "(PASS)" else "(FAIL)")$
+samples : makelist([gg, float(sqrt(subst(G = gg, kappa2)))], gg, [1, 11/10, 3/2, 2, 5/2, 5, 10])$
+print("STEP 3e kappa at G = 1, 1.1, 1.5, 2, 2.5, 5, 10:", samples)$
+print("STEP 3e", if every(lambda([r], r[2] >= 0), samples) and subst(G = 5, kappa2) = 16/9
+      then "(PASS)" else "(FAIL)")$
+print("STEP 3f Gamma(k) at k = 1/2, 1, 2:", makelist(float(subst(k = kk, ginv)), kk, [1/2, 1, 2]),
+      "; exact at k = 1:", subst(k = 1, ginv))$
+old_k2 : ratsimp(old2/(1 - old2))$
+print("STEP 3g kappa up to 0.21 over kappa at G = 1.1, 1.25, 1.5, 2, 2.5:",
+      makelist(float(sqrt(subst(G = gg, old_k2/kappa2))), gg, [11/10, 5/4, 3/2, 2, 5/2]))$
 
-/* ===== STEP 4: an exact discrete example ===== */
+/* ===== STEP 4: an exact discrete example, equality ===== */
 print("=== STEP 4: Z = +-1, u | Z on {-1, +1} tilted by t, y = b u + c Z + eta ===")$
 /* p(u = s | Z = z) = (1 + t s z)/2: the density ratio to p(u) = 1/2 is 1 + t s z in [1 - t, 1 + t],
-   inside [1/G, G] at t = 1 - 1/G */
+   inside [1/G, G] at t = 1 - 1/G, where 1 + t = 2 - 1/G <= G */
 tilt : 1 - 1/G$
-Eu_z : tilt$                       /* E[u | Z = +1] = t, E[u | Z = -1] = -t */
-cov_uz : tilt$                     /* E[u Z] = t, Var u = 1, Var Z = 1 */
-slope_bias : c*cov_uz$             /* least squares of y on u: b + c E[uZ]/E[u^2] */
-var_r : ratsimp(c^2 + s2 - (c*tilt)^2)$   /* E r^2 = Var(cZ + eta) - bias^2 Var u */
-bound4 : sqrt(subst(G = G, kappa2))*sqrt(var_r)$
-print("STEP 4a bias", slope_bias, "; residual variance", var_r)$
-/* the bound beats the bias iff bias^2 <= kappa^2 var_r; check on a grid of G, c, s2 */
+print("STEP 4a the ratio's ends at t = 1 - 1/G:", [1 - tilt, ratsimp(1 + tilt)],
+      "; G less the upper end:", factor(ratsimp(G - (1 + tilt))))$
+print("STEP 4a", if ratsimp(1 - tilt - 1/G) = 0 and ratsimp(G - (1 + tilt) - (G - 1)^2/G) = 0
+      then "(PASS: inside the box)" else "(FAIL)")$
+/* Var u = Var Z = 1 and E[u Z] = t: E[u | Z] = t Z explains t^2 of u's variance, the share of STEP 1 */
+print("STEP 4b the share E[u Z]^2 less (1 - 1/G)^2:", ratsimp(tilt^2 - rho2))$
+print("STEP 4b", if ratsimp(tilt^2 - rho2) = 0 then "(PASS: the share is met)" else "(FAIL)")$
+slope_bias : c*tilt$                       /* least squares of y on u: b + c E[uZ]/E[u^2] */
+var_r : ratsimp(c^2 + s2 - (c*tilt)^2)$    /* E r^2 = Var(cZ + eta) - bias^2 Var u */
+slack : ratsimp(kappa2*var_r - slope_bias^2)$
+print("STEP 4c kappa^2 E r^2 - bias^2 =", factor(slack), "= kappa^2 Var eta: not negative, and")$
+print("        zero when all the rate's noise is Z's, where the bound is met")$
+print("STEP 4c", if ratsimp(slack - kappa2*s2) = 0 then "(PASS: equality at Var eta = 0)"
+      else "(FAIL)")$
 grid4 : flatten(makelist(makelist(makelist(
-  float(subst([G = g, c = cc, s2 = ss], kappa2*var_r - slope_bias^2)), ss, [0, 1/4, 1]),
-  cc, [1/2, 1, 3]), g, [11/10, 3/2, 2, 5/2]))$
-print("STEP 4b kappa^2 E r^2 - bias^2 over G in {1.1, 1.5, 2, 2.5}, c in {.5, 1, 3}, s2 in {0, .25, 1}:")$
-print("       least", lmin(grid4))$
-print("STEP 4b", if lmin(grid4) >= 0 then "(PASS)" else "(FAIL)")$
+  float(subst([G = gg, c = cc, s2 = ss], slack)), ss, [0, 1/4, 1]),
+  cc, [1/2, 1, 3]), gg, [11/10, 3/2, 2, 5/2, 4, 10]))$
+print("STEP 4d kappa^2 E r^2 - bias^2 over G in {1.1, 1.5, 2, 2.5, 4, 10}, c in {.5, 1, 3},")$
+print("        s2 in {0, .25, 1}: least", lmin(grid4))$
+print("STEP 4d", if lmin(grid4) >= 0 then "(PASS)" else "(FAIL)")$
 print("================================================================")$
 print("SUMMARY: ||(B_hat - B) D||_op <= kappa(Gamma) sqrt(lmax(R'R)) sqrt(lmax(D Phi' V^-1 Phi D)),")$
-print("kappa = (G-1)/sqrt(3G - G^2 - 1) below (3 + sqrt 5)/2, unbounded from there")$
+print("kappa = (G-1)/sqrt(2G - 1) at every G >= 1, met by the two-valued lever of STEP 4")$

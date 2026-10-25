@@ -129,9 +129,11 @@ failures, when the tests were first written (names relative to `chc`):
 | `allocation_decision_weight.mac` | `allocation.decision_weight` | `test_formal_control.py` |
 | `bandit_causal.mac` | `regret.bandit_causal_certificate` | `test_formal_regret_a.py` |
 | `bandit_causal.v` | `regret.bandit_causal_certificate` | `test_formal_regret_a.py` |
+| `barrier_centred.mac` | `plan.certify_safety` | `test_formal_seams.py` |
 | `barrier_feasibility.mac` | `barrier` | `test_formal_control.py` |
 | `barrier_feasibility.v` | `barrier` | `test_formal_control.py` |
 | `barrier_feasibility_lift.v` | `sensitivity` | `test_formal_control.py` |
+| `barrier_room.mac` | `plan._barrier_room` | `test_formal_seams.py` |
 | `c2_end_to_end.mac` | `regret.end_to_end_c2_certificate` | `test_formal_regret_b.py` |
 | `c2_end_to_end.v` | `regret.ce_explicit_constant_certificate`, `regret.end_to_end_c2_certificate` | `test_formal_regret_a.py, test_formal_regret_b.py` |
 | `capped_exploration.v` | `regret.capped_exploration_policy` | `test_formal_regret_a.py` |

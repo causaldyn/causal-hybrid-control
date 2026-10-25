@@ -2,6 +2,8 @@
 
 **Status:** accepted, 2026-09-26. Amended by ADR 0085, 2026-10-12: `cvar_gap` is a share of the
 channel's operator norm at the plan's first state, so `delta` carries the channel's units.
+Amended by ADR 0132, 2026-10-25: with a `centre`, `Γ*`'s threshold reads the drift and the
+action set from that action, `d* = ||Dw|| - (-αh - a_c)/U`.
 
 ## Context
 

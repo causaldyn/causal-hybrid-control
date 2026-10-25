@@ -4,6 +4,8 @@
 `ChannelSensitivity` gives an absolute radius, read at each step's predicted state, in its place.
 Amends ADR 0101: with a sensitivity, each step's `Γ*` reads the radius at that step's state.
 Amended by ADR 0125: `prescribe` reads the fit's absolute radius by default, where the fit gives one.
+Amended by ADR 0132, 2026-10-25: the share is `(1 - 1/Γ)²`, sharp, so `κ(Γ) = (Γ-1)/√(2Γ-1)`, finite
+at every finite level; no level from `(3 + √5)/2` on is refused.
 
 ## Context
 
