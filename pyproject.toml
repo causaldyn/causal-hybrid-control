@@ -121,7 +121,8 @@ conflicts = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+# exact, so a release builds the same artefact from the same tree; a bump is a reviewed commit
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

@@ -38,7 +38,7 @@ jobs:
       - name: Build sdist + wheel
         run: uv build
       - name: Check metadata
-        run: uvx twine check dist/*
+        run: uvx twine==7.0.0 check dist/*
       # SLSA build provenance, and it is a *different* claim from the PEP 740 attestation the
       # publish job makes. PyPI's says "this file was uploaded by this workflow"; this one says
       # "this file was built from this commit, by this workflow, on this runner", and it is
