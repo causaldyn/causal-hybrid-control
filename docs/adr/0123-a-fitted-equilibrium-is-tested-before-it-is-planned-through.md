@@ -1,7 +1,9 @@
 # ADR 0123 — A fitted equilibrium is tested before it is planned through
 
 **Status:** accepted, 2026-10-21. Amends ADR 0114. Amended 2026-10-24: on the fitted class the
-tilt costs share, most in short logs, where this record said it added nothing.
+tilt costs share, most in short logs, where this record said it added nothing. Amended
+2026-10-25 by ADR 0134: the fit stopped early, and the table and the shares below were read
+through it; ADR 0134 records them read through the polished fit and against the exact oracle.
 
 ## Context
 

@@ -26,12 +26,14 @@ never through the simulator's own base demand, attractiveness and equilibrium ma
 supplies: through those, a response of zero planned as close to the oracle as the adjusted
 one, so the comparison measured knowing the equilibrium. The SUTVA baselines get no such
 structure. The plan's value is the fitted equilibrium's: on 30 markets the adjusted
-response's tilt moved the share of the best plan's lift by -0.027 +- 0.016 on 400 blocks against
-a response of zero (mean +- standard error; -0.18 to +0.21), and by -0.064 +- 0.024 on 50 (-0.36
-to +0.17). Only where the market lies outside the fitted class, its attractiveness fixed while
-the demand moves, did the tilt carry value on average: 0.77 of the lift against 0.41, over 100
-logs of 400 blocks. The fit warns on such a market, and the planner refuses a fit whose drivers do
-not tell an incentive from none (ADR 0123).
+response's tilt moved the share of the best plan's lift by -0.022 +- 0.012 on 400 blocks against
+a response of zero (mean +- standard error; -0.17 to +0.12), and by -0.057 +- 0.025 on 50 (-0.41
+to +0.21), the best plan being the exact oracle's (:meth:`SharedStateMarket.oracle_allocation`).
+Where the market lies outside the fitted class, its attractiveness fixed while the demand moves,
+the tilt cost share too: 0.73 of the lift against 0.79 with a response of zero, over 100 logs of
+400 blocks (ADR 0134; through a fit that stopped early it had read 0.72 against 0.40). The fit
+warns on such a market, and the planner refuses a fit whose drivers do not tell an incentive from
+none (ADR 0123).
 
 Everything is differentiable and reuses the equilibrium solver in :mod:`chc.games`.
 """
@@ -40,6 +42,7 @@ from __future__ import annotations
 
 import math
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import jax
@@ -48,11 +51,16 @@ import numpy as np
 from jax import Array
 from numpy.typing import NDArray
 from scipy import special, stats
-from scipy.optimize import OptimizeResult, minimize
+from scipy.optimize import least_squares, lsq_linear, minimize
 
 from chc import _units
 from chc.frames import _real_entries
-from chc.games import fixed_point, softmax_congestion_equilibrium, stackelberg_allocation
+from chc.games import (
+    exact_congestion_allocation,
+    fixed_point,
+    softmax_congestion_equilibrium,
+    stackelberg_allocation,
+)
 
 
 @dataclass(frozen=True)
@@ -95,9 +103,32 @@ class SharedStateMarket:
     def value(self, u: Array) -> float:
         return float(self.completions(u))
 
-    def oracle_allocation(self, steps: int = 1200) -> Array:
-        """Equilibrium-aware optimum with full model access (the regret reference)."""
-        return stackelberg_allocation(self.completions, self.n_zones, self.budget, steps=steps)
+    def oracle_allocation(self, steps: int | None = None) -> Array:
+        """The allocation that completes the most rides at the market's equilibrium, with full
+        model access: the regret reference, exact (:func:`chc.games.exact_congestion_allocation`).
+
+        Its value moves with the machine only through the equilibrium solve, to about its
+        tolerance of 1e-6. The ascent it ran before, a local maximum at best, stays
+        :func:`chc.games.stackelberg_allocation`; ``steps``, its length, is ignored, and leaves in
+        0.23.0.
+
+        Warns:
+            DeprecationWarning: where ``steps`` is given.
+        """
+        if steps is not None:
+            warnings.warn(
+                "SharedStateMarket.oracle_allocation(steps=...) is ignored and leaves in 0.23.0:"
+                " the oracle is the exact optimum, chc.games.exact_congestion_allocation. The"
+                " ascent it ran is chc.games.stackelberg_allocation(market.completions,"
+                " market.n_zones, market.budget, steps=steps)",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        demand, attract = self._base()
+        exact = exact_congestion_allocation(
+            attract, demand, self.beta, self.congestion, self.mass, self.budget
+        )
+        return jnp.asarray(exact.allocation, dtype=demand.dtype)
 
     def generate_logs(self, n_blocks: int, key: Array) -> dict[str, Array]:
         """Confounded switchback logs, shape ``(n_blocks, n_zones)``: each block draws a demand
@@ -241,11 +272,16 @@ class FittedEquilibrium:
 
     demand: Array  # (n_zones,) the demand planned at: each zone's mean over the logged blocks
     attract: Array  # (n_zones,) attractiveness per unit of demand
+    # (n_zones,) its standard error from the Gauss-Newton covariance at the fit; inf where the logs
+    # do not identify it (:func:`_attract_se`)
+    attract_se: Array
     beta: float  # drivers' sensitivity to value
     congestion: float  # crowding penalty
     mass: float  # total drivers
     rmse: float  # root mean square of the fit's residual over the logged blocks and zones
-    converged: bool  # whether the least-squares solve met its tolerance
+    # whether the fit stopped at Bates and Watts' relative offset of 1e-3, or where no Gauss-Newton
+    # step lowers its residual; False where it ran out of steps first
+    converged: bool
     # p-value of an F test of the residuals on each zone's demand and incentive, to the second
     # order: small where the logs follow some other law than the fitted class
     lack_of_fit: float
@@ -293,6 +329,132 @@ _INCENTIVE_Z = float(special.ndtri(0.95))
 
 _LACK_OF_FIT = 0.01
 """The lack-of-fit p-value below which :func:`fit_equilibrium` warns."""
+
+_OFFSET = 1e-3
+"""Bates and Watts' (1981) relative offset at which a least-squares fit has converged: the Gauss-
+Newton step left is a thousandth of the radius of the parameters' confidence region."""
+
+_LEVENBERG_MARQUARDT_CALLS = 100
+"""Residual evaluations at most in the Levenberg-Marquardt polish."""
+
+_GAUSS_NEWTON_STEPS = 20
+"""Gauss-Newton steps at most after the Levenberg-Marquardt polish."""
+
+
+def _polish(
+    start: NDArray[np.float64],
+    drivers: Callable[[NDArray[np.float64]], NDArray[np.float64]],
+    jacobian: Callable[[NDArray[np.float64]], NDArray[np.float64]],
+    demand: NDArray[np.float64],
+    y: NDArray[np.float64],
+    eps: float,
+) -> tuple[NDArray[np.float64], bool]:
+    """The least-squares fit of ``y = min(demand, drivers(p))`` from ``start``, and whether it
+    converged: Bates and Watts' relative offset is at most ``_OFFSET``, or no Gauss-Newton step
+    lowers the sum of squares at all, the floor of the arithmetic.
+
+    Levenberg-Marquardt (MINPACK's, Moré 1978) polishes first. The residual is not smooth where a
+    zone's drivers meet its demand, and the method stalls on such a kink, so Gauss-Newton steps
+    finish, halved until they lower the sum of squares. On a zone within the equilibrium solve's
+    tolerance of its demand they take the generalised gradient (Clarke 1983) of least norm in the
+    Gauss-Newton metric, any weight in ``[0, 1]`` on the zone's row, and so move along the kink;
+    the offset reads that gradient. A direction no column moves past ``eps`` of the largest is
+    dropped: a parameter that runs off to infinity, such as a crowding penalty fitted to zero on
+    its logarithm, has no offset to read. ``validation/relative_offset_stop.mac`` checks the
+    Gauss-Newton step's drop, the rule's reading as a ceiling on the offset, and the least
+    gradient's step along a kink.
+    """
+    n_parameters = start.size
+
+    def residual(p: NDArray[np.float64]) -> NDArray[np.float64]:
+        return (y - np.minimum(demand, drivers(p))).ravel()
+
+    def rows(p: NDArray[np.float64]) -> NDArray[np.float64]:
+        below = drivers(p) < demand
+        return -np.where(below[..., None], jacobian(p), 0.0).reshape(-1, n_parameters)
+
+    p = least_squares(
+        residual,
+        start,
+        jac=rows,
+        method="lm",
+        x_scale="jac",
+        ftol=1e-10,
+        xtol=1e-10,
+        gtol=1e-10,
+        max_nfev=_LEVENBERG_MARQUARDT_CALLS,
+    ).x
+    for _ in range(_GAUSS_NEWTON_STEPS):
+        x, slope = drivers(p), -jacobian(p).reshape(-1, n_parameters)
+        left = (y - np.minimum(demand, x)).ravel()
+        sse = float(left @ left)
+        reach = 1e-6 * np.maximum(1.0, np.linalg.norm(x, axis=1, keepdims=True))
+        corner = (np.abs(x - demand) <= reach).ravel()
+        below = (x < demand).ravel() & ~corner
+        # the metric reads a corner's row as below its demand; the gradient weighs it by theta
+        _, singular, basis = np.linalg.svd(
+            np.where((below | corner)[:, None], slope, 0.0), full_matrices=False
+        )
+        rank = int(np.sum(singular > singular[0] * max(slope.shape) * eps))
+        if rank == 0:
+            return p, True
+        metric = basis[:rank].T / singular[:rank]
+        gradient = slope[below].T @ left[below]
+        weighted = (slope[corner] * left[corner, None]).T
+        if corner.any():
+            theta = lsq_linear(metric.T @ weighted, -(metric.T @ gradient), bounds=(0.0, 1.0)).x
+            gradient = gradient + weighted @ theta
+        reduced = metric.T @ gradient
+        # the full step's drop, ||Q1'r||^2, against what it leaves: the offset, squared
+        drop = float(reduced @ reduced)
+        if drop * max(left.size - rank, 1) <= _OFFSET**2 * rank * max(sse - drop, 0.0):
+            return p, True
+        step = -(metric @ reduced)
+        size = 1.0
+        while size >= 2.0**-20:
+            trial = residual(p + size * step)
+            if float(trial @ trial) < sse:
+                p = p + size * step
+                break
+            size /= 2.0
+        else:
+            return p, True
+    return p, False
+
+
+def _attract_se(
+    p: NDArray[np.float64],
+    drivers: Callable[[NDArray[np.float64]], NDArray[np.float64]],
+    jacobian: Callable[[NDArray[np.float64]], NDArray[np.float64]],
+    demand: NDArray[np.float64],
+    y: NDArray[np.float64],
+    eps: float,
+    count: int,
+) -> NDArray[np.float64]:
+    """The standard errors of the first ``count`` parameters, the zones' attractiveness, from the
+    Gauss-Newton covariance ``s**2 (J'J)^+`` at ``p``: ``J`` the drivers' Jacobian on the rows
+    below their demand or within the solve's tolerance of it (the rows :func:`_polish`'s metric
+    reads), ``s**2`` the sum of squares over the residuals less the rank.
+
+    The pseudo-inverse keeps the singular directions above ``eps`` times the largest times the
+    larger dimension, as :func:`_polish` does. A zone whose unit direction leaves that row space by
+    a squared share above the same bound is not identified by the logs: its error is ``inf``, not
+    the pseudo-inverse's finite value, which reads only the identified part of it.
+    """
+    n_parameters = p.size
+    x = drivers(p)
+    slope = -jacobian(p).reshape(-1, n_parameters)
+    left = (y - np.minimum(demand, x)).ravel()
+    reach = 1e-6 * np.maximum(1.0, np.linalg.norm(x, axis=1, keepdims=True))
+    read = ((x < demand) | (np.abs(x - demand) <= reach)).ravel()
+    _, singular, basis = np.linalg.svd(np.where(read[:, None], slope, 0.0), full_matrices=False)
+    bound = max(slope.shape) * eps
+    rank = int(np.sum(singular > singular[0] * bound)) if singular[0] > 0.0 else 0
+    variance = float(left @ left) / max(left.size - rank, 1)
+    kept = basis[:rank, :count]
+    spread = np.sqrt(variance * np.sum((kept / singular[:rank, None]) ** 2, axis=0))
+    outside = 1.0 - np.sum(kept**2, axis=0)
+    return np.where(outside > bound, np.inf, spread)
 
 
 def _lack_of_fit(
@@ -346,6 +508,11 @@ def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEqu
     fitted on their logarithms, by L-BFGS on gradients implicit in the equilibrium; the solve
     starts from an attractiveness of 1, a sensitivity and a penalty of 1, and a total 1.2 times
     the largest block's completions, since a block completes no more rides than it has drivers.
+    Levenberg-Marquardt and Gauss-Newton steps on the blocks' residuals then polish it until the
+    step left is a thousandth of the radius of the parameters' confidence region (Bates and Watts'
+    relative offset, 1981). L-BFGS alone stopped on the relative fall of its objective, 2.2e-9 of
+    1 where the mean squared residual is 4e-4, and said it converged: on markets 0-3 at offsets of
+    0.08 to 2.6, its mean squared residual up to 2.1% above the polished fit's.
 
     The demand is logged and enters the model, so the logging policy's chase of it does not
     confound the fit. What is assumed: the model class, which is the simulator's, and an
@@ -353,33 +520,44 @@ def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEqu
     leaves its mark on the residuals, and :attr:`FittedEquilibrium.lack_of_fit` reads it: an F test
     of each zone's residual on its own demand and incentive to the second order. Below 0.01 the
     fit warns. On 20 logs of 400 blocks from five markets whose attractiveness stays put while the
-    demand moves, the fit converged on every one with the sensitivity 0.56 too high on average
-    (1.2 at most), its residual 2.4 to 3 times the noise's, and nothing said; the test read below
-    1e-226 on each, and below 1e-15 on 20 logs of 50 blocks. On 50 logs of the class itself it
-    read under 0.01 once (0.006) at 400 blocks, and never at 50.
+    demand moves, the fit converged on every one with the sensitivity 0.54 too high on average
+    (1.17 at most), its residual 2.4 to 3.1 times the noise's, and nothing said; the test read
+    below 3e-226 on each, and below 1e-15 on 20 logs of 50 blocks. On 50 logs of the class itself
+    it read under 0.01 once (0.009) at 400 blocks, and never at 50.
 
     The fit is then fitted again with every incentive at zero, and
     :attr:`FittedEquilibrium.incentive_z` is Vuong's ``z`` of what the incentives gain, block by
     block: a fit whose drivers do not tell an incentive from none plans nothing, and
     :func:`pessimistic_equilibrium_allocation` refuses it. On the same markets' logs with the
     incentives shuffled across the blocks, the planner had spent the whole budget through the fit,
-    and on some markets lost completions by it; its ``z`` read -12.5 to -1.1 on 400 blocks and at
-    most 1.26 on 50, under the one-sided 5% quantile 1.645 on all 40, where the logs themselves
-    read at least 11.7 and 3.3, and the markets outside the class at least 14.1 and 3.8.
+    and on some markets lost completions by it; its ``z`` read -5.0 to 1.0 on 400 blocks and at
+    most 1.28 on 50, under the one-sided 5% quantile 1.645 on all 40, where the logs themselves
+    read at least 11.7 and 3.3, and the markets outside the class at least 14.2 and 3.8.
 
     The fit reads its ``n_zones + 3`` parameters from at least as many blocks: on five markets of
-    12 zones, 3 blocks read the sensitivity 0.54 off at the median and 3.2 at worst, and 15 blocks
-    0.056 and 0.49. The parameters' sampling error is not carried into the plan. A zone that draws
+    12 zones, 3 blocks read the sensitivity 1.7 off at the median and 94 at worst, and 15 blocks
+    0.055 and 0.26. The parameters' sampling error is not carried into the plan. A zone that draws
     almost no drivers in any logged block tells little of its attractiveness: the default market's
-    zone 8 averages 0.0008 drivers on a demand of 0.50, and its attractiveness read 0.95 for 0.63
-    on 400 blocks and 0.96 on 6400, where moving it over that range moves the mean squared
-    residual by 1e-10 of its 4e-4.
+    zone 8 averages 0.0008 drivers on a demand of 0.50, and its attractiveness read 0.73 for 0.63
+    on 400 blocks and 0.67 on 6400, where moving it from 0.63 to 0.95 moves the mean squared
+    residual by 1e-10 of its 4e-4. On short logs such a zone's attractiveness is read by little
+    but the fit's own path: on 50 blocks of markets 0-29, four fits read a zone's more than 1 off
+    and one ran it to -4.8e4, the logs' drivers there no fewer for it.
+
+    :attr:`FittedEquilibrium.attract_se` is each zone's standard error from the Gauss-Newton
+    covariance ``s**2 (J'J)^+`` at the fit, ``J`` the drivers' Jacobian in the parameters on the
+    blocks where a zone is below its demand, ``s**2`` the mean square of the residual over the
+    blocks' zones less the rank. A zone whose direction the pseudo-inverse drops, for want of any
+    block that moves its drivers, reads ``inf``. Of the 60 fits in float64 five read a zone's
+    error infinite or above its attractiveness's size: those four, and on 400 blocks one zone read
+    -0.01 with an error of 0.40. :func:`pessimistic_equilibrium_allocation` holds such a zone at
+    zero incentive.
 
     Args:
         logs: :meth:`SharedStateMarket.generate_logs`'s, or any with ``u``, ``demand`` and ``y``
             of shape ``(n_blocks, n_zones)``, ``n_blocks`` at least the ``n_zones + 3`` parameters
             and the demand positive.
-        max_iter: L-BFGS iterations at most.
+        max_iter: L-BFGS iterations at most, before the polish.
 
     Raises:
         ValueError: on columns that are not finite matrices of one shape, fewer blocks than
@@ -414,20 +592,28 @@ def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEqu
     def unpack(p: Array) -> tuple[Array, tuple[Array, Array, Array]]:
         return p[:n_zones], (jnp.exp(p[n_zones]), jnp.exp(p[n_zones + 1]), jnp.exp(p[n_zones + 2]))
 
-    def residual(p: Array, incentive: Array) -> Array:
+    def one_block(p: Array, d: Array, v: Array) -> Array:
         attract, parameters = unpack(p)
-        drivers = jax.vmap(lambda d, v: _fitted_drivers(attract * d, v, parameters))(
-            demand, incentive
-        )
-        return y - jnp.minimum(demand, drivers)
+        return _fitted_drivers(attract * d, v, parameters)
+
+    def drivers(p: Array, incentive: Array) -> Array:
+        return jax.vmap(lambda d, v: one_block(p, d, v))(demand, incentive)
+
+    def residual(p: Array, incentive: Array) -> Array:
+        return y - jnp.minimum(demand, drivers(p, incentive))
 
     value_and_grad = jax.jit(
         jax.value_and_grad(lambda p, incentive: jnp.mean(residual(p, incentive) ** 2))
     )
+    drivers_at = jax.jit(drivers)
+    # each block's drivers in the parameters, reverse mode through the fixed point
+    jacobians = jax.jit(jax.vmap(jax.jacrev(one_block), in_axes=(None, 0, 0)))
     mass = 1.2 * float(jnp.max(jnp.sum(y, axis=1)))
     start = np.concatenate([np.ones(n_zones), [0.0, 0.0, math.log(mass)]])
+    eps = float(jnp.finfo(dtype).eps)
+    demand_64, y_64 = np.asarray(demand, np.float64), np.asarray(y, np.float64)
 
-    def solve(incentive: Array) -> tuple[OptimizeResult, NDArray[np.float64]]:
+    def solve(incentive: Array) -> tuple[NDArray[np.float64], bool, NDArray[np.float64]]:
         def objective(p: NDArray[np.float64]) -> tuple[float, NDArray[np.float64]]:
             value, grad = value_and_grad(jnp.asarray(p, dtype=dtype), incentive)
             return float(value), np.asarray(grad, dtype=np.float64)
@@ -435,14 +621,33 @@ def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEqu
         found = minimize(
             objective, start, jac=True, method="L-BFGS-B", options={"maxiter": max_iter}
         )
-        left = np.asarray(residual(jnp.asarray(found.x, dtype=dtype), incentive), np.float64)
-        return found, left
+        p, converged = _polish(
+            found.x,
+            lambda p: np.asarray(drivers_at(jnp.asarray(p, dtype=dtype), incentive), np.float64),
+            lambda p: np.asarray(
+                jacobians(jnp.asarray(p, dtype=dtype), demand, incentive), np.float64
+            ),
+            demand_64,
+            y_64,
+            eps,
+        )
+        left = np.asarray(residual(jnp.asarray(p, dtype=dtype), incentive), np.float64)
+        return p, converged, left
 
-    result, left = solve(u)
-    _, idle = solve(jnp.zeros_like(u))
+    fitted, converged, left = solve(u)
+    _, _, idle = solve(jnp.zeros_like(u))
+    attract_se = _attract_se(
+        fitted,
+        lambda p: np.asarray(drivers_at(jnp.asarray(p, dtype=dtype), u), np.float64),
+        lambda p: np.asarray(jacobians(jnp.asarray(p, dtype=dtype), demand, u), np.float64),
+        demand_64,
+        y_64,
+        eps,
+        n_zones,
+    )
     lack_of_fit = _lack_of_fit(left, np.asarray(demand, np.float64), np.asarray(u, np.float64))
-    attract, (beta, congestion, total) = unpack(jnp.asarray(result.x, dtype=dtype))
-    rmse = math.sqrt(float(result.fun))
+    attract, (beta, congestion, total) = unpack(jnp.asarray(fitted, dtype=dtype))
+    rmse = math.sqrt(float(np.mean(left**2)))
     if lack_of_fit < _LACK_OF_FIT:
         warnings.warn(
             f"fit_equilibrium: the residuals still follow the zones' demand and incentive (F test"
@@ -455,11 +660,12 @@ def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEqu
     return FittedEquilibrium(
         demand=jnp.mean(demand, axis=0),
         attract=attract,
+        attract_se=jnp.asarray(attract_se, dtype=dtype),
         beta=float(beta),
         congestion=float(congestion),
         mass=float(total),
         rmse=rmse,
-        converged=bool(result.success),
+        converged=converged,
         lack_of_fit=lack_of_fit,
         incentive_z=_incentive_z(left, idle),
     )
@@ -478,6 +684,12 @@ def pessimistic_equilibrium_allocation(
     adjusted response gates the plan through a W-DRO pessimism tilt (``radius * SE``): where
     the offline estimate is weak or unsupported, the incentive is discounted rather than trusted.
 
+    A zone whose attractiveness the fit does not identify, its
+    :attr:`FittedEquilibrium.attract_se` infinite or above the attractiveness's size, is held at
+    zero incentive, and the budget is planned over the rest: the logs do not say what an incentive
+    there buys. Such a zone draws almost no drivers in any logged block; on 50 blocks of market 2
+    the plan had spent 3.1 of the budget of 6 on one and won 0.15 of the exact oracle's lift.
+
     ``equilibrium`` is the one planned through, and is required: :func:`fit_equilibrium`'s,
     estimated from the logs. ``market`` gives only the budget and the zones; its own base demand,
     attractiveness and solver are the simulator's truth, which no log supplies, and the planner does
@@ -485,9 +697,10 @@ def pessimistic_equilibrium_allocation(
 
     Raises:
         TypeError: when ``equilibrium`` is not given.
-        ValueError: on a response or an equilibrium whose zones are not ``market``'s, or an
+        ValueError: on a response or an equilibrium whose zones are not ``market``'s, an
             equilibrium whose drivers do not tell an incentive from none
-            (:attr:`FittedEquilibrium.incentive_z`): every plan through it reads the same.
+            (:attr:`FittedEquilibrium.incentive_z`): every plan through it reads the same, or one
+            that identifies no zone's attractiveness.
     """
     for name, part in (("marginal", response.marginal), ("se", response.se)):
         if jnp.shape(part) != (market.n_zones,):
@@ -519,11 +732,21 @@ def pessimistic_equilibrium_allocation(
     pess = jnp.maximum(response.marginal - radius * response.se, 0.0)
     tilt = pess - jnp.maximum(response.marginal, 0.0)
     completions = equilibrium.completions
+    se, attract = np.asarray(equilibrium.attract_se), np.asarray(equilibrium.attract)
+    free = np.flatnonzero(np.isfinite(se) & (se <= np.abs(attract)))
+    if not free.size:
+        raise ValueError(
+            "the fitted equilibrium identifies no zone's attractiveness: every attract_se is"
+            " infinite or above the attractiveness's size, so no zone's incentive is read"
+        )
+    zero = jnp.zeros(market.n_zones, dtype=equilibrium.attract.dtype)
 
-    def surrogate(u: Array) -> Array:
+    def surrogate(v: Array) -> Array:
+        u = zero.at[free].set(v)
         return completions(u) + jnp.dot(tilt, u)
 
-    return stackelberg_allocation(surrogate, market.n_zones, market.budget, steps=steps)
+    planned = stackelberg_allocation(surrogate, free.size, market.budget, steps=steps)
+    return zero.at[free].set(planned)
 
 
 def interference_bias(

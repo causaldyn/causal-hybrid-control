@@ -146,6 +146,20 @@ FORMAL_LINKS = {
             "test_congestion_map_contracts_pairs_at_the_certified_rate",
         ),
     },
+    "chc.games.exact_congestion_allocation": {
+        "cites": ("exact_congestion_allocation.mac",),
+        "tests": (
+            "test_games.py::test_no_split_of_the_budget_completes_more_than_the_exact_allocation",
+            "test_games.py::test_the_exact_allocation_carries_its_certificate",
+        ),
+    },
+    "chc.marketplace._polish": {
+        "cites": ("relative_offset_stop.mac",),
+        "tests": (
+            "test_marketplace.py::test_the_fit_converges_where_no_gauss_newton_step_is_left",
+        ),
+        "via": "fit_equilibrium",
+    },
     "chc.research.games.equilibrium_monotonicity_certificate": {
         "cites": ("equilibrium_monotonicity.mac", "equilibrium_monotonicity.v"),
         "tests": (

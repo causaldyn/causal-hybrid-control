@@ -1,0 +1,179 @@
+/* The exact allocation of chc.games.exact_congestion_allocation (tests/test_games.py).
+   m drivers settle at the shares s = softmax(beta*(a + u - c*s)); the incentive u >= 0, sum(u) = B,
+   adds to each zone's value a; zone i completes min(d_i, m*s_i). A zone's level at share s is
+       phi_i(s) = log(s)/beta + c*s - a_i.
+   STEP 1  Berry's (1994) inversion: at the equilibrium phi_i(s_i) - u_i = -log(Z)/beta, the same for
+           every zone; and shares whose levels less u are one constant are the equilibrium
+   STEP 2  the floor g(mu) = W(k*exp(beta*(mu + a)))/k, k = beta*c, solves phi(g) = mu, symbolically
+           and at sample points; g' = beta*g/(1 + k*g) > 0, g'' = beta^2*g/(1 + k*g)^3 > 0
+   STEP 3  Newton's start on t + k*exp(t) = z (t = log g): with L = log(k) + z, the start z lies
+           W(e^L) in [0, 1] right of the root where L <= 1, and log(L) - log(k) lies
+           W(e^L) - L + log(L) in [0, 1/(e - 1)] right of it where L > 1 (Hoorfar and Hassani 2008)
+   STEP 4  the bound: min(d, m*s) = m*s - (m*s - d)+, so shares s >= g, sum(s) = 1, complete
+           m - sum (m*s - d)+ <= m - sum (m*g - d)+ = U
+   STEP 5  a vertex's cost at a rational point: beta 2, c 3/2, level -1, floors (1/10, 1/5, 3/10),
+           demand shares (3/10, 1/2, 2/5); every vertex of the box cut by the deficit's
+           hyperplane, and the least, log(10/3)/2 + 3/5 at zones 1 and 2 filled (counted from 0)
+   STEP 6  the exchange step: raising the level with the other funded zones held and an over-supplied
+           funded zone k giving up what the floors take changes the bill at
+           -#funded - phi_k'(s_k)*sum(g') < 0
+   STEP 7  SharedStateMarket(seed=4) and (seed=1) in float64: the equilibrium at the allocation the
+           function returns completes the value it returns, the zones it names hold their demand,
+           and the unfunded zones sit at its level
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/exact_congestion_allocation.mac */
+
+linel : 110$
+display2d : false$
+ratprint : false$
+verdict(e) := if is(e) then "(ok)" else "(FAIL)"$
+
+/* STEP 1 */
+logs : beta*(a + u - c*s) - log(Z)$            /* log s_i at the softmax fixed point, Z its sum */
+gap1 : ratsimp(logs/beta + c*s - a - u + log(Z)/beta)$
+print("STEP 1  phi(s) - u + log(Z)/beta at the equilibrium:", gap1, verdict(equal(gap1, 0)))$
+/* conversely phi_i(s_i) = u_i + kappa gives s_i = exp(beta*(a_i + u_i - c*s_i + kappa)); summing
+   to 1 fixes exp(beta*kappa) = 1/Z, the softmax */
+back : ratsimp(log(exp(beta*(a + u - c*s + kappa)))/beta + c*s - a - u)$
+print("STEP 1  the converse, phi(s) - u:", radcan(back), verdict(equal(radcan(back), kappa)))$
+
+/* STEP 2 */
+k : beta*c$
+/* log W(y) = log(y) - W(y) for y > 0, so log g = beta*(mu + a) - W with W = W(k*exp(beta*(mu + a))) */
+gap2 : ratsimp((beta*(mu + a) - W)/beta + c*(W/k) - a - mu)$
+print("STEP 2  phi(g(mu)) - mu, symbolic:", gap2, verdict(equal(gap2, 0)))$
+fpprec : 40$
+block([worst : 0],
+  for pt in [[13/10, 7/10, 1/5, -2/5], [5/2, 2, 11/10, -3/2], [2/5, 5, -3/10, 4/5], [5/2, 2, 2, -4]] do
+    block([b : bfloat(pt[1]), cc : bfloat(pt[2]), aa : bfloat(pt[3]), m0 : bfloat(pt[4]), g],
+      g : bfloat(lambert_w(b*cc*exp(b*(m0 + aa))))/(b*cc),
+      worst : max(worst, abs(log(g)/b + cc*g - aa - m0))),
+  print("STEP 2  |phi(g(mu)) - mu| at four points, 40 digits:", float(worst),
+        verdict(worst < 1b-30)))$
+depends(G, mu)$
+F : log(G)/beta + c*G - a - mu$
+dG : rhs(solve(diff(F, mu), diff(G, mu))[1])$
+d2G : ratsimp(subst(diff(G, mu) = dG, diff(dG, mu)))$
+print("STEP 2  g' less beta*g/(1 + k*g):", ratsimp(dG - beta*G/(1 + k*G)),
+      verdict(equal(ratsimp(dG - beta*G/(1 + k*G)), 0)))$
+print("STEP 2  g'' less beta^2*g/(1 + k*g)^3:", ratsimp(d2G - beta^2*G/(1 + k*G)^3),
+      verdict(equal(ratsimp(d2G - beta^2*G/(1 + k*G)^3), 0)))$
+assume(beta > 0, c >= 0, G > 0)$
+print("STEP 2  signs of g' and g'':", sign(dG), sign(d2G), verdict(sign(dG) = pos and sign(d2G) = pos))$
+forget(beta > 0, c >= 0, G > 0)$
+
+/* STEP 3: the root of t + k*exp(t) = z is z - W(e^L); the start sits start - root right of it */
+block([low : 1, high : 0, ok : true],
+  for L in [-30, -3, 0, 1/2, 1] do
+    block([w : bfloat(lambert_w(exp(bfloat(L))))],
+      if not (w >= 0 and w <= 1) then ok : false),
+  print("STEP 3  W(e^L) in [0, 1] for L in [-30, -3, 0, 1/2, 1]:", verdict(ok)),
+  for L in [101/100, 3/2, 2, %e, 5, 20, 100, 10^4] do
+    block([d : bfloat(lambert_w(exp(bfloat(L))) - L + log(L))],
+      low : min(low, d), high : max(high, d)),
+  print("STEP 3  W(e^L) - L + log(L) over L in (1, 1e4]: from", float(low), "to", float(high),
+        verdict(low >= 0 and high <= 1/(%e - 1))))$
+/* Hoorfar and Hassani's upper term e/(e - 1)*log(L)/L peaks at L = e, at 1/(e - 1) */
+hh : %e/(%e - 1)*log(L)/L$
+print("STEP 3  d/dL of the term at L = e:", ratsimp(subst(L = %e, diff(hh, L))),
+      "; its value there less 1/(e - 1):", ratsimp(subst(L = %e, hh) - 1/(%e - 1)),
+      verdict(equal(ratsimp(subst(L = %e, diff(hh, L))), 0)
+              and equal(ratsimp(subst(L = %e, hh) - 1/(%e - 1)), 0)))$
+
+/* STEP 4: each sign of m*s - d */
+assume(t > 0)$
+for region in [[d + t, "m*s > d"], [d - t, "m*s < d"], [d, "m*s = d"]] do
+  block([ms : region[1], e],
+    e : ratsimp(min(d, ms) - (ms - max(ms - d, 0))),
+    print("STEP 4 ", region[2], " min(d, m*s) less m*s - (m*s - d)+:", e, verdict(equal(e, 0))))$
+forget(t > 0)$
+/* (m*s - d)+ does not fall as s rises: its two pieces are 0 and the rising m*s - d */
+print("STEP 4  s >= g gives (m*s - d)+ >= (m*g - d)+, so sum min(d, m*s) <= U",
+      verdict(is(max(3/2 - 1, 0) >= max(1/2 - 1, 0)) and is(max(1/4 - 1, 0) >= max(1/8 - 1, 0))))$
+
+/* STEP 5 */
+b5 : 2$  c5 : 3/2$  mu5 : -1$
+g5 : [1/10, 1/5, 3/10]$
+cap5 : [3/10, 1/2, 2/5] - g5$
+deficit5 : 1 - apply("+", g5)$
+/* a zone's value makes its floor the level's: a_i = log(g_i)/beta + c*g_i - mu */
+a5 : makelist(log(g5[i])/b5 + c5*g5[i] - mu5, i, 1, 3)$
+lift_cost(i, l) := log(1 + l/g5[i])/b5 + c5*l$
+vertices5 : []$
+for j : 1 thru 3 do
+  for sub in powerset(setify(delete(j, [1, 2, 3]))) do
+    block([need : deficit5 - apply("+", makelist(cap5[i], i, listify(sub))), cost],
+      if need >= 0 and need <= cap5[j] then (
+        cost : apply("+", makelist(lift_cost(i, cap5[i]), i, listify(sub))) + lift_cost(j, need),
+        vertices5 : endcons([j, listify(sub), need, radcan(cost)], vertices5)))$
+print("STEP 5  feasible vertices [partial, filled, its lift, cost]:", vertices5)$
+least5 : lmin(makelist(bfloat(v[4]), v, vertices5))$
+closed5 : log(10/3)/2 + 3/5$
+print("STEP 5  the least cost:", least5, "; less log(10/3)/2 + 3/5:", float(least5 - bfloat(closed5)),
+      verdict(abs(least5 - bfloat(closed5)) < 1b-35))$
+print("STEP 5  the floors' levels less mu:", makelist(ratsimp(log(g5[i])/b5 + c5*g5[i] - a5[i] - mu5), i, 1, 3),
+      verdict(every(lambda([e], equal(e, 0)),
+                    makelist(ratsimp(log(g5[i])/b5 + c5*g5[i] - a5[i] - mu5), i, 1, 3))))$
+fpprintprec : 20$
+print("STEP 5  to 20 digits:", bfloat(closed5))$
+fpprintprec : 0$
+
+/* STEP 6: two funded zones held (levels p1, p2 fixed), zone k absorbing, three unfunded zones */
+depends([g1, g2, g3, sk], nu)$
+bill : (p1 - nu) + (p2 - nu) + (log(sk)/beta + c*sk - ak - nu)$
+dbill : subst(diff(sk, nu) = -(diff(g1, nu) + diff(g2, nu) + diff(g3, nu)), diff(bill, nu))$
+claim6 : -3 - (1/(beta*sk) + c)*(diff(g1, nu) + diff(g2, nu) + diff(g3, nu))$
+print("STEP 6  d bill/d mu less -#funded - phi_k'*sum(g'):", ratsimp(dbill - claim6),
+      verdict(equal(ratsimp(dbill - claim6), 0)))$
+signed6 : subst([diff(g1, nu) = beta*q1/(1 + beta*c*q1), diff(g2, nu) = beta*q2/(1 + beta*c*q2),
+                 diff(g3, nu) = beta*q3/(1 + beta*c*q3)], claim6)$
+assume(beta > 0, c >= 0, sk > 0, q1 > 0, q2 > 0, q3 > 0)$
+print("STEP 6  its sign with the floors' g' > 0:", sign(signed6), verdict(sign(signed6) = neg))$
+forget(beta > 0, c >= 0, sk > 0, q1 > 0, q2 > 0, q3 > 0)$
+
+/* STEP 7 */
+equilibrium(av, uv, bb, cc) := block([n : length(av), s, v, top, z],
+  s : makelist(bfloat(1/n), i, 1, n),
+  for it : 1 thru 400 do (
+    v : makelist(bb*(av[i] + uv[i] - cc*s[i]), i, 1, n),
+    top : lmax(v),
+    z : makelist(exp(v[i] - top), i, 1, n),
+    z : z/apply("+", z),
+    s : (s + z)/2),
+  s)$
+check_market(name, dv, av, uv, value, level, at_demand, unfunded) := block(
+  [bb : bfloat(5/2), cc : bfloat(2), m : bfloat(12), s, done, phis],
+  dv : map(bfloat, dv), av : map(bfloat, av), uv : map(bfloat, uv),
+  s : equilibrium(av, uv, bb, cc),
+  done : apply("+", makelist(min(dv[i], m*s[i]), i, 1, length(s))),
+  phis : makelist(log(s[i])/bb + cc*s[i] - av[i], i, 1, length(s)),
+  print("STEP 7 ", name, " completions at u:", done, "; less the value returned:",
+        float(done - bfloat(value)), verdict(abs(done - bfloat(value)) < 1b-12)),
+  print("STEP 7 ", name, " zones at demand, |m*s - d| at most:",
+        float(lmax(makelist(abs(m*s[i + 1] - dv[i + 1]), i, at_demand))),
+        verdict(lmax(makelist(abs(m*s[i + 1] - dv[i + 1]), i, at_demand)) < 1b-12)),
+  print("STEP 7 ", name, " unfunded zones' levels less the level returned, at most:",
+        float(lmax(makelist(abs(phis[i + 1] - bfloat(level)), i, unfunded))),
+        verdict(lmax(makelist(abs(phis[i + 1] - bfloat(level)), i, unfunded)) < 1b-12)))$
+check_market("seed 4",
+  [0.6946075516358086, 0.6248167518350979, 1.3565796749088928, 1.0275026757538375, 0.7428803375497307,
+   0.4581474186024377, 0.9657720347806458, 1.8743889894928758, 1.3007957848834635, 0.8582688065793861,
+   1.3999702304260464, 0.8769578172441066],
+  [0.8604908839469041, 1.2212743638155037, 2.481030840561747, 1.088884983279795, 1.3021626207748973,
+   0.39606991854979473, 1.2891202821539076, 2.578382322891069, 2.1066178002505747, 1.3698114773968362,
+   1.8728605072585496, 1.562182351383949],
+  [1.0858433573703712, 0.4719808056023862, 8.511709855459534e-15, 1.0695475940581611, 0.6790922714534717,
+   8.511709855459534e-15, 0.834240361828199, 8.511709855459534e-15, 0.19170160776021333,
+   0.6884277727971547, 0.4713778762136627, 0.5077883529163554],
+  11.5314154095106, -2.9702922826842353, [0, 3, 4, 6, 8, 9, 10, 11], [2, 5, 7])$
+check_market("seed 1",
+  [1.7802107238895357, 1.4080413276756611, 0.6937126573169842, 0.5345236600351474, 1.466549420607199,
+   1.9135249477317862, 1.2258683294842432, 0.7448717099897145, 1.9371613354451158, 0.7709897992595143,
+   0.4364284131017076, 0.7956218635589156],
+  [2.8850814667523443, 2.1239299087357364, 1.2539520320450472, 0.6815450168218948, 1.9249956888048323,
+   2.9414266077777214, 2.094564479460547, 0.8743894795960461, 3.4440378262553564, 1.0655924392137166,
+   0.9953018906988824, 0.6596468008820642],
+  [0.23511706407464644, 0.8404275365260299, 1.2934915430920537, 3.9968028886505635e-15, 1.065398184966114,
+   0.229877089173273, 0.7840107290103167, 3.9968028886505635e-15, 3.9968028886505635e-15,
+   1.5516778531575455, 3.9968028886505635e-15, 3.9968028886505635e-15],
+  11.224654464238776, -3.586766706825368, [0, 1, 4, 5, 6, 9], [3, 7, 8, 10, 11])$

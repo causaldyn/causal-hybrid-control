@@ -4,19 +4,24 @@ while the CHC allocation, which plans through an equilibrium fitted from the log
 it.
 
 The thresholds are read on one market, ``SharedStateMarket(seed=0)``, among the hardest for the
-SUTVA planners. Over markets 0-29, at either precision, the CHC allocation had the least regret of
-the three on every one, and realised more completions than the naive one on every one; the naive
-plan won a median of 0.36 of the lift in float64, up to 0.79.
+SUTVA planners. Over markets 0-29 on logs of 400 blocks, the CHC allocation had the least regret of
+the three on every one in float64 and on 29 in float32; the naive plan won a median of 0.35 of the
+exact oracle's lift in float64, up to 0.79.
 """
+
+import math
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from chc.games import exact_congestion_allocation
 from chc.marketplace import (
     ExposureResponse,
     SharedStateMarket,
+    _attract_se,
+    _fitted_drivers,
     _zone_slope,
     calibrate_naive_causal,
     calibrate_predictive,
@@ -33,7 +38,7 @@ def env() -> dict:
     market = SharedStateMarket(seed=0)
     logs = market.generate_logs(400, jax.random.key(1))
     zero = jnp.zeros(market.n_zones)
-    oracle_value = market.value(market.oracle_allocation(steps=1200))
+    oracle_value = market.value(market.oracle_allocation())
     base_value = market.value(zero)
     return {
         "market": market,
@@ -114,9 +119,9 @@ def test_chc_recovers_the_oracle_where_baselines_do_not(env: dict) -> None:
     chc = pessimistic_equilibrium_allocation(market, shared, radius=1.0, equilibrium=env["fitted"])
     naive = sutva_allocation(market, calibrate_naive_causal(env["logs"]), radius=1.0)
     pred = sutva_allocation(market, calibrate_predictive(env["logs"]), radius=1.0)
-    # the least regret of the three, as on every one of markets 0-29
+    # the least regret of the three, as on every one of markets 0-29 in float64
     assert market.value(chc) > max(market.value(naive), market.value(pred))
-    # through an equilibrium fitted from the logs: 0.083 short in float32, 0.106 in float64
+    # through an equilibrium fitted from the logs: 0.102 short in float32, 0.087 in float64
     assert oracle - market.value(chc) < 0.3
     assert oracle - market.value(naive) > 0.8  # SUTVA leaves large regret on the table
     assert oracle - market.value(pred) > 0.8
@@ -133,7 +138,7 @@ def test_the_planner_refuses_to_plan_without_a_fitted_equilibrium(env: dict) -> 
 
 def test_the_fitted_equilibrium_recovers_the_market_s_parameters(env: dict) -> None:
     """Drivers' sensitivity 2.5, crowding 2 and 12 drivers, read off 400 blocks whose completions
-    carry noise of SD 0.02: the fit lands within 0.01, 0.003 and 0.04 of them in either precision,
+    carry noise of SD 0.02: the fit lands within 0.014, 0.004 and 0.04 of them in either precision,
     and its residual is the noise's."""
     fitted = env["fitted"]
     assert fitted.converged
@@ -141,6 +146,117 @@ def test_the_fitted_equilibrium_recovers_the_market_s_parameters(env: dict) -> N
     assert fitted.congestion == pytest.approx(2.0, abs=0.05)
     assert fitted.mass == pytest.approx(12.0, abs=0.1)
     assert fitted.rmse == pytest.approx(0.02, rel=0.1)
+
+
+def _relative_offset(fitted, logs: dict) -> tuple[float, float]:
+    """Bates and Watts' (1981) relative offset of the least-squares fit at ``fitted``'s parameters,
+    and the least distance of a block's drivers from its demand, where the residual has a kink.
+
+    The Jacobian of the drivers in the fit's parameters, the attractiveness and the logarithms of
+    the sensitivity, the penalty and the total, by reverse mode through each block's equilibrium;
+    a zone past its demand completes its demand, and its row is zero."""
+    u, demand, y = (jnp.asarray(logs[name]) for name in ("u", "demand", "y"))
+    n = u.shape[1]
+
+    def one_block(q: jax.Array, d: jax.Array, v: jax.Array) -> jax.Array:
+        return _fitted_drivers(q[:n] * d, v, (jnp.exp(q[n]), jnp.exp(q[n + 1]), jnp.exp(q[n + 2])))
+
+    q = jnp.concatenate(
+        [fitted.attract, jnp.log(jnp.array([fitted.beta, fitted.congestion, fitted.mass]))]
+    )
+    drivers = jax.vmap(lambda d, v: one_block(q, d, v))(demand, u)
+    below = np.asarray(drivers < demand).ravel()
+    jacobian = np.asarray(jax.vmap(jax.jacrev(one_block), in_axes=(None, 0, 0))(q, demand, u))
+    residual = np.asarray(y - jnp.minimum(demand, drivers)).ravel()
+    basis, _ = np.linalg.qr(jacobian.reshape(-1, q.size)[below])
+    fitted_part = basis.T @ residual[below]
+    explained, total, size = fitted_part @ fitted_part, residual @ residual, q.size
+    offset = math.sqrt(explained / size) / math.sqrt((total - explained) / (residual.size - size))
+    return offset, float(jnp.min(jnp.abs(drivers - demand)))
+
+
+def test_the_fit_converges_where_no_gauss_newton_step_is_left() -> None:
+    """On market 2's logs of 400 blocks the fit stopped on scipy's default tolerance on the change
+    in its objective, 2.2e-9 of 1 where the objective is 4e-4, and said it converged. A Gauss-Newton
+    step from there was 2.62 times the radius of the parameters' confidence region in its own
+    metric (Bates and Watts' relative offset), and lowered the mean squared residual by 2.1%. The
+    fit now stops at an offset of 1e-3 at most; no zone sits at its demand, where the residual has
+    a kink and the offset is read along it."""
+    market = SharedStateMarket(seed=2)
+    logs = market.generate_logs(400, jax.random.key(3))
+    fitted = fit_equilibrium(logs)
+    offset, gap = _relative_offset(fitted, logs)
+    assert gap > 1e-3
+    assert fitted.converged
+    assert offset <= 1e-3
+
+
+@pytest.mark.parametrize(("seed", "rides"), [(4, 11.5314154095), (1, 11.2246544642)])
+def test_the_oracle_is_the_exact_optimum(seed: int, rides: float) -> None:
+    """The oracle was 1200 steps of an ascent from the even split, a local maximum at best: on
+    markets 4 and 1 it completed 11.32 and 10.55 rides where the exact allocation completes 11.53
+    and 11.22. The market's own equilibrium solve, to its tolerance of 1e-6 of the drivers, now
+    reads the exact allocation's rides to 2e-6."""
+    market = SharedStateMarket(seed=seed)
+    demand, attract = market._base()
+    exact = exact_congestion_allocation(
+        attract, demand, market.beta, market.congestion, market.mass, market.budget
+    )
+    assert exact.value == pytest.approx(rides, abs=1e-9)
+    assert market.value(market.oracle_allocation()) == pytest.approx(rides, abs=2e-6)
+
+
+def test_an_oracle_given_its_old_step_count_warns_and_ignores_it() -> None:
+    market = SharedStateMarket(seed=4)
+    with pytest.warns(DeprecationWarning, match=r"oracle_allocation\(steps=...\) is ignored"):
+        stepped = market.oracle_allocation(steps=1200)
+    np.testing.assert_array_equal(stepped, market.oracle_allocation())
+
+
+def test_an_attractiveness_no_block_moves_reads_an_infinite_error() -> None:
+    """Drivers linear in three parameters, the third moving no block: the first two read the
+    Gauss-Newton errors ``s * sqrt(diag((J'J)^-1))`` of the two-column fit, the third ``inf``,
+    not the pseudo-inverse's zero."""
+    rng = np.random.default_rng(0)
+    slope = np.column_stack([rng.normal(size=40), rng.normal(size=40), np.zeros(40)])
+    p = np.array([0.3, -0.2, 5.0])
+    y = slope @ p + 0.1 * rng.normal(size=40)
+    se = _attract_se(
+        p,
+        lambda q: (slope @ q).reshape(8, 5),
+        lambda q: slope.reshape(8, 5, 3),
+        np.full((8, 5), 1e9),
+        y.reshape(8, 5),
+        float(np.finfo(np.float64).eps),
+        3,
+    )
+    left = y - slope @ p
+    variance = left @ left / (40 - 2)
+    expected = np.sqrt(variance * np.diag(np.linalg.inv(slope[:, :2].T @ slope[:, :2])))
+    np.testing.assert_allclose(se[:2], expected, rtol=1e-12, atol=0.0)
+    assert np.isinf(se[2])
+
+
+def test_the_planner_holds_a_zone_the_logs_do_not_identify_at_zero() -> None:
+    """On market 2's logs of 50 blocks zones 8 and 10 draw almost no drivers: the fit reads zone 8's
+    attractiveness -4.3 with a standard error of 9e2, and zone 10's not at all. Planned through,
+    the fit spent 3.1 of the budget of 6 on zone 8 and won 0.15 of the exact oracle's lift over no
+    incentive; held at zero, the plan spends it on the zones the logs read."""
+    market = SharedStateMarket(seed=2)
+    logs = market.generate_logs(50, jax.random.key(3))
+    fitted = fit_equilibrium(logs)
+    se, attract = np.asarray(fitted.attract_se), np.asarray(fitted.attract)
+    assert se[8] > abs(attract[8])
+    assert np.isinf(se[10])
+    assert np.all(np.isfinite(se[[0, 1, 2, 3, 4, 5, 6, 7, 9, 11]]))
+    plan = pessimistic_equilibrium_allocation(
+        market, calibrate_shared_state(logs), radius=1.0, equilibrium=fitted
+    )
+    assert float(plan[8]) == 0.0
+    assert float(plan[10]) == 0.0
+    base = market.value(jnp.zeros(market.n_zones))
+    oracle = market.value(market.oracle_allocation())
+    assert market.value(plan) - base > 0.5 * (oracle - base)
 
 
 def test_a_fit_on_logs_that_carry_no_response_is_refused_by_the_planner(env: dict) -> None:
@@ -153,8 +269,7 @@ def test_a_fit_on_logs_that_carry_no_response_is_refused_by_the_planner(env: dic
     market, logs, base, oracle = env["market"], env["logs"], env["base"], env["oracle"]
     shared = calibrate_shared_state(logs)
     order = np.random.default_rng(0).permutation(logs["u"].shape[0])
-    with pytest.warns(UserWarning, match="residuals still follow"):
-        scrambled = fit_equilibrium(logs | {"u": logs["u"][order]})
+    scrambled = fit_equilibrium(logs | {"u": logs["u"][order]})
     assert scrambled.beta < 0.1
     assert scrambled.incentive_z < 1.645 < env["fitted"].incentive_z
     with pytest.raises(ValueError, match="do not tell an incentive from none"):

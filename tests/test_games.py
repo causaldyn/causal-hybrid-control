@@ -1,12 +1,16 @@
 """Game primitives: simplex projection, certified congestion equilibrium, Stackelberg allocation."""
 
+import math
+
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from chc.games import (
     congestion_contraction_modulus,
     congestion_damping,
+    exact_congestion_allocation,
     project_simplex,
     softmax_congestion_equilibrium,
     stackelberg_allocation,
@@ -277,3 +281,101 @@ def test_an_active_constraint_costs_an_order_and_a_vertex_costs_the_slope(
     # the regret is identically zero and there is no slope to degrade.
     assert transfer.constrained_slope < transfer.regret_slope - 0.5
     assert all(r == 0.0 for r in transfer.vertex_regret)
+
+
+def _rides(value, demand, beta, congestion, mass, u):
+    """The rides an incentive ``u`` completes, through the solver the market uses, at float64."""
+    shares = softmax_congestion_equilibrium(
+        jnp.asarray(value), u, congestion, mass, beta, tol=1e-13, max_iter=5000
+    )
+    return jnp.sum(jnp.minimum(jnp.asarray(demand), shares.x)), shares.converged
+
+
+@pytest.mark.parametrize(
+    ("seed", "congestion"), [(0, 2.0), (1, 2.0), (2, 2.0), (3, 0.0)], ids=["a", "b", "c", "free"]
+)
+def test_no_split_of_the_budget_completes_more_than_the_exact_allocation(seed, congestion) -> None:
+    """Every split of the budget on a grid of step ``budget/120`` over three zones, solved by the
+    fixed point the market uses: none completes more rides than the allocation returned, and the
+    fixed point at that allocation completes what it says. The last market has no crowding, where
+    a zone's floor share is an exponential, not Lambert's ``W``."""
+    rng = np.random.default_rng(seed)
+    demand = rng.uniform(0.4, 2.0, 3)
+    value = 1.5 * demand + 0.3 * rng.standard_normal(3)
+    beta, mass, budget = 2.5, 3.0, 1.5
+    exact = exact_congestion_allocation(value, demand, beta, congestion, mass, budget)
+    steps = 120
+    grid = np.array([(i, j, steps - i - j) for i in range(steps + 1) for j in range(steps + 1 - i)])
+    rides, converged = jax.jit(
+        jax.vmap(lambda u: _rides(value, demand, beta, congestion, mass, u))
+    )(jnp.asarray(budget * grid / steps))
+    assert bool(jnp.all(converged))
+    at_exact, solved = _rides(value, demand, beta, congestion, mass, jnp.asarray(exact.allocation))
+    assert bool(solved)
+    # the solves stop at a residual of 1e-13 of the drivers: 1e-9 is a thousand times their error
+    assert float(at_exact) == pytest.approx(exact.value, abs=1e-9)
+    assert float(jnp.max(rides)) <= exact.value + 1e-9
+
+
+def test_the_exact_allocation_carries_its_certificate() -> None:
+    """On ``SharedStateMarket(seed=4)``: the zones it names hold their demand, the unpaid zones sit
+    at its level, the budget reaches that level and falls short just below it."""
+    market = SharedStateMarket(seed=4)
+    demand, value = (np.asarray(column, np.float64) for column in market._base())
+    beta, congestion, mass = market.beta, market.congestion, market.mass
+    exact = exact_congestion_allocation(value, demand, beta, congestion, mass, market.budget)
+    assert np.all(exact.allocation >= 0.0)
+    assert math.fsum(exact.allocation) == pytest.approx(market.budget, rel=1e-15, abs=0.0)
+    assert math.fsum(exact.shares) == pytest.approx(1.0, rel=1e-15, abs=0.0)
+    full = list(exact.at_demand)
+    assert np.max(np.abs(mass * exact.shares[full] - demand[full])) <= 1e-12 * mass
+    level = np.log(exact.shares) / beta + congestion * exact.shares - value
+    unpaid = [i for i in range(demand.size) if i not in full and i != exact.partial]
+    assert np.max(np.abs(level[unpaid] - exact.level)) <= 1e-12
+    paid = exact.allocation - exact.allocation[unpaid[0]]
+    assert np.max(np.abs(level - exact.level - paid)) <= 1e-12  # Berry's inversion
+    assert exact.spent <= market.budget < exact.cost_below
+    assert exact.level_below < exact.level
+    assert exact.value == pytest.approx(
+        math.fsum(np.minimum(demand, mass * exact.shares)), rel=1e-15, abs=0.0
+    )
+
+
+def test_with_no_budget_the_exact_allocation_is_the_free_equilibrium() -> None:
+    market = SharedStateMarket(seed=4)
+    demand, value = (np.asarray(column, np.float64) for column in market._base())
+    exact = exact_congestion_allocation(
+        value, demand, market.beta, market.congestion, market.mass, 0.0
+    )
+    assert np.all(exact.allocation == 0.0)
+    free, solved = _rides(value, demand, market.beta, market.congestion, market.mass, jnp.zeros(12))
+    assert bool(solved)
+    assert exact.value == pytest.approx(float(free), abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"value": np.zeros(21), "demand": np.ones(21)}, "at most 20 zones"),
+        ({"demand": np.ones(4)}, "both are one vector over the zones"),
+        ({"demand": np.array([1.0, -0.5, 1.0])}, "a zone's demand is non-negative"),
+        ({"value": np.array([1.0, np.nan, 1.0])}, "value is not finite"),
+        ({"beta": 0.0}, "beta is 0.0; it is one finite number, positive"),
+        ({"congestion": -1.0}, "congestion is -1.0; it is one finite number, non-negative"),
+        ({"mass": math.inf}, "mass is inf"),
+        ({"budget": -1.0}, "budget is -1.0"),
+    ],
+    ids=["zones", "shapes", "demand", "nan", "beta", "congestion", "mass", "budget"],
+)
+def test_inputs_outside_the_exact_allocation_s_contract_are_refused(change, message) -> None:
+    """21 zones would read up to 22 million vertices a level."""
+    given = {
+        "value": np.ones(3),
+        "demand": np.ones(3),
+        "beta": 2.5,
+        "congestion": 2.0,
+        "mass": 3.0,
+        "budget": 1.0,
+    } | change
+    with pytest.raises(ValueError, match=message):
+        exact_congestion_allocation(**given)

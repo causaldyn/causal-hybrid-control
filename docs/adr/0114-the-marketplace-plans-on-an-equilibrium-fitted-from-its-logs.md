@@ -2,7 +2,8 @@
 
 **Status:** accepted, 2026-10-19. Amends what `pessimistic_equilibrium_allocation` plans through.
 Amended by ADR 0126, 2026-10-21: `equilibrium=` is required, and the simulator's own is not
-planned through.
+planned through. Amended by ADR 0134, 2026-10-25: the oracle is the exact optimum, not the ascent
+these shares were read against, and the fit stops on a relative offset.
 
 ## Context
 

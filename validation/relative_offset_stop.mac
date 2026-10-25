@@ -1,0 +1,80 @@
+/* The stopping rule of chc.marketplace.fit_equilibrium (tests/test_marketplace.py).
+   A least-squares fit has N residuals r and a Jacobian J of P columns, full rank; Q1 spans J's
+   columns and Q2 the rest. The fit has converged where Bates and Watts' (1981) relative offset
+   w = (||Q1'r||/sqrt(P))/(||Q2'r||/sqrt(N - P)) is at most t = 0.001, which the code reads as
+   drop*(N - P) <= t^2*P*(||r||^2 - drop), drop = ||Q1'r||^2: no Gauss-Newton step lowers ||r||^2
+   by more than t^2*P*s^2/(1 + t^2*P/(N - P)), s^2 = ||r||^2/(N - P).
+   STEP 1  the Gauss-Newton step d = -(J'J)^(-1) J'r lowers ||r + J d||^2 below ||r||^2 by
+           r'J (J'J)^(-1) J'r = ||Q1'r||^2: exact on a rational J and r
+   STEP 2  with Bates and Watts' (1981) relative offset w = (||Q1'r||/sqrt(P))/(||Q2'r||/sqrt(N - P)),
+           that drop is P*s^2*w^2/(1 + P*w^2/(N - P)), rising in w; the code's rule
+           drop*(N - P) <= t^2*P*||Q2'r||^2 is w <= t, the drop at most t^2*P*s^2/(1 + t^2*P/(N - P));
+           a rule drop <= t^2*P*s^2 would be w^2 <= t^2/(1 - t^2*P/(N - P)), the same to 2e-9 at 400
+           blocks of 12 zones
+   STEP 3  at a kink the gradients are g + theta*v, theta in [0, 1]; the least in the metric M^(-1)
+           at an interior theta* = -v'M^(-1)g/(v'M^(-1)v) leaves v'M^(-1)(g + theta* v) = 0, so the
+           step -M^(-1)(g + theta* v) holds the kink's row, v'step = 0, to first order
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/relative_offset_stop.mac */
+
+linel : 110$
+display2d : false$
+ratprint : false$
+verdict(e) := if is(e) then "(ok)" else "(FAIL)"$
+
+/* STEP 1 */
+J : matrix([1, 0], [1, 1], [1, 2], [1, 3], [1, 4])$
+r : matrix([1], [-2], [0], [3], [1])$
+JtJ : transpose(J) . J$
+d : -(invert(JtJ) . transpose(J) . r)$
+norm2(v) := (transpose(v) . v)$
+drop : ratsimp(norm2(r) - norm2(r + J . d))$
+hat : ratsimp(transpose(r) . J . invert(JtJ) . transpose(J) . r)$
+print("STEP 1  the drop of the Gauss-Newton step:", drop, "; r'J(J'J)^(-1)J'r:", hat,
+      verdict(equal(drop, hat)))$
+/* Q1 from Gram-Schmidt on J's columns: ||Q1'r||^2 is the same number */
+c1 : col(J, 1)$
+c2 : col(J, 2) - ((transpose(col(J, 2)) . c1)/norm2(c1)) * c1$
+q1r : ratsimp((transpose(c1) . r)^2/norm2(c1) + (transpose(c2) . r)^2/norm2(c2))$
+print("STEP 1  ||Q1'r||^2 by Gram-Schmidt:", q1r, verdict(equal(q1r, hat)))$
+
+/* STEP 2: a = ||Q1'r||^2, b = ||Q2'r||^2 */
+assume(a > 0, b > 0, nn > pp, pp > 0, t > 0)$
+w2 : (a/pp)/(b/(nn - pp))$
+s2 : (a + b)/(nn - pp)$
+gap2 : ratsimp(a - pp*s2*w2/(1 + pp*w2/(nn - pp)))$
+print("STEP 2  drop less P*s^2*w^2/(1 + P*w^2/(N - P)):", gap2, verdict(equal(gap2, 0)))$
+/* at the boundary drop = t^2 P s^2, w^2 is t^2/(1 - t^2 P/(N - P)) */
+edge : solve(a = t^2*pp*s2, a)[1]$
+w2edge : ratsimp(subst(edge, w2))$
+gap3 : ratsimp(w2edge - t^2/(1 - t^2*pp/(nn - pp)))$
+print("STEP 2  w^2 where the drop is t^2*P*s^2, less t^2/(1 - t^2*P/(N - P)):", gap3,
+      verdict(equal(gap3, 0)))$
+/* the code's rule, drop*(N - P) <= t^2*P*(||r||^2 - drop), is w^2 <= t^2 and the drop's ceiling */
+rule : ratsimp((a*(nn - pp) - t^2*pp*b) - pp*b*(w2 - t^2))$
+print("STEP 2  drop*(N - P) - t^2*P*||Q2'r||^2 less P*||Q2'r||^2*(w^2 - t^2):", rule,
+      verdict(equal(rule, 0)))$
+/* at equality, with ||Q2'r||^2 = (N - P)*s^2 - drop */
+ceiling : solve(a*(nn - pp) = t^2*pp*(ss*(nn - pp) - a), a)[1]$
+gap4 : ratsimp(rhs(ceiling) - t^2*pp*ss/(1 + t^2*pp/(nn - pp)))$
+print("STEP 2  the drop at w = t less t^2*P*s^2/(1 + t^2*P/(N - P)):", gap4, verdict(equal(gap4, 0)))$
+excess : float(1/sqrt(1 - 1e-6*15/(4800 - 15)) - 1)$
+print("STEP 2  at t = 0.001, P = 15, N = 4800 the rule is w <= 0.001 * (1 +", excess, ")",
+      verdict(excess < 2e-9))$
+/* the drop rises with w: d(drop)/d(w^2) > 0, so the rule is a ceiling on w */
+dd : ratsimp(diff(pp*s2*ww/(1 + pp*ww/(nn - pp)), ww))$
+assume(ww > 0)$
+print("STEP 2  d drop/d w^2:", factor(dd), "; sign", sign(dd), verdict(sign(dd) = pos))$
+forget(a > 0, b > 0, nn > pp, pp > 0, t > 0, ww > 0)$
+
+/* STEP 3: M^(-1) symmetric 2 x 2 */
+Mi : matrix([m1, m2], [m2, m3])$
+g : matrix([g1], [g2])$
+v : matrix([v1], [v2])$
+theta_star : -(transpose(v) . Mi . g)/(transpose(v) . Mi . v)$
+q(th) := transpose(g + th*v) . Mi . (g + th*v)$
+stationary : ratsimp(subst(th = theta_star, diff(q(th), th)))$
+print("STEP 3  dq/dtheta at theta*:", stationary, verdict(equal(stationary, 0)))$
+move : -(Mi . (g + theta_star*v))$
+tangent : ratsimp(transpose(v) . move)$
+print("STEP 3  v'step at theta*:", tangent, verdict(equal(tangent, 0)))$
