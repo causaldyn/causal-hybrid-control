@@ -135,7 +135,10 @@ conda install jax -c conda-forge
 conda install "jaxlib=*=*cuda*" jax -c conda-forge
 ```
 
-`chc` installs from PyPI: `pip install causal-hybrid-control` follows in the same environment.
+`chc` itself is on conda-forge, `conda install causal-hybrid-control -c conda-forge`, which brings
+`jax` as the first command does. The feedstock's bot follows each PyPI release, so a new version
+can reach PyPI first; `pip install causal-hybrid-control` in the same environment installs it from
+there.
 
 ## Nightly JAX, source builds, older wheels
 
