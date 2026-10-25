@@ -54,11 +54,12 @@ LIFECYCLE_PAGE = Path(__file__).resolve().parent.parent / "docs" / "lifecycle.md
 
 
 def _lifecycle_names() -> list[str]:
-    """Every name `docs/lifecycle.md` files that some module of the library defines, in page
+    """Every name `docs/lifecycle.md` files that some public module of the library defines, in page
     order; the page's other code spans are arguments and symbols."""
     defined = {
         name
         for found in pkgutil.iter_modules(chc.__path__)
+        if not found.name.startswith("_")
         for name in vars(importlib.import_module(f"chc.{found.name}"))
         if not name.startswith("_")
     }
