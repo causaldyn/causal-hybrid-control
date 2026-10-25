@@ -1565,10 +1565,25 @@ def test_the_report_and_the_json_carry_the_same_decision() -> None:
     assert (
         f"- run: on {jax.default_backend()} ({jax.devices()[0].device_kind}), x64=True, "
         "fit in float64, solve in float64, seed=0, integrator=rk4\n"
-        "- settings: folds=2, degree=1, channel_degree=1, nuisance_degree=2, ridge=1e-06, "
-        "steps=10000, tolerance=0.5, hold_constraints=False, max_levers=none\n"
+        "- settings: folds=2, degree=1, channel_degree=1, nuisance_degree=2, "
+        "nuisance_knots=auto, ridge=1e-06, steps=10000, tolerance=0.5, hold_constraints=False, "
+        "max_levers=none\n"
         f"- versions: {versions}"
     ) in report
+
+
+def test_the_report_s_settings_line_names_the_nuisance_knots() -> None:
+    """The run's record carried the nuisances' knots and the report's settings line left them out,
+    so two runs whose nuisances differed printed the same line."""
+    result = _small(nuisance_knots=None)
+    run = result.run
+    assert run is not None
+    assert run.nuisance_knots is None
+    assert result.to_json()["run"]["nuisance_knots"] is None
+    assert ", nuisance_degree=2, nuisance_knots=none, ridge=1e-06, " in result.report()
+    for knots, shown in (("auto", "auto"), (8, "8")):
+        record = dataclasses.replace(result, run=dataclasses.replace(run, nuisance_knots=knots))
+        assert f", nuisance_degree=2, nuisance_knots={shown}, ridge=1e-06, " in record.report()
 
 
 def _small(panel: Panel | None = None, **kwargs: object) -> Prescription:
@@ -2403,6 +2418,26 @@ def test_the_logger_check_flags_a_graph_that_leaves_out_what_the_levers_read() -
     report = prescription.report()
     assert "strongest: `incentive` on `demand`" in report
     assert "read more than the record says, or read it through more than a quadratic" in report
+
+
+def test_the_logger_check_logs_its_rejection_at_info(caplog: pytest.LogCaptureFixture) -> None:
+    """A rejection says what the levers read. A confounder drawn afresh each period leaves no trace
+    any test of the log can see, so a rejection is a finding to read, not an alarm: it is logged at
+    INFO, as a pass is, and it still names what the levers read."""
+    missing = CausalGraph.from_edges([edge for edge in EDGES if edge != ("demand", "incentive")])
+    with caplog.at_level(logging.DEBUG, logger="chc.decision"):
+        check = _prescribe(_panel(), missing).logger_check
+    assert check is not None
+    assert check.test.p_value <= 0.05
+    checks = [
+        record for record in caplog.records if getattr(record, "chc_event", "") == "logger_check"
+    ]
+    assert [record.levelno for record in checks] == [logging.INFO]
+    assert checks[0].getMessage() == (
+        "the levers read more than the state and their recorded parents, or read those through "
+        "more than a quadratic"
+    )
+    assert getattr(checks[0], "p_value", None) == check.test.p_value
 
 
 def test_the_logger_check_sees_a_policy_that_keeps_part_of_its_last_incentive() -> None:

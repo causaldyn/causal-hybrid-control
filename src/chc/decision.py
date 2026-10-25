@@ -158,10 +158,11 @@ call, and a library that reaches for ``basicConfig`` takes it away.
 
 The records that are not ``INFO`` are the ones worth waking someone for: identifying in single
 precision, a graph that says the effect is not identified at all, a driver's forecast outside the
-range the panel logged, levers that read more than the state and their recorded parents or read
-those through more than a quadratic, levers held to what the log did with them, a plan some fit
-the log cannot tell apart predicts differently, a tube whose rate or budget is not a finite
-number, and an evaluation that reads one unit's windows as independent.
+range the panel logged, levers held to what the log did with them, a plan some fit the log cannot
+tell apart predicts differently, a tube whose rate or budget is not a finite number, and an
+evaluation that reads one unit's windows as independent. The logger check's rejection is
+``INFO``: it reports the logger's memory and the columns it read, and a confounder drawn afresh
+each period is one it cannot see (:class:`~chc.evaluation.LoggerCheck`).
 """
 
 IdentificationStatus = Literal["identified", "asserted", "not_identified"]
@@ -1167,7 +1168,7 @@ class Prescription:
         :attr:`Prescription.logger_check` on the panel the plan was fitted on). On enough rows it
         also flags levers that read the state through more than a quadratic, such as a logger that
         switches at a threshold; the logger fitted here is affine, so that premise fails too. A
-        rejection is logged as a warning and changes nothing else. *Experimental.*
+        rejection is logged at ``INFO`` and changes nothing else. *Experimental.*
 
         Raises:
             NotIdentifiedError: if the effect is not identified, so there is no plan.
@@ -1628,13 +1629,14 @@ class Prescription:
         solve = "no solve" if run.solve_dtype is None else f"solve in {run.solve_dtype}"
         tolerance = "none" if run.tolerance is None else f"{run.tolerance:g}"
         cap = "none" if run.max_levers is None else str(run.max_levers)
+        knots = "none" if run.nuisance_knots is None else str(run.nuisance_knots)
         return [
             f"- run: on {run.backend} ({run.device_kind}), x64={run.x64}, fit in {run.fit_dtype}, "
             f"{solve}, seed={run.seed}, integrator={run.integrator}",
             f"- settings: folds={run.folds}, degree={run.degree}, "
             f"channel_degree={run.channel_degree}, nuisance_degree={run.nuisance_degree}, "
-            f"ridge={run.ridge:g}, steps={run.steps}, tolerance={tolerance}, "
-            f"hold_constraints={run.hold_constraints}, max_levers={cap}"
+            f"nuisance_knots={knots}, ridge={run.ridge:g}, steps={run.steps}, "
+            f"tolerance={tolerance}, hold_constraints={run.hold_constraints}, max_levers={cap}"
             + ("" if run.clusters is None else f", clusters=`{run.clusters}`"),
             "- versions: " + ", ".join(f"{name} {version}" for name, version in run.versions),
         ]
@@ -2101,12 +2103,12 @@ def prescribe(
     (see :data:`_log`). Nothing is configured here; a caller that wants them calls
     ``logging.basicConfig`` itself. An unidentified effect, a lever the log never moved, one on its
     logged rule, a combination kept at its logged level, a plan the log does not determine, a run
-    in single precision, a forecast outside the logged range, a planned action outside its lever's
-    logged range and levers that read more than the record says come through at ``WARNING``.
+    in single precision, a forecast outside the logged range and a planned action outside its
+    lever's logged range come through at ``WARNING``.
 
     Before fitting, the panel is asked whether the levers read anything but the states and their
-    recorded parents: :attr:`Prescription.logger_check` (*experimental*). It reports; it changes
-    nothing else.
+    recorded parents: :attr:`Prescription.logger_check` (*experimental*). It reports, at ``INFO``;
+    it changes nothing else.
     """
     if not levers:
         raise DecisionError(
@@ -3679,7 +3681,7 @@ _LOGGER_CHECK_DEGREE = 2
 # The degree of the nuisances' polynomial prescribe fits with, and so of the rules of the state the
 # log's actions are read against (ADR 0054).
 _NUISANCE_DEGREE = 2
-_LOGGER_CHECK_ALPHA = 0.05  # the level at which a check is logged as a warning
+_LOGGER_CHECK_ALPHA = 0.05  # the level at which the check reports a rejection
 _PERSISTENCE_ALPHA = 0.05  # the level at which the report names the noise's persistence
 _JACKKNIFE_GROUPS = 50  # the most groups of units the tube's noise read is jackknifed over
 _INTERFERENCE_ALPHA = 0.05  # the level at which a spillover is logged and named in the report
@@ -3734,7 +3736,9 @@ def _check_logger(
     Tested against the numeric columns of ``columns.unlogged`` the panel holds, at the period, and
     against ``given`` and the levers one period back: the past a Markov logger ignores. ``None``,
     logged, when a lever's parent cannot be read or the rows are fewer than twice the regression's
-    terms. A rejection is logged as a warning.
+    terms. A rejection is logged at ``INFO``, as a pass is: the check sees a logger's memory and
+    the columns it read, and cannot see a confounder drawn afresh each period
+    (:class:`~chc.evaluation.LoggerCheck`), so a rejection is a finding to read, not an alarm.
     """
     if columns.unreadable:
         _log.info(
@@ -3785,8 +3789,7 @@ def _check_logger(
         ),
     )
     rejected = check.test.p_value <= _LOGGER_CHECK_ALPHA
-    _log.log(
-        logging.WARNING if rejected else logging.INFO,
+    _log.info(
         "the levers read more than the state and their recorded parents, or read those through "
         "more than a quadratic"
         if rejected

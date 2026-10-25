@@ -20,12 +20,13 @@ import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
-from math import comb, lgamma
+from math import comb, factorial, lgamma
 from typing import Any, Literal, cast
 
 import numpy as np
+from numpy.polynomial.hermite_e import hermegauss, hermeval
 from numpy.typing import NDArray
-from scipy.integrate import quad
+from scipy.integrate import quad, quad_vec
 from scipy.optimize import minimize
 from scipy.special import expit
 
@@ -258,6 +259,10 @@ class InformationLowerBoundCurve:
     hodges_pointwise_ratio: float  # superefficient estimator vs the UNBIASED CR floor at b: << 1
     hodges_bayes_ratio: float  # the same estimator against the van Trees floor: >> 1
     plugin_bayes_ratio: float  # the efficient plug-in against it: > 1, and far below Hodges
+    # Floors on the Bayes REGRET of every estimator, by van Trees weighted by C(b) (Gill and Levit
+    # 1995): C = W psi', in closed form, and the best C over W psi' and He_0 .. He_8
+    weighted_bayes_floor: float
+    best_weighted_bayes_floor: float
 
 
 def information_lower_bound_certificate(
@@ -269,6 +274,7 @@ def information_lower_bound_certificate(
     alpha: float = 1.0,
     sample_sizes: Sequence[int] = (200, 500, 1000, 2000, 4000),
     n_seeds: int = 300,
+    prior_width: float = 0.25,
 ) -> InformationLowerBoundCurve:
     """Information-theoretic lower bound for UNBIASED effect estimators (Cramer-Rao;
     derived in ``validation/information_lower_bound.mac``; ``proofs/information_lower_bound.v``
@@ -302,11 +308,38 @@ def information_lower_bound_certificate(
     plug-in clears the same floor by ``~2.8x``, so the bound separates the two rather than being
     vacuous for both.
 
+    Two floors on the REGRET itself need no least curvature. Van Trees with a weight ``C(b)``
+    (Gill and Levit, Bernoulli 1995), for any ``C`` with ``C lambda`` vanishing at both ends, is
+
+        ``E[W (T - psi)^2] >= (E[C psi'])^2 / (I_n E[C^2/W] + E[(C' + C (log lambda)')^2/W])``
+
+    with ``W = b^2 + rr``, ``I_n = n V_id/sigma^2`` and every mean over the prior ``lambda``
+    (``validation/weighted_van_trees.mac``; ADR 0136). ``C = 1``, with ``W`` bounded below by
+    ``rr``, is ``rr`` times the action floor. ``C = W psi'``, whose slope is closed form by
+    ``psi'' = 2 xt b (3 rr - b^2)/(rr + b^2)^3``, gives ``weighted_bayes_floor``; it tends to
+    ``E[W psi'^2]/I_n``, the prior's mean of the local floor and the limit of the Bayes regret.
+    ``best_weighted_bayes_floor`` is the largest over ``C`` in the span of ``W psi'`` and the
+    Hermite polynomials ``He_0 .. He_8`` of ``(b' - b)/prior_width``, ``b'`` the prior's draw.
+    Both are floors at every ``n`` and every prior width, and neither cancels at the knife edge,
+    since ``W psi'^2 >= 0``. On a prior ``N(0, 1)``, ``rr = 0.5``, ``xt = 1`` and ``I_n = 5``,
+    where the Bayes regret is 0.0749503, they read 0.0488867 and 0.0595994, 0.652 and 0.795 of
+    it, and ``rr`` times the action floor 0.0172035, 0.230 of it. At ``I_n = 10^4`` both read
+    0.99967 of it, and the least-curvature floor 0.216, which is its limit
+    (``validation/weighted_van_trees.gp``, at 38 digits). The prior of the van Trees arm is
+    ``N(b, prior_width^2)``.
+
     The caveat that SURVIVES is the knife edge: at ``rr = b^2`` the optimal action is stationary
     in ``b``, so ``psi'`` and with it the leading floor vanish. That is a property of the problem,
-    not of the inequality used. There the floors and the linearised regret are exactly zero, so
-    ``rate_slope`` and ``hodges_pointwise_ratio`` have nothing to measure and read ``nan``.
+    not of the inequality used. There the Cramer-Rao floors and the linearised regret are exactly
+    zero, so ``rate_slope`` and ``hodges_pointwise_ratio`` have nothing to measure and read
+    ``nan``.
     """
+    if not 0.0 < rr < np.inf:
+        raise ValueError(f"rr is the action's cost weight, positive and finite: got {rr}")
+    if not 0.0 < prior_width < np.inf:
+        raise ValueError(
+            f"the prior width is a standard deviation, positive and finite: got {prior_width}"
+        )
     # At the knife edge rr = b^2 the coefficient is 0: no rate to fit, no floor to compare with.
     # b = sqrt(rr) and b*b each round once, so there |rr - b^2| <= 1.5 eps rr, and an exact test
     # missed it: b = sqrt(0.5) left 1.1e-16 and a coefficient of 1e-33 to fit a rate to.
@@ -330,7 +363,6 @@ def information_lower_bound_certificate(
     slope = float("nan") if knife_edge else float(np.polyfit(np.log(ns), np.log(exp_regret), 1)[0])
 
     # The van Trees arm, in ACTION space, where the regret identity is exact.
-    prior_width = 0.25
     prior_info = 1.0 / prior_width**2
     n_probe = int(sample_sizes[-1])
     standard_error = sigma / np.sqrt(n_probe * v_exp)
@@ -360,6 +392,13 @@ def information_lower_bound_certificate(
         np.mean((optimal_action(hodges(fitted_drawn)) - optimal_action(drawn)) ** 2)
     )
     plugin_bayes = float(np.mean((optimal_action(fitted_drawn) - optimal_action(drawn)) ** 2))
+    weighted, best = _weighted_van_trees_floors(
+        rr=rr,
+        xt=xt,
+        mean=b,
+        width=prior_width,
+        information=n_probe * v_exp / sigma**2,
+    )
     return InformationLowerBoundCurve(
         ns,
         exp_regret,
@@ -371,7 +410,107 @@ def information_lower_bound_certificate(
         float("nan") if knife_edge else hodges_pointwise / float(cr_floor[-1]),
         hodges_bayes / vt_floor,
         plugin_bayes / vt_floor,
+        weighted,
+        best,
     )
+
+
+_HERMITE_DEGREE = 8  # the best weight's basis: W psi' and He_0 .. He_8 of the standardised effect
+_PRIOR_REACH = 40.0  # prior standard deviations read on each side; the mass beyond is e^-800
+
+
+def _weighted_van_trees_floors(
+    *, rr: float, xt: float, mean: float, width: float, information: float
+) -> tuple[float, float]:
+    """The weighted van Trees floors on the one-step regret ``W (T - psi)^2``, ``W = b^2 + rr``,
+    ``psi = u*(b)``, under the prior ``N(mean, width^2)`` and data of Fisher information
+    ``information`` about ``b``: with ``C = W psi'``, and with the best ``C`` over ``W psi'`` and
+    ``He_0 .. He_8`` of ``z = (b - mean)/width``, ``a' B^+ a`` with ``a = E[C_i psi']`` and
+    ``B = E[(information C_i C_j + G_i G_j)/W]``, ``G = C' - C z/width``.
+
+    Every mean is an adaptive quadrature in ``z``, split at ``b = 0``: the integrands' poles sit at
+    ``b = +-i sqrt(rr)``, so a prior wide against ``sqrt(rr)`` packs their features near that point.
+    The closed form is read on its own two integrals, each to a relative ``1e-12``. The basis is
+    read in one vector quadrature, whose error is relative to its largest entry; ``W psi'`` is in
+    the basis, so the best floor is never read below the closed form's.
+    """
+
+    def psi_slope(b: float) -> float:
+        return -xt * (rr - b * b) / (rr + b * b) ** 2
+
+    def weight(b: float) -> float:  # C = W psi'
+        return -xt * (rr - b * b) / (rr + b * b)
+
+    def weight_slope(b: float) -> float:  # C' = 2 b psi' + W psi''
+        return 4.0 * xt * b * rr / (rr + b * b) ** 2
+
+    split = -mean / width
+    points = [split] if abs(split) < _PRIOR_REACH else None
+    density = 1.0 / np.sqrt(2.0 * np.pi)
+
+    def prior_mean(f: Any) -> float:
+        def integrand(z: float) -> float:
+            return float(f(mean + width * z, z)) * density * np.exp(-0.5 * z * z)
+
+        value, _ = quad(
+            integrand,
+            -_PRIOR_REACH,
+            _PRIOR_REACH,
+            points=points,
+            epsabs=0.0,
+            epsrel=1e-12,
+            limit=400,
+        )
+        return float(value)
+
+    curvature_mean = prior_mean(lambda b, z: (b * b + rr) * psi_slope(b) ** 2)
+    prior_term = prior_mean(
+        lambda b, z: (weight_slope(b) - weight(b) * z / width) ** 2 / (b * b + rr)
+    )
+    weighted = curvature_mean**2 / (information * curvature_mean + prior_term)
+
+    size = _HERMITE_DEGREE + 2
+    scale = np.sqrt([float(factorial(k)) for k in range(_HERMITE_DEGREE + 1)])
+    values = np.diag(1.0 / scale)  # row k: the coefficients of He_k/sqrt(k!)
+    slopes = np.zeros_like(values)
+    for k in range(1, _HERMITE_DEGREE + 1):
+        slopes[k, k - 1] = k / scale[k]  # He_k' = k He_{k-1}
+    upper = np.triu_indices(size)
+
+    def entries(z: float) -> NDArray[np.float64]:
+        b = mean + width * z
+        curvature = b * b + rr
+        basis = np.concatenate([[weight(b)], hermeval(z, values.T)])
+        basis_slope = np.concatenate([[weight_slope(b)], hermeval(z, slopes.T) / width])
+        score = basis_slope - basis * z / width
+        return (density * np.exp(-0.5 * z * z)) * np.concatenate(
+            [
+                basis * psi_slope(b),
+                np.outer(basis, basis)[upper] / curvature,
+                np.outer(score, score)[upper] / curvature,
+            ]
+        )
+
+    vector, _ = quad_vec(
+        entries,
+        -_PRIOR_REACH,
+        _PRIOR_REACH,
+        epsabs=0.0,
+        epsrel=1e-12,
+        norm="max",
+        points=points,
+        limit=2000,
+    )
+    vector = np.asarray(vector, dtype=np.float64)
+    numerator = vector[:size]
+    pairs = upper[0].size
+    gram = np.zeros((2, size, size))
+    gram[0][upper] = vector[size : size + pairs]
+    gram[1][upper] = vector[size + pairs :]
+    gram = gram + np.swapaxes(gram, 1, 2) * (1.0 - np.eye(size))
+    denominator = information * gram[0] + gram[1]
+    best = float(numerator @ np.linalg.lstsq(denominator, numerator, rcond=None)[0])
+    return float(weighted), max(best, float(weighted))
 
 
 @dataclass(frozen=True)
@@ -601,6 +740,10 @@ class MultivariateVanTreesCurve:
     worst_single_direction: float  # 1 + (k-1) a_max/sum(a): the most one direction can ever cost
     knife_edge_weight: float  # the weight a channel at rr = b^2 carries (== 0)
     live_channel_weight: float  # ... against the other channel's, which is not zero
+    # A floor on the Bayes REGRET E[(T - psi)' M (T - psi)] of every estimator, beside bayes_floor
+    # on the action error: van Trees weighted by C = M Psi' I^-1; nan where the mean over the prior
+    # does not settle (see the function)
+    weighted_bayes_floor: float
 
     @property
     def floor(self) -> float:
@@ -612,6 +755,82 @@ class MultivariateVanTreesCurve:
             stacklevel=2,
         )
         return self.local_floor
+
+
+_PRIOR_NODES = (32, 64, 128, 256)  # the Gauss-Hermite rules read in each direction, in turn
+_PRIOR_AGREEMENT = 1e-8  # how close two rules in turn must read for the finer to be taken
+
+
+def _weighted_matrix_floor(
+    *,
+    centre: Vector,
+    width: float,
+    information: Matrix,
+    state_weight: Matrix,
+    action_weight: Matrix,
+    target: Vector,
+    directions: NDArray[np.float64],
+) -> float:
+    """Van Trees on the regret ``(T - psi)' M (T - psi)`` with the weight ``C = M Psi' I^-1``,
+    the effect ``sum_k theta_k directions[k]`` and the prior ``N(centre, width^2)`` on each
+    ``theta_k``: ``F^2/(F + P)``, ``F = E tr(Psi'^T C)``,
+    ``P = E ||sum_j d_j C_.j + C grad log lambda||^2_{M^-1}``. ``information`` is the data's ``I``
+    alone; the prior enters through ``grad log lambda``.
+
+    ``Psi'`` comes from the solves :func:`_action_sensitivity` makes, batched over the nodes,
+    and the divergence of ``C`` from a central difference of them. The mean is a tensor
+    Gauss-Hermite rule of ``nodes**d`` points. The rules of :data:`_PRIOR_NODES` are read in turn,
+    and the first that agrees with the one before to :data:`_PRIOR_AGREEMENT` is taken. The
+    integrands have poles where ``M`` is singular at a complex ``theta``, and a rule resolves them
+    more slowly the wider the prior is against their distance; where the last rule still
+    disagrees, the floor is ``nan``, not a number that may sit above the risk it bounds.
+    """
+    dims = centre.size
+    inverse = np.linalg.inv(information)
+    step = 1e-5 * max(1.0, float(np.abs(centre).max()) + width)
+
+    def weights_at(
+        theta: NDArray[np.float64],
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+        effects = np.einsum("nk,kpq->npq", theta, directions)
+        curvature = np.einsum("npq,pr,nrs->nqs", effects, state_weight, effects) + action_weight
+        drive = np.einsum("npq,pr,r->nq", effects, state_weight, target)
+        action = -np.linalg.solve(curvature, drive[..., None])[..., 0]
+        columns = []
+        for bump in directions:
+            moved = np.einsum("pq,pr,nrs->nqs", bump, state_weight, effects) + np.einsum(
+                "npq,pr,rs->nqs", effects, state_weight, bump
+            )
+            right = np.einsum("nqs,ns->nq", moved, action) + bump.T @ state_weight @ target
+            columns.append(-np.linalg.solve(curvature, right[..., None])[..., 0])
+        sensitivity = np.stack(columns, axis=-1)
+        return curvature @ sensitivity @ inverse, curvature, sensitivity
+
+    def floor(nodes: int) -> float:
+        z, w = hermegauss(nodes)
+        grid = np.stack(np.meshgrid(*([z] * dims), indexing="ij"), axis=-1).reshape(-1, dims)
+        masses = np.meshgrid(*([w / w.sum()] * dims), indexing="ij")
+        mass = np.prod(np.stack(masses, axis=-1).reshape(-1, dims), axis=1)
+        theta = centre + width * grid
+        weight, curvature, sensitivity = weights_at(theta)
+        divergence = np.zeros(weight.shape[:2])
+        for j in range(dims):
+            bump = np.zeros(dims)
+            bump[j] = step
+            ahead, behind = weights_at(theta + bump)[0], weights_at(theta - bump)[0]
+            divergence += (ahead[:, :, j] - behind[:, :, j]) / (2.0 * step)
+        score = divergence - np.einsum("nqk,nk->nq", weight, grid) / width
+        spread = np.einsum("nq,nq->n", score, np.linalg.solve(curvature, score[..., None])[..., 0])
+        local = float(mass @ np.einsum("nqk,nqk->n", sensitivity, weight))
+        return local**2 / (local + float(mass @ spread))
+
+    previous = floor(_PRIOR_NODES[0])
+    for nodes in _PRIOR_NODES[1:]:
+        current = floor(nodes)
+        if abs(current - previous) <= _PRIOR_AGREEMENT * abs(current):
+            return current
+        previous = current
+    return float("nan")
 
 
 def multivariate_van_trees_certificate(
@@ -629,7 +848,7 @@ def multivariate_van_trees_certificate(
     """The multivariate van Trees floor, and what it says that the scalar floor cannot.
 
     Derived in ``validation/multivariate_van_trees.mac``, proved in
-    ``proofs/multivariate_van_trees.v``. Four things are measured, each able to fail.
+    ``proofs/multivariate_van_trees.v``. Five things are measured, each able to fail.
 
     1. The floor REDUCES correctly. At ``p = q = 1`` it is the scalar Cramer-Rao
        ``C sigma^2/(n V)``, and on two decoupled channels it is ``h1 C(b1,x1) + h2 C(b2,x2)`` -- the
@@ -655,6 +874,22 @@ def multivariate_van_trees_certificate(
        vanishes, so that channel contributes zero to the floor -- and confounding it is free. In the
        scalar model this is a measure-zero curiosity; here it is one entry of a vector that a real
        plant can sit near without anything else degenerating.
+
+    5. The REGRET has a floor over the prior. ``bayes_floor`` bounds the action error, and
+       ``local_floor``, which weighs it by ``M``, is read at one plant and is no bound. Van Trees
+       weighted by ``C = M Psi' I^-1`` (Gill and Levit, Bernoulli 1995;
+       ``validation/weighted_van_trees.mac`` STEP 2) bounds the regret of every estimator,
+
+           ``E[(T - psi)' M (T - psi)] >= F^2/(F + P)``,  ``F = E tr(M Psi' I^-1 Psi'^T)``,
+
+       with ``I = n_probe/sigma^2`` the data's information in each channel and ``P`` the prior's
+       term. ``F`` is the prior's mean of the local floor at that information, and ``F/(F + P)``
+       is the one factor that makes it a floor: ``weighted_bayes_floor`` (ADR 0136). The
+       divergence of ``C`` is a central difference, and the mean over the prior a Gauss-Hermite
+       rule in each channel, from 32 nodes up, the first that agrees with the one before to 1e-8;
+       the field is ``nan`` where 256 nodes do not, as on a prior about as wide as ``sqrt(rr)``.
+       At the defaults it reads 3.12299e-5, 0.99972 of the Bayes regret, 3.12387e-5
+       (``validation/weighted_van_trees.gp``).
     """
     for name, value in (("rr", rr), ("sigma", sigma)):
         if not 0.0 < value < np.inf:
@@ -793,6 +1028,17 @@ def multivariate_van_trees_certificate(
         information=np.diag(spectrum),
         directions=channels,
     )
+
+    # 5. the regret's own floor over the prior, from the data's information alone
+    regret_floor = _weighted_matrix_floor(
+        centre=centre,
+        width=prior_width,
+        information=(n_probe / sigma**2) * np.eye(2),
+        state_weight=weight,
+        action_weight=control_weight,
+        target=x,
+        directions=channels,
+    )
     return MultivariateVanTreesCurve(
         diagonal.local_floor,
         scalar_agreement,
@@ -808,6 +1054,7 @@ def multivariate_van_trees_certificate(
         float(worst),
         float(edge.direction_alignment[1]),
         float(edge.direction_alignment[0]),
+        regret_floor,
     )
 
 

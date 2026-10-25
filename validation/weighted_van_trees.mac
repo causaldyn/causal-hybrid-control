@@ -1,0 +1,245 @@
+/* THE WEIGHTED VAN TREES FLOOR: a Bayes floor on the regret itself, with no least curvature.
+
+   validation/action_van_trees.mac bounds the Bayes ACTION error E[(T - psi)^2] of every
+   estimator T of psi(b) = u*(b), and reaches the regret W (T - psi)^2, W = b^2 + rr, only through
+   the least curvature rr.  That costs a constant factor: at a prior N(0, 1), rr = 1/2 and five
+   units of information the floor is 0.23 of the Bayes regret, and 0.216 in the limit.  Gill and
+   Levit (Bernoulli 1995) weight van Trees by a function C(b): for every estimator T and every C
+   with C lambda -> 0 at the ends of the prior's support,
+
+       E[W (T - psi)^2] >= (E[C psi'])^2 / ( In E[C^2/W] + E[(C' + C (log lambda)')^2/W] ),   (*)
+
+   every mean over the prior lambda and the data, In the data's Fisher information about b.
+
+     STEP 1  (*) from two identities and Cauchy-Schwarz: the identities in exact Gaussian moments
+             on a polynomial C, psi and T, the second pointwise in b, so for a W that moves with b.
+     STEP 2  the matrix form for the regret (T - psi)' M (T - psi): with C = M Psi' I^-1 the floor
+             is F^2/(F + P), F = E tr(M Psi' I^-1 Psi'^T); on decoupled channels F and P are sums.
+     STEP 3  the one-step LQ regret's closed forms: psi', psi'', C = W psi' and its slope; the
+             floor with C = W psi' tends to E[W psi'^2]/In, and stays below it at every In.
+     STEP 4  the best C over a span of weights is a' B^-1 a, at least the floor of each of them.
+     STEP 5  sample points, in double precision, against validation/weighted_van_trees.gp.
+
+   Certificates: chc.research.regret.information_lower_bound_certificate (weighted_bayes_floor,
+   best_weighted_bayes_floor) and chc.research.regret.multivariate_van_trees_certificate
+   (weighted_bayes_floor).
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/weighted_van_trees.mac */
+
+display2d : false$
+linel : 110$
+ratprint : false$
+
+verdict(ok) := if ok then "(PASS)" else "(FAIL)"$
+/* the mean of a polynomial in a standard normal v: E v^k = (k - 1)!! for even k, 0 for odd */
+gmom(k) := if oddp(k) then 0 else product(2*i - 1, i, 1, k/2)$
+gexp(e, v) := block([p : expand(e)], sum(ratcoef(p, v, k)*gmom(k), k, 0, hipow(p, v)))$
+
+/* ===== STEP 1: the scalar inequality ===== */
+
+print("=== STEP 1: E[W (T - psi)^2] >= (E[C psi'])^2/(In E[C^2/W] + E[(C' + C (log lambda)')^2/W]) ===")$
+/* one reading x ~ N(b, s^2), so In = 1/s^2; the prior N(mu, tau^2); V = (C lambda p)_b/(lambda p) */
+Cp : c0 + c1*b + c2*b^2$
+psip : b^3 + d1*b$
+Tx : x^3 - 2*x + e0$
+lead : diff(Cp, b) - Cp*(b - mu)/tau^2$
+V : lead + Cp*(x - b)/s^2$
+toz(e) := subst(x = b + s*z, e)$
+toy(e) := subst(b = mu + tau*y, e)$
+lhs1 : gexp(toy(gexp(toz((Tx - psip)*V), z)), y)$
+rhs1 : gexp(toy(Cp*diff(psip, b)), y)$
+print("STEP 1a E[(T - psi) V] - E[C psi'] =", ratsimp(lhs1 - rhs1), " for a biased T:",
+      verdict(ratsimp(lhs1 - rhs1) = 0))$
+print("        (integration by parts in b; the boundary term is C lambda p (T - psi), which vanishes)")$
+inner : gexp(toz(V^2), z)$
+print("STEP 1b E[V^2 | b] - (C^2/s^2 + (C' + C (log lambda)')^2) =", ratsimp(inner - (Cp^2/s^2 + lead^2)),
+      verdict(ratsimp(inner - (Cp^2/s^2 + lead^2)) = 0))$
+print("        it holds at each b, so dividing by any W(b) > 0 and averaging over the prior gives")$
+print("        E[V^2/W] = In E[C^2/W] + E[(C' + C (log lambda)')^2/W]: the score has mean 0 and")$
+print("        variance In given b, whatever W does")$
+print("STEP 1c Cauchy-Schwarz, (E[(T - psi) V])^2 = (E[sqrt(W) (T - psi) V/sqrt(W)])^2")$
+print("        <= E[W (T - psi)^2] E[V^2/W], with 1a and 1b, is (*).  C = 1 and W >= rr give")$
+print("        rr (E psi')^2/(In + I(lambda)): the least-curvature floor, the C = 1 member of (*)")$
+
+/* ===== STEP 2: the matrix form ===== */
+
+print("=== STEP 2: the matrix weight C = M Psi' I^-1 ===")$
+/* the regret (T - psi)' M (T - psi), psi in R^2 of theta in R^2, x | theta ~ N(theta, s^2 I) */
+E4(e) := gexp(gexp(gexp(gexp(e, z1), z2), y1), y2)$
+tr2(A) := A[1, 1] + A[2, 2]$
+th : [t1, t2]$
+Cm : matrix([1 + t1, t2^2/2], [t1*t2, 2 - t2])$
+psim : matrix([t1^3 - t2], [t1*t2 + t2^2])$
+Tm : matrix([x1^3 + x2], [2*x1 - x2^2])$
+Mi : invert(matrix([2, 1/2], [1/2, 1]))$
+dlam : [-t1/tau^2, -t2/tau^2]$
+dlp : [(x1 - t1)/s^2, (x2 - t2)/s^2]$
+Vm : sum(diff(col(Cm, j), th[j]) + col(Cm, j)*(dlam[j] + dlp[j]), j, 1, 2)$
+Vprior : sum(diff(col(Cm, j), th[j]) + col(Cm, j)*dlam[j], j, 1, 2)$
+Psim : addcol(diff(psim, t1), diff(psim, t2))$
+S(e) := subst([t1 = tau*y1, t2 = tau*y2], subst([x1 = t1 + s*z1, x2 = t2 + s*z2], e))$
+lhs2 : E4(S((transpose(Tm - psim) . Vm)))$
+rhs2 : E4(S(tr2(transpose(Psim) . Cm)))$
+print("STEP 2a E[(T - psi)' V] - E[tr(Psi'^T C)] =", ratsimp(lhs2 - rhs2), verdict(ratsimp(lhs2 - rhs2) = 0))$
+inner2 : gexp(gexp(subst([x1 = t1 + s*z1, x2 = t2 + s*z2], transpose(Vm) . Mi . Vm), z1), z2)$
+rhs2b : tr2(Mi . Cm . transpose(Cm))/s^2 + transpose(Vprior) . Mi . Vprior$
+print("STEP 2b E[V' M^-1 V | theta] - (tr(M^-1 C I C') + ||sum_j d_j C_.j + C grad log lambda||^2) =",
+      ratsimp(inner2 - rhs2b), verdict(ratsimp(inner2 - rhs2b) = 0))$
+print("        pointwise in theta again, so M may move with theta; Cauchy-Schwarz in M then gives")$
+print("        E[(T - psi)' M (T - psi)] >= (E tr(Psi'^T C))^2/(E tr(M^-1 C I C') + P)")$
+/* C = M Psi' I^-1 with a general M, Psi' and I: both the numerator's and the data term's integrand
+   are tr(M Psi' I^-1 Psi'^T) */
+Mg : matrix([m11, m12], [m12, m22])$
+Pg : matrix([p11, p12], [p21, p22])$
+Ig : matrix([i11, i12], [i12, i22])$
+Cg : Mg . Pg . invert(Ig)$
+Fint : tr2(Mg . Pg . invert(Ig) . transpose(Pg))$
+gap_num : ratsimp(tr2(transpose(Pg) . Cg) - Fint)$
+gap_data : ratsimp(tr2(invert(Mg) . Cg . Ig . transpose(Cg)) - Fint)$
+print("STEP 2c with C = M Psi' I^-1: tr(Psi'^T C) - F's integrand =", gap_num,
+      "; tr(M^-1 C I C^T) - F's integrand =", gap_data, verdict(gap_num = 0 and gap_data = 0))$
+print("        so the floor is F^2/(F + P), F = E tr(M Psi' I^-1 Psi'^T): the prior's mean of the")$
+print("        local floor, times F/(F + P), the one factor that makes it a floor")$
+/* two decoupled channels: M = diag(W_i), Psi' = diag(psi_i'), I = info Id */
+psi1 : -x1t*t1/(t1^2 + rr)$
+psi2 : -x2t*t2/(t2^2 + rr)$
+Md : matrix([t1^2 + rr, 0], [0, t2^2 + rr])$
+Pd : matrix([diff(psi1, t1), 0], [0, diff(psi2, t2)])$
+Cd : Md . Pd/info$
+dlamg : [-(t1 - g1)/tau^2, -(t2 - g2)/tau^2]$
+Vd : sum(diff(col(Cd, j), th[j]) + col(Cd, j)*dlamg[j], j, 1, 2)$
+Pint : ratsimp((transpose(Vd) . invert(Md) . Vd))$
+cw1 : (t1^2 + rr)*diff(psi1, t1)$
+cw2 : (t2^2 + rr)*diff(psi2, t2)$
+Psum : ((diff(cw1, t1) - cw1*(t1 - g1)/tau^2)^2/(t1^2 + rr)
+        + (diff(cw2, t2) - cw2*(t2 - g2)/tau^2)^2/(t2^2 + rr))/info^2$
+Fd : ratsimp(tr2(Md . Pd . transpose(Pd))/info)$
+Fsum : ((t1^2 + rr)*diff(psi1, t1)^2 + (t2^2 + rr)*diff(psi2, t2)^2)/info$
+print("STEP 2d decoupled channels: P's integrand less the sum of the channels' own =", ratsimp(Pint - Psum),
+      "; F's =", ratsimp(Fd - Fsum), verdict(ratsimp(Pint - Psum) = 0 and ratsimp(Fd - Fsum) = 0))$
+
+/* ===== STEP 3: the one-step LQ regret ===== */
+
+print("=== STEP 3: C = W psi' on the one-step LQ regret ===")$
+W : b^2 + rr$
+J : (xt + b*u)^2 + rr*u^2$
+ustar : -xt*b/(b^2 + rr)$
+print("STEP 3a J(u) - J(u*) - W (u - u*)^2 =", ratsimp(J - subst(u = ustar, J) - W*(u - ustar)^2),
+      verdict(ratsimp(J - subst(u = ustar, J) - W*(u - ustar)^2) = 0))$
+dpsi : diff(ustar, b)$
+d2psi : diff(ustar, b, 2)$
+Cw : W*dpsi$
+dCw : diff(Cw, b)$
+checks3 : [ratsimp(dpsi + xt*(rr - b^2)/(rr + b^2)^2),
+           ratsimp(d2psi - 2*xt*b*(3*rr - b^2)/(rr + b^2)^3),
+           ratsimp(Cw + xt*(rr - b^2)/(rr + b^2)),
+           ratsimp(dCw - 4*xt*b*rr/(rr + b^2)^2),
+           ratsimp(dCw - (2*b*dpsi + W*d2psi))]$
+print("STEP 3b residuals of psi' = -xt (rr - b^2)/(rr + b^2)^2, psi'' = 2 xt b (3 rr - b^2)/(rr + b^2)^3,")$
+print("        C = W psi' = -xt (rr - b^2)/(rr + b^2), C' = 4 xt b rr/(rr + b^2)^2 = 2 b psi' + W psi'':",
+      checks3, verdict(checks3 = [0, 0, 0, 0, 0]))$
+print("STEP 3c C psi' = W psi'^2 and C^2/W = W psi'^2: with A = E[W psi'^2] and")$
+print("        P = E[(C' - C (b - mu)/tau^2)^2/W] the floor is A^2/(In A + P)")$
+fl : A^2/(In*A + P)$
+lim3 : limit(In*fl, In, inf)$
+short3 : ratsimp(A/In - fl - A*P/(In*(In*A + P)))$
+print("STEP 3d In times the floor tends to", lim3, "= E[W psi'^2], the prior's mean of the local")$
+print("        constant xt^2 (rr - b^2)^2/(rr + b^2)^3 (validation/action_van_trees.mac STEP 2);")$
+print("        A/In less the floor less A P/(In (In A + P)) =", short3, verdict(lim3 = A and short3 = 0))$
+print("        so the floor sits below its limit at every In, by O(1/In^2) of it.  W psi'^2 >= 0")$
+print("        everywhere, so A > 0 on any prior with a spread: at the knife edge b^2 = rr nothing")$
+print("        cancels, where (E psi')^2, the action floor's numerator, can vanish")$
+
+/* ===== STEP 4: the best weight over a span ===== */
+
+print("=== STEP 4: the best C = sum c_i phi_i is a' B^-1 a ===")$
+/* E[C psi'] = c'a and the denominator is c'Bc, B_ij = E[(In phi_i phi_j + G_i G_j)/W],
+   G = phi' + phi (log lambda)': bilinear in c.  The ratio (c'a)^2/(c'Bc) peaks at c = B^-1 a. */
+Bs : matrix([q11, q12], [q12, q22])$
+as : matrix([a1], [a2])$
+cv : matrix([c1v], [c2v])$
+ratio : (transpose(cv) . as)^2/(transpose(cv) . Bs . cv)$
+cstar : invert(Bs) . as$
+grad4 : ratsimp(subst([c1v = cstar[1, 1], c2v = cstar[2, 1]], [diff(ratio, c1v), diff(ratio, c2v)]))$
+peak4 : ratsimp(subst([c1v = cstar[1, 1], c2v = cstar[2, 1]], ratio) - transpose(as) . invert(Bs) . as)$
+print("STEP 4a the ratio's gradient at c = B^-1 a:", grad4, "; its value less a' B^-1 a:", peak4,
+      verdict(grad4 = [0, 0] and peak4 = 0))$
+print("STEP 4b by Cauchy-Schwarz in B's metric, (c'a)^2 <= (c'Bc)(a'B^-1 a), so a' B^-1 a is the")$
+print("        largest floor over the span: at least that of C = W psi' and of C = 1 = He_0 when both")$
+print("        are in it.  The certificate's span is W psi' and He_0 .. He_8 of (b - mu)/tau")$
+
+/* ===== STEP 5: sample points ===== */
+
+print("=== STEP 5: sample points against validation/weighted_van_trees.gp (38 digits) ===")$
+/* each mean is a sum of quad_qags over pieces one prior standard deviation wide, out to 12 */
+Eg(ex, m0, t0) := block([total : 0, r],
+  for k : -12 thru 11 do (
+    r : quad_qags(ex*exp(-(b - m0)^2/(2*t0^2))/(t0*sqrt(2*%pi)), b, m0 + k*t0, m0 + (k + 1)*t0,
+                  epsrel = 1d-12, epsabs = 1d-15, limit = 400),
+    if r[4] # 0 then print("        quad_qags returned ier", r[4], "on piece", k, "(FAIL)"),
+    total : total + r[1]),
+  total)$
+close(got, want, tol) := abs(got/want - 1) < tol$
+floor5(rr0, xt0, m0, t0, in0) := block([sub, w, ps, c, dc, a, p, v, bay],
+  sub : [rr = rr0, xt = xt0],
+  w : subst(sub, W), ps : subst(sub, dpsi), c : subst(sub, Cw), dc : subst(sub, dCw),
+  a : Eg(w*ps^2, m0, t0),
+  p : Eg((dc - c*(b - m0)/t0^2)^2/w, m0, t0),
+  v : 1/(in0 + 1/t0^2),
+  bay : xt0^2*(Eg(b^2/(b^2 + rr0), m0, t0) - Eg(b^2/(b^2 + v + rr0), m0, sqrt(t0^2 - v))),
+  [a^2/(in0*a + p), rr0*Eg(ps, m0, t0)^2/(in0 + 1/t0^2), bay])$
+/* the 38-digit values of validation/weighted_van_trees.gp, to 20 digits */
+f5 : floor5(1/2, 1, 0, 1, 5)$
+print("STEP 5a ADR 0130's example, rr = 1/2, xt = 1, b ~ N(0, 1), In = 5: C = W psi'", f5[1],
+      ", least curvature", f5[2], ", Bayes regret", f5[3],
+      verdict(close(f5[1], 0.048886656770088468288b0, 1d-10) and close(f5[2], 0.017203481087286511118b0, 1d-10)
+              and close(f5[3], 0.074950277196394276769b0, 1d-10)))$
+g5 : floor5(1/2, 1, 1, 1/4, 32000)$
+print("STEP 5b the certificate's defaults, b ~ N(1, 1/16), In = 32000: C = W psi'", g5[1], ", Bayes regret", g5[3],
+      verdict(close(g5[1], 2.5954264284212702130b-6, 1d-10) and close(g5[3], 2.5958185160720431543b-6, 1d-7)))$
+h5 : floor5(1/2, 1, sqrt(1/2), 1/4, 20)$
+print("STEP 5c the knife edge, b ~ N(sqrt(1/2), 1/16), In = 20: C = W psi'", h5[1], ", least curvature", h5[2],
+      ", Bayes regret", h5[3],
+      verdict(close(h5[1], 0.0029463093917227430506b0, 1d-10) and close(h5[2], 0.00039208466824034907562b0, 1d-10)
+              and close(h5[3], 0.0034182967991247919784b0, 1d-9)))$
+/* the best C at ADR 0130's example: W psi' and He_0 .. He_8 of z = b, Gaussian elimination */
+he5 : block([v : [1, b]], for n : 2 thru 8 do v : endcons(b*v[n] - (n - 1)*v[n - 1], v), v)$
+basis5 : cons(subst([rr = 1/2, xt = 1], Cw), makelist(he5[k + 1]/sqrt(k!), k, 0, 8))$
+w5 : b^2 + 1/2$
+ps5 : subst([rr = 1/2, xt = 1], dpsi)$
+score5 : makelist(diff(f, b) - f*b, f, basis5)$
+nb5 : length(basis5)$
+avec : makelist(Eg(basis5[i]*ps5, 0, 1), i, 1, nb5)$
+Bmat : genmatrix(lambda([i, j], 0), nb5, nb5)$
+for i : 1 thru nb5 do for j : i thru nb5 do (
+  Bmat[i, j] : Eg((5*basis5[i]*basis5[j] + score5[i]*score5[j])/w5, 0, 1),
+  Bmat[j, i] : Bmat[i, j])$
+solve5(A0, y0) := block([n : length(y0), A : copymatrix(A0), y : copylist(y0), p, t, f, x],
+  for k : 1 thru n do (
+    p : k,
+    for i : k + 1 thru n do if abs(A[i, k]) > abs(A[p, k]) then p : i,
+    if p # k then (
+      for j : 1 thru n do (t : A[k, j], A[k, j] : A[p, j], A[p, j] : t),
+      t : y[k], y[k] : y[p], y[p] : t),
+    for i : k + 1 thru n do (
+      f : A[i, k]/A[k, k],
+      for j : k thru n do A[i, j] : A[i, j] - f*A[k, j],
+      y[i] : y[i] - f*y[k])),
+  x : makelist(0, n),
+  for i : n step -1 thru 1 do x[i] : (y[i] - sum(A[i, j]*x[j], j, i + 1, n))/A[i, i],
+  x)$
+best5 : float(avec . solve5(Bmat, avec))$
+print("STEP 5d the best C there:", best5, "of a Bayes regret", f5[3], "=", best5/f5[3],
+      verdict(close(best5, 0.059599430154587394402b0, 1d-9) and best5 >= f5[1] and best5 <= f5[3]))$
+/* the two-channel certificate at its defaults: gains (1, 0.4), targets (1, 0.8), rr = 1/2,
+   prior N(gain, 1/16) on each, information 4000/(1/4) = 16000 in each */
+mv5(gs, xs, rr0, t0, i0) := block([F : 0, P : 0, c, d],
+  for k : 1 thru length(gs) do (
+    c : subst([rr = rr0, xt = xs[k]], Cw), d : subst([rr = rr0, xt = xs[k]], dCw),
+    F : F + Eg(c^2/(b^2 + rr0), gs[k], t0)/i0,
+    P : P + Eg((d - c*(b - gs[k])/t0^2)^2/(b^2 + rr0), gs[k], t0)/i0^2),
+  F^2/(F + P))$
+m5 : mv5([1, 2/5], [1, 4/5], 1/2, 1/4, 16000)$
+n5 : mv5([1, 2/5], [1, 4/5], 1/2, 1/4, 80)$
+print("STEP 5e two decoupled channels at n = 4000 and n = 20:", m5, n5,
+      verdict(close(m5, 3.1229867355947744704b-5, 1d-10) and close(n5, 0.0048798105211533944128b0, 1d-10)))$

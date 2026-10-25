@@ -1,0 +1,120 @@
+/* A LOG CANNOT SEE A FRESH GAUSSIAN CONFOUNDER: what chc.evaluation.LoggerCheck cannot test.
+
+   A unit's plant and logger, with a confounder w that nothing logs:
+
+       x' = a x + b u + c w + sg e,        u = k x + d w + s eta,
+
+   w, e and eta independent N(0, 1), drawn afresh each step.  The logger read w, and w moves the
+   plant, so an adjustment on the state reads the channel b + beta0, beta0 = c d/(d^2 + s^2), and
+   not b.  The log holds (x_t, u_t) and nothing else.
+
+     STEP 1  the step's kernel, (u_t, x_{t+1}) given x_t: Gaussian, its mean and covariance.
+     STEP 2  a loop with no confounder, x' = (a - beta0 k) x + (b + beta0) u + sg2 e2,
+             u = k x + s2 eta2, s2^2 = d^2 + s^2, sg2^2 = sg^2 + c^2 s^2/(d^2 + s^2): the same
+             kernel, entry by entry, and a valid loop for every c, d, s and sg.
+     STEP 3  so the logged path has one law in both worlds, from a common start, at every length.
+             A test that reads the log alone rejects the confounded world exactly as often as the
+             loop of STEP 2, in which the logger read the state and noise of its own: its power
+             is its size, at every number of rows (Darmois-Skitovich: Gaussianity is what makes the
+             two worlds one).
+     STEP 4  what tells them apart.  (a) A logged draw: the residual of the plant's projection on
+             the logger's noise is correlated with eta, Cov = -beta0 s, so a test of the noise
+             against the draw (Durbin-Wu-Hausman against the channel the draw instruments) sees
+             what the log alone does not.  (b) Persistence: with w' = rho w + sqrt(1 - rho^2) nu
+             and k = 0, the lever correlates with its own lag given the state for rho # 0 even at
+             c = 0, where w does not move the plant; at rho = 0 the correlation is 0 for every c.
+             LoggerCheck tests the lever against its lags, so it sees persistence, not confounding.
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/confounded_log_equivalence.mac */
+
+display2d : false$
+linel : 110$
+ratprint : false$
+
+verdict(ok) := if ok then "(PASS)" else "(FAIL)"$
+
+/* ===== STEP 1: the kernel of the confounded world ===== */
+
+print("=== STEP 1: (u_t, x_{t+1}) given x_t, with the confounder ===")$
+/* the innovations (u - k x, x' - (a + b k) x) are a linear map L of (w, eta, e) */
+L : matrix([d, s, 0], [b*d + c, b*s, sg])$
+K : ratsimp(L . transpose(L))$
+mean1 : [k, a + b*k]$
+print("STEP 1a the means are (k x, (a + b k) x); the covariance is", K)$
+
+/* ===== STEP 2: the loop with no confounder ===== */
+
+print("=== STEP 2: the loop with no confounder and channel b + beta0 ===")$
+beta0 : c*d/(d^2 + s^2)$
+a2 : a - beta0*k$
+b2 : b + beta0$
+s2sq : d^2 + s^2$
+sg2sq : sg^2 + c^2*s^2/(d^2 + s^2)$
+/* its innovations: u - k x = s2 eta2 and x' - (a2 + b2 k) x = b2 s2 eta2 + sg2 e2 */
+K2 : matrix([s2sq, b2*s2sq], [b2*s2sq, b2^2*s2sq + sg2sq])$
+mean2 : [k, a2 + b2*k]$
+gapK : ratsimp(K - K2)$
+gapm : ratsimp(mean1 - mean2)$
+print("STEP 2a the two kernels' means differ by", gapm, "and their covariances by", gapK,
+      verdict(gapm = [0, 0] and gapK = zeromatrix(2, 2)))$
+print("STEP 2b the second loop's noise variance less sg^2 is", factor(sg2sq - sg^2),
+      ": it is a loop for every c, d, s and sg with d^2 + s^2 > 0")$
+/* the same thing read as a projection: eps = c w + sg e on v = d w + s eta */
+etil_w : c - beta0*d$
+etil_eta : -beta0*s$
+cov_ev : ratsimp(etil_w*d + etil_eta*s)$
+var_et : ratsimp(etil_w^2 + etil_eta^2 + sg^2)$
+print("STEP 2c eps - beta0 v has covariance", cov_ev, "with v and variance less sg2^2",
+      ratsimp(var_et - sg2sq), verdict(cov_ev = 0 and ratsimp(var_et - sg2sq) = 0))$
+print("        jointly Gaussian and uncorrelated, so independent: x' = a2 x + b2 u + (eps - beta0 v)")$
+print("        is the second loop, path by path, with its noise independent of (x_t, u_t, the past)")$
+
+/* ===== STEP 3: the path's law ===== */
+
+print("=== STEP 3: one law for the logged path ===")$
+print("STEP 3a (x_0, u_0, x_1, u_1, ...) is a Markov chain of Gaussian kernels: its law is the start's")$
+print("        times the kernels of STEP 1.  The kernels are equal (STEP 2a), so the laws are, at every")$
+print("        length.  A test that reads the log alone rejects the confounded world as often as the")$
+print("        loop with no confounder, in which the logger read the state and noise of its own:")$
+print("        its power against c d # 0 is its size, at every number of rows")$
+/* one consequence at stationarity (|a + b k| < 1): the logged lag-1 covariances agree */
+lag(KK, aa, bb) := block([rho_x : aa + bb*k, vx],
+  vx : KK[2, 2]/(1 - rho_x^2),
+  [vx, k*vx, rho_x*vx, k*rho_x*vx + KK[1, 2]])$
+lag1 : lag(K, a, b)$
+lag2 : lag(K2, a2, b2)$
+print("STEP 3b stationary Var x, Cov(u, x), Cov(x', x), Cov(x', u) differ by", ratsimp(lag1 - lag2),
+      verdict(ratsimp(lag1 - lag2) = [0, 0, 0, 0]))$
+
+/* ===== STEP 4: what tells the worlds apart ===== */
+
+print("=== STEP 4a: a logged draw ===")$
+print("STEP 4a the residual eps - beta0 v has covariance", etil_eta, "with eta: nonzero where c d s # 0,")$
+print("        while the second loop's noise is independent of its draw.  Instrumented by eta, the")$
+print("        channel reads Cov(eta, x' | x)/Cov(eta, u | x) =", ratsimp((b*s)/s),
+      "; adjusted on the state it reads", b2, verdict(ratsimp((b*s)/s - b) = 0))$
+
+print("=== STEP 4b: a confounder that persists, k = 0 ===")$
+/* w' = rho w + sqrt(1 - rho^2) nu: stationary moments of (x_t, w_t) */
+g1 : b*d + c$
+m : rho*g1/(1 - a*rho)$
+q : (g1^2 + b^2*s^2 + sg^2 + 2*a*g1*m)/(1 - a^2)$
+chk_m : ratsimp(m - rho*(a*m + g1))$
+chk_q : ratsimp(q - (a^2*q + g1^2 + b^2*s^2 + sg^2 + 2*a*g1*m))$
+print("STEP 4b0 the stationary Cov(x, w) and Var x solve their fixed points:", chk_m, chk_q,
+      verdict(chk_m = 0 and chk_q = 0))$
+cov_u_x : d*m$
+cov_x_ulag : a*d*m + g1*d + b*s^2$
+cov_u_ulag : d^2*rho$
+pc : cov_u_ulag - cov_u_x*cov_x_ulag/q$
+var_u_x : d^2 + s^2 - cov_u_x^2/q$
+var_ulag_x : d^2 + s^2 - cov_x_ulag^2/q$
+pc0 : ratsimp(subst(rho = 0, pc))$
+print("STEP 4b1 the lever's partial covariance with its lag given the state, at rho = 0:", pc0,
+      verdict(pc0 = 0))$
+unmoved : [a = 9/10, b = 1/2, d = 1, s = 1, sg = 1, c = 0, rho = 8/10]$
+r_unmoved : float(subst(unmoved, pc/sqrt(var_u_x*var_ulag_x)))$
+print("STEP 4b2 at c = 0, where w does not move the plant, and rho = 0.8 (a = 0.9, b = 0.5,")$
+print("         d = s = sg = 1) the partial correlation is", r_unmoved, verdict(abs(r_unmoved) > 0.1))$
+print("STEP 4b3 so a test of the lever against its lags sees a confounder's persistence, whether or")$
+print("         not it moves the plant, and cannot see a fresh one that does")$

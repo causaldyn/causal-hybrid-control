@@ -9,6 +9,7 @@ quadrature in place of a Monte-Carlo mean, or a population limit derived by hand
 from __future__ import annotations
 
 import itertools
+import math
 from functools import cache
 
 import numpy as np
@@ -24,6 +25,8 @@ from chc.research.regret import (
     _dml_two_channel,
     _psi_ratio_closed_form,
     _shifted_kyfan_bound,
+    _weighted_matrix_floor,
+    _weighted_van_trees_floors,
     fold_exactness_certificate,
     multichannel_control_certificate,
     multivariate_action_floor,
@@ -82,10 +85,18 @@ FORMAL_LINKS = {
         ),
     },
     "chc.research.regret.multivariate_van_trees_certificate": {
-        "cites": ("multivariate_van_trees.mac", "multivariate_van_trees.v"),
+        "cites": (
+            "multivariate_van_trees.mac",
+            "multivariate_van_trees.v",
+            "weighted_van_trees.gp",
+            "weighted_van_trees.mac",
+        ),
         "tests": (
             "test_multivariate_van_trees_bayes_floor_is_below_the_bayes_risk",
             "test_multivariate_van_trees_confounding_price_is_a_convex_combination",
+            "test_multivariate_weighted_floor_matches_the_38_digit_values",
+            "test_multivariate_weighted_floor_is_nan_where_the_rules_do_not_settle",
+            "test_weighted_matrix_floor_on_one_channel_is_the_scalar_floor",
         ),
     },
     "chc.research.regret.multivariate_transfer_certificate": {
@@ -590,6 +601,68 @@ def test_multivariate_van_trees_bayes_floor_is_below_the_bayes_risk() -> None:
     assert curve.bayes_floor == pytest.approx(floor, abs=5.0 * floor_se)
     assert risk >= floor
     assert curve.plugin_ratio > 1.0
+
+
+# validation/weighted_van_trees.gp (4) at 38 digits, to 20: the certificate's options, then its
+# weighted_bayes_floor and the Bayes regret of the two decoupled channels
+_MATRIX_WEIGHTED_38 = {
+    "defaults": ({}, 3.1229867355947744704e-5, 3.1238679581200361790e-5),
+    "few_probes": ({"n_probe": 20}, 0.0048798105211533944128, 0.0051003996586318466539),
+    "small_rr": ({"rr": 0.1}, 9.7026015015231876484e-5, 9.7100582640543746919e-5),
+    "wider_prior": ({"prior_width": 0.6}, 4.0905451404997409793e-5, 4.0914290939859281195e-5),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_MATRIX_WEIGHTED_38))
+def test_multivariate_weighted_floor_matches_the_38_digit_values(case: str) -> None:
+    """weighted_van_trees.mac STEP 2: with the weight C = M Psi' I^-1 the regret's floor is
+    F^2/(F + P). The certificate reads it from solves, a central difference and Gauss-Hermite
+    rules; validation/weighted_van_trees.gp from the closed form of C' at 38 digits. Each sits
+    below the Bayes regret, where the local floor, read at one plant, is no bound."""
+    options, floor, bayes = _MATRIX_WEIGHTED_38[case]
+    curve = multivariate_van_trees_certificate(**options)
+    # The rule taken agrees with the one before it to 1e-8, and Gauss-Hermite's error on poles at
+    # a fixed distance falls as exp(-c sqrt(nodes)), so the rule's own is below 1e-11; the central
+    # difference leaves 1e-10 of P, at most 5% of F + P here. 1e-9 holds both.
+    assert curve.weighted_bayes_floor == pytest.approx(floor, rel=1e-9, abs=0.0)
+    assert curve.weighted_bayes_floor < bayes
+
+
+def test_multivariate_weighted_floor_is_nan_where_the_rules_do_not_settle() -> None:
+    """On a prior as wide as sqrt(rr), 128 and 256 nodes still differ by 1e-4 of the floor, so
+    it reads nan: not a number that may sit above the regret it bounds."""
+    curve = multivariate_van_trees_certificate(prior_width=1.0)
+    assert math.isnan(curve.weighted_bayes_floor)
+    assert np.isfinite(curve.bayes_floor)
+
+
+@SETTINGS
+@given(
+    b=st.floats(-1.5, 2.5),
+    rr=st.floats(0.2, 2.0),
+    xt=st.floats(0.3, 2.0),
+    reach=st.floats(0.05, 0.7),
+    log_info=st.floats(0.0, 4.0),
+)
+def test_weighted_matrix_floor_on_one_channel_is_the_scalar_floor(
+    b: float, rr: float, xt: float, reach: float, log_info: float
+) -> None:
+    """weighted_van_trees.mac STEP 2d at one channel: the matrix floor, whose divergence of C is
+    a central difference of solves, against the scalar floor, whose C' is closed form and whose
+    means are adaptive quadratures. The prior's width is ``reach`` times ``sqrt(rr)``."""
+    width, info = reach * math.sqrt(rr), 10.0**log_info
+    matrix = _weighted_matrix_floor(
+        centre=np.array([b]),
+        width=width,
+        information=np.array([[info]]),
+        state_weight=np.eye(1),
+        action_weight=np.array([[rr]]),
+        target=np.array([xt]),
+        directions=np.ones((1, 1, 1)),
+    )
+    scalar, _ = _weighted_van_trees_floors(rr=rr, xt=xt, mean=b, width=width, information=info)
+    # the matrix floor's rule holds 1e-11 and its central difference 1e-10 of P; quad holds 1e-12
+    assert matrix == pytest.approx(scalar, rel=1e-8, abs=0.0)
 
 
 @SETTINGS

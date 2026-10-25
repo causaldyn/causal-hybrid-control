@@ -3,7 +3,11 @@
 **Status:** proposed, 2026-09-30. Measured 2026-10-24: read as a stop on a wrong graph, over 200
 replicates in each of nine worlds, the flag removed failed claims no more often than it refused
 sound ones in any world (one-sided Fisher p 0.64 to 1; size 0.058). It stays an experimental
-report, not a stop.
+report, not a stop. Amended 2026-10-25 (ADR 0136): a confounder drawn afresh each period, Gaussian
+and not logged, leaves the log the law of a loop without it whose channel is `b + c d/(d^2 + s^2)`
+(`validation/confounded_log_equivalence.mac`), so the check's power against it is its size at
+every number of rows. The check stays as a diagnostic of the logger's memory and of the columns it
+read, and a rejection is logged at `INFO`, not `WARNING`.
 
 ## Context
 

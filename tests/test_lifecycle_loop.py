@@ -119,7 +119,7 @@ def test_a_prescription_is_evaluated_from_a_later_panel_before_it_is_deployed() 
     assert evaluation.value == pytest.approx(direct.value, rel=1e-9)
 
 
-def test_the_evaluation_warns_when_a_later_logger_read_what_the_graph_says_it_did_not(
+def test_the_evaluation_reports_when_a_later_logger_read_what_the_graph_says_it_did_not(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The graph says the incentive chases nothing. A later panel whose logger chased demand, which
@@ -150,5 +150,7 @@ def test_the_evaluation_warns_when_a_later_logger_read_what_the_graph_says_it_di
     assert stale.logger_check.test.p_value <= 0.05
     strongest = np.nanargmax(np.abs(stale.logger_check.test.partial_correlation[0]))
     assert stale.logger_check.columns[strongest] == "supply[t-1]"
-    levels = [logging.INFO, logging.WARNING, logging.INFO, logging.WARNING]
-    assert [record.levelno for record in checks] == levels
+    # a rejection is a diagnostic of what the logger read, not an alarm: INFO, as a pass is
+    assert [record.levelno for record in checks] == [logging.INFO] * 4
+    rejected = [record.getMessage().startswith("the levers read more") for record in checks]
+    assert rejected == [False, True, False, True]

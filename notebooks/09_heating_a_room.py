@@ -231,14 +231,13 @@ def show_logger_check(prescription):
 # to account for, and we give it no weather forecast. This is a model fitted on the room and the
 # heater alone.
 #
-# The call prints three warnings. The first one is expected, and section 5 comes back to the
-# other two. Before it fits anything, `prescribe`
-# runs a *logger check*. It asks whether the old thermostat's power depended only on what we told
-# it about, here the room temperature. It did not: the old thermostat also read the weather, and
-# the weather changes slowly. So the power in one hour still helps to predict the power in the
-# next, beyond what the room temperature explains, and the check notices. Below, each number says
-# how strongly a reading from the hour before still predicts the power: 0 means not at all, and
-# the further from 0, the stronger.
+# The call prints two warnings, and section 5 comes back to them. Before it fits anything,
+# `prescribe` runs a *logger check*. It asks whether the old thermostat's power depended only on
+# what we told it about, here the room temperature. It did not: the old thermostat also read the
+# weather, and the weather changes slowly. So the power in one hour still helps to predict the
+# power in the next, beyond what the room temperature explains, and the check notices. It says so
+# in the result, not as a warning. Below, each number says how strongly a reading from the hour
+# before still predicts the power: 0 means not at all, and the further from 0, the stronger.
 
 # %%
 naive = prescribe(panel, adjustment=(), **decision)

@@ -448,6 +448,19 @@ class LoggerCheck:
     collider made a parent, a lever's effect denied), stopping where it fired removed failed claims
     no more often than it refused sound ones in any world (one-sided Fisher p 0.64 to 1), and it
     fired on 0.058 of the true graph's panels. It reports on the logger; it does not guard the plan.
+
+    Nor can it see the confounder that matters most. One the log does not hold, drawn afresh each
+    period and Gaussian, leaves the log exactly the law of a loop without it: for the plant
+    ``x' = a x + b u + c w + noise`` and the logger ``u = k x + d w + s eta``, the logged path is
+    that of a logger that read the state and noise of its own, on a plant whose channel is
+    ``b + c d/(d^2 + s^2)`` (``validation/confounded_log_equivalence.mac``). So this check, and
+    every test that reads the log alone, rejects such a log as often as a sound one, at every
+    number of rows, while the fit's channel is off by ``c d/(d^2 + s^2)``. A logged draw that the
+    confounder cannot reach tells the two apart; the check reads none. What it does see is
+    persistence: a confounder that carries over from one period to the next makes the levers
+    depend on their own past given the state, whether or not it moves the plant. It stays a
+    diagnostic of the logger's memory and of the columns it read, and a rejection is logged at
+    ``INFO`` (ADR 0136).
     """
 
     levers: tuple[str, ...]  # the rows of ``test``'s arrays

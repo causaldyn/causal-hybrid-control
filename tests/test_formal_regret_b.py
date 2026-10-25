@@ -128,12 +128,17 @@ FORMAL_LINKS = {
             "action_van_trees.mac",
             "information_lower_bound.mac",
             "information_lower_bound.v",
+            "weighted_van_trees.gp",
+            "weighted_van_trees.mac",
         ),
         "tests": (
             "test_information_floor_constant_is_the_exact_action_curvature",
             "test_information_unbiased_arm_sits_on_the_exact_ols_risk",
             "test_information_van_trees_floor_lies_below_both_bayes_risks",
             "test_information_certificate_survives_the_knife_edge",
+            "test_information_weighted_floors_match_the_38_digit_values",
+            "test_information_weighted_floors_order_below_the_bayes_regret",
+            "test_information_reference_floors_at_the_example_match_the_38_digit_values",
         ),
     },
     "chc.research.regret.interference_convexity_certificate": {
@@ -1207,6 +1212,169 @@ def test_information_van_trees_floor_lies_below_both_bayes_risks():
     assert curve.plugin_bayes_ratio > 1.0
     assert curve.hodges_bayes_ratio > curve.plugin_bayes_ratio
     assert curve.hodges_pointwise_ratio == 0.0
+
+
+# validation/weighted_van_trees.gp at 38 digits, to 20: the certificate's options, then
+# weighted_bayes_floor, best_weighted_bayes_floor and the Bayes regret, at rr = 0.5 and xt = 1.
+# The information is n V_exp/sigma^2 with n the last sample size and V_exp = alpha^2 + 1.
+_WEIGHTED_38 = {
+    # ADR 0130's example: a prior N(0, 1) and 5 = 10 * 2/2^2 units of information
+    "example": (
+        {"b": 0.0, "sigma": 2.0, "sample_sizes": (5, 10), "prior_width": 1.0},
+        0.048886656770088468288,
+        0.059599430154587394402,
+        0.074950277196394276769,
+    ),
+    # the certificate's own prior N(1, 0.25^2), 32000 = 4000 * 2/0.5^2
+    "defaults": (
+        {"sample_sizes": (200, 4000)},
+        2.5954264284212702130e-6,
+        2.5954269125467168867e-6,
+        2.5958185160720431543e-6,
+    ),
+    # a prior N(3, 1), wide against the action's curvature, and 1 = 4 * 1/2^2
+    "wide": (
+        {"b": 3.0, "sigma": 2.0, "alpha": 0.0, "sample_sizes": (2, 4), "prior_width": 1.0},
+        0.029769819507049474468,
+        0.036091642450661538201,
+        0.036805950324842746323,
+    ),
+    # the knife edge rr = b^2 at the prior's centre, N(sqrt(0.5), 0.25^2), 20 = 10 * 2/1
+    "knife_edge": (
+        {"b": math.sqrt(0.5), "sigma": 1.0, "sample_sizes": (5, 10)},
+        0.0029463093917227430506,
+        0.0030096012654927632950,
+        0.0034182967991247919784,
+    ),
+    # N(0, 1) at 10^4 = 5000 * 2/1, where both read 0.99967 of the Bayes regret
+    "informed": (
+        {"b": 0.0, "sigma": 1.0, "sample_sizes": (50, 5000), "prior_width": 1.0},
+        4.7746524201828625014e-5,
+        4.7746538123194054383e-5,
+        4.7762404509348150350e-5,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_WEIGHTED_38))
+def test_information_weighted_floors_match_the_38_digit_values(case):
+    """weighted_van_trees.mac STEPs 3-4, against validation/weighted_van_trees.gp: the floor with
+    the weight C = W psi' and the best over W psi' and He_0 .. He_8, both below the Bayes regret,
+    the knife edge included. Before them the regret's only floor was rr times the action floor,
+    0.230 of the Bayes regret at ADR 0130's example, where these read 0.652 and 0.795."""
+    options, weighted, best, bayes = _WEIGHTED_38[case]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        curve = R.information_lower_bound_certificate(n_seeds=2, **options)
+    # Each mean is read to a relative 1e-12, and the best floor's solve kept 1e-15 of it in every
+    # case here, its condition number up to 2e7 (at the defaults): 1e-9 is a margin, not a fit.
+    assert curve.weighted_bayes_floor == pytest.approx(weighted, rel=1e-9, abs=0.0)
+    assert curve.best_weighted_bayes_floor == pytest.approx(best, rel=1e-9, abs=0.0)
+    assert curve.weighted_bayes_floor <= curve.best_weighted_bayes_floor < bayes
+
+
+def _prior_mean(f, centre, scale):
+    """``E f(b)`` over ``b ~ N(centre, scale^2)``, by quadrature in standard units, split where
+    ``b = 0``: the regret's poles sit at ``b = +-i sqrt(rr)``."""
+    split = -centre / scale
+    value, _ = quad(
+        lambda z: f(centre + scale * z) * math.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi),
+        -40.0,
+        40.0,
+        points=[split] if abs(split) < 40.0 else None,
+        epsabs=0.0,
+        epsrel=1e-12,
+        limit=400,
+    )
+    return value
+
+
+@FAST
+@given(
+    b=st.floats(-2.0, 3.0),
+    rr=st.floats(0.05, 2.0),
+    xt=st.floats(0.3, 2.0),
+    width=st.floats(0.05, 1.5),
+    log_info=st.floats(-1.0, 4.0),
+)
+def test_information_weighted_floors_order_below_the_bayes_regret(b, rr, xt, width, log_info):
+    """weighted_van_trees.mac STEP 4: the best weight's floor is at least the floors of C = W psi'
+    and of C = 1, and the latter is at least rr times the action floor; the Bayes regret, read here
+    from the posterior in closed form, ``xt^2 (E[b^2/(b^2+rr)] - E[m^2/(m^2+v+rr)])``, is above all
+    of them."""
+    info = 10.0**log_info
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        weighted, best = R._weighted_van_trees_floors(
+            rr=rr, xt=xt, mean=b, width=width, information=info
+        )
+
+    def slope(effect):
+        return -xt * (rr - effect**2) / (rr + effect**2) ** 2
+
+    mean_slope = _prior_mean(slope, b, width)
+    least_curvature = rr * mean_slope**2 / (info + 1.0 / width**2)
+    unit_weight = mean_slope**2 / _prior_mean(
+        lambda effect: (info + ((effect - b) / width**2) ** 2) / (effect**2 + rr), b, width
+    )
+    post = 1.0 / (info + 1.0 / width**2)
+    bayes = xt**2 * (
+        _prior_mean(lambda effect: effect**2 / (effect**2 + rr), b, width)
+        - _prior_mean(lambda m: m**2 / (m**2 + post + rr), b, math.sqrt(width**2 - post))
+    )
+    # The quadratures hold 1e-12 of each mean; the Bayes regret is their difference, which cancels
+    # by at most the 10^4 information allowed here, so it carries 1e-8 of itself.
+    assert least_curvature <= unit_weight * (1.0 + 1e-9)
+    assert max(weighted, unit_weight) <= best * (1.0 + 1e-9)
+    assert best <= bayes * (1.0 + 1e-7)
+
+
+def test_information_reference_floors_at_the_example_match_the_38_digit_values():
+    """weighted_van_trees.gp (1), at ADR 0130's example (rr = 0.5, xt = 1, b ~ N(0, 1), I_n = 5):
+    the least-curvature floor rr (E psi')^2/(I_n + 1), the floor of C = 1 and the Bayes regret,
+    read by the quadratures the ordering test reads them with, and the least-curvature floor's
+    limit ratio rr (E psi')^2/E[W psi'^2] as I_n grows."""
+    rr, xt, info = 0.5, 1.0, 5.0
+
+    def slope(effect):
+        return -xt * (rr - effect**2) / (rr + effect**2) ** 2
+
+    mean_slope = _prior_mean(slope, 0.0, 1.0)
+    least_curvature = rr * mean_slope**2 / (info + 1.0)
+    unit_weight = mean_slope**2 / _prior_mean(
+        lambda effect: (info + effect**2) / (effect**2 + rr), 0.0, 1.0
+    )
+    post = 1.0 / (info + 1.0)
+    bayes = xt**2 * (
+        _prior_mean(lambda effect: effect**2 / (effect**2 + rr), 0.0, 1.0)
+        - _prior_mean(lambda m: m**2 / (m**2 + post + rr), 0.0, math.sqrt(1.0 - post))
+    )
+    limit = rr * mean_slope**2 / _prior_mean(lambda e: (e**2 + rr) * slope(e) ** 2, 0.0, 1.0)
+    # each mean holds 1e-12 of itself; the Bayes regret's difference cancels by a factor of 4 here
+    assert least_curvature == pytest.approx(0.017203481087286511118, rel=1e-10, abs=0.0)
+    assert unit_weight == pytest.approx(0.034926362313523239698, rel=1e-10, abs=0.0)
+    assert bayes == pytest.approx(0.074950277196394276769, rel=1e-10, abs=0.0)
+    assert limit == pytest.approx(0.21608203006291320481, rel=1e-10, abs=0.0)
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("rr", 0.0),
+        ("rr", -0.5),
+        ("rr", math.inf),
+        ("rr", math.nan),
+        ("prior_width", 0.0),
+        ("prior_width", -0.25),
+        ("prior_width", math.inf),
+        ("prior_width", math.nan),
+    ],
+)
+def test_information_certificate_refuses_a_weight_or_width_that_is_not_positive(option, value):
+    """The floors divide by ``W >= rr`` and integrate over the prior: neither a cost weight nor a
+    prior width that is not positive and finite has one."""
+    with pytest.raises(ValueError, match="positive and finite"):
+        R.information_lower_bound_certificate(sample_sizes=(50, 100), n_seeds=2, **{option: value})
 
 
 # ------------------------------------------------------------------- interference certificates
