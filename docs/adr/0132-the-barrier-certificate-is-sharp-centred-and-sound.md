@@ -47,7 +47,12 @@ All three set the one closed form `Γ*` reads.
    push `||D⁺(u_k - c)||`, and the best action of the set `c` plus a step along `D(Dw)`. `Γ*`
    inverts the threshold `d* = ||Dw|| - (-αh - a_c)/U`, `a_c` the drift at `c`
    (`validation/barrier_centred.mac`). `prescribe` passes the log's mean action. `None` reads
-   from zero, as before.
+   from zero, as before. The centre sets where the spread is measured from, not which actions are
+   admissible: those stay the box's. Where the centre is outside the box -- `prescribe`'s lever
+   selection pins a lever at 0 that the log moved -- the threshold above, which reads `c` as an
+   action, does not count. A step's `Γ*` is then the largest over the box's actions it reads: the
+   plan's own, the box's action nearest `c`, and from that one along the set's best direction on
+   the levers the box frees, out to the box's edge.
 3. **A sound room.** The room is `h - ||∇h|| e - κ e²/2`, `κ` a bound on `λ_max(-∇²h)` within
    the deviation, in the audit and at the next states the held solve holds. By Taylor's theorem
    it is at most the least `h` a plant there can have. `κ` is read from `h`: 0 where its Hessian
@@ -78,6 +83,11 @@ bound where the docs said it was one.
   deviation to `1e-4`. `prescribe`'s plan on the moved log still clears no barrier step: the plan
   itself differs, since its cost prices an action from the lever's zero. That is the cost's
   reading, not the certificate's, and it is not changed here.
+- A centre outside the box no longer reads `Γ*` at an action the box excludes. With one lever
+  pinned at 0 and its logged mean at -1, a plan that clears every step at `gamma = 1` read `Γ*`
+  1.61, and nan where the drift at the centre failed the step; it now reads 1.91,
+  where the box's best action just clears. On the cross-module panel the change moves one `Γ*`
+  by one ulp.
 - A level past `(3 + √5)/2` is read under the absolute radius; `prescribe` no longer raises there.
 - Every barrier `prescribe` passes is an affine margin, as are the BOPTEST track's and the docs'
   examples: `room_model` reads `affine` and their numbers do not move, bit for bit on the
