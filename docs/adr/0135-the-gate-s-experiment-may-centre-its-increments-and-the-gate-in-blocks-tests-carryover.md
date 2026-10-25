@@ -1,6 +1,6 @@
 # ADR 0135 — The gate's experiment may centre its increments, and the gate in blocks tests carryover
 
-**Status:** proposed, 2026-10-25. Amends ADR 0090 (the gate reads plants with memory in blocks)
+**Status:** accepted, 2026-10-25. Amends ADR 0090 (the gate reads plants with memory in blocks)
 and ADR 0035 (a futility stop for the gate's experiment).
 
 ## Context

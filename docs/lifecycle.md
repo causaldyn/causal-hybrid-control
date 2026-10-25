@@ -194,7 +194,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   block's read mean moves with the block before, and warns to raise `burn_in` when it does. With
   `centred` (*experimental*), the experiment reads each reward less a level set from the arms'
   earlier rewards: the guarantees hold, and where rewards sit far from 0 a deploy comes in far
-  fewer decisions or blocks. See [`chc.gate`](api/gate.md).
+  fewer decisions or blocks. In blocks, set `check_burn_in` with `centred`: a centred
+  experiment also deploys sooner a candidate whose read periods still see the block before. See
+  [`chc.gate`](api/gate.md).
 
 ## 6. Adapt: after deployment
 
