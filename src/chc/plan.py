@@ -3255,6 +3255,13 @@ def _audit(
     back along its ray from the centre to the box's edge, and the step's ceiling read at that
     action's distance. On one lever that is the box's best action, so the ceiling is exact; on
     several it is a lower bound.
+
+    The centre need not be in the box: a lever the box pins at 0 that the log moved has its mean
+    outside. The admissible actions are still the box's. There the set's closed form, which reads
+    the centre as an action, does not count; the box's action nearest the centre and, from it, the
+    set's best direction on the levers the box frees, out to the box's edge, do. The plan's own
+    action counts at every step, so a step whose condition holds at ``gamma = 1`` has a ceiling
+    of at least 1.
     """
     if isinstance(barrier, tuple):
         if not barrier:
@@ -3358,16 +3365,59 @@ def _audit(
             np.asarray(box[1], dtype=np.float64) - point,
         ),
     )
+    origin = np.zeros(actions.shape[1]) if point is None else point
+    # The admissible actions are the box. The set's best action counts where it is in the box,
+    # and its closed form only where the centre is too: not where a lever is pinned at 0 and the
+    # log moved it. The plan's own action, which the audit certifies, and the box's action nearest
+    # the centre, the best one under a wide radius, count beside it. Each gives the largest radius
+    # under which it holds the step; the step's is the largest of them, a lower bound on the box's.
+    steps = actions.shape[0]
+    everywhere = np.ones(steps, dtype=bool)
+    candidates = [(np.asarray(actions, dtype=np.float64), everywhere)]
+    centre_in = everywhere
+    if box is not None:
+        lo, hi = (np.broadcast_to(np.asarray(end, dtype=np.float64), actions.shape) for end in box)
+        centre_in = np.all((origin >= lo) & (origin <= hi), axis=1)
+        nearest = np.clip(np.broadcast_to(origin, actions.shape), lo, hi)
+        candidates.append((nearest, everywhere))
+        # where the centre is outside the box, which leaves the set's closed form nothing to read:
+        # from there along the set's best direction, on the levers the box lets move, to its edge
+        free = np.where(hi > lo, np.asarray(unit, dtype=np.float64), 0.0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            room = np.where(
+                free > 0.0,
+                (hi - nearest) / free,
+                np.where(free < 0.0, (lo - nearest) / free, np.inf),
+            )
+        reach_out = np.min(room, axis=1)
+        reach_out = np.where(np.isfinite(reach_out), reach_out, 0.0)
+        candidates.append((np.clip(nearest + reach_out[:, None] * free, lo, hi), ~centre_in))
     if np.isfinite(budgets).all():
-        best = unit * jnp.asarray(budgets, unit.dtype)[:, None]
-        probes = [actions, best if point is None else best + jnp.asarray(point, best.dtype)]
+        best = np.asarray(unit, dtype=np.float64) * budgets[:, None] + origin
+        inside = everywhere if box is None else np.all((best >= lo) & (best <= hi), axis=1)
+        candidates.append((best, inside))
     else:
-        probes = [actions]
+        inside = np.zeros(steps, dtype=bool)
+    probes = [actions] + [jnp.asarray(one, actions.dtype) for one, _ in candidates[1:]]
     _refuse_curved(model, barrier, states, probes, dt)
     at_centre = drift if point is None else drift + channel @ jnp.asarray(point, channel.dtype)
+    within = None if box is not None else authority * (1.0 + 1e-12)
+
+    def step_threshold(k: int, a: float, length: float, alpha_h: float, budget: float) -> float:
+        closed = _threshold(a, length, budget, alpha_h) if inside[k] and centre_in[k] else math.nan
+        w = np.asarray(channel[k], dtype=np.float64)
+        radii = [closed] + [
+            _held_radius(a, w, alpha_h, one[k] - origin, inverse, within)
+            for one, admitted in candidates
+            if admitted[k]
+        ]
+        return max(radii, key=lambda radius: -math.inf if math.isnan(radius) else radius)
+
     thresholds = [
-        _threshold(float(a), float(c), float(budget), float(alpha * h))
-        for a, c, h, budget in zip(at_centre, lengths, h_values, budgets, strict=True)
+        step_threshold(k, float(a), float(c), float(alpha * h), float(budget))
+        for k, (a, c, h, budget) in enumerate(
+            zip(at_centre, lengths, h_values, budgets, strict=True)
+        )
     ]
     if sensitivity is None or width is None:
         per_step = tuple(
@@ -3435,6 +3485,27 @@ def _threshold(drift: float, channel: float, budget: float, alpha_h: float) -> f
             drift=drift, channel=channel, u_max=budget, alpha_h=alpha_h
         )
     return math.inf if -alpha_h - drift <= 0.0 else math.nan
+
+
+def _held_radius(
+    drift: float,
+    channel: NDArray[np.float64],
+    alpha_h: float,
+    move: NDArray[np.float64],
+    inverse: NDArray[np.float64] | None,
+    within: float | None,
+) -> float:
+    """The largest ``d`` under which the action ``c + move`` holds the step,
+    ``drift + <w, move> - d ||D^+ move|| >= -alpha h``, ``drift`` the field's at ``c``: ``inf``
+    where its spread is zero and it holds, ``nan`` where it holds under no ``d >= 0``, or where
+    ``within`` is given and the action is outside the set ``||D^+ move|| <= within``."""
+    size = float(np.linalg.norm(move if inverse is None else move * inverse))
+    if within is not None and size > within:
+        return math.nan
+    room = drift + float(channel @ move) + alpha_h
+    if not room >= 0.0:
+        return math.nan
+    return math.inf if size == 0.0 else room / size
 
 
 def _box_budgets(

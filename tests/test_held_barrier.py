@@ -1227,3 +1227,51 @@ def test_a_held_disk_keeps_the_plant_at_the_radius_s_edge_in_the_set() -> None:
     edge = LinearDynamics(jnp.zeros((1, 1)), jnp.full((1, 1), 1.0 + delta))
     reached = np.asarray(rollout(edge, jnp.zeros(1), plan.actions, DT))[: steps + 1, 0]
     assert np.all(1.0 - reached**2 >= -1e-9)
+
+
+def test_gamma_star_reads_a_pinned_lever_s_box_and_not_its_logged_mean() -> None:
+    """``x' = x / 2 + u_1 + u_2`` held above ``-1``, the second lever pinned at 0 though the log
+    moved it to -1, the centre. Its box excludes the centre, so the set's best action is not one
+    the box admits. At ``gamma = 1`` the plan clears every step, and each step's ``gamma*`` is
+    where the box's best action, ``u_1`` on a grid of 200 001 points, just clears at the radius
+    the audit reads there: 1.91. Read along the set's best direction from the centre, as if the
+    box admitted it, it was 1.61, and nan where the drift at the centre failed the step."""
+    a, alpha, start = 0.5, 1.0, -0.5
+    model = LinearDynamics(jnp.array([[a]]), jnp.array([[1.0, 1.0]]))
+    cost = QuadraticCost(
+        Q=jnp.eye(1), R=0.01 * jnp.eye(2), Qf=10.0 * jnp.eye(1), x_target=jnp.array([start])
+    )
+    lo, hi = (-1.0, 0.0), (1.0, 0.0)
+    centre, reach = (0.0, -1.0), (1.0, 1.0)
+
+    def floor(x: Array) -> Array:
+        return x[0] + 1.0
+
+    requirement = BarrierConstraint(
+        floor, alpha=alpha, cvar_gap=2.0, u_max=reach, u_box=(lo, hi), centre=centre
+    )
+    plan = causal_plan(
+        model,
+        jnp.array([start]),
+        cost,
+        DT,
+        HORIZON,
+        jnp.array(lo),
+        jnp.array(hi),
+        barrier=requirement,
+    )
+    assert plan.safety is not None
+    assert plan.safety.certified_steps == HORIZON
+    ceilings = np.asarray(plan.safety.step_gamma_star, dtype=np.float64)
+    assert np.all(np.isfinite(ceilings))
+    assert np.all(ceilings > 1.0)
+    assert plan.safety.gamma_star == pytest.approx(float(np.min(ceilings)), rel=0.0, abs=0.0)
+
+    lever = np.linspace(lo[0], hi[0], 200_001)
+    spread = np.hypot((lever - centre[0]) / reach[0], (0.0 - centre[1]) / reach[1])
+    for state, ceiling in zip(np.asarray(plan.trajectory[:-1])[:, 0], ceilings, strict=True):
+        radius = plan_module._audit(
+            plan, model, floor, DT, alpha, float(ceiling), 2.0, reach, (lo, hi), centre=centre
+        ).radius
+        best = np.max(a * state + lever - radius * spread) + alpha * (state + 1.0)
+        assert best == pytest.approx(0.0, rel=0.0, abs=1e-8)
