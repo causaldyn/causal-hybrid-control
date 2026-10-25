@@ -540,6 +540,84 @@ def test_a_futility_stop_is_wrong_no_more_often_than_its_level_when_read_after_e
     assert stops == 1
 
 
+CENTRED = dataclasses.replace(FUTILE, horizon=1, centred=True)
+
+
+@pytest.mark.parametrize(
+    ("margin", "verdict", "level"),
+    [
+        (CENTRED.delta, "deploy", CENTRED.alpha),
+        (-CENTRED.delta_harm, "hold", CENTRED.alpha_harm),
+        (CENTRED.delta + CENTRED.min_effect, "shadow", CENTRED.alpha_futility),
+    ],
+)
+def test_centred_increments_keep_each_level_when_read_after_every_decision(
+    margin: float, verdict: str, level: float
+) -> None:
+    """A lone zone in the experiment from the start, with centred increments, whose candidate sits
+    exactly at a margin, read after each of 1000 decisions: at ``delta`` it is deployed, at
+    ``-delta_harm`` held, and at ``delta + min_effect`` stopped for futility, each on at most its
+    level of 100 paths, within three binomial standard deviations."""
+    truth = Truth(_boundary(margin, "high"), 1.0, "bump")
+    rng = np.random.default_rng(20261031)
+    crossed = 0
+    for _ in range(100):
+        gate = DeploymentGate({"z": truth.plan}, CENTRED)
+        assert gate.update({}) == {"z": "experiment"}
+        batch = truth.draw(rng, "experiment", np.full(1000, 0.2), CENTRED.rho)
+        for t in range(1000):
+            one = slice(t, t + 1)
+            seen = gate.update(
+                {
+                    "z": ZoneBatch(
+                        batch.reward[one],
+                        batch.candidate[one],
+                        batch.baseline[one],
+                        batch.logged[one],
+                    )
+                }
+            )["z"]
+            if seen != "experiment":
+                crossed += seen == verdict
+                break
+    assert abs(truth.contrast - margin) < 1e-12
+    assert crossed <= 100 * level + 3.0 * math.sqrt(100 * level * (1.0 - level))
+
+
+def test_centring_leaves_shadow_and_deployed_evidence_as_it_was() -> None:
+    """``centred`` reads the experiment alone: in shadow, and once deployed, a centred gate's
+    evidence is a plain gate's, bit for bit."""
+    gates = {
+        centred: DeploymentGate(
+            {"z": ZonePlan(0.1, 0.1)}, dataclasses.replace(LONE, centred=centred)
+        )
+        for centred in (False, True)
+    }
+    rng = np.random.default_rng(20261033)
+
+    def same(evidence: tuple[str, ...]) -> None:
+        for name in evidence:
+            plain, centred = (getattr(g._zones["z"], name).log_wealth for g in gates.values())
+            np.testing.assert_array_equal(plain, centred)
+
+    for _ in range(3):
+        candidate, reward = rng.uniform(0.5, 1.5, BATCH), rng.random(BATCH)
+        shadow = ZoneBatch(reward, candidate, np.ones(BATCH), np.ones(BATCH))
+        assert {g.update({"z": shadow})["z"] for g in gates.values()} == {"shadow"}
+    same(("improvement", "harm", "futility"))
+    for _ in range(10):
+        verdicts = {g.update({"z": STRONG})["z"] for g in gates.values()}
+        assert len(verdicts) == 1
+        if verdicts == {"deploy"}:
+            break
+    assert all(g.mode("z") == "deployed" for g in gates.values())
+    for _ in range(3):
+        candidate, reward = rng.uniform(0.5, 1.5, BATCH), rng.random(BATCH)
+        deployed = ZoneBatch(reward, candidate, np.ones(BATCH), candidate)
+        assert {g.update({"z": deployed})["z"] for g in gates.values()} == {"deploy"}
+    same(("rollback",))
+
+
 @pytest.fixture
 def futile() -> DeploymentGate:
     """A lone zone sent to the experiment by the rule on the horizon, whose candidate acts as the

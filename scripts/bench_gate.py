@@ -22,8 +22,11 @@ level. The shock and each zone then draw from streams of their own, so the two a
 draws in every zone whose modes agree: a zone the stop never reaches reads the same verdicts in
 both.
 
+With ``--centred``, every arm centres the experiment's increments (``GateConfig.centred``), and
+the output says so under ``centred``.
+
 Run: uv run python scripts/bench_gate.py {null,mixed} [--replications 400] [--futility LEVEL]
-    > out.json
+    [--centred] > out.json
 """
 
 from __future__ import annotations
@@ -219,6 +222,7 @@ def _run(world: str, replications: int, config: GateConfig, *, paired: bool = Fa
         "rollbacks_of_deployed": int((seen["rollback"] & deployed).sum()),
         "deployments": int(deployed.sum()),
         "alpha_futility": config.alpha_futility,
+        "centred": config.centred,
         "experiment_decisions": spent.mean(axis=0).tolist(),
         "futility_stop_share": futile.mean(axis=0).tolist(),
     }
@@ -229,14 +233,16 @@ def main() -> None:
     parser.add_argument("world", choices=["null", "mixed"])
     parser.add_argument("--replications", type=int, default=400)
     parser.add_argument("--futility", type=float, default=None, help="alpha_futility; unset")
+    parser.add_argument("--centred", action="store_true", help="centre the experiment's increments")
     args = parser.parse_args()
+    base = dataclasses.replace(CONFIG, centred=args.centred)
     if args.futility is None:
-        print(json.dumps(_run(args.world, args.replications, CONFIG), indent=2))
+        print(json.dumps(_run(args.world, args.replications, base), indent=2))
         return
-    stop = dataclasses.replace(CONFIG, alpha_futility=args.futility)
+    stop = dataclasses.replace(base, alpha_futility=args.futility)
     arms = {
         arm: _run(args.world, args.replications, config, paired=True)
-        for arm, config in (("without", CONFIG), ("with", stop))
+        for arm, config in (("without", base), ("with", stop))
     }
     print(json.dumps(arms, indent=2))
 

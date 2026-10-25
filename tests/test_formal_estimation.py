@@ -46,12 +46,15 @@ from chc.dynamics_id import (
 )
 from chc.experiment import ChannelPrior, ZoneDecision
 from chc.gate import (
+    _BETS,
     BlockBatch,
     ChannelMove,
     DecisionLog,
     DeploymentGate,
     GateConfig,
     ZonePlan,
+    _BlockCarryover,
+    _Level,
     _per_block,
     channel_drift_evalues,
     channel_move,
@@ -142,11 +145,15 @@ FORMAL_LINKS = {
         "tests": ("test_the_published_bayes_action_minimises_the_expected_cost",),
     },
     "chc.gate": {
-        "cites": ("gate_block_contrast.mac",),
+        "cites": ("gate_block_contrast.mac", "gate_centred_increment.mac"),
         "tests": (
             "test_block_read_meets_the_geometric_memory_bound_and_attains_it",
             "test_block_read_under_carryover_of_order_one",
             "test_gate_in_blocks_reads_the_sustained_contrast_not_the_myopic_one",
+            "test_a_centred_increment_reads_the_contrast_and_meets_its_bounds",
+            "test_the_centred_level_tends_to_the_level_of_least_variance",
+            "test_a_pair_of_blocks_bets_at_mean_one_without_carryover",
+            "test_a_pair_of_blocks_reads_the_carryover_past_the_burn_in",
         ),
     },
     "chc.gate.ChannelMove.price": {
@@ -896,6 +903,168 @@ def test_gate_in_blocks_reads_the_sustained_contrast_not_the_myopic_one(
         if seen != "experiment":
             break
     assert seen == verdict
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    rho=st.floats(0.05, 0.95),
+    level=st.floats(0.0, 1.0),
+    reads=st.tuples(st.floats(0.0, 1.0), st.floats(0.0, 1.0)),
+    margins=st.tuples(st.floats(0.0, 0.4), st.floats(0.0, 0.4), st.floats(0.01, 0.5)),
+)
+def test_a_centred_increment_reads_the_contrast_and_meets_its_bounds(
+    rho: float, level: float, reads: tuple[float, float], margins: tuple[float, float, float]
+) -> None:
+    """gate_centred_increment.mac STEPs 1, 3 and 7: at a level fixed before the draw, the block's
+    increment under each draw, weighed by the draw's chance, reads the two read means' contrast,
+    for DEPLOY, harm and futility alike; and on the box's corners each scaled increment reaches
+    -1 and no lower."""
+    delta, delta_harm, extra = margins
+    config = GateConfig(
+        delta,
+        delta_harm,
+        extra,
+        10**6,
+        rho=rho,
+        alpha_futility=0.1,
+        block_length=1,
+        centred=True,
+    )
+    worth = delta + extra
+    c = (1.0 - rho) * level + rho * level  # the level a centred gate reads off these sums
+    below = max(c / rho, (1.0 - c) / (1.0 - rho))
+    above = max((1.0 - c) / rho, c / (1.0 - rho))
+
+    def scaled(ran: bool, read: float) -> np.ndarray:
+        """The block's DEPLOY, harm and futility increments, read off each e-value's largest
+        bet."""
+        gate = DeploymentGate({"z": ZonePlan(chi2=1.0, tv=0.5)}, config)
+        zone = gate._zones["z"]
+        zone.level.sums = np.array([[level, level], [1.0, 1.0]])
+        logged = np.array([rho if ran else 1.0 - rho])
+        gate.update({"z": BlockBatch(np.array([[read]]), np.array([ran]), logged)})
+        evidence = (zone.improvement, zone.harm, zone.futility)
+        return np.array([np.expm1(e.log_wealth[0]) / _BETS[0] for e in evidence])
+
+    def unscaled(y: np.ndarray) -> np.ndarray:
+        """``x``, ``-x`` and ``-x`` back from the three scaled increments."""
+        return np.array(
+            [
+                y[0] * (below + delta) + delta,
+                y[1] * (above + delta_harm) + delta_harm,
+                y[2] * (above - worth) - worth,
+            ]
+        )
+
+    new, base = unscaled(scaled(True, reads[0])), unscaled(scaled(False, reads[1]))
+    contrast = reads[0] - reads[1]
+    mean = rho * new + (1.0 - rho) * base
+    np.testing.assert_allclose(mean, [contrast, -contrast, -contrast], rtol=0.0, atol=1e-9)
+    corners = np.array([scaled(ran, read) for ran in (True, False) for read in (0.0, 1.0)])
+    np.testing.assert_allclose(corners.min(axis=0), -1.0, rtol=0.0, atol=1e-9)
+    inside = np.vstack([scaled(True, reads[0]), scaled(False, reads[1])])
+    assert inside.min() >= -1.0 - 1e-9
+
+
+def test_the_centred_level_tends_to_the_level_of_least_variance() -> None:
+    """gate_centred_increment.mac STEPs 4 and 5: over 40 000 blocks whose read means are
+    ``mu + Delta u + eta``, the level the gate reads tends to ``c* = mu + (1 - rho) Delta``, and the
+    centred increment's mean square to ``s^2 / (rho (1 - rho)) + Delta^2``, where the plain one's
+    is ``((1 - rho)(mu + Delta)^2 + rho mu^2 + s^2) / (rho (1 - rho))``."""
+    rho, mu, effect, sd, n = 0.3, 0.5, 0.05, 0.08, 40_000
+    rng = np.random.default_rng(20261025)
+    ran = rng.random(n) < rho
+    reads = mu + effect * ran + sd * rng.standard_normal(n)
+    # no clip, so the moments are the formula's
+    assert reads.min() >= 0.0
+    assert reads.max() <= 1.0
+    w_new, w_base = ran / rho, ~ran / (1.0 - rho)
+    levels = _Level().read(w_new, w_base, reads, rho)
+    best = mu + (1.0 - rho) * effect
+    # the level's last read is (1 - rho) m_new + rho m_base over n - 1 blocks
+    spread = sd * math.sqrt((1.0 - rho) ** 2 / (rho * n) + rho**2 / ((1.0 - rho) * n))
+    assert abs(levels[-1] - best) <= 4.0 * spread
+    for squares, expected in (
+        (((w_new - w_base) * (reads - levels))[1000:] ** 2, sd**2 / (rho * (1 - rho)) + effect**2),
+        (
+            ((w_new - w_base) * reads) ** 2,
+            ((1 - rho) * (mu + effect) ** 2 + rho * mu**2 + sd**2) / (rho * (1 - rho)),
+        ),
+    ):
+        assert abs(squares.mean() - expected) <= 4.0 * squares.std() / math.sqrt(squares.size)
+
+
+def _scores(ran: list[bool] | np.ndarray, rho: float) -> np.ndarray:
+    return np.where(np.asarray(ran, dtype=bool), 1.0 / rho, -1.0 / (1.0 - rho))
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    rho=st.floats(0.05, 0.95),
+    earlier=st.lists(st.tuples(st.booleans(), st.floats(0.0, 1.0)), max_size=6),
+    first_reads=st.tuples(st.floats(0.0, 1.0), st.floats(0.0, 1.0)),
+    second=st.tuples(st.booleans(), st.floats(0.0, 1.0)),
+)
+def test_a_pair_of_blocks_bets_at_mean_one_without_carryover(
+    rho: float,
+    earlier: list[tuple[bool, float]],
+    first_reads: tuple[float, float],
+    second: tuple[bool, float],
+) -> None:
+    """gate_centred_increment.mac STEP 9: with the second block's read fixed, as carryover within
+    the burn-in leaves it, the pair's factor averages 1 over the first block's draw, for every
+    bet of either sign and whatever came before, though the first block's own read moves with
+    its draw; and no factor reaches 0."""
+    closed = earlier[: len(earlier) // 2 * 2]
+
+    def factor(first: bool) -> np.ndarray:
+        check = _BlockCarryover(rho)
+        if closed:
+            ran, reads = zip(*closed, strict=True)
+            check.add(_scores(ran, rho), np.array(reads), "experiment")
+        before = check.log_wealth.copy()
+        blocks = [(first, first_reads[0] if first else first_reads[1]), second]
+        ran, reads = zip(*blocks, strict=True)
+        assert check.add(_scores(ran, rho), np.array(reads), "experiment") is None
+        return np.exp(check.log_wealth - before)
+
+    mean = rho * factor(True) + (1.0 - rho) * factor(False)
+    np.testing.assert_allclose(mean, 1.0, rtol=0.0, atol=1e-12)
+    for first in (True, False):
+        assert factor(first).min() >= 1.0 - _BETS[0] - 1e-12
+
+
+def test_a_pair_of_blocks_reads_the_carryover_past_the_burn_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gate_centred_increment.mac STEP 9: on the plant ``1/2 + gain u_t - cost u_(t-p)``, blocks
+    of 5 with 1 burned, the pairs' mean ``s (R - c)`` reads ``-cost (p - b) / r = -cost / 2`` at
+    ``p = 3``, and 0 within the burn-in, at ``p = 1``. The check's level is set so low that it
+    never warns, so it reads every pair, and its pairs are re-read here by another route: each
+    pair's term from its own blocks."""
+    monkeypatch.setattr("chc.gate._CARRYOVER_LEVEL", 1e-300)
+    rho, gain, cost, length, burn, blocks = 0.5, 0.3, 0.4, 5, 1, 4000
+    rng = np.random.default_rng(20261026)
+    ran = rng.random(blocks) < rho
+    u = np.repeat(ran.astype(np.float64), length)
+    for order, expected in ((3, -cost * (3 - burn) / (length - burn)), (1, 0.0)):
+        lagged = np.concatenate([np.zeros(order), u[:-order]])
+        reads = (0.5 + gain * u - cost * lagged).reshape(blocks, length)[:, burn:].mean(axis=1)
+        check = _BlockCarryover(rho)
+        assert check.add(_scores(ran, rho), reads, "experiment") is None
+        terms = []
+        seen = {True: [], False: []}
+        for k in range(1, blocks, 2):
+            arm = seen[bool(ran[k])] or seen[not ran[k]]
+            level = float(np.mean(arm)) if arm else 0.5
+            terms.append(_scores(ran[k - 1 : k], rho)[0] * (reads[k] - level))
+            seen[bool(ran[k - 1])].append(reads[k - 1])
+            seen[bool(ran[k])].append(reads[k])
+        terms_array = np.array(terms)
+        assert check.pairs == terms_array.size
+        assert check.contrast == pytest.approx(terms_array.sum(), rel=1e-9, abs=1e-9)
+        spread = terms_array.std() / math.sqrt(terms_array.size)
+        assert abs(terms_array.mean() - expected) <= 4.0 * spread + 1e-12
 
 
 def _move_case(rng: np.random.Generator, states: int, actions: int):

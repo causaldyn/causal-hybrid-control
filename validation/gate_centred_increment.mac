@@ -1,0 +1,212 @@
+/* The centred increments of chc.gate's experiment (GateConfig(centred=True)), and the exact test
+   of carryover past the burn-in that the gate in blocks runs.
+
+   In the experiment each decision, or each block, is logged under the mixture
+   (1 - rho) baseline + rho candidate. D = w_new - w_base is the difference of the two policies'
+   weights over the logged propensity; on a block it is 1/rho when the block ran the candidate and
+   -1/(1 - rho) when it ran the baseline. R in [0, 1] is the reward, or the block's read mean, and
+   c a level fixed before the draw: the gate's is the arm-weighted midpoint of the arms' earlier
+   rewards. The plain increments are the c = 0 one for DEPLOY and the c = 1 one for harm.
+
+   STEP 1  E[D] = 0 under the design, so E[D (R - c)] = Delta = V_new - V_base for every c
+   STEP 2  per decision, rho w_new + (1 - rho) w_base = 1 under the mixture, so
+           D = (w_new - 1)/(1 - rho), which lies in [-1/(1 - rho), 1/rho]
+   STEP 3  x = D (R - c) is bilinear on that box and R in [0, 1], so its extremes are corners:
+           x >= -B(c), B(c) = max(c/rho, (1 - c)/(1 - rho)), and x <= B'(c),
+           B'(c) = max((1 - c)/rho, c/(1 - rho)); B(0) = B'(1) = 1/(1 - rho), the plain bounds;
+           B >= 1 with equality at c = rho, B' >= 1 with equality at c = 1 - rho; checked against
+           a grid over the box at sample points
+   STEP 4  second moments on a block, R = mu + Delta ran + eta, E eta = 0, E eta^2 = s^2:
+           E[x(c)^2] is least at c* = mu + (1 - rho) Delta, where it is s^2/(rho (1 - rho)) +
+           Delta^2, and exceeds that by (c - c*)^2/(rho (1 - rho)); at c = 0 it is
+           ((1 - rho)(mu + Delta)^2 + rho mu^2 + s^2)/(rho (1 - rho))
+   STEP 5  the arm-weighted midpoint (1 - rho) m_new + rho m_base of the arms' means is c*, and
+           in blocks the weighted mean sum w_new R / sum w_new is the candidate blocks' mean read
+   STEP 6  the centred increment is the augmented inverse-propensity one with the arms' means for
+           a reward model: D (R - c) = D (R - m_arm) + (m_new - m_base) on both draws
+   STEP 7  each scaled increment is at least -1, and its mean is at most 0 under its null:
+           (x - delta)/(B + delta) for DEPLOY, (-x - delta_h)/(B' + delta_h) for harm and
+           (w - x)/(B' - w) for futility, w = delta + min_effect
+   STEP 8  blocks to an e-value of 20 x 12 bets, plain against centred at c*, by the growth of the
+           best fixed bet capped at 0.9 (an approximation), beside the shipped gate's Monte Carlo
+           medians in blocks of one period read after every block, 200 paths each, and the
+           lab's plant below, read every 5 blocks; with the two second moments
+   STEP 9  the carryover test: a block's score s has mean 0 and |s (R - c)| <= A =
+           max(1/rho, 1/(1 - rho)) max(c, 1 - c), so 1 + lam s (R - c)/A >= 1 - |lam| > 0; on
+           the tests' plants the pair's mean s (R - c) is the change of the read mean with the
+           block before: -cost (min(p, L) - b)/r under carryover of order p > b, and
+           -cost (1 - a^L) a^b (1 - a^r)/(r (1 - a)) for a stock m' = a m + (1 - a) u; and the
+           read periods' own contrast, what the gate in blocks certifies, is
+           gain - cost #{t in [b, L - 1]: t >= p}/r under order p and
+           gain - cost (1 - a^b (1 - a^r)/(r (1 - a))) under the stock, against gain - cost sustained
+   STEP 10 the lab's plant of tests/test_gate_blocks.py, x' = 9/10 x + u/10 + eps/5, reward mean
+           3/10 exp(-(u - 1)^2/2) + 7/10 exp(-x^2/2), baseline u ~ N(0, 1): a candidate that
+           acts 0 is better myopically by 3/10 (exp(-1/2) - exp(-1/4)/sqrt(2)) and in the long
+           run by that plus 7/10 ((1 + 4/19)^(-1/2) - (1 + 5/19)^(-1/2)); both policies keep x's
+           mean at 0, and its variance moves to the new policy's by (81/100)^t, so after a
+           burn-in of 40 the block's contrast is the long-run one within 81/100^40 of the gap;
+           the Gaussian expectations are checked by quadrature at sample points
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/gate_centred_increment.mac */
+
+display2d : false$
+fpprintprec : 8$
+assume(rho > 0, rho < 1, s2 > 0)$
+pass(ok) := if ok then "(PASS)" else "(FAIL)"$
+
+/* STEP 1 */
+ED : rho*(1/rho) + (1 - rho)*(-1/(1 - rho))$
+EX(c) := rho*(1/rho)*(mu + Delta - c) + (1 - rho)*(-1/(1 - rho))*(mu - c)$
+step1 : ratsimp(EX(c) - Delta)$
+print("STEP 1  E[D] =", ratsimp(ED), "; E[D (R - c)] - Delta =", step1,
+      pass(ratsimp(ED) = 0 and step1 = 0))$
+
+/* STEP 2 */
+wbase : rhs(first(solve(rho*wn + (1 - rho)*wb = 1, wb)))$
+D2 : ratsimp(wn - wbase)$
+print("STEP 2  D =", D2, "; D - (w_new - 1)/(1 - rho) =", ratsimp(D2 - (wn - 1)/(1 - rho)),
+      "; D at w_new = 0 and 1/rho:", ratsimp(subst(wn = 0, D2)), ratsimp(subst(wn = 1/rho, D2)),
+      pass(ratsimp(D2 - (wn - 1)/(1 - rho)) = 0
+           and ratsimp(subst(wn = 0, D2) + 1/(1 - rho)) = 0
+           and ratsimp(subst(wn = 1/rho, D2) - 1/rho) = 0))$
+
+/* STEP 3 */
+corners : [[1/rho, 0], [1/rho, 1], [-1/(1 - rho), 0], [-1/(1 - rho), 1]]$
+cvals : map(lambda([dr], ratsimp(dr[1]*(dr[2] - c))), corners)$
+print("STEP 3  x at the corners (D, R):", cvals)$
+print("STEP 3  the corners' negative values are -c/rho and -(1 - c)/(1 - rho):",
+      pass(ratsimp(cvals[1] + c/rho) = 0 and ratsimp(cvals[4] + (1 - c)/(1 - rho)) = 0
+           and ratsimp(cvals[2] - (1 - c)/rho) = 0 and ratsimp(cvals[3] - c/(1 - rho)) = 0))$
+B(c, rho) := max(c/rho, (1 - c)/(1 - rho))$
+Bp(c, rho) := max((1 - c)/rho, c/(1 - rho))$
+print("STEP 3  B(0) =", B(0, rho), " B'(1) =", Bp(1, rho), " B(rho) =", ratsimp(B(rho, rho)),
+      " B'(1 - rho) =", ratsimp(Bp(1 - rho, rho)),
+      pass(ratsimp(B(0, rho) - 1/(1 - rho)) = 0 and ratsimp(Bp(1, rho) - 1/(1 - rho)) = 0))$
+/* at sample points: the least and greatest x over a 41 x 41 grid of the box, against -B and B',
+   and the least B and B' over c on a grid of 1001 */
+worst : 0$
+for rv in [1/10, 1/4, 1/2, 2/3, 9/10] do
+  for cv in [0, 1/7, 1/3, 1/2, 4/5, 1] do block([lo : inf, hi : minf, x],
+    for i : 0 thru 40 do for j : 0 thru 40 do (
+      x : (-1/(1 - rv) + i*(1/rv + 1/(1 - rv))/40) * (j/40 - cv),
+      lo : min(lo, x), hi : max(hi, x)),
+    worst : max(worst, abs(lo + B(cv, rv)), abs(hi - Bp(cv, rv))))$
+leastB : lmin(makelist(min(B(k/1000, 3/10), Bp(k/1000, 3/10)), k, 0, 1000))$
+print("STEP 3  grid extremes less -B and B', largest gap:", worst,
+      "; least B and B' over c at rho = 3/10:", leastB, pass(worst = 0 and leastB = 1))$
+
+/* STEP 4 */
+EX2(c) := rho*(1/rho^2)*((mu + Delta - c)^2 + s2) + (1 - rho)*(1/(1 - rho)^2)*((mu - c)^2 + s2)$
+cstar : rhs(first(solve(diff(EX2(c), c) = 0, c)))$
+s4a : ratsimp(cstar - (mu + (1 - rho)*Delta))$
+s4b : ratsimp(EX2(cstar) - (s2/(rho*(1 - rho)) + Delta^2))$
+s4c : ratsimp(EX2(c) - EX2(cstar) - (c - cstar)^2/(rho*(1 - rho)))$
+s4d : ratsimp(EX2(0) - ((1 - rho)*(mu + Delta)^2 + rho*mu^2 + s2)/(rho*(1 - rho)))$
+print("STEP 4  c* - (mu + (1 - rho) Delta):", s4a, "; E[x(c*)^2] - (s^2/(rho(1 - rho)) + Delta^2):",
+      s4b, "; E[x(c)^2] - E[x(c*)^2] - (c - c*)^2/(rho(1 - rho)):", s4c, "; E[x(0)^2] less its form:",
+      s4d, pass(s4a = 0 and s4b = 0 and s4c = 0 and s4d = 0))$
+
+/* STEP 5: three blocks, the first and third ran the candidate */
+level : (1 - rho)*(mu + Delta) + rho*mu$
+wn5 : [1/rho, 0, 1/rho]$
+R5 : [r1, r2, r3]$
+selfnorm : ratsimp(sum(wn5[i]*R5[i], i, 1, 3)/sum(wn5[i], i, 1, 3))$
+print("STEP 5  midpoint - c*:", ratsimp(level - cstar), "; weighted mean of the candidate's reads:",
+      selfnorm, pass(ratsimp(level - cstar) = 0 and ratsimp(selfnorm - (r1 + r3)/2) = 0))$
+
+/* STEP 6 */
+cm : (1 - rho)*mn + rho*mb$
+dr_new : ratsimp((1/rho)*(R - cm) - ((1/rho)*(R - mn) + (mn - mb)))$
+dr_base : ratsimp((-1/(1 - rho))*(R - cm) - ((-1/(1 - rho))*(R - mb) + (mn - mb)))$
+print("STEP 6  centred less augmented IPW, candidate and baseline draws:", dr_new, dr_base,
+      pass(dr_new = 0 and dr_base = 0))$
+
+/* STEP 7 */
+low_dep : ratsimp((-Bv - delta)/(Bv + delta))$
+low_harm : ratsimp((-Bpv - dh)/(Bpv + dh))$
+low_fut : ratsimp((w - Bpv)/(Bpv - w))$
+print("STEP 7  each increment at its bound:", low_dep, low_harm, low_fut,
+      "; their means:", (Delta - delta)/(Bv + delta), (-Delta - dh)/(Bpv + dh),
+      (w - Delta)/(Bpv - w), pass(low_dep = -1 and low_harm = -1 and low_fut = -1))$
+
+/* STEP 8 */
+g(EY, EY2) := if EY/EY2 <= 0.9 then EY^2/(2*EY2) else 0.9*EY - 0.81*EY2/2$
+need : log(20.0) + log(12.0)$
+for row in [[0.5, 0.05, 0.03, "230.5; plain deployed on 25 of 200 within 3000"],
+            [0.5, 0.10, 0.03, "442.5"], [0.8, 0.05, 0.03, "373.5"], [0.5, 0.05, 0.01, "905"],
+            [0.5, 0.5, 0.03, "none: 32 of 200 deployed within 5000, plain 7"],
+            [0.1, 0.05, 0.03, "406.5; plain 728.5"],
+            [0.788, 0.138, 0.0305, "830 on the lab's plant (196 of 200 within 2000); plain 6"]] do
+  block([m, sd, dl, vals, c1, b0, b1, plain, centred],
+    [m, sd, dl] : [row[1], row[2], row[3]],
+    vals : [rho = 1/2, mu = m, s2 = sd^2, Delta = dl],
+    c1 : float(ev(cstar, vals)),
+    b0 : 2.0, b1 : float(B(c1, 1/2)),
+    plain : g(float(ev(EX(0), vals))/b0, float(ev(EX2(0), vals))/b0^2),
+    centred : g(float(ev(EX(c1), vals))/b1, float(ev(EX2(c1), vals))/b1^2),
+    print("STEP 8  mu", m, "s", sd, "Delta", dl, ": blocks plain", round(need/plain),
+          " centred at c*", round(need/centred), " growth", float(centred/plain), "times;",
+          " E[x^2] plain", float(ev(EX2(0), vals)), " centred", float(ev(EX2(c1), vals)),
+          "; the gate's Monte Carlo median, centred:", row[4]))$
+
+/* STEP 9 */
+Es : rho*(1/rho) + (1 - rho)*(-1/(1 - rho))$
+A(c, rho) := max(1/rho, 1/(1 - rho)) * max(c, 1 - c)$
+worst9 : 0$
+for rv in [1/5, 1/2, 3/4] do for cv in [0, 1/4, 1/2, 9/10, 1] do
+  for sv in [1/rv, -1/(1 - rv)] do for Rv in [0, 1/3, 1] do
+    worst9 : max(worst9, abs(sv*(Rv - cv)) - A(cv, rv))$
+print("STEP 9  E[s] =", ratsimp(Es), "; largest |s (R - c)| - A over sample points:", worst9,
+      pass(ratsimp(Es) = 0 and worst9 <= 0))$
+/* order p: a read period t (0-based, t >= b) sees the block before when t < p */
+order(p, L, b) := -cost * sum(if t < p then 1 else 0, t, b, L - 1) / (L - b)$
+print("STEP 9  order 3, L 5, b 1:", order(3, 5, 1), "; order 2, L 5, b 1:", order(2, 5, 1),
+      "; order 5, L 10, b 4:", order(5, 10, 4), "; order 3, L 5, b 3:", order(3, 5, 3),
+      pass(order(3, 5, 1) = -cost/2 and order(2, 5, 1) = -cost/4 and order(5, 10, 4) = -cost/6
+           and order(3, 5, 3) = 0))$
+/* the stock m_t = a m_(t-1) + (1 - a) u_(t-1): period t of a block weighs the block before by
+   (1 - a) sum_(j = t+1)^(t+L) a^(j-1) = a^t (1 - a^L) */
+load("simplify_sum")$
+stockw : simplify_sum((1 - a)*sum(a^(j - 1), j, t + 1, t + L))$
+s9 : ratsimp(stockw - a^t*(1 - a^L))$
+stock(a0, L0, b0) := -cost * (1 - a0^L0) * a0^b0 * (1 - a0^(L0 - b0)) / ((L0 - b0)*(1 - a0))$
+s9b : ratsimp(-cost*sum((9/10)^t * (1 - (9/10)^10), t, 5, 9)/5 - stock(9/10, 10, 5))$
+print("STEP 9  the stock's weight less a^t (1 - a^L):", s9, "; mean over the read periods less",
+      "the closed form (a 0.9, L 10, b 5):", s9b, pass(s9 = 0 and s9b = 0))$
+for row in [[50, 40], [50, 10], [10, 5]] do
+  print("STEP 9  stock a 0.9, L", row[1], "b", row[2], ": contrast / cost =",
+        float(stock(9/10, row[1], row[2]) / cost))$
+own_order(p, L, b) := gain - cost * sum(if t >= p then 1 else 0, t, b, L - 1) / (L - b)$
+own_stock(a0, L, b) := gain - cost * sum(1 - a0^t, t, b, L - 1) / (L - b)$
+s9c : ratsimp(own_stock(a, 10, 5) - (gain - cost*(1 - a^5*(1 - a^5)/(5*(1 - a)))))$
+print("STEP 9  own contrast, order 3, L 5, b 1:", own_order(3, 5, 1), "; the stock's closed form",
+      "less its sum (L 10, b 5):", s9c, pass(own_order(3, 5, 1) = gain - cost/2 and s9c = 0))$
+print("STEP 9  at gain 2/5, cost 3/5: order 3, L 5, b 1:", subst([gain = 2/5, cost = 3/5],
+      own_order(3, 5, 1)), "; stock a 0.9, L 10, b 5:",
+      float(subst([gain = 2/5, cost = 3/5], own_stock(9/10, 10, 5))), "; sustained:", 2/5 - 3/5)$
+
+/* STEP 10 */
+hm(m, v) := exp(-m^2/(2*(1 + v)))/sqrt(1 + v)$
+gm(m, v) := exp(-(m - 1)^2/(2*(1 + v)))/sqrt(1 + v)$
+vs(su2) := (su2/100 + 4/100)/(1 - 81/100)$
+myopic0 : 3/10*(gm(0, 0) - gm(0, 1))$
+longrun0 : myopic0 + 7/10*(hm(0, vs(0)) - hm(0, vs(1)))$
+s10a : ratsimp(vs(0) - 4/19) + ratsimp(vs(1) - 5/19)$
+s10b : radcan(longrun0 - (3/10*(exp(-1/2) - exp(-1/4)/sqrt(2))
+                          + 7/10*((1 + 4/19)^(-1/2) - (1 + 5/19)^(-1/2))))$
+/* the two Gaussian expectations by quadrature, at sample points */
+quad(f, m, v) := first(quad_qagi(f(x)*exp(-(x - m)^2/(2*v))/sqrt(2*%pi*v), x, minf, inf))$
+gap10 : lmax(map(lambda([mv], max(abs(quad(lambda([x], exp(-x^2/2)), mv[1], mv[2]) - hm(mv[1], mv[2])),
+                                   abs(quad(lambda([x], exp(-(x - 1)^2/2)), mv[1], mv[2])
+                                       - gm(mv[1], mv[2])))),
+                 [[0, 4/19], [2/5, 5/19], [-1, 2]]))$
+/* the variance recursion v' = 81/100 v + su2/100 + 4/100 closes on vs at the rate 81/100 */
+s10c : ratsimp((81/100*v + su2/100 + 4/100) - vs(su2) - 81/100*(v - vs(su2)))$
+/* the block's contrast after the burn-in, from a start at either policy's stationary variance */
+blockc(v0, b0, r0) := myopic0 + 7/10/r0*sum(
+  hm(0, vs(0) + (81/100)^t*(v0 - vs(0))) - hm(0, vs(1) + (81/100)^t*(v0 - vs(1))), t, b0, b0 + r0 - 1)$
+print("STEP 10 stationary variances less 4/19 and 5/19:", s10a, "; long run less its closed form:",
+      s10b, "; recursion:", s10c, "; quadrature gaps:", float(gap10),
+      pass(s10a = 0 and s10b = 0 and s10c = 0 and float(gap10) < 1e-9))$
+print("STEP 10 acts 0: myopic", float(myopic0), " long run", float(longrun0),
+      " block b 40 r 10 from either start:", float(blockc(4/19, 40, 10)), float(blockc(5/19, 40, 10)))$

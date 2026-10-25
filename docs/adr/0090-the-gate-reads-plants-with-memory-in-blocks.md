@@ -45,6 +45,10 @@ design, whatever the dependence of the outcomes.
   reward within `C a^t` of its policy's long-run value `t` periods after the policy takes over,
   it lies within `2 C a^b (1 - a^r) / (r (1 - a))` of `V_new - V_base`, and `delta` must cover
   that bias. The docstring states both, with the lab's numbers.
+  *2026-10-25, ADR 0135:* with `GateConfig(check_burn_in=True)` the gate in blocks tests, in its
+  experiment, whether a block's read mean moves with the block before, which carryover of order at
+  most `b` rules out, and warns to raise `burn_in`; the docstring's "the gate cannot test `p` or
+  `a` on its own data" is withdrawn.
 - **Modes in blocks.** A futility stop sends a zone to SHADOW, which runs the baseline's blocks.
   Rule 5 sends a shadow zone back to EXPERIMENT as soon as it may enter one, without reading the
   zone's `ZonePlan`. A deployed zone runs the candidate's blocks, so its rollback e-process has no
@@ -81,6 +85,9 @@ only, no wall time.
   2156. On the lab's plant, whose effects are a few hundredths, a DEPLOY of a candidate that is
   better is out of reach in 20 000 periods: the block's weighted reward has a variance near
   `E[R^2] / (rho (1 - rho))` whatever `r` is.
+  *2026-10-25, ADR 0135:* with `GateConfig(centred=True)` the second moment falls to
+  `Var(R) / (rho (1 - rho))` plus the contrast's square, and a candidate +0.030 better in the long
+  run was deployed on 36 of 200 paths within 20 000 periods and on 196 within 100 000.
 - Thirteen mutations of the change were each caught by a test.
 
 ## Alternatives considered
@@ -93,5 +100,7 @@ only, no wall time.
 - **Centring the block's reward** at a predictable level, which keeps the design's mean and would
   cut the variance on plants whose rewards sit far from 0. Not built: it changes the increments the
   gate's other modes share, and its gain was not measured here.
+  *2026-10-25, ADR 0135:* built, opt-in, for the experiment alone, so the other modes' increments
+  do not change; its gain is measured there.
 - **A separate gate class for blocks.** Rejected: the block reuses every rule and e-process, and
   only how a batch becomes increments differs.

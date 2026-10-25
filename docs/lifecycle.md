@@ -190,7 +190,11 @@ documented, and what is not built yet. Every name below is importable from `chc`
   On a plant with memory, `block_length` and `burn_in` (*experimental*) run the experiment in
   blocks: each block runs one policy, drawn at random, and the gate reads a `BlockBatch` of them
   after each block's burn-in, so that a deploy certifies the sustained effect, not the effect of
-  one decision. See [`chc.gate`](api/gate.md).
+  one decision. With `check_burn_in` (*experimental*) the gate in blocks also tests whether a
+  block's read mean moves with the block before, and warns to raise `burn_in` when it does. With
+  `centred` (*experimental*), the experiment reads each reward less a level set from the arms'
+  earlier rewards: the guarantees hold, and where rewards sit far from 0 a deploy comes in far
+  fewer decisions or blocks. See [`chc.gate`](api/gate.md).
 
 ## 6. Adapt: after deployment
 

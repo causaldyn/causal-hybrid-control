@@ -7,7 +7,8 @@ Carlo standard deviations, or it says it cannot read the case: a ``gate_carryove
 path, over its whole run.
 
 Every zone logs as its mode asks: the baseline takes action 1 with probability 0.5, the candidate
-with 0.8, an experiment mixes the two, and the reward is Bernoulli.
+with 0.8, an experiment mixes the two, and the reward is Bernoulli; in blocks whose burn-in falls
+short of the dead time, the candidate acts 1, the baseline 0, and the reward has Gaussian noise.
 """
 
 from __future__ import annotations
@@ -141,6 +142,67 @@ def _blocks(paths: int, blocks: int, cost: float = COST, per_read: int = 5) -> f
                 verdict = gate.update({"z": BlockBatch(reward[i], ran[i], logged[i])})["z"]
                 deployed[i] |= verdict == "deploy"
     return float(np.mean(deployed))
+
+
+def _short_burn_in(
+    paths: int, blocks: int, *, centred: bool, per_read: int = 5
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per path, whether the gate in blocks of 5 periods, 1 burned, read every ``per_read``
+    blocks, deploys a candidate that acts 1 against a baseline that acts 0, where an action pays
+    ``GAIN`` now and costs ``COST`` ``DEAD`` periods on, on a reward with Gaussian noise of sd 0.2;
+    and whether it warned of carryover by then. Two of a block's four read periods see the block
+    before: the read periods' contrast is ``GAIN - COST / 2 = +0.1``, the sustained one
+    ``GAIN - COST = -0.2``."""
+    config = GateConfig(
+        delta=0.0,
+        delta_harm=0.02,
+        min_effect=0.02,
+        horizon=10**6,
+        block_length=5,
+        burn_in=1,
+        check_burn_in=True,
+        centred=centred,
+    )
+    rng = np.random.default_rng(20261032)
+    gates = [DeploymentGate({"z": PLAN}, config) for _ in range(paths)]
+    past = np.zeros((paths, DEAD))
+    deployed = np.zeros(paths, dtype=bool)
+    warned = np.zeros(paths, dtype=bool)
+    handler = _Carryover()
+    logger = logging.getLogger("chc.gate")
+    logger.addHandler(handler)
+    for _ in range(blocks // per_read):
+        modes = np.array([gate.mode("z") for gate in gates])[:, None]
+        experiment = modes == "experiment"
+        ran = np.where(experiment, rng.random((paths, per_read)) < config.rho, modes == "deployed")
+        logged = np.where(experiment, np.where(ran, config.rho, 1.0 - config.rho), 1.0)
+        reward = np.empty((paths, per_read, 5))
+        for b in range(per_read):
+            u = ran[:, b].astype(float)
+            for t in range(5):
+                noise = 0.2 * rng.standard_normal(paths)
+                reward[:, b, t] = np.clip(0.5 + GAIN * u - COST * past[:, 0] + noise, 0.0, 1.0)
+                past = np.concatenate([past[:, 1:], u[:, None]], axis=1)
+        for i, gate in enumerate(gates):
+            if modes[i, 0] == "retired" or deployed[i]:
+                continue
+            before = handler.count
+            verdict = gate.update({"z": BlockBatch(reward[i], ran[i], logged[i])})["z"]
+            warned[i] |= handler.count > before
+            deployed[i] = verdict == "deploy"
+    logger.removeHandler(handler)
+    return deployed, warned
+
+
+@pytest.mark.parametrize("centred", [False, True])
+def test_in_blocks_a_burn_in_short_of_the_dead_time_is_said_or_not_deployed(centred: bool) -> None:
+    """The gate in blocks certifies the read periods' contrast, +0.1 here, and the candidate is
+    -0.2 worse sustained. Over 1000 blocks, with ``check_burn_in``, it deploys the candidate with
+    no carryover warning before on at most ``alpha`` of 100 paths, within three Monte Carlo
+    standard deviations. Plain, it deployed on 23 and warned on 98, 2 of the deploys with no
+    warning before; centred, it deployed on all 100, 4 with no warning before."""
+    deployed, warned = _short_burn_in(100, 1000, centred=centred)
+    assert np.mean(deployed & ~warned) <= _slack(100), (deployed.sum(), warned.sum())
 
 
 def test_rewards_that_persist_deploy_no_candidate_that_is_no_better() -> None:

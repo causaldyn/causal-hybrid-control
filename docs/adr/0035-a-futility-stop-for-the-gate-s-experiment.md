@@ -79,6 +79,14 @@ agree. Verdicts and decision counts only, no wall time.
 - **Unset, the gate is what it was.** The lab replay reproduces the lab's counts, and the bench's
   default path reprints its previous output key for key.
 - Ten mutations of the stop were each caught by a test.
+- *2026-10-25, ADR 0135:* with `GateConfig(centred=True)` the experiment's increments are centred,
+  and `scripts/bench_gate.py {null,mixed} --futility 0.1 --centred` reads, on the same draws: the
+  boundary zones 14 232 and 14 269 → 9 900 and 9 917 decisions (64 % and 68 % stopped) in the null
+  world and 14 189 → 10 027 (63 %) in the mixed one; the heavy-tailed nulls 14 304 → 966 and 897
+  (99.75 %); the better heavy-tailed zone 958 → 958, against 1 966 plain. The FDR, 0.010 ± 0.005
+  and 0.003 ± 0.001, and the power, 1.000, hold, and the mean check of a deploy falls from 10.1 to
+  7.4. The heavy-tailed null was held in 5 of 800 runs with the stop and none without. The plain
+  numbers above do not move: the bench reprints them.
 
 ## Alternatives considered
 

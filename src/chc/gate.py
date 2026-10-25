@@ -81,11 +81,51 @@ block, given everything before the block.
   ``b = 40`` it lies between -0.0115 and -0.0069 for every start in ``[-1.1, 1.5]``, against
   -0.0096 in the long run, and the gate in blocks deployed the candidate on 5 of 1000 paths of
   20 000 periods, where without blocks it deployed on every path.
-* The gate cannot test ``p`` or ``a`` on its own data.
+* **A carryover check** (*experimental*), with ``GateConfig(check_burn_in=True)``. Carryover of
+  order at most ``b`` leaves a block's read mean unmoved by the draw of the block before, which the
+  design drew independently of everything else, so the gate can test it on its own data. The
+  experiment's blocks pair up in the order they run, and each pair bets on its first block's score
+  ``s`` against ``R - c``: its second block's read mean less the mean read of that block's policy
+  over the earlier pairs. While the null holds each factor has mean 1, whatever the rewards'
+  dependence: the randomisation test of Liu and Zhong (2026, arXiv:2602.23257, Theorem 4.1), read
+  after every pair at level 0.05 by Ville's inequality (``validation/gate_centred_increment.mac``).
+  It logs one warning per zone, ``gate_carryover``, that says to raise ``burn_in``, and moves no
+  verdict. Fed every block of 2000, under carryover of order 3 in blocks of 5 with 1 burned and a
+  cost of 0.6 three periods on, it warned on 400 of 400 paths after a median of 72 blocks, and at a
+  cost of 0.1, which moves the read mean by 0.05, after a median of 517; with ``b >= p``, on 1 of
+  400 in each of three settings. Under a stock ``m' = 0.9 m + 0.1 u`` in blocks of 50 it warned on
+  381 of 400 paths with 10 burned, and on none with 40. It reads only a carryover that moves the
+  read mean, and a DEPLOY can come first: on the plant of order 3, where the read periods' contrast
+  is +0.1 and the sustained one -0.2, the gate deployed on 204 of 400 paths, 5 of them with no
+  warning before.
 * A block is one increment however long it is, and its burned periods read nothing. Under
   carryover of order 1, a candidate +0.3 better sustained was deployed after a median of 562
   periods in blocks of 2 with 1 burned, 978 in blocks of 5 with 1 burned, and 1288 in blocks of 5
   with 4 burned.
+
+**Centred increments** (*experimental*). Under the experiment's mixture the difference of the two
+weights, ``D = w_new - w_base``, lies in ``[-1 / (1 - rho), 1 / rho]`` and has mean 0 given the
+past, so a reward read less any level ``c`` set before its decision keeps the contrast:
+``E[D (R - c)] = V_new - V_base``. With ``GateConfig(centred=True)`` the experiment reads each
+reward less ``c = (1 - rho) m_new + rho m_base``, from the arms' earlier rewards in the experiment,
+and scales its increments by the bounds ``D (R - c)`` meets: ``max(c / rho, (1 - c) / (1 - rho))``
+below, ``max((1 - c) / rho, c / (1 - rho))`` above. It is the doubly robust increment of
+Waudby-Smith et al. (2024), and the guarantees hold as before. Its second moment no longer carries
+the reward's level: for read means ``mu + Delta u`` plus noise of variance ``s^2``, it is
+``s^2 / (rho (1 - rho)) + Delta^2`` at the level's limit, against
+``((1 - rho)(mu + Delta)^2 + rho mu^2 + s^2) / (rho (1 - rho))`` for the plain increment
+(``validation/gate_centred_increment.mac``). In blocks of one period at ``mu = 0.5``, ``s = 0.05``
+and ``Delta = 0.03``, the gate deployed on 200 of 200 paths after a median of 230.5 blocks, where
+plain increments deployed on 25 within 3000. On the lab's plant, in blocks of 50 with 40 burned, a
+candidate that acts 0, +0.030 better in the long run, was deployed on 36 of 200 paths within 20 000
+periods and on 196 within 100 000, after a median of 41 500, against 2 and 6 plain; the candidate
+0.0096 worse in the long run, on none of 1000 paths, against 5. A candidate whose read periods
+still see the block before is deployed sooner too, at times before the carryover check has warned:
+on the plant of order 3 above, on all 400 paths, 15 of them with no warning before; under the stock
+in blocks of 10 with 5 burned, on 140 of 400 with no warning before, against 13 plain. Shadow and
+deployed increments do not change: there the candidate's weight has no bound from the design. A
+centred e-value is on another scale than a plain one, and each of the gate's log records says
+which, under ``centred``.
 
 A zone's channel is watched through per-decision drift e-values. :func:`channel_drift_evalues`
 reads them off the Gaussian dither a :class:`DecisionLog` records, and :class:`DriftAlarm` turns
@@ -192,15 +232,27 @@ class GateConfig:
     not in blocks (see :mod:`chc.gate`); 0 turns it off. The check logs a warning and changes no
     verdict.
 
+    ``check_burn_in`` (*experimental*), off by default, runs the carryover check of a gate in
+    blocks: an exact test that a block's read mean does not move with the policy of the block
+    before, which a ``burn_in`` short of the plant's carryover lets it do (see :mod:`chc.gate`). It
+    too logs a warning and changes no verdict.
+
+    ``centred`` (*experimental*), off by default, centres the experiment's increments: each reward
+    is read less a level predicted from the zone's earlier decisions in the experiment, so that
+    the reward's own level no longer adds to the increment's variance (see :mod:`chc.gate`). The
+    guarantees do not change. Shadow and deployed increments do not change either. The logged
+    e-values are on another scale, and the gate's log records say which, under ``centred``.
+
     Raises:
         ValueError: on a margin outside ``[0, 1)``, a level or ``rho`` outside ``(0, 1)``, a
             ``min_effect`` that is not positive, a ``horizon`` below 1, a ``drift_arl`` not above
             1, an ``alpha_futility`` with ``delta + min_effect`` not below 1, which no reward
             in ``[0, 1]`` can beat, a ``block_length`` below 1, a ``burn_in`` that is negative,
-            leaves no period of a block to read, or is set without a ``block_length``, or a
-            negative ``carryover_lags``.
+            leaves no period of a block to read, or is set without a ``block_length``, a
+            ``check_burn_in`` set without one, or a negative ``carryover_lags``.
         TypeError: on a ``horizon``, ``block_length``, ``burn_in`` or ``carryover_lags`` that is
-            not a whole number: a float, or a bool.
+            not a whole number: a float, or a bool; or a ``check_burn_in`` or ``centred`` that is
+            not a bool.
     """
 
     delta: float
@@ -215,6 +267,8 @@ class GateConfig:
     block_length: int | None = None
     burn_in: int = 0
     carryover_lags: int = 5
+    check_burn_in: bool = False
+    centred: bool = False
 
     def __post_init__(self) -> None:
         for name in ("horizon", "burn_in", "carryover_lags") + (
@@ -223,6 +277,10 @@ class GateConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int | np.integer):
                 raise TypeError(f"{name} must be a whole number, got {value!r}")
+        for name in ("check_burn_in", "centred"):
+            value = getattr(self, name)
+            if not isinstance(value, bool | np.bool_):
+                raise TypeError(f"{name} must be True or False, got {value!r}")
         for name in ("delta", "delta_harm"):
             value = getattr(self, name)
             if not 0.0 <= value < 1.0:
@@ -252,6 +310,11 @@ class GateConfig:
                 raise ValueError(
                     f"burn_in = {self.burn_in} without a block_length: a burn-in is the start of a"
                     " block"
+                )
+            if self.check_burn_in:
+                raise ValueError(
+                    "check_burn_in without a block_length: the check reads blocks; without them"
+                    " carryover_lags sets the carryover check"
                 )
         elif self.block_length < 1:
             raise ValueError(f"block_length must be at least 1 period, got {self.block_length}")
@@ -1355,6 +1418,39 @@ class _Evidence:
         )
 
 
+class _Level:
+    """The level a centred experiment reads each reward against: ``(1 - rho) m_new + rho m_base``,
+    with ``m_new`` and ``m_base`` the rewards of the zone's earlier decisions in the experiment,
+    each averaged under its own policy's weight. In blocks those are the two arms' read means.
+    While one weight has summed to nothing the level is the other's mean, and before any decision
+    it is 1/2.
+
+    A decision's level reads only the decisions before it, in its batch and in earlier ones, so it
+    is predictable: the mixture draws the decision's action after it, and the difference of the
+    two weights has mean 0 given it."""
+
+    def __init__(self) -> None:
+        # [weighted reward, weight] by [candidate, baseline], summed in the decisions' order
+        self.sums = np.zeros((2, 2))
+
+    def read(self, w_new: _Array, w_base: _Array, reward: _Array, rho: float) -> _Array:
+        """Each decision's level, from the decisions before it; the sums then take the batch."""
+        weights = np.stack([w_new, w_base])
+        terms = np.stack([weights * reward, weights])
+        running = np.cumsum(np.concatenate([self.sums[:, :, None], terms], axis=-1), axis=-1)
+        self.sums = running[:, :, -1].copy()
+        total, weight = running[0, :, :-1], running[1, :, :-1]
+        seen = weight > 0.0
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mean = total / weight
+        level = np.where(
+            seen.all(axis=0),
+            (1.0 - rho) * mean[0] + rho * mean[1],
+            np.where(seen[0], mean[0], np.where(seen[1], mean[1], 0.5)),
+        )
+        return np.clip(level, 0.0, 1.0)
+
+
 class _Carryover:
     """A score test of a reward on the actions ``1 .. lags`` decisions back.
 
@@ -1439,6 +1535,72 @@ class _Carryover:
         return lag + 1, float(z[lag]), float(p[lag])
 
 
+class _BlockCarryover:
+    """An exact test, for a gate in blocks, that a block's read mean does not move with the draw of
+    the block before.
+
+    The experiment's blocks pair up in the order they run, and each pair reads its first block's
+    draw against its second block's read mean ``R``. With carryover of order at most the burn-in,
+    ``R`` does not depend on the first block's draw, and the design drew that independently of
+    every earlier block and of the second block's draw, so given those and ``R`` the draw's score
+    ``s``, ``1 / rho`` or ``-1 / (1 - rho)``, has mean 0 (Liu and Zhong 2026, arXiv:2602.23257,
+    Theorem 4.1). Each pair's ``1 + lam s (R - c) / A`` then has mean 1, for ``c`` the mean read of
+    the second block's policy over the earlier pairs (the other policy's while it has none, and 1/2
+    before any) and ``A = max(1 / rho, 1 / (1 - rho)) max(c, 1 - c)``, the most ``|s (R - c)|`` can
+    be. Their products, mixed over the gate's bets ``lam`` of either sign, are a test martingale,
+    which by Ville's inequality ever reaches ``1 / _CARRYOVER_LEVEL`` with probability at most that
+    level: at any number of blocks, read after every pair, whatever the rewards' dependence.
+
+    A pair's first read enters no ``c`` before the pair closes, since it moves with the draw the
+    pair tests, and a batch outside the experiment ends an open pair. It warns once."""
+
+    def __init__(self, rho: float) -> None:
+        self.scale = max(1.0 / rho, 1.0 / (1.0 - rho))  # the largest |s|
+        self.first: tuple[float, float] | None = None  # the open pair's first block: s, R
+        self.blocks = np.zeros(2)  # the closed pairs' blocks of the candidate, of the baseline
+        self.reads = np.zeros(2)  # and their read means, summed
+        self.log_wealth = np.zeros((2, _BETS.size))  # bets on a draw that raises R, that lowers it
+        self.contrast = 0.0  # the pairs' s (R - c), summed
+        self.pairs = 0
+        self.warned = False
+
+    def add(
+        self, scores: _Array, rewards: _Array, mode: GateMode
+    ) -> tuple[float, float, int] | None:
+        """Add a batch of blocks logged in ``mode``, and return the e-value, the pairs' mean
+        ``s (R - c)`` and their number at the pair where the test rejects; ``None`` otherwise.
+        Once it has rejected, it reads nothing more."""
+        if self.warned or mode != "experiment":
+            self.first = None
+            return None
+        sides = np.multiply.outer([1.0, -1.0], _BETS)
+        for score, reward in zip(scores.tolist(), rewards.tolist(), strict=True):
+            if self.first is None:
+                self.first = score, reward
+                continue
+            (draw, earlier), self.first = self.first, None
+            arm = int(score < 0.0)
+            if self.blocks[arm]:
+                level = self.reads[arm] / self.blocks[arm]
+            elif self.blocks[1 - arm]:
+                level = self.reads[1 - arm] / self.blocks[1 - arm]
+            else:
+                level = 0.5
+            term = draw * (reward - level)
+            self.log_wealth += np.log1p(sides * (term / (self.scale * max(level, 1.0 - level))))
+            self.contrast += term
+            self.pairs += 1
+            for s, r in ((draw, earlier), (score, reward)):
+                self.blocks[int(s < 0.0)] += 1.0
+                self.reads[int(s < 0.0)] += r
+            log_e = float(np.logaddexp.reduce(self.log_wealth.ravel()))
+            log_e -= math.log(self.log_wealth.size)
+            if log_e >= -math.log(_CARRYOVER_LEVEL):
+                self.warned = True
+                return math.exp(log_e), self.contrast / self.pairs, self.pairs
+        return None
+
+
 @dataclass
 class _Zone:
     plan: ZonePlan
@@ -1450,7 +1612,8 @@ class _Zone:
     futility: _Evidence = field(default_factory=_Evidence)
     futile: bool = False  # the futility e-value crossed in this epoch; a crossing is a rejection
     decisions: int = 0
-    carryover: _Carryover | None = None
+    carryover: _Carryover | _BlockCarryover | None = None
+    level: _Level = field(default_factory=_Level)  # read only when the experiment is centred
 
 
 class DeploymentGate:
@@ -1506,14 +1669,14 @@ class DeploymentGate:
             raise ValueError("the gate needs at least one zone")
         self.config = config
         start: GateMode = "shadow" if config.block_length is None else "experiment"
-        lags = config.carryover_lags if config.block_length is None else 0
+
+        def carryover() -> _Carryover | _BlockCarryover | None:
+            if config.block_length is not None:
+                return _BlockCarryover(config.rho) if config.check_burn_in else None
+            return _Carryover(config.carryover_lags) if config.carryover_lags else None
+
         self._zones = {
-            name: _Zone(
-                plan,
-                DriftAlarm(config.drift_arl),
-                start,
-                carryover=_Carryover(lags) if lags else None,
-            )
+            name: _Zone(plan, DriftAlarm(config.drift_arl), start, carryover=carryover())
             for name, plan in plans.items()
         }
 
@@ -1551,25 +1714,32 @@ class DeploymentGate:
             zone = self._zones[z]
             zone.decisions += given[z].reward.size
             w_new, w_base, r = b.candidate / b.logged, b.baseline / b.logged, b.reward
-            if zone.carryover is not None:
+            if isinstance(zone.carryover, _BlockCarryover):
+                found = zone.carryover.add(w_new - w_base, r, zone.mode)
+                self._check_block_carryover(z, zone, found)
+            elif zone.carryover is not None:
                 self._check_carryover(z, zone, zone.carryover.add(w_new - w_base, r, zone.mode))
             if zone.mode == "deployed":
                 zone.rollback.add(((w_base - w_new) * r - cfg.delta_harm) / (1 + cfg.delta_harm))
                 continue
-            bound = 1.0 if zone.mode == "shadow" else 1.0 / (1.0 - cfg.rho)
-            diff = w_new - w_base
-            zone.improvement.add((diff * r - cfg.delta) / (bound + cfg.delta))
-            zone.harm.add((diff * (1 - r) - cfg.delta_harm) / (bound + cfg.delta_harm))
-            if cfg.alpha_futility is not None:
-                # The harm increment at the margin -(delta + min_effect): E[diff (1 - r)] is
-                # V_base - V_new, so this bets against V_new - V_base >= delta + min_effect.
-                worth = cfg.delta + cfg.min_effect
-                zone.futility.add((diff * (1 - r) + worth) / (bound - worth))
+            if cfg.centred and zone.mode == "experiment":
+                self._add_centred(zone, w_new, w_base, r)
+            else:
+                bound = 1.0 if zone.mode == "shadow" else 1.0 / (1.0 - cfg.rho)
+                diff = w_new - w_base
+                zone.improvement.add((diff * r - cfg.delta) / (bound + cfg.delta))
+                zone.harm.add((diff * (1 - r) - cfg.delta_harm) / (bound + cfg.delta_harm))
+                if cfg.alpha_futility is not None:
+                    # The harm increment at the margin -(delta + min_effect): E[diff (1 - r)] is
+                    # V_base - V_new, so this bets against V_new - V_base >= delta + min_effect.
+                    worth = cfg.delta + cfg.min_effect
+                    zone.futility.add((diff * (1 - r) + worth) / (bound - worth))
             if alarms[z]:
                 zone.improvement.restart()
                 zone.harm.restart()
                 zone.futility.restart()
                 zone.futile = False
+                zone.level = _Level()
 
         # A zone's improvement evidence stops at DEPLOY or retirement, so e-BH reads stopped
         # e-values, and the deployed set is self-consistent at every read.
@@ -1587,6 +1757,7 @@ class DeploymentGate:
                         "zone": z,
                         "verdict": verdicts[z],
                         "mode": zone.mode,
+                        "centred": cfg.centred,
                         "drift_alarm": alarm,
                         "futile": zone.futile,
                         "log_evidence": zone.improvement.log_value,
@@ -1598,6 +1769,25 @@ class DeploymentGate:
                     },
                 )
         return verdicts
+
+    def _add_centred(self, zone: _Zone, w_new: _Array, w_base: _Array, r: _Array) -> None:
+        """The experiment's increments, each reward read less its predictable level ``c``. Under
+        the mixture ``w_new - w_base`` lies in ``[-1 / (1 - rho), 1 / rho]`` and has mean 0, so
+        ``x = (w_new - w_base)(r - c)`` has mean ``V_new - V_base`` and, over that box and rewards
+        in ``[0, 1]``, lies in ``[-below, above]``, with
+        ``below = max(c / rho, (1 - c) / (1 - rho))`` and
+        ``above = max((1 - c) / rho, c / (1 - rho))``, both at least 1. Harm and futility bet on
+        ``-x``."""
+        cfg = self.config
+        c = zone.level.read(w_new, w_base, r, cfg.rho)
+        x = (w_new - w_base) * (r - c)
+        below = np.maximum(c / cfg.rho, (1.0 - c) / (1.0 - cfg.rho))
+        above = np.maximum((1.0 - c) / cfg.rho, c / (1.0 - cfg.rho))
+        zone.improvement.add((x - cfg.delta) / (below + cfg.delta))
+        zone.harm.add((-x - cfg.delta_harm) / (above + cfg.delta_harm))
+        if cfg.alpha_futility is not None:
+            worth = cfg.delta + cfg.min_effect
+            zone.futility.add((worth - x) / (above - worth))
 
     def _check_carryover(
         self, name: str, zone: _Zone, found: tuple[int, float, float] | None
@@ -1620,6 +1810,38 @@ class DeploymentGate:
                 "lag": lag,
                 "statistic": statistic,
                 "p_value": p_value,
+                "decisions": zone.decisions,
+            },
+        )
+
+    def _check_block_carryover(
+        self, name: str, zone: _Zone, found: tuple[float, float, int] | None
+    ) -> None:
+        if found is None:
+            return
+        e_value, contrast, pairs = found
+        burn_in = self.config.burn_in
+        _log.warning(
+            "zone %r: a block's read mean moves with the policy of the block before (e = %.3g, so"
+            " p <= %.2g, over %d pairs of blocks; %+.3g when the block before ran the candidate"
+            " rather than the baseline), so the read periods still see that block and a DEPLOY"
+            " would not certify the sustained contrast; raise burn_in, now %d, to at least the"
+            " carryover's order",
+            name,
+            e_value,
+            1.0 / e_value,
+            pairs,
+            contrast,
+            burn_in,
+            extra={
+                "chc_event": "gate_carryover",
+                "zone": name,
+                "lag": 1,
+                "e_value": e_value,
+                "p_value": 1.0 / e_value,
+                "contrast": contrast,
+                "pairs": pairs,
+                "burn_in": burn_in,
                 "decisions": zone.decisions,
             },
         )
