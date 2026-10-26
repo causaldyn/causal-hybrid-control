@@ -4,6 +4,11 @@
 tilt costs share, most in short logs, where this record said it added nothing. Amended
 2026-10-25 by ADR 0134: the fit stopped early, and the table and the shares below were read
 through it; ADR 0134 records them read through the polished fit and against the exact oracle.
+Amended 2026-10-26 by ADR 0137: the tilt `-min(max(m, 0), r*se)` is never positive, but the plan
+adds it on `sum(u) = budget`, where only its differences act, so a zone whose estimate is not
+positive still gains `min(max(m_j, 0), r*se_j)` per unit against each zone `j`: the bonus survives
+in relative form (`validation/marketplace_tilt.mac`, steps 4 and 5). ADR 0137 adds the opt-in
+expected objective, which reads no tilt.
 
 ## Context
 

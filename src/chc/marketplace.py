@@ -937,8 +937,11 @@ def pessimistic_equilibrium_allocation(
         return zero.at[free].set(_expected_plan(market, equilibrium, free, steps))
     assert response is not None
     # The worst response within radius SEs that is not negative, less the estimate projected onto
-    # the same prior: -min(max(m, 0), radius * se), never a bonus (validation/marketplace_tilt.mac).
-    # Read against the raw estimate, a negative one earned its zone a bonus of |m| per unit.
+    # the same prior: -min(max(m, 0), radius * se), never positive. Read against the raw estimate, a
+    # negative one earned its zone a bonus of |m| per unit. On sum(u) = budget only the tilt's
+    # differences act, so the bonus survives in relative form: a zone whose estimate is not
+    # positive gains min(max(m_j, 0), radius * se_j) per unit against each zone j
+    # (validation/marketplace_tilt.mac).
     pess = jnp.maximum(response.marginal - radius * response.se, 0.0)
     tilt = pess - jnp.maximum(response.marginal, 0.0)
     completions = equilibrium.completions

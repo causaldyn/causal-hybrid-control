@@ -7,10 +7,17 @@
        tilt = max(m - r s, 0) - max(m, 0) = -min(max(m, 0), r s),
    never positive and never below -r s. Read against the raw estimate, L - m, it is a bonus of -m
    wherever m < 0, which is the defect this file records.
+   The planner adds tilt'u to its objective on the budget simplex sum(u) = B, where only the
+   tilt's differences act: a zone whose estimate is not positive is tilted 0 and so gains
+   min(max(m_j, 0), r s_j) per unit against each zone j, r s_j against one with m_j >= r s_j. The
+   bonus survives in relative form; "never a bonus" holds only of the tilt's absolute value.
 
    STEP 1  the three regions of m against 0 and r s: L - P and -min(max(m, 0), r s) agree
    STEP 2  the tilt lies in [-r s, 0] in every region
    STEP 3  L - m on m < 0 is -m > 0: the bonus
+   STEP 4  on sum(u) = B a shift k of every zone's tilt adds k B, a constant
+   STEP 5  three zones, m_1 <= 0 and m_2, m_3 >= r s: with u_3 = B - u_1 - u_2, tilt'u rises in u_1
+           at r s_3 and in u_2 at r (s_3 - s_2); with every tilt equal it does not move at all
 
    Run: timeout 300 maxima --very-quiet -Q -b validation/marketplace_tilt.mac */
 
@@ -44,3 +51,22 @@ region("STEP 1-2  m = r s:", w)$
 /* STEP 3 */
 bonus : ratsimp(L(-t, w) - (-t))$
 print("STEP 3  L - m at m = -t:", bonus, verdict(equal(bonus, t)))$
+
+/* STEP 4 */
+assume(s2 > 0, s3 > 0)$
+u3 : B - u1 - u2$
+dot(t1, t2, t3) := t1*u1 + t2*u2 + t3*u3$
+shift : expand(dot(t1 + k, t2 + k, t3 + k) - dot(t1, t2, t3))$
+print("STEP 4  a shift k of the tilt adds:", shift, verdict(equal(shift, k*B)))$
+
+/* STEP 5: tilt(m_1) = 0 for m_1 <= 0; tilt(m_j) = -r s_j for m_j >= r s_j */
+relative : expand(dot(tilt(-t, w), tilt(w*s2 + t, w*s2), tilt(w*s3 + t, w*s3)))$
+by1 : diff(relative, u1)$
+by2 : diff(relative, u2)$
+print("STEP 5  d(tilt'u)/du1 less r s_3:", ratsimp(by1 - w*s3),
+      verdict(equal(ratsimp(by1 - w*s3), 0)), " and it is positive:", verdict(by1 > 0))$
+print("STEP 5  d(tilt'u)/du2 less r (s_3 - s_2):", ratsimp(by2 - w*(s3 - s2)),
+      verdict(equal(ratsimp(by2 - w*(s3 - s2)), 0)))$
+flat : expand(dot(-w*s2, -w*s2, -w*s2))$
+print("STEP 5  equal tilts, the slopes in u1 and u2:", diff(flat, u1), diff(flat, u2),
+      verdict(equal(diff(flat, u1), 0) and equal(diff(flat, u2), 0)))$
