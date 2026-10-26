@@ -9,19 +9,25 @@ the three on every one in float64 and on 29 in float32; the naive plan won a med
 exact oracle's lift in float64, up to 0.79.
 """
 
+import dataclasses
+import importlib
 import math
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy import integrate
 
-from chc.games import exact_congestion_allocation
+from chc.games import exact_congestion_allocation, fixed_point
 from chc.marketplace import (
     ExposureResponse,
     SharedStateMarket,
     _attract_se,
+    _driver_jacobians,
+    _expected_completions,
     _fitted_drivers,
+    _fitted_step,
     _sandwich,
     _zone_slope,
     calibrate_budget_scale,
@@ -33,6 +39,13 @@ from chc.marketplace import (
     pessimistic_equilibrium_allocation,
     sutva_allocation,
 )
+
+# Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
+# which later releases deprecate.
+if hasattr(jax, "enable_x64"):
+    enable_x64 = jax.enable_x64
+else:  # pragma: no cover - the lowest supported jax
+    enable_x64 = importlib.import_module("jax.experimental").enable_x64
 
 
 @pytest.fixture(scope="module")
@@ -731,6 +744,137 @@ def test_the_fit_carries_its_sandwich_and_its_demand_s_covariance(env: dict) -> 
         rtol=1e-12,
         atol=0.0,
     )
+
+
+def test_the_driver_jacobians_are_the_solve_s_in_closed_form(env: dict) -> None:
+    """The closed forms of the drivers' Jacobians, in the fit's parameters and in the planning
+    demand, against reverse mode through the equilibrium solved to 1e-13."""
+    fitted = env["fitted"]
+    n = fitted.demand.shape[0]
+    u = jnp.linspace(0.0, 1.0, n)
+    q0 = jnp.concatenate(
+        [fitted.attract, jnp.log(jnp.array([fitted.beta, fitted.congestion, fitted.mass]))]
+    )
+
+    def solved(q: jax.Array, demand: jax.Array) -> jax.Array:
+        params = (q[:n] * demand, u, jnp.exp(q[n]), jnp.exp(q[n + 1]), jnp.exp(q[n + 2]))
+        start = jnp.full(n, jnp.exp(q[n + 2]) / n)
+        return fixed_point(_fitted_step, params, start, tol=1e-13, max_iter=20_000).x
+
+    drivers = solved(q0, fitted.demand)
+    by_parameters, by_demand = _driver_jacobians(
+        drivers, u, fitted.attract, fitted.demand, fitted._parameters()
+    )
+    np.testing.assert_allclose(
+        by_parameters, jax.jacrev(solved)(q0, fitted.demand), rtol=0.0, atol=1e-9
+    )
+    np.testing.assert_allclose(
+        by_demand, jax.jacrev(solved, argnums=1)(q0, fitted.demand), rtol=0.0, atol=1e-9
+    )
+
+
+def test_the_expected_completions_are_the_normal_loss_function() -> None:
+    """``E[min(d, X)]``, X normal, against quadrature zone by zone, and ``min(d, x)`` where the
+    variance is zero."""
+    drivers = jnp.array([0.8, 1.3, 2.0, 0.5])
+    demand = jnp.array([1.0, 1.0, 1.5, 0.5])
+    variance = jnp.array([0.04, 0.09, 0.0, 0.01])
+    by_zone = []
+    for x, d, v in zip(drivers.tolist(), demand.tolist(), variance.tolist(), strict=True):
+        if v == 0.0:
+            by_zone.append(min(x, d))
+            continue
+        sd = math.sqrt(v)
+
+        def density(t: float, x: float = x, sd: float = sd) -> float:
+            return math.exp(-0.5 * ((t - x) / sd) ** 2) / (sd * math.sqrt(2 * math.pi))
+
+        below, _ = integrate.quad(lambda t: t * density(t), x - 40 * sd, d, epsabs=1e-14)
+        above, _ = integrate.quad(density, d, x + 40 * sd, epsabs=1e-14)
+        by_zone.append(below + d * above)
+    assert float(_expected_completions(drivers, demand, variance)) == pytest.approx(
+        math.fsum(by_zone), rel=1e-12, abs=0.0
+    )
+
+
+def test_the_expected_objective_plans_market_18_where_the_tilted_ascent_stops_short() -> None:
+    """Float32 market 18, logs of 400 blocks: the tilted plan's 600-step ascent from the even split
+    ended short on the fitted equilibrium, and the naive plan won more of the oracle's lift. The
+    expected objective hedges each zone's kink at its demand under the fit's own uncertainty, and
+    starts a second ascent from the fitted game's exact optimum: it wins most of the lift."""
+    with enable_x64(False):
+        market = SharedStateMarket(seed=18)
+        logs = market.generate_logs(400, jax.random.key(19))
+        fitted = fit_equilibrium(logs)
+        plan = pessimistic_equilibrium_allocation(
+            market, None, equilibrium=fitted, objective="expected"
+        )
+        naive = sutva_allocation(market, calibrate_naive_causal(logs), 1.0)
+        base = market.value(jnp.zeros(market.n_zones))
+        lift = market.value(market.oracle_allocation()) - base
+        assert plan.dtype == jnp.float32
+        assert float(jnp.sum(plan)) == pytest.approx(market.budget, rel=1e-6, abs=0.0)
+        assert market.value(plan) - base > 0.9 * lift
+        assert market.value(plan) > market.value(naive)
+
+
+def test_the_expected_objective_wins_more_than_the_tilted_one(env: dict) -> None:
+    """Market 0 in float64: the tilted plan won 0.918 of the exact oracle's lift, the expected one
+    all of it, holding no zone and spending the budget."""
+    market, base, oracle = env["market"], env["base"], env["oracle"]
+    tilted = pessimistic_equilibrium_allocation(
+        market, calibrate_shared_state(env["logs"]), equilibrium=env["fitted"]
+    )
+    expected = pessimistic_equilibrium_allocation(
+        market, None, equilibrium=env["fitted"], objective="expected"
+    )
+    assert float(jnp.sum(expected)) == pytest.approx(market.budget, rel=1e-12, abs=0.0)
+    assert market.value(expected) - base > 0.99 * (oracle - base)
+    assert market.value(expected) > market.value(tilted)
+
+
+def test_the_expected_objective_holds_a_zone_the_logs_do_not_identify() -> None:
+    """Market 2's 50 blocks, where zones 8 and 10 draw almost no drivers: the expected objective
+    holds them at zero, as the tilted one does, and reads the sandwich over the rest."""
+    market = SharedStateMarket(seed=2)
+    logs = market.generate_logs(50, jax.random.key(3))
+    fitted = fit_equilibrium(logs)
+    covariance = np.asarray(fitted.covariance)
+    assert np.all(np.isnan(covariance[[8, 10]]))
+    plan = pessimistic_equilibrium_allocation(
+        market, None, equilibrium=fitted, objective="expected"
+    )
+    assert float(plan[8]) == 0.0
+    assert float(plan[10]) == 0.0
+    base = market.value(jnp.zeros(market.n_zones))
+    assert market.value(plan) - base > 0.5 * (market.value(market.oracle_allocation()) - base)
+
+
+@pytest.mark.parametrize(
+    ("change", "error", "message"),
+    [
+        ({"covariance": None}, ValueError, "carries none"),
+        ({"covariance": jnp.full((15, 15), jnp.nan)}, ValueError, "sandwich is singular"),
+    ],
+    ids=["no covariance", "singular"],
+)
+def test_the_expected_objective_refuses_a_fit_whose_uncertainty_it_cannot_read(
+    env: dict, change: dict, error: type, message: str
+) -> None:
+    fitted = dataclasses.replace(env["fitted"], **change)
+    with pytest.raises(error, match=message):
+        pessimistic_equilibrium_allocation(
+            env["market"], None, equilibrium=fitted, objective="expected"
+        )
+
+
+def test_the_planner_s_objective_is_one_it_knows_and_the_tilt_needs_a_response(env: dict) -> None:
+    with pytest.raises(ValueError, match="'tilted' or 'expected'"):
+        pessimistic_equilibrium_allocation(
+            env["market"], None, equilibrium=env["fitted"], objective="robust"
+        )
+    with pytest.raises(TypeError, match="pass a response"):
+        pessimistic_equilibrium_allocation(env["market"], None, equilibrium=env["fitted"])
 
 
 def test_the_budget_scale_s_slope_is_read_and_the_fit_matches_it(env: dict) -> None:

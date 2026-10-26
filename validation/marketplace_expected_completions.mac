@@ -1,0 +1,115 @@
+/* The expected-completions objective of chc.marketplace.pessimistic_equilibrium_allocation
+   (objective="expected"; tests/test_marketplace.py). m drivers settle at the shares
+   s = softmax(beta*(v - c*s)), v = alpha*d + u, alpha a zone's attractiveness per unit of demand d,
+   u its incentive; zone i completes min(D_i, m*s_i). With q_i = s_i/(1 + beta*c*s_i), Q = sum(q),
+   w = v - c*s, and the q-weighted means w_q, s_q:
+   STEP 1  ds/dv = beta*(diag(q) - q q'/Q), by implicit differentiation of the logit (n = 3)
+   STEP 2  ds_i/dlog(beta) = beta*q_i*(w_i - w_q), ds_i/dlog(c) = -beta*c*q_i*(s_i - s_q); the
+           shares do not read the mass, so dx/dlog(m) = x
+   STEP 3  v = alpha*d: dx_i/dalpha_j = m*(ds/dv)_ij*d_j and dx_i/dd_j = m*(ds/dv)_ij*alpha_j
+   STEP 4  the normal loss function: for X ~ N(mu, sig^2), E[min(d, X)] = mu - (mu - d)*Phi(z) -
+           sig*phi(z), z = (mu - d)/sig, by integration on either side of d; its slope in mu is
+           Phi((d - mu)/sig), its curvature -phi(z)/sig < 0, and it tends to min(d, mu) as sig -> 0
+   STEP 5  at a sample market in 40 digits: the equilibrium solved, and STEP 1-2's closed forms
+           against central differences of the solved shares
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/marketplace_expected_completions.mac */
+
+linel : 110$
+display2d : false$
+ratprint : false$
+verdict(e) := if is(e) then "(ok)" else "(FAIL)"$
+zero_matrix(M) := is(equal(apply("+", map(lambda([r], apply("+", map(lambda([e], e^2), r))),
+                                          args(M))), 0))$
+
+n : 3$
+s : [s1, s2, s3]$
+v : [v1, v2, v3]$
+assume(b > 0, c > 0, s1 > 0, s2 > 0, s3 > 0)$
+
+/* STEP 1: G_i = log(s_i) - b*(v_i - c*s_i) + L = 0 with sum(s) = 1, L = log(Z) */
+G : append(makelist(log(s[i]) - b*(v[i] - c*s[i]) + L, i, 1, n), [apply("+", s) - 1])$
+z : append(s, [L])$
+Gz : genmatrix(lambda([i, k], diff(G[i], z[k])), n + 1, n + 1)$
+Gv : genmatrix(lambda([i, k], diff(G[i], v[k])), n + 1, n)$
+dz : ratsimp(-invert(Gz) . Gv)$
+q : makelist(s[i]/(1 + b*c*s[i]), i, 1, n)$
+Q : apply("+", q)$
+J : genmatrix(lambda([i, k], b*((if i = k then q[i] else 0) - q[i]*q[k]/Q)), n, n)$
+D1 : ratsimp(submatrix(n + 1, dz) - J)$
+print("STEP 1  ds/dv less beta*(diag(q) - q q'/Q):", D1, verdict(zero_matrix(D1)))$
+
+/* STEP 2 */
+Gb : transpose(matrix(makelist(diff(G[i], b), i, 1, n + 1)))$
+Gc : transpose(matrix(makelist(diff(G[i], c), i, 1, n + 1)))$
+db : ratsimp(-invert(Gz) . Gb)$
+dc : ratsimp(-invert(Gz) . Gc)$
+w : makelist(v[i] - c*s[i], i, 1, n)$
+wq : sum(q[k]*w[k], k, 1, n)/Q$
+sq : sum(q[k]*s[k], k, 1, n)/Q$
+gapb : makelist(ratsimp(b*db[i, 1] - b*q[i]*(w[i] - wq)), i, 1, n)$
+gapc : makelist(ratsimp(c*dc[i, 1] + b*c*q[i]*(s[i] - sq)), i, 1, n)$
+print("STEP 2  ds/dlog(beta) less beta*q*(w - w_q):", gapb, verdict(every(lambda([e], is(equal(e, 0))), gapb)))$
+print("STEP 2  ds/dlog(c) less -beta*c*q*(s - s_q):", gapc, verdict(every(lambda([e], is(equal(e, 0))), gapc)))$
+gm : makelist(diff(G[i], m), i, 1, n + 1)$
+print("STEP 2  the shares' equations in the mass:", gm, verdict(every(lambda([e], is(equal(e, 0))), gm)))$
+
+/* STEP 3: the value alpha_j*d_j + u_j enters the shares only through v */
+Ga : append(makelist(log(s[i]) - b*(al[i]*dd[i] + uu[i] - c*s[i]) + L, i, 1, n),
+            [apply("+", s) - 1])$
+Gal : genmatrix(lambda([i, k], diff(Ga[i], al[k])), n + 1, n)$
+Gdd : genmatrix(lambda([i, k], diff(Ga[i], dd[k])), n + 1, n)$
+Gza : genmatrix(lambda([i, k], diff(Ga[i], z[k])), n + 1, n + 1)$
+Jv : subst(makelist(v[i] = al[i]*dd[i] + uu[i], i, 1, n), J)$
+D3a : ratsimp(submatrix(n + 1, -invert(Gza) . Gal)
+              - genmatrix(lambda([i, k], Jv[i, k]*dd[k]), n, n))$
+D3d : ratsimp(submatrix(n + 1, -invert(Gza) . Gdd)
+              - genmatrix(lambda([i, k], Jv[i, k]*al[k]), n, n))$
+print("STEP 3  ds/dalpha less (ds/dv)*diag(d):", D3a, verdict(zero_matrix(D3a)))$
+print("STEP 3  ds/dd less (ds/dv)*diag(alpha):", D3d, verdict(zero_matrix(D3d)))$
+
+/* STEP 4: X = mu + sig*Z, mu = d + sig*k; min(d, X) = X below Z = -k and d above */
+Phi(t) := (1 + erf(t/sqrt(2)))/2$
+pdf(t) := exp(-t^2/2)/sqrt(2*%pi)$
+assume(sig > 0, kp > 0)$
+closed : mu - (mu - dm)*Phi((mu - dm)/sig) - sig*pdf((mu - dm)/sig)$
+for kk in [kp, -kp] do block([below, above, gap],
+  below : integrate((dm + sig*kk + sig*t)*pdf(t), t, minf, -kk),
+  above : dm*(1 - Phi(-kk)),
+  gap : ratsimp(expand(below + above - subst(mu = dm + sig*kk, closed))),
+  print("STEP 4  k =", kk, ": the integral less the closed form:", gap, verdict(equal(gap, 0))))$
+slope : ratsimp(diff(closed, mu) - Phi((dm - mu)/sig))$
+print("STEP 4  the slope in mu less Phi((d - mu)/sig):", slope, verdict(equal(slope, 0)))$
+curve : ratsimp(diff(closed, mu, 2) + pdf((mu - dm)/sig)/sig)$
+print("STEP 4  the curvature less -phi(z)/sig:", curve, verdict(equal(curve, 0)))$
+lo : limit(subst(mu = dm - 1/10, closed), sig, 0, plus)$
+hi : limit(subst(mu = dm + 1/10, closed), sig, 0, plus)$
+print("STEP 4  sig -> 0 at mu = d - 1/10 and d + 1/10:", lo, hi,
+      verdict(equal(ratsimp(lo - (dm - 1/10)), 0) and equal(ratsimp(hi - dm), 0)))$
+
+/* STEP 5: beta 5/2, c 2, v (1, 3/2, 1/2); the equilibrium by Newton on the logit's residual */
+fpprec : 40$
+solve_shares(bb, cc, vv) := block([x : [1b0/3, 1b0/3, 1b0/3], e, jac, r, dx],
+  for it : 1 thru 60 do (
+    e : makelist(exp(bb*(vv[i] - cc*x[i])), i, 1, 3),
+    r : makelist(x[i] - e[i]/apply("+", e), i, 1, 3),
+    jac : genmatrix(lambda([i, k], (if i = k then 1 else 0)
+                    + bb*cc*(if i = k then e[i]/apply("+", e) else 0)
+                    - bb*cc*e[i]*e[k]/apply("+", e)^2), 3, 3),
+    dx : invert(jac) . transpose(matrix(r)),
+    x : makelist(x[i] - dx[i, 1], i, 1, 3)),
+  x)$
+b0 : bfloat(5/2)$ c0 : bfloat(2)$ v0 : [1b0, 1.5b0, 0.5b0]$ h : 1b-12$
+x0 : solve_shares(b0, c0, v0)$
+point : append(makelist(s[i] = x0[i], i, 1, 3), makelist(v[i] = v0[i], i, 1, 3), [b = b0, c = c0])$
+fdv : makelist((solve_shares(b0, c0, v0 + h*makelist(if i = k then 1 else 0, i, 1, 3))
+               - solve_shares(b0, c0, v0 - h*makelist(if i = k then 1 else 0, i, 1, 3)))/(2*h),
+               k, 1, 3)$
+errv : lmax(flatten(makelist(makelist(abs(fdv[k][i] - subst(point, J[i, k])), i, 1, 3), k, 1, 3)))$
+fdb : (solve_shares(b0*exp(h), c0, v0) - solve_shares(b0*exp(-h), c0, v0))/(2*h)$
+fdc : (solve_shares(b0, c0*exp(h), v0) - solve_shares(b0, c0*exp(-h), v0))/(2*h)$
+errb : lmax(makelist(abs(fdb[i] - subst(point, b*q[i]*(w[i] - wq))), i, 1, 3))$
+errc : lmax(makelist(abs(fdc[i] + subst(point, b*c*q[i]*(s[i] - sq))), i, 1, 3))$
+print("STEP 5  the shares:", float(x0), " their sum less 1:", float(apply("+", x0) - 1))$
+print("STEP 5  largest gap to central differences, ds/dv, ds/dlog(beta), ds/dlog(c):",
+      float(errv), float(errb), float(errc), verdict(lmax([errv, errb, errc]) < 1b-20))$

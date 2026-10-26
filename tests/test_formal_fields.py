@@ -153,6 +153,17 @@ FORMAL_LINKS = {
             "test_games.py::test_the_exact_allocation_carries_its_certificate",
         ),
     },
+    "chc.marketplace._driver_jacobians": {
+        "cites": ("marketplace_expected_completions.mac",),
+        "tests": ("test_marketplace.py::test_the_driver_jacobians_are_the_solve_s_in_closed_form",),
+    },
+    "chc.marketplace.pessimistic_equilibrium_allocation": {
+        "cites": ("marketplace_expected_completions.mac",),
+        "tests": (
+            "test_marketplace.py::test_the_expected_completions_are_the_normal_loss_function",
+            "test_marketplace.py::test_the_expected_objective_wins_more_than_the_tilted_one",
+        ),
+    },
     "chc.marketplace._polish": {
         "cites": ("relative_offset_stop.mac",),
         "tests": (

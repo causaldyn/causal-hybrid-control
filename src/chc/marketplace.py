@@ -44,11 +44,13 @@ import math
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from jax.scipy.stats import norm
 from numpy.typing import NDArray
 from scipy import special, stats
 from scipy.optimize import least_squares, lsq_linear, minimize
@@ -416,6 +418,10 @@ def _fitted_drivers(attract: Array, u: Array, parameters: tuple[Array, Array, Ar
     # every parameter goes in through the solve's params: its gradient is implicit in them alone
     return fixed_point(_fitted_step, (attract, u, beta, congestion, mass), start).x
 
+
+PlanObjective = Literal["tilted", "expected"]
+"""What :func:`pessimistic_equilibrium_allocation` maximises: the fit's completions with the
+response's tilt, or the fit's expected completions under its own uncertainty."""
 
 _INCENTIVE_Z = float(special.ndtri(0.95))
 """Vuong's ``z`` below which a fit's incentive response is not told from none, one-sided 5%."""
@@ -860,19 +866,48 @@ def pessimistic_equilibrium_allocation(
     attractiveness and solver are the simulator's truth, which no log supplies, and the planner does
     not read them. ``response`` enters only through the tilt.
 
+    ``objective`` chooses what the plan maximises. ``"tilted"``, the default, is the fit's
+    completions plus the response's tilt, ascended ``steps`` times from the even split.
+    ``"expected"``, opt-in, is the fit's expected completions under its own uncertainty,
+    ``S(u) = sum_i E[min(D_i, X_i(u))]``, ``X_i - D_i`` normal about the fit's drivers less the
+    planning demand, of variance ``g_i' C g_i + h_i' C_d h_i``: ``C`` the fit's sandwich
+    (:attr:`FittedEquilibrium.covariance`) over the zones it identifies and the market's
+    parameters, ``C_d`` the planning demand's (:attr:`FittedEquilibrium.demand_covariance`),
+    ``g_i`` and ``h_i`` the drivers' Jacobians in them, in closed form. Each term is the normal loss
+    function (``validation/marketplace_expected_completions.mac``). A plug-in plan sits on each
+    zone's kink at its demand, where an error in either direction costs (Liyanage and Shanthikumar
+    2005); the expectation hedges it. It is ascended ``steps`` times from the even split and from
+    the fitted game's exact optimum (:func:`chc.games.exact_congestion_allocation`), and the plan
+    better on ``S`` is kept. The response is not read and may be None. On markets 0-29, logs of 400
+    blocks, it won 0.971 of the exact oracle's lift on average in float64, where the tilted plan won
+    0.900 (more on 27 markets, less on 1, by 0.006), and 0.984 in float32 against 0.907 (more on
+    28, less on 2, by 0.0007 at most), never less than the naive plan. On float32 market 18 the
+    tilted ascent stops short, its surrogate 9.83 where 10.67 is reachable, and wins 0.735, below
+    the naive plan's 0.805; the expected plan wins 0.978. Nearly all of the hedge is the demand's
+    error: at the plan the parameters' SD per zone is 0.07 to 0.18 of the demand's (markets 0-9).
+    What it assumes: the drivers' error is normal, the fit's parameters and its planning demand are
+    uncorrelated though read from the same logs, and a plan is scored at the planning demand.
+
     Raises:
-        TypeError: when ``equilibrium`` is not given.
         ValueError: on a response or an equilibrium whose zones are not ``market``'s, an
             equilibrium whose drivers do not tell an incentive from none
             (:attr:`FittedEquilibrium.incentive_z`): every plan through it reads the same, or one
-            that identifies no zone's attractiveness.
+            that identifies no zone's attractiveness; under ``"expected"``, an equilibrium with no
+            covariance or a singular one; an ``objective`` that is neither.
+        TypeError: when ``equilibrium`` is not given, or ``response`` is None under
+            ``"tilted"``.
     """
-    for name, part in (("marginal", response.marginal), ("se", response.se)):
-        if jnp.shape(part) != (market.n_zones,):
-            raise ValueError(
-                f"response.{name} has shape {jnp.shape(part)}; the market has {market.n_zones}"
-                " zones"
-            )
+    if objective not in ("tilted", "expected"):
+        raise ValueError(f"objective is {objective!r}; it is 'tilted' or 'expected'")
+    if response is None and objective == "tilted":
+        raise TypeError("the tilted objective reads the response's tilt: pass a response")
+    if response is not None:
+        for name, part in (("marginal", response.marginal), ("se", response.se)):
+            if jnp.shape(part) != (market.n_zones,):
+                raise ValueError(
+                    f"response.{name} has shape {jnp.shape(part)}; the market has"
+                    f" {market.n_zones} zones"
+                )
     if equilibrium is None:
         raise TypeError(
             "pessimistic_equilibrium_allocation plans through an equilibrium estimated from the"
@@ -891,20 +926,22 @@ def pessimistic_equilibrium_allocation(
             " incentives explain no more of the completions than none, so no plan through it"
             " is better than another"
         )
-    # The worst response within radius SEs that is not negative, less the estimate projected onto
-    # the same prior: -min(max(m, 0), radius * se), never a bonus (validation/marketplace_tilt.mac).
-    # Read against the raw estimate, a negative one earned its zone a bonus of |m| per unit.
-    pess = jnp.maximum(response.marginal - radius * response.se, 0.0)
-    tilt = pess - jnp.maximum(response.marginal, 0.0)
-    completions = equilibrium.completions
-    se, attract = np.asarray(equilibrium.attract_se), np.asarray(equilibrium.attract)
-    free = np.flatnonzero(np.isfinite(se) & (se <= np.abs(attract)))
+    free = _identified(np.asarray(equilibrium.attract), np.asarray(equilibrium.attract_se))
     if not free.size:
         raise ValueError(
             "the fitted equilibrium identifies no zone's attractiveness: every attract_se is"
             " infinite or above the attractiveness's size, so no zone's incentive is read"
         )
     zero = jnp.zeros(market.n_zones, dtype=equilibrium.attract.dtype)
+    if objective == "expected":
+        return zero.at[free].set(_expected_plan(market, equilibrium, free, steps))
+    assert response is not None
+    # The worst response within radius SEs that is not negative, less the estimate projected onto
+    # the same prior: -min(max(m, 0), radius * se), never a bonus (validation/marketplace_tilt.mac).
+    # Read against the raw estimate, a negative one earned its zone a bonus of |m| per unit.
+    pess = jnp.maximum(response.marginal - radius * response.se, 0.0)
+    tilt = pess - jnp.maximum(response.marginal, 0.0)
+    completions = equilibrium.completions
 
     def surrogate(v: Array) -> Array:
         u = zero.at[free].set(v)
@@ -912,6 +949,112 @@ def pessimistic_equilibrium_allocation(
 
     planned = stackelberg_allocation(surrogate, free.size, market.budget, steps=steps)
     return zero.at[free].set(planned)
+
+
+def _driver_jacobians(
+    drivers: Array,
+    u: Array,
+    attract: Array,
+    demand: Array,
+    parameters: tuple[Array, Array, Array],
+) -> tuple[Array, Array]:
+    """The equilibrium drivers' Jacobians, closed form, at ``drivers``: in the fit's parameters
+    ``(attract, log beta, log congestion, log mass)``, ``(n, n + 3)``, and in the planning demand,
+    ``(n, n)``.
+
+    With ``s = drivers / mass``, ``q = s / (1 + beta*congestion*s)`` and ``w = attract*demand + u -
+    congestion*s``, Berry's (1994) inversion ``log(s)/beta + congestion*s - value = const`` gives
+    ``ds/dvalue = beta*(diag(q) - q q'/sum(q))``, ``ds_i/dlog(beta) = beta*q_i*(w_i - w_q)`` and
+    ``ds_i/dlog(congestion) = -beta*congestion*q_i*(s_i - s_q)``, ``w_q`` and ``s_q`` the
+    ``q``-weighted means; the shares do not move with the mass, so ``dx/dlog(mass) = x``. The value
+    is ``attract*demand``, so the demand moves the drivers as the attractiveness does, weighted by
+    the attractiveness. ``validation/marketplace_expected_completions.mac`` derives them.
+    """
+    beta, congestion, mass = parameters
+    shares = drivers / mass
+    q = shares / (1.0 + beta * congestion * shares)
+    total = jnp.sum(q)
+    by_value = mass * beta * (jnp.diag(q) - jnp.outer(q, q) / total)
+    worth = attract * demand + u - congestion * shares
+    by_beta = mass * beta * q * (worth - jnp.dot(q, worth) / total)
+    by_congestion = -mass * beta * congestion * q * (shares - jnp.dot(q, shares) / total)
+    by_parameters = jnp.concatenate(
+        [by_value * demand[None, :], by_beta[:, None], by_congestion[:, None], drivers[:, None]],
+        axis=1,
+    )
+    return by_parameters, by_value * attract[None, :]
+
+
+def _expected_completions(drivers: Array, demand: Array, variance: Array) -> Array:
+    """``sum_i E[min(D_i, X_i)]`` where ``X_i - D_i`` is normal about ``drivers_i - demand_i`` with
+    ``variance_i``, and ``E[X_i] = drivers_i``: by the normal loss function, ``x - (x - d)*Phi(z) -
+    sd*phi(z)`` with ``z = (x - d)/sd``, and ``min(d, x)`` where the variance is zero."""
+    spread = jnp.sqrt(jnp.maximum(variance, 0.0))
+    known = spread > 0.0
+    safe = jnp.where(known, spread, 1.0)
+    gap = drivers - demand
+    z = gap / safe
+    hedged = drivers - gap * norm.cdf(z) - safe * norm.pdf(z)
+    return jnp.sum(jnp.where(known, hedged, jnp.minimum(drivers, demand)))
+
+
+def _expected_plan(
+    market: SharedStateMarket, equilibrium: FittedEquilibrium, free: NDArray[np.intp], steps: int
+) -> Array:
+    """The incentive over the zones ``free`` that maximises the fit's expected completions, the
+    better on that objective of two ascents: from the even split, and from the exact optimum of the
+    fitted game (:func:`chc.games.exact_congestion_allocation`), its held zones' share of the
+    budget spread over the rest."""
+    covariance, demand_covariance = equilibrium.covariance, equilibrium.demand_covariance
+    if covariance is None or demand_covariance is None:
+        raise ValueError(
+            "the expected objective reads the fit's covariance, and this equilibrium carries none:"
+            " fit it with fit_equilibrium(logs)"
+        )
+    n = market.n_zones
+    read = np.concatenate([free, n + np.arange(3)])
+    block = np.asarray(covariance, np.float64)[np.ix_(read, read)]
+    if not np.all(np.isfinite(block)):
+        raise ValueError(
+            "the fit's sandwich is singular: the logs do not read some combination of the"
+            " parameters of the zones it identifies and the market's, so the plan's uncertainty is"
+            " not read. Plan with objective='tilted'"
+        )
+    dtype = equilibrium.attract.dtype
+    parameters = equilibrium._parameters()
+    attract, demand = equilibrium.attract, equilibrium.demand
+    sigma_parameters = jnp.asarray(block, dtype)
+    sigma_demand = jnp.asarray(demand_covariance, dtype)
+    zero = jnp.zeros(n, dtype=dtype)
+    identity = jnp.eye(n, dtype=dtype)
+
+    def expected(v: Array) -> Array:
+        u = zero.at[free].set(v)
+        drivers = _fitted_drivers(attract * demand, u, parameters)
+        by_parameters, by_demand = _driver_jacobians(drivers, u, attract, demand, parameters)
+        g = by_parameters[:, read]
+        h = by_demand - identity
+        variance = jnp.einsum("ip,pq,iq->i", g, sigma_parameters, g) + jnp.einsum(
+            "ik,kl,il->i", h, sigma_demand, h
+        )
+        return _expected_completions(drivers, demand, variance)
+
+    beta, congestion, mass = (float(part) for part in parameters)
+    exact = exact_congestion_allocation(
+        np.asarray(attract * demand, np.float64),
+        np.asarray(demand, np.float64),
+        beta,
+        congestion,
+        mass,
+        market.budget,
+    )
+    starts = (None, jnp.asarray(exact.allocation[free], dtype))
+    plans = [
+        stackelberg_allocation(expected, free.size, market.budget, steps=steps, start=start)
+        for start in starts
+    ]
+    scores = [float(expected(plan)) for plan in plans]
+    return plans[int(np.argmax(scores))]
 
 
 def interference_bias(

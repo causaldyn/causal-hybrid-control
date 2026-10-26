@@ -231,6 +231,8 @@ def stackelberg_allocation(
     budget: float,
     steps: int = 400,
     lr: float = 0.05,
+    *,
+    start: Array | None = None,
 ) -> Array:
     """Differentiable-bilevel leader allocation: an ascent on ``objective(u)`` over the budget
     simplex.
@@ -248,8 +250,13 @@ def stackelberg_allocation(
     congestion equilibrium completes, :func:`exact_congestion_allocation` finds the global plan:
     on the 30 markets ``SharedStateMarket(seed=0..29)`` in float64, 2500 steps of this ascent
     ended short of it on 17, by up to 0.215 rides.
+
+    ``start``, where given, replaces the even split: the ascent starts at its projection onto the
+    budget simplex.
     """
-    u = jnp.full(n, budget / n)
+    if start is not None and jnp.shape(start) != (n,):
+        raise ValueError(f"start has shape {jnp.shape(start)}; the allocation has {n} entries")
+    u = jnp.full(n, budget / n) if start is None else project_simplex(jnp.asarray(start), budget)
     grad_fn = jax.jit(jax.grad(lambda u: -objective(u)))
     value_fn = jax.jit(objective)
     optimizer = optax.adam(lr)
