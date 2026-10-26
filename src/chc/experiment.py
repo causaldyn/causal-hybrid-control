@@ -832,3 +832,277 @@ def design_experiment(
         weights=_frozen(weight.copy()),
         pinned=pinned,
     )
+
+
+DitherMethod = Literal["closed_form", "numeric"]
+
+
+@dataclass(frozen=True)
+class DitherDesign:
+    """What :func:`dither_covariance` recommends: the dither's covariance over the levers, and
+    what it and two simpler designs leave.
+
+    ``value`` is ``tr(C V) + tr(Q (P0 + V)^-1)`` at ``covariance``: what the dither costs the plan
+    plus the regret its information leaves. ``gap`` bounds how far ``value`` is above the least
+    value any dither reaches: 0 for the closed form, which is exact; on the numeric route, the
+    duality gap the stationarity of the solution certifies. ``diagonal`` and ``white`` are the
+    best designs that dither each lever on its own, ``diag(diagonal)``, and every lever alike,
+    ``white I``, with their values.
+    """
+
+    covariance: _Array  # (K, K), positive semidefinite
+    value: float
+    method: DitherMethod
+    gap: float
+    diagonal: _Array  # (K,)
+    diagonal_value: float
+    white: float
+    white_value: float
+
+
+_DITHER_PSD = 1e-10  # V*'s least eigenvalue, relative to its largest, above which it is a dither
+
+
+def dither_covariance(
+    cost: ArrayLike, weight: ArrayLike, precision: ArrayLike | None = None
+) -> DitherDesign:
+    """The covariance of a dither over several levers that buys the most for what it costs.
+
+    Over ``K`` levers, a dither of covariance ``V`` costs the plan ``tr(C V)`` and leaves a regret
+    of ``tr(Q (P0 + V)^-1)``: ``C`` is ``cost``, ``Q`` is ``weight`` and ``P0`` is ``precision``,
+    zero where not given. :func:`dither_covariance` minimises their sum over ``V >= 0``.
+
+    **Where the three come from.** A dither drawn afresh each period with covariance ``V``, run for
+    ``n`` periods on a channel that does not move with the state (or a plant whose drift is known),
+    with noise covariance ``Sigma``, adds ``n V (x) Sigma^-1`` to the precision of the channel; a
+    plan whose regret in the channel's error is ``e' W e / 2`` (the decision weight,
+    :meth:`chc.plan.CausalPlan.decision_weight`, or :func:`design_experiment`'s) then leaves
+    ``tr(Q V^-1)``, ``Q`` the weight traced against ``Sigma`` over ``2 n``, in the units ``P0``
+    holds the prior's precision in. ``C`` is half the sum, over the dither's periods, of the plan's
+    action Hessian's diagonal blocks: what a dither costs a quadratic task, exactly, when the
+    dither is open loop. This is the criterion of Wagenmaker, Simchowitz and Jamieson (ICML 2021)
+    in its static case.
+
+    **The closed form.** The sum is convex in ``V``, and stationary where ``C = M^-1 Q M^-1``,
+    ``M = P0 + V``: at the matrix geometric mean of ``C^-1`` and ``Q`` (Pusz and Woronowicz, Rep.
+    Math. Phys. 1975; Ando, Linear Algebra Appl. 1979; Bhatia, Positive Definite Matrices, 2007,
+    ch. 4),
+
+        M* = C^-1 # Q = C^-1/2 (C^1/2 Q C^1/2)^1/2 C^-1/2,
+
+    the one positive definite solution of ``M C M = Q``. Where ``V* = M* - P0`` is positive
+    semidefinite it is the optimum, with value ``2 tr((C^1/2 Q C^1/2)^1/2) - tr(C P0)``
+    (``validation/dither_covariance.mac``). A diagonal ``C``, ``Q`` and ``P0`` give each lever the
+    precision ``sqrt(Q_kk / C_kk)``, the level :func:`design_experiment`'s water-filling starts
+    from. Where ``V*`` is not, the prior already holds more than the closed form asks along a
+    direction, the bound ``V >= 0`` binds, and the optimum has no closed form: it is found over a
+    Cholesky factor of ``V`` by L-BFGS from three starts, and ``gap`` bounds what that leaves.
+
+    On ``C = [[2, 1], [1, 1]]``, ``Q = [[1, -1/2], [-1/2, 2]]`` and no prior the value is
+    ``2 sqrt(3 + sqrt 7) = 4.7522``: 16 % below the best diagonal dither, ``4 sqrt 2 = 5.6569``,
+    and 21 % below the best white one, 6. A correlated dither moves the levers together where the
+    channel's error costs the plan least to learn.
+
+    It is a certainty-equivalent design: ``Q`` is read at the estimate, and the information is the
+    least-squares fit's. Where the dither also moves a state the plan reads, the state's own
+    excitation adds information this leaves out.
+
+    Raises:
+        ValueError: on matrices that are not square of one size, a non-finite entry, a ``cost``
+            or a ``weight`` that is not symmetric positive definite, or a ``precision`` that is not
+            symmetric positive semidefinite.
+    """
+    c = np.array(cost, dtype=np.float64)
+    if c.ndim != 2 or c.shape[0] != c.shape[1] or c.size == 0:
+        raise ValueError(f"cost must be a square matrix, got shape {c.shape}")
+    k = c.shape[0]
+    c = _matrix(c, "cost", k)
+    q = _matrix(weight, "weight", k)
+    p0 = np.zeros((k, k)) if precision is None else _matrix(precision, "precision", k)
+    c_root = _symmetric_root(c, "cost", definite=True)
+    _symmetric_root(q, "weight", definite=True)
+    _symmetric_root(p0, "precision", definite=False)
+    c, q, p0 = (0.5 * (m + m.T) for m in (c, q, p0))
+    c_inverse_root = np.linalg.inv(c_root)
+    # In C's whitened coordinates, V = C^-1/2 Vw C^-1/2, the cost is tr(Vw) and the regret
+    # tr(Qw (Pw + Vw)^-1): the optimum's precision is Qw^1/2.
+    qw = _symmetric(c_root @ q @ c_root)
+    pw = _symmetric(c_root @ p0 @ c_root)
+    mw = _symmetric_root(qw, "weight", definite=True)
+    vw = _symmetric(mw - pw)
+    values = np.linalg.eigvalsh(vw)
+    scale = float(np.max(np.abs(np.linalg.eigvalsh(mw))))
+    if values[0] >= -_DITHER_PSD * scale:
+        method: DitherMethod = "closed_form"
+        vw = _psd(vw)
+        gap = 0.0
+    else:
+        method = "numeric"
+        vw, gap = _dither_numeric(qw, pw, vw, scale)
+    covariance = _symmetric(c_inverse_root @ vw @ c_inverse_root)
+    value = (
+        2.0 * float(np.trace(mw)) - float(np.sum(c * p0))
+        if method == "closed_form"
+        else _dither_value(covariance, c, q, p0)
+    )
+    diagonal = _diagonal_dither(c, q, p0)
+    white = _white_dither(c, q, p0)
+    design = DitherDesign(
+        covariance=_frozen(covariance),
+        value=value,
+        method=method,
+        gap=gap,
+        diagonal=_frozen(diagonal),
+        diagonal_value=_dither_value(np.diag(diagonal), c, q, p0),
+        white=white,
+        white_value=_dither_value(white * np.eye(k), c, q, p0),
+    )
+    _log.info(
+        "dither covariance: %s",
+        method,
+        extra={
+            "chc_event": "dither_design",
+            "method": method,
+            "value": design.value,
+            "gap": gap,
+            "diagonal_value": design.diagonal_value,
+            "white_value": design.white_value,
+        },
+    )
+    return design
+
+
+def _symmetric(m: _Array) -> _Array:
+    return 0.5 * (m + m.T)
+
+
+def _psd(m: _Array) -> _Array:
+    """``m`` with its negative eigenvalues, rounding's, set to zero."""
+    values, vectors = np.linalg.eigh(_symmetric(m))
+    return _symmetric((vectors * np.clip(values, 0.0, None)) @ vectors.T)
+
+
+def _dither_value(v: _Array, c: _Array, q: _Array, p0: _Array) -> float:
+    """``tr(C V) + tr(Q (P0 + V)^-1)``; ``inf`` where ``P0 + V`` is singular."""
+    try:
+        factor = np.linalg.cholesky(_symmetric(p0 + v))
+    except np.linalg.LinAlgError:
+        return math.inf
+    inverse = np.linalg.solve(factor.T, np.linalg.solve(factor, np.eye(v.shape[0])))
+    return float(np.sum(c * v) + np.sum(q * inverse))
+
+
+def _dither_numeric(qw: _Array, pw: _Array, start: _Array, scale: float) -> tuple[_Array, float]:
+    """The optimum of ``tr(V) + tr(Qw (Pw + V)^-1)`` over ``V >= 0``, where the bound binds: by
+    L-BFGS over a lower-triangular ``L``, ``V = L L'``, from the closed form's positive part, the
+    best white and the best diagonal dither, at the scale where ``Qw^1/2``'s largest eigenvalue is
+    1; with the duality gap its gradient certifies, in ``Qw``'s units.
+
+    At a ``V >= 0`` with gradient ``G = I - M^-1 Qw M^-1``, convexity gives every ``V' >= 0`` a
+    value at least ``f(V) + tr(G (V' - V))``, and the optimum has ``tr(V') <= f(V)``: so the gap
+    is at most ``tr(G V) - f(V) min(lambda_min(G), 0)``."""
+    k = qw.shape[0]
+    q, p = qw / scale**2, pw / scale
+    rows, cols = np.tril_indices(k)
+    eye = np.eye(k)
+
+    def unpack(theta: _Array) -> _Array:
+        lower = np.zeros((k, k))
+        lower[rows, cols] = theta
+        return lower
+
+    def objective(theta: _Array) -> tuple[float, _Array]:
+        lower = unpack(theta)
+        m = _symmetric(p + lower @ lower.T)
+        try:
+            factor = np.linalg.cholesky(m)
+        except np.linalg.LinAlgError:
+            return math.inf, np.zeros_like(theta)
+        inverse = np.linalg.solve(factor.T, np.linalg.solve(factor, eye))
+        gradient = eye - inverse @ q @ inverse
+        value = float(np.trace(lower @ lower.T) + np.sum(q * inverse))
+        return value, (2.0 * gradient @ lower)[rows, cols]
+
+    def factor_of(v: _Array) -> _Array:
+        values, vectors = np.linalg.eigh(_symmetric(v))
+        root = vectors * np.sqrt(np.clip(values, 0.0, None))
+        # a full-rank start, so the factor can turn toward any direction
+        return np.linalg.cholesky(root @ root.T + 1e-3 * eye)[rows, cols]
+
+    diag_q, diag_p = np.diag(q), np.diag(p)
+    starts = [
+        _psd(start / scale),
+        np.diag(np.maximum(np.sqrt(diag_q) - diag_p, 0.0)),
+        max(float(np.sqrt(np.trace(q) / k)) - float(np.trace(p)) / k, 0.0) * eye,
+    ]
+    best: tuple[float, _Array] = (math.inf, starts[0])
+    for v0 in starts:
+        result = optimize.minimize(
+            objective,
+            factor_of(v0),
+            jac=True,
+            method="L-BFGS-B",
+            options={"ftol": 1e-15, "gtol": 1e-12, "maxiter": 10_000, "maxcor": 30},
+        )
+        lower = unpack(result.x)
+        value = objective(result.x)[0]
+        if value < best[0]:
+            best = (value, lower @ lower.T)
+    value, v = best
+    m = _symmetric(p + v)
+    inverse = np.linalg.inv(m)
+    gradient = _symmetric(eye - inverse @ q @ inverse)
+    least = float(np.linalg.eigvalsh(gradient)[0])
+    gap = max(float(np.sum(gradient * v)) - value * min(least, 0.0), 0.0)
+    return scale * _psd(v), scale * gap
+
+
+def _diagonal_dither(c: _Array, q: _Array, p0: _Array) -> _Array:
+    """The best ``diag(v)``, ``v >= 0``: in closed form where ``P0`` is diagonal, the lever's
+    precision ``sqrt(Q_kk / C_kk)`` less the prior's, and by L-BFGS-B from there otherwise."""
+    start = np.maximum(np.sqrt(np.diag(q) / np.diag(c)) - np.diag(p0), 0.0)
+    if np.array_equal(p0, np.diag(np.diag(p0))):
+        return start
+    k = c.shape[0]
+
+    def objective(v: _Array) -> tuple[float, _Array]:
+        m = p0 + np.diag(v)
+        try:
+            inverse = np.linalg.inv(np.linalg.cholesky(m))
+        except np.linalg.LinAlgError:
+            return math.inf, np.zeros(k)
+        inverse = inverse.T @ inverse
+        return (
+            float(np.diag(c) @ v + np.sum(q * inverse)),
+            np.diag(c) - np.diag(inverse @ q @ inverse),
+        )
+
+    result = optimize.minimize(
+        objective,
+        start + 1e-3 * float(np.max(start, initial=1.0)),
+        jac=True,
+        method="L-BFGS-B",
+        bounds=[(0.0, None)] * k,
+        options={"ftol": 1e-15, "gtol": 1e-12, "maxiter": 10_000},
+    )
+    return np.clip(result.x, 0.0, None)
+
+
+def _white_dither(c: _Array, q: _Array, p0: _Array) -> float:
+    """The best ``v I``, ``v >= 0``: the root of the value's derivative in ``v``, which grows with
+    ``v``; ``sqrt(tr Q / tr C)`` with no prior."""
+    trace_c = float(np.trace(c))
+    if not p0.any():
+        return math.sqrt(float(np.trace(q)) / trace_c)
+    values, vectors = np.linalg.eigh(p0)
+    q_rotated = np.diag(vectors.T @ q @ vectors)
+
+    def slope(v: float) -> float:
+        return trace_c - float(np.sum(q_rotated / (values + v) ** 2))
+
+    if values[0] > 0.0 and slope(0.0) >= 0.0:
+        return 0.0
+    high = math.sqrt(float(np.trace(q)) / trace_c)
+    while slope(high) < 0.0:
+        high *= 2.0
+    return float(optimize.brentq(slope, 0.0 if values[0] > 0.0 else 1e-300, high, xtol=1e-300))

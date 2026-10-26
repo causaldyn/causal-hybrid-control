@@ -1,0 +1,159 @@
+/* The covariance of a dither over several levers: the matrix geometric mean.
+
+   Setting (chc.experiment.dither_covariance). A dither of covariance V costs the plan tr(C V) and
+   leaves a regret tr(Q (P0 + V)^-1), C and Q positive definite, P0 >= 0 the prior's precision:
+
+       f(V) = tr(C V) + tr(Q (P0 + V)^-1),        minimised over V >= 0.
+
+   With M = P0 + V, f is stationary where C = M^-1 Q M^-1, i.e. M C M = Q, whose one positive
+   definite solution is the geometric mean M* = C^-1 # Q = C^-1/2 (C^1/2 Q C^1/2)^1/2 C^-1/2
+   (Pusz and Woronowicz 1975; Ando 1979). f is convex, so where V* = M* - P0 >= 0 it is the
+   optimum, of value tr(C (M* - P0)) + tr(Q M*^-1) = 2 tr(C M*) - tr(C P0)
+   = 2 tr((C^1/2 Q C^1/2)^1/2) - tr(C P0).
+
+     STEP 1  the gradient: d/dt f(M + t H) at 0 is tr((C - M^-1 Q M^-1) H), symbolic on 2 x 2.
+     STEP 2  convexity: d^2/dt^2 f(M + t H) = 2 tr(Q M^-1 H M^-1 H M^-1), symbolic on 2 x 2, which
+             is 2 ||Q^1/2 M^-1 H M^-1/2||_F^2 >= 0.
+     STEP 3  the example C = [[2, 1], [1, 1]], Q = [[1, -1/2], [-1/2, 2]], no prior: M* C M* = Q
+             exactly, M* > 0, value 2 sqrt(3 + sqrt 7).
+     STEP 4  the two simpler designs on it: the best diagonal dither, 2 sum_k sqrt(C_kk Q_kk) =
+             4 sqrt 2, and the best white one, 2 sqrt(tr C tr Q) = 6; the closed form is 16 % and
+             21 % below them.
+     STEP 5  diagonal C, Q: M* = diag(sqrt(Q_kk / C_kk)), symbolic: it is positive definite and
+             solves M C M = Q, whose positive definite solution is unique, and it is the
+             water-filling level of chc.experiment._water_filling at Q = uses W / 2 and C = the
+             price of information.
+     STEP 6  a prior that leaves V* >= 0, P0 = [[1/5, 1/20], [1/20, 1/10]]: value 2 sqrt(3 + sqrt 7)
+             - 3/5, and f at V* reads it.
+     STEP 7  a prior that does not, P1 = diag(1, 1/20): M* - P1 has a negative eigenvalue, the bound
+             binds, and the optimum is a rank-one V = v v'. Newton on f(v v') in 40 digits finds
+             it; the gradient G = C - M^-1 Q M^-1 there is >= 0 with G v = 0, the KKT conditions of
+             the convex problem, so it is the global optimum: f = 2.9176361092651...
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/dither_covariance.mac */
+
+display2d : false$
+linel : 110$
+ratprint : false$
+fpprec : 40$
+
+verdict(ok) := if ok then "(PASS)" else "(FAIL)"$
+/* the symmetric square root of a 2 x 2 positive definite N */
+root2(N) := (N + sqrt(determinant(N))*ident(2))/sqrt(mat_trace(N) + 2*sqrt(determinant(N)))$
+f(V, C, Q, P0) := mat_trace(C . V) + mat_trace(Q . invert(P0 + V))$
+
+/* ===== STEP 1: the gradient ===== */
+print("=== STEP 1: the gradient of f in M ===")$
+Mg : matrix([m1, m2], [m2, m3])$
+Hg : matrix([h1, h2], [h2, h3])$
+Cg : matrix([c1, c2], [c2, c3])$
+Qg : matrix([q1, q2], [q2, q3])$
+along(t) := mat_trace(Cg . (Mg + t*Hg)) + mat_trace(Qg . invert(Mg + t*Hg))$
+slope : subst(t = 0, diff(along(t), t))$
+claimed : mat_trace((Cg - invert(Mg) . Qg . invert(Mg)) . Hg)$
+print("STEP 1 d/dt f(M + t H) - tr((C - M^-1 Q M^-1) H) =", ratsimp(slope - claimed),
+      verdict(ratsimp(slope - claimed) = 0))$
+
+/* ===== STEP 2: convexity ===== */
+print("=== STEP 2: the second derivative is a squared norm ===")$
+curve : subst(t = 0, diff(along(t), t, 2))$
+claimed2 : 2*mat_trace(Qg . invert(Mg) . Hg . invert(Mg) . Hg . invert(Mg))$
+print("STEP 2 d^2/dt^2 f(M + t H) - 2 tr(Q M^-1 H M^-1 H M^-1) =", ratsimp(curve - claimed2),
+      verdict(ratsimp(curve - claimed2) = 0))$
+print("        = 2 tr(A A'), A = Q^1/2 M^-1 H M^-1/2: never negative, so f is convex on M > 0")$
+
+/* ===== STEP 3: the example ===== */
+print("=== STEP 3: the geometric mean on the example ===")$
+C : matrix([2, 1], [1, 1])$
+Q : matrix([1, -1/2], [-1/2, 2])$
+Z : zeromatrix(2, 2)$
+Ch : root2(C)$
+Chi : invert(Ch)$
+G : root2(Ch . Q . Ch)$
+Mstar : Chi . G . Chi$
+print("STEP 3a Ch.Ch - C =", ratsimp(radcan(Ch . Ch - C)), verdict(ratsimp(radcan(Ch . Ch - C)) = Z))$
+residual3 : ratsimp(radcan(Mstar . C . Mstar - Q))$
+print("STEP 3b M* C M* - Q =", residual3, verdict(residual3 = Z))$
+ev3 : float(eigenvalues(Mstar)[1])$
+print("STEP 3c M* =", float(Mstar), "eigenvalues", ev3, verdict(every(lambda([e], e > 0), ev3)))$
+value3 : radcan(2*mat_trace(G))$
+gap3 : radcan(value3^2 - 4*(3 + sqrt(7)))$
+print("STEP 3d 2 tr((C^1/2 Q C^1/2)^1/2) =", value3, "; its square less 4 (3 + sqrt 7) =", gap3,
+      verdict(gap3 = 0))$
+fstar : bfloat(f(Mstar, C, Q, Z))$
+print("STEP 3e f(M*) =", fstar, "; 2 sqrt(3 + sqrt 7) =", bfloat(2*sqrt(3 + sqrt(7))),
+      verdict(abs(fstar - bfloat(2*sqrt(3 + sqrt(7)))) < 1b-35))$
+
+/* ===== STEP 4: the simpler designs ===== */
+print("=== STEP 4: the best diagonal and white dithers ===")$
+/* diagonal V = diag(v1, v2) and no prior: f = sum C_kk v_k + Q_kk / v_k, least at sqrt(Q_kk/C_kk) */
+fd : 2*v1 + v2 + 1/v1 + 2/v2$
+dsol : solve([diff(fd, v1) = 0, diff(fd, v2) = 0], [v1, v2])$
+dbest : sublist(dsol, lambda([s], is(rhs(s[1]) > 0) and is(rhs(s[2]) > 0)))[1]$
+print("STEP 4a best diagonal", dbest, "value", radcan(subst(dbest, fd)),
+      verdict(radcan(subst(dbest, fd) - 4*sqrt(2)) = 0))$
+fw : v*mat_trace(C) + mat_trace(Q)/v$
+wsol : sublist(solve(diff(fw, v) = 0, v), lambda([s], is(rhs(s) > 0)))[1]$
+print("STEP 4b best white", wsol, "value", radcan(subst(wsol, fw)), verdict(radcan(subst(wsol, fw)) = 6))$
+print("STEP 4c the closed form below them:", float(1 - 2*sqrt(3 + sqrt(7))/(4*sqrt(2))),
+      float(1 - 2*sqrt(3 + sqrt(7))/6), " (0.160 and 0.208)",
+      verdict(abs(float(1 - 2*sqrt(3 + sqrt(7))/(4*sqrt(2))) - 0.15993) < 1e-4))$
+
+/* ===== STEP 5: diagonal data ===== */
+print("=== STEP 5: diagonal C and Q give the water-filling level ===")$
+assume(a1 > 0, a2 > 0, b1 > 0, b2 > 0)$
+Cd : matrix([a1, 0], [0, a2])$
+Qd : matrix([b1, 0], [0, b2])$
+level : matrix([sqrt(b1/a1), 0], [0, sqrt(b2/a2)])$
+gap5 : ratsimp(radcan(level . Cd . level - Qd))$
+print("STEP 5a diag(sqrt(Q_kk/C_kk)) C diag(sqrt(Q_kk/C_kk)) - Q =", gap5,
+      "; its entries are positive:", is(sqrt(b1/a1) > 0 and sqrt(b2/a2) > 0),
+      verdict(gap5 = Z and is(sqrt(b1/a1) > 0 and sqrt(b2/a2) > 0)))$
+/* and at a point, the geometric mean's own formula reads the same */
+Md : invert(root2(Cd)) . root2(root2(Cd) . Qd . root2(Cd)) . invert(root2(Cd))$
+at5 : [a1 = 3, a2 = 2/7, b1 = 5, b2 = 11/3]$
+gap5c : float(subst(at5, Md - level))$
+print("STEP 5c at C = diag(3, 2/7), Q = diag(5, 11/3): C^-1 # Q - diag(sqrt(Q_kk/C_kk)) =", gap5c,
+      verdict(lmax(map(abs, list_matrix_entries(gap5c))) < 1e-14))$
+/* water-filling: the precision after is sqrt(uses w / (2 price)) */
+gap5b : radcan(subst([b1 = uses*w/2, a1 = price], sqrt(b1/a1)) - sqrt(uses*w/(2*price)))$
+print("STEP 5b at Q = uses W / 2, C = price:", gap5b, verdict(gap5b = 0))$
+
+/* ===== STEP 6: a prior the closed form clears ===== */
+print("=== STEP 6: a prior that leaves V* >= 0 ===")$
+P0 : matrix([1/5, 1/20], [1/20, 1/10])$
+ev6 : float(eigenvalues(Mstar - P0)[1])$
+print("STEP 6a eigenvalues of M* - P0:", ev6, verdict(every(lambda([e], e > 0), ev6)))$
+value6 : bfloat(2*sqrt(3 + sqrt(7)) - mat_trace(C . P0))$
+f6 : bfloat(f(Mstar - P0, C, Q, P0))$
+print("STEP 6b 2 sqrt(3 + sqrt 7) - tr(C P0) =", value6, "; f(M* - P0) =", f6,
+      verdict(abs(value6 - f6) < 1b-35 and mat_trace(C . P0) = 3/5))$
+
+/* ===== STEP 7: a prior the closed form does not clear ===== */
+print("=== STEP 7: the bound binds; the rank-one optimum and its KKT certificate ===")$
+P1 : matrix([1, 0], [0, 1/20])$
+ev7 : float(eigenvalues(Mstar - P1)[1])$
+print("STEP 7a eigenvalues of M* - P1:", ev7, verdict(some(lambda([e], e < 0), ev7)))$
+vv : matrix([y1], [y2])$
+g7 : f(vv . transpose(vv), C, Q, P1)$
+load(mnewton)$
+newtonepsilon : 1b-35$
+newtonmaxiter : 200$
+sol7 : mnewton([diff(g7, y1), diff(g7, y2)], [y1, y2], [0.59, -1.39])$
+V7 : bfloat(subst(sol7[1], vv . transpose(vv)))$
+fv7 : bfloat(subst(sol7[1], g7))$
+M7 : P1 + V7$
+Grad7 : C - invert(M7) . Q . invert(M7)$
+/* the eigenvalues of the symmetric 2 x 2 G in 40 digits, the small one as det / the large one */
+tr7 : bfloat(mat_trace(Grad7))$
+det7 : bfloat(determinant(Grad7))$
+big7 : (tr7 + sqrt(tr7^2 - 4*det7))/2$
+ev7g : [det7/big7, big7]$
+gv7 : bfloat(subst(sol7[1], Grad7 . vv))$
+print("STEP 7b v =", bfloat(subst(sol7[1], [y1, y2])), "; V = v v' =", V7)$
+print("STEP 7c f =", fv7)$
+print("STEP 7d eigenvalues of G = C - M^-1 Q M^-1:", ev7g, "; G v =", gv7,
+      verdict(every(lambda([e], e > -1b-30), ev7g) and every(lambda([e], abs(e) < 1b-30), list_matrix_entries(gv7))))$
+print("        G >= 0 and G V = 0 with V >= 0: the KKT conditions of a convex problem, so V is optimal")$
+print("STEP 7e the value against the numeric route's 2.9176361092651:",
+      verdict(abs(fv7 - 2.9176361092651b0) < 1b-12))$
