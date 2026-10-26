@@ -153,6 +153,13 @@ FORMAL_LINKS = {
             "test_games.py::test_the_exact_allocation_carries_its_certificate",
         ),
     },
+    "chc.games._budget_shadow_price": {
+        "cites": ("marketplace_shadow_price.mac",),
+        "tests": (
+            "test_games.py::test_the_exact_allocation_s_shadow_price_is_its_value_s_slope_in_the_budget",
+        ),
+        "via": "exact_congestion_allocation",
+    },
     "chc.marketplace._driver_jacobians": {
         "cites": ("marketplace_expected_completions.mac",),
         "tests": ("test_marketplace.py::test_the_driver_jacobians_are_the_solve_s_in_closed_form",),

@@ -363,6 +363,30 @@ def test_the_exact_allocation_carries_its_certificate() -> None:
     )
 
 
+@pytest.mark.parametrize("budget", [0.5, 1.0, 2.0, 6.0, 20.0])
+@pytest.mark.parametrize("seed", [0, 1, 3, 4])
+def test_the_exact_allocation_s_shadow_price_is_its_value_s_slope_in_the_budget(
+    seed: int, budget: float
+) -> None:
+    """The rides one more unit of budget completes, in closed form at the optimum, against central
+    differences of the exact optimum's value in the budget. Where no zone at its floor is past its
+    demand, more budget completes nothing and the price is 0; at the larger budgets of these
+    markets it is."""
+    market = SharedStateMarket(seed=seed)
+    demand, value = (np.asarray(column, np.float64) for column in market._base())
+    rest = (market.beta, market.congestion, market.mass)
+    exact = exact_congestion_allocation(value, demand, *rest, budget)
+    h = 1e-4 * budget
+    up = exact_congestion_allocation(value, demand, *rest, budget + h).value
+    down = exact_congestion_allocation(value, demand, *rest, budget - h).value
+    # the difference's error: the value's curvature times h^2 / 6, and its rounding 1e-15 / h
+    assert exact.shadow_price == pytest.approx((up - down) / (2.0 * h), rel=0.0, abs=1e-7)
+    if budget == 20.0:
+        assert exact.shadow_price == 0.0
+    if budget == 0.5:
+        assert exact.shadow_price > 0.5
+
+
 def test_with_no_budget_the_exact_allocation_is_the_free_equilibrium() -> None:
     market = SharedStateMarket(seed=4)
     demand, value = (np.asarray(column, np.float64) for column in market._base())

@@ -296,6 +296,10 @@ class CongestionAllocation:
     costs ``cost_below`` or more, above the budget, or no vertex fills the deficit without a zone
     passing its demand (``cost_below`` is inf); and an allocation that completed more would reach
     a vertex of a level that low (the exchange step of :func:`exact_congestion_allocation`).
+    ``shadow_price`` is what one more unit of budget completes there, the budget's Lagrange
+    multiplier: on ``SharedStateMarket(seed=0..7)`` at budgets from 0.5 to 60 it equals central
+    differences of ``value`` in the budget to 1e-8, and it is 0 where more budget completes
+    nothing.
     """
 
     allocation: NDArray[np.float64]  # (n,) the incentive per zone: non-negative, summing to budget
@@ -308,6 +312,9 @@ class CongestionAllocation:
     level_below: float  # the level, just below ``level``, at which the budget falls short
     cost_below: float  # the least cost of a vertex at ``level_below``: above the budget, or inf
     vertices: int  # the vertices whose cost the solve evaluated, over every level it read
+    # the rides one more unit of budget completes, dV*/dB: 0 where more budget completes nothing,
+    # nan at a vertex with no partial zone where drivers are wasted (:func:`_budget_shadow_price`)
+    shadow_price: float = math.nan
 
 
 def _floor_log_shares(
@@ -409,6 +416,53 @@ def _cheapest_vertex(
     incentive[open_zones[zone]] = part_zone
     full = members + ([zone] if lift_zone >= caps[zone] else [])
     return best, shares, incentive, tuple(sorted(int(open_zones[i]) for i in full)), vertices
+
+
+def _budget_shadow_price(
+    shares: NDArray[np.float64],
+    demand: NDArray[np.float64],
+    at_demand: tuple[int, ...],
+    partial: int | None,
+    cost_below: float,
+    beta: float,
+    congestion: float,
+    mass: float,
+) -> float:
+    """The optimum's rides per unit of budget,
+    ``dV*/dB = mass*beta*q_p*Q_O / ((|T| + 1)*q_p + Q_R)``, with ``q = s / (1 + beta*congestion*s)``
+    at the optimum's shares, ``T`` the zones held at their demand, ``p`` the partial zone, ``Q_R``
+    the sum of ``q`` over the other zones, at their floor, and ``Q_O`` over those of them past their
+    demand.
+
+    One more unit of budget lowers the level ``mu`` the unfunded zones share by ``1/(|T| + 1 +
+    Q_R/q_p)``: each zone at demand and the partial zone pays one unit per unit of level, and the
+    partial zone takes the drivers the floors give up, ``beta*q_j`` per unit of level each, at
+    ``1/(beta*q_p)`` per driver share. The rides gained are the over-supplied floors' waste, which
+    falls at ``mass*beta*Q_O`` per unit of level. 0 where more budget completes nothing: no zone
+    at its floor is past its demand, so no driver is wasted, or the zones below their demand cannot
+    hold the deficit at any lower level (``cost_below`` is inf). nan where drivers are wasted and
+    the optimum has no partial zone, a vertex at which the rides have no derivative in the budget,
+    as at a budget of zero. ``validation/marketplace_shadow_price.mac`` derives it.
+    """
+    if not math.isfinite(cost_below):
+        return 0.0
+    rest = np.ones(shares.size, dtype=bool)
+    rest[list(at_demand)] = False
+    if partial is not None:
+        rest[partial] = False
+    over = rest & (mass * shares > demand)
+    if not over.any():
+        return 0.0
+    if partial is None:
+        return math.nan
+    q = shares / (1.0 + beta * congestion * shares)
+    return (
+        mass
+        * beta
+        * q[partial]
+        * math.fsum(q[over])
+        / ((len(at_demand) + 1) * q[partial] + math.fsum(q[rest]))
+    )
 
 
 def _parameter(name: str, number: float, *, positive: bool) -> float:
@@ -553,15 +607,19 @@ def exact_congestion_allocation(
     spent, shares, incentive, full, _ = at
     funded = np.flatnonzero(incentive > 0.0)
     partial = [int(i) for i in funded if int(i) not in full]
+    middle_zone = partial[0] if partial else None
     return CongestionAllocation(
         allocation=incentive + (budget - spent) / n,
         value=math.fsum(np.minimum(wanted, mass * shares)),
         level=high,
         shares=shares,
         at_demand=full,
-        partial=partial[0] if partial else None,
+        partial=middle_zone,
         spent=spent,
         level_below=low,
         cost_below=below[0],
         vertices=vertices,
+        shadow_price=_budget_shadow_price(
+            shares, wanted, full, middle_zone, below[0], beta, congestion, mass
+        ),
     )

@@ -1,0 +1,71 @@
+/* The budget's shadow price at the exact allocation, chc.games.CongestionAllocation.shadow_price
+   (tests/test_games.py). A zone's level at share s is phi_i(s) = log(s)/beta + c*s - a_i; a zone
+   paid nothing sits at its floor g_j(mu), phi_j(g_j(mu)) = mu, the level they share. At the optimum
+   the zones T hold their demand share d_i/m, the partial zone p holds what the others leave,
+   s_p = 1 - sum_T d_i/m - sum_R g_j(mu), R the unpaid zones, O those of them past their demand. The
+   budget the level costs and the rides it completes are
+       B(mu) = sum_T (phi_i(d_i/m) - mu) + phi_p(s_p) - mu,   V(mu) = m - sum_O (m*g_j(mu) - d_j),
+   so with q = s/(1 + beta*c*s), Q_R = sum_R q_j and Q_O = sum_O q_j,
+       dV/dB = V'(mu)/B'(mu) = m*beta*q_p*Q_O / ((|T| + 1)*q_p + Q_R).
+   STEP 1  g'(mu) = beta*q(g) and phi'(s) = 1/(beta*q(s)), by implicit differentiation
+   STEP 2  T = {1}, p = 2, R = {3, 4}, O = {3}: V'/B' against the closed form, symbolically
+   STEP 3  |T| = 2, p = 3, R = {4, 5, 6}, O = {4, 5}: the same
+   STEP 4  the case of STEP 2 at beta 5/2, c 2, m 12, a (1, 4/5, 8/5, 1/5), d (3, 6, 2, 1) and
+           level -3/2, in 40 digits: the floors from Lambert's W, the structure (zone 3 past its
+           demand, zone 4 below, zone 2 between its floor and its demand), and dV/dB from central
+           differences of V and B in the level against the closed form
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/marketplace_shadow_price.mac */
+
+linel : 110$
+display2d : false$
+ratprint : false$
+verdict(e) := if is(e) then "(ok)" else "(FAIL)"$
+assume(beta > 0, c > 0, m > 0)$
+
+/* STEP 1 */
+depends(G, mu)$
+dG : rhs(solve(diff(log(G)/beta + c*G - a - mu, mu), diff(G, mu))[1])$
+q(x) := x/(1 + beta*c*x)$
+gap1 : ratsimp(dG - beta*q(G))$
+gap2 : ratsimp(diff(log(S)/beta + c*S, S) - 1/(beta*q(S)))$
+print("STEP 1  g' less beta*q(g):", gap1, verdict(equal(gap1, 0)))$
+print("STEP 1  phi'(s) less 1/(beta*q(s)):", gap2, verdict(equal(gap2, 0)))$
+remove(G, dependency)$
+
+/* STEP 2 and 3: the floors g_j(mu) with g_j' = beta*q(g_j); the partial share follows */
+over(f, L) := apply("+", makelist(f(j), j, L))$
+shadow(T, p, R, O) := block([sp, dB, dV, closed, gap],
+  sp : 1 - over(lambda([i], concat(dd, i)/m), T) - over(lambda([j], concat(g, j)), R),
+  /* d s_p/d mu = -sum_R beta*q(g_j); d phi_p(s_p)/d mu = phi'(s_p) * that */
+  dB : -length(T) - 1 + (1/(beta*q(sp))) * (-over(lambda([j], beta*q(concat(g, j))), R)),
+  dV : -m*over(lambda([j], beta*q(concat(g, j))), O),
+  closed : m*beta*q(sp)*over(lambda([j], q(concat(g, j))), O)
+           / ((length(T) + 1)*q(sp) + over(lambda([j], q(concat(g, j))), R)),
+  gap : ratsimp(dV/dB - closed),
+  [gap, verdict(equal(gap, 0))])$
+print("STEP 2  T = {1}, p = 2, R = {3, 4}, O = {3}: V'/B' less the closed form:",
+      shadow([1], 2, [3, 4], [3]))$
+print("STEP 3  T = {1, 2}, p = 3, R = {4, 5, 6}, O = {4, 5}: V'/B' less the closed form:",
+      shadow([1, 2], 3, [4, 5, 6], [4, 5]))$
+
+/* STEP 4 */
+fpprec : 40$
+b0 : bfloat(5/2)$ c0 : bfloat(2)$ m0 : bfloat(12)$
+a0 : [1b0, 0.8b0, 1.6b0, 0.2b0]$ d0 : [3b0, 6b0, 2b0, 1b0]$
+floor_at(lev, j) := bfloat(lambert_w(b0*c0*exp(b0*(lev + a0[j]))))/(b0*c0)$
+phi_at(x, j) := log(x)/b0 + c0*x - a0[j]$
+qn(x) := x/(1 + b0*c0*x)$
+share2(lev) := 1 - d0[1]/m0 - floor_at(lev, 3) - floor_at(lev, 4)$
+budget_at(lev) := (phi_at(d0[1]/m0, 1) - lev) + (phi_at(share2(lev), 2) - lev)$
+rides_at(lev) := m0 - (m0*floor_at(lev, 3) - d0[3])$
+mu0 : -1.5b0$ h : 1b-12$
+structure : [m0*floor_at(mu0, 3) > d0[3], m0*floor_at(mu0, 4) < d0[4],
+             floor_at(mu0, 2) < share2(mu0), m0*share2(mu0) < d0[2], d0[1]/m0 > floor_at(mu0, 1)]$
+print("STEP 4  zone 3 past demand, 4 below, 2 between floor and demand, 1 lifted to demand:",
+      structure, verdict(every(lambda([e], is(e)), structure)))$
+fd : (rides_at(mu0 + h) - rides_at(mu0 - h))/(budget_at(mu0 + h) - budget_at(mu0 - h))$
+closed4 : m0*b0*qn(share2(mu0))*qn(floor_at(mu0, 3))
+          / (2*qn(share2(mu0)) + qn(floor_at(mu0, 3)) + qn(floor_at(mu0, 4)))$
+print("STEP 4  dV/dB from central differences and in closed form:", float(fd), float(closed4),
+      verdict(abs(fd - closed4) < 1b-20))$
