@@ -56,7 +56,7 @@ System identification, one-step and multi-step. A pluggable effect backend: adju
 **observational** control channel, so under a confounded logging policy the planner inherits the
 bias: measured, a channel of `0.02` where the truth is `1.0`. `fit_causal_residual` estimates it by
 Robinson partialling-out lifted to a state-dependent matrix: channel error `0.003`, control regret
-`0.014` against the biased fit's `6.20`. When the confounder is never logged it uses 2SLS, at a real
+`0.008` against the biased fit's `6.20`. When the confounder is never logged it uses 2SLS, at a real
 variance premium (`0.10` error, regret `0.13`), because the shifter explains only 18 % of the
 action. It reports `identified=False` instead of a confident wrong answer when nothing in the log
 can pin the channel down.

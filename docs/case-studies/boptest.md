@@ -138,6 +138,13 @@ Where they disagree:
   Measured the same way before and after, the tube one step ahead does not move, the mean trusted
   steps move from 1.56 to 2.54 by cell to 1.59 to 2.71, at most 4 where it was 3, and the logs
   trusted past their own plant's horizon rise by one in one cell and by two in another, of 100.
+  From 0.22.0 the tube reads the fitted field's error as one first-order term at the box's worst
+  vertex
+  ([ADR 0133](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0133-the-tube-reads-the-field-s-error-as-one-first-order-term.md)).
+  Measured the same way on 0.21.0 and 0.22.0, the tube one step ahead reads 0.18 to 0.24 K on
+  average by cell on both, and holds the plant at the first step on 96% to 98% of draws; the mean
+  trusted steps move from 1.89 to 2.70 by cell to 1.87 to 2.79, at most 5 on both, and the logs
+  trusted past their own plant's horizon stay at 0 or 1 of 100 in each cell.
 - The regret bound stayed small wherever it was finite, the runaway weeks included. It is a gap in
   the planning objective on the fitted model, not a statement about the plant. It was infinite, the
   objective not convex over the box, on 3.4% of the adjusted calls and 12.1% of the naive ones.

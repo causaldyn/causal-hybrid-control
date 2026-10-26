@@ -2111,9 +2111,10 @@ def prescribe(
             the tube carried the channel's error alone: on 600 one-unit logs shaped like the
             BOPTEST case's it read 0.051 K one step ahead, where the plant's error one step ahead
             reached 0.16 to 0.22 K at 95 %; it held the plant at the first step on 40 % of draws
-            and trusted 6 to 13 steps on nine logs in ten. It now holds the plant at the first step
-            on 97 % to 99 % of draws and trusts 1 or 2 steps, where the plant's error stays within
-            the tolerance of 0.5 K at 95 % for 2 or 3. A tube whose rate, budget or noise comes out
+            and trusted 6 to 13 steps on nine logs in ten. On 0.22.0 it holds the plant at the
+            first step on 96 % to 98 % of draws and trusts 1.9 to 2.8 steps on average by cell, 5
+            at most, where the plant's error stays within the tolerance of 0.5 K at 95 % for 2 to 4
+            (``scripts/bench_boptest_tube.py cover``). A tube whose rate, budget or noise comes out
             other than a finite number is not evaluated, and a warning says so; as is one on an
             asserted empty adjustment set, whose observational fit has no channel error, and one
             over a noisy log in which no unit has two consecutive transitions, which leaves the

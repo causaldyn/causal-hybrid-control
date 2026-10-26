@@ -66,9 +66,11 @@ design record is
   Where the channel's residual persists within units (`noise_persistence_p` at most 0.05), the
   noise the tube reads may not be the plant's, and a `tube` warning says so. Without the noise, on logs shaped like the BOPTEST
   case's, a tube of 0.05 K one step ahead trusted 6 to 13 steps, and the plant left it at the
-  first step on 60% of draws; with it, the tube trusts 1 or 2 steps, where the plant's error
+  first step on 60% of draws; with it, the tube trusted 1 or 2 steps, where the plant's error
   allows 2 or 3
   ([ADR 0080](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0080-a-plan-s-tube-carries-the-plant-s-noise.md)).
+  On 0.22.0 it holds the plant at the first step on 96% to 98% of draws and trusts 1.9 to 2.8
+  steps on average by cell, 5 at most, where the plant's error allows 2 to 4.
   On a field affine in the state `prescribe` carries both parts by the fitted slope at each
   planned action, and the noise's radius is its exact 0.95 quantile at each step; elsewhere a
   bound on the slope's norm carries them, and the radius holds at least 0.95. `tube_mode` says
