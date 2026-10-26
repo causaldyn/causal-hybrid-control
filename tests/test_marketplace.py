@@ -22,7 +22,9 @@ from chc.marketplace import (
     SharedStateMarket,
     _attract_se,
     _fitted_drivers,
+    _sandwich,
     _zone_slope,
+    calibrate_budget_scale,
     calibrate_naive_causal,
     calibrate_predictive,
     calibrate_shared_state,
@@ -643,3 +645,131 @@ def test_a_response_with_no_positive_uplift_funds_no_zone(env: dict) -> None:
     market = env["market"]
     flat = ExposureResponse(marginal=jnp.zeros(market.n_zones), se=jnp.ones(market.n_zones))
     assert np.all(np.asarray(sutva_allocation(market, flat, radius=1.0)) == 0.0)
+
+
+def _linear_sandwich_case() -> tuple:
+    """Drivers linear in three parameters over 8 blocks of 5 zones, every zone below its demand,
+    and the residuals of one block sharing a draw, so the blocks' scores carry what the rows'
+    do not."""
+    rng = np.random.default_rng(1)
+    slope = rng.normal(size=(8, 5, 3))
+    p = np.array([0.3, -0.2, 0.5])
+    shared = np.repeat(rng.normal(size=(8, 1)), 5, axis=1)
+    y = np.einsum("bip,p->bi", slope, p) + 0.1 * rng.normal(size=(8, 5)) + 0.1 * shared
+    return slope, p, y
+
+
+def _clustered(slope: np.ndarray, p: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """``H^-1 M H^-1`` written out: ``H`` the stacked rows' Gram, ``M`` the blocks' scores'."""
+    rows = slope.reshape(-1, slope.shape[-1])
+    bread = np.linalg.inv(rows.T @ rows)
+    meat = sum(
+        np.outer(block.T @ (y_b - block @ p), block.T @ (y_b - block @ p))
+        for block, y_b in zip(slope, y, strict=True)
+    )
+    return bread @ meat @ bread
+
+
+def test_the_fit_s_sandwich_is_the_block_clustered_one() -> None:
+    """The fit carried no covariance of its parameters: its sampling error was not read anywhere.
+    On a model linear in its parameters the sandwich is Cameron and Miller's ``H^-1 M H^-1`` with
+    each block's score once; a parameter held is nan in its row and column, and the others read
+    the sandwich of the fit without it."""
+    slope, p, y = _linear_sandwich_case()
+    eps = float(np.finfo(np.float64).eps)
+
+    def read(kept: list[int]) -> np.ndarray:
+        return _sandwich(
+            p,
+            lambda q: np.einsum("bip,p->bi", slope, q),
+            lambda q: slope,
+            np.full((8, 5), 1e9),
+            y,
+            eps,
+            np.array(kept),
+        )
+
+    np.testing.assert_allclose(read([0, 1, 2]), _clustered(slope, p, y), rtol=1e-12, atol=0.0)
+    held = read([0, 2])
+    assert np.all(np.isnan(held[1]))
+    assert np.all(np.isnan(held[:, 1]))
+    without = _clustered(slope[..., [0, 2]], p[[0, 2]], y - slope[..., 1] * p[1])
+    np.testing.assert_allclose(held[np.ix_([0, 2], [0, 2])], without, rtol=1e-12, atol=0.0)
+
+
+def test_a_sandwich_the_logs_do_not_read_is_nan() -> None:
+    """A parameter no block moves leaves the Gauss-Newton matrix singular: a pseudo-inverse would
+    read its variance as zero, so the sandwich reads nan in every entry."""
+    slope, p, y = _linear_sandwich_case()
+    slope = slope.copy()
+    slope[..., 2] = 0.0
+    covariance = _sandwich(
+        p,
+        lambda q: np.einsum("bip,p->bi", slope, q),
+        lambda q: slope,
+        np.full((8, 5), 1e9),
+        y,
+        float(np.finfo(np.float64).eps),
+        np.arange(3),
+    )
+    assert np.all(np.isnan(covariance))
+
+
+def test_the_fit_carries_its_sandwich_and_its_demand_s_covariance(env: dict) -> None:
+    """Market 0's 400 blocks: every parameter is read, the sandwich is symmetric and positive
+    definite, and the planning demand's covariance is the blocks' over their count."""
+    fitted, logs = env["fitted"], env["logs"]
+    covariance = np.asarray(fitted.covariance, np.float64)
+    assert covariance.shape == (15, 15)
+    assert np.all(np.isfinite(covariance))
+    np.testing.assert_allclose(covariance, covariance.T, rtol=0.0, atol=1e-12 * covariance.max())
+    assert np.linalg.eigvalsh(covariance).min() > 0.0
+    demand = np.asarray(logs["demand"], np.float64)
+    np.testing.assert_allclose(
+        np.asarray(fitted.demand_covariance, np.float64),
+        np.cov(demand, rowvar=False) / demand.shape[0],
+        rtol=1e-12,
+        atol=0.0,
+    )
+
+
+def test_the_budget_scale_s_slope_is_read_and_the_fit_matches_it(env: dict) -> None:
+    """Market 0's logs: the block's total incentive is randomised independently of the demand, so
+    its slope is a causal response along the logged split, and the fitted equilibrium's own
+    completions read the same total slope within 0.2 of its SE."""
+    read = calibrate_budget_scale(env["logs"], equilibrium=env["fitted"])
+    assert read.marginal.shape == read.se.shape == (12,)
+    assert np.all(np.asarray(read.se) > 0.0)
+    assert read.total < 0.0 < read.total_se
+    assert abs(read.z) < 0.2
+    assert read.z == pytest.approx((read.total - read.fitted_total) / read.total_se, rel=1e-12)
+    bare = calibrate_budget_scale(env["logs"])
+    assert math.isnan(bare.fitted_total)
+    assert math.isnan(bare.z)
+    assert bare.total == read.total
+
+
+def test_the_budget_scale_s_slope_is_the_one_ols_reads() -> None:
+    """Completions linear in the block's total and the demand: each zone's slope on the total,
+    its own demand held, and the total's, every zone's demand held, are the coefficients, to the
+    ridge's 1e-4 of the columns' variance."""
+    rng = np.random.default_rng(3)
+    blocks, zones = 400, 3
+    demand = rng.uniform(0.5, 1.5, size=(blocks, zones))
+    total = rng.uniform(1.0, 3.0, size=blocks)
+    u = total[:, None] * np.full(zones, 1.0 / zones)
+    gain = np.array([0.2, -0.1, 0.05])
+    y = gain * total[:, None] + 0.7 * demand + 0.01 * rng.normal(size=(blocks, zones))
+    read = calibrate_budget_scale({"u": u, "demand": demand, "y": y})
+    np.testing.assert_allclose(read.marginal, gain, rtol=0.0, atol=5e-3)
+    assert read.total == pytest.approx(gain.sum(), abs=5e-3)
+
+
+def test_the_budget_scale_refuses_logs_outside_its_contract(env: dict) -> None:
+    logs = env["logs"]
+    with pytest.raises(ValueError, match=r"logs\['y'\] has shape"):
+        calibrate_budget_scale(logs | {"y": logs["y"][:, :11]})
+    with pytest.raises(ValueError, match="zones and the logs"):
+        calibrate_budget_scale(
+            {name: logs[name][:, :11] for name in ("u", "demand", "y")}, equilibrium=env["fitted"]
+        )

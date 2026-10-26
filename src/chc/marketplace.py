@@ -250,6 +250,91 @@ def calibrate_shared_state(logs: dict[str, Array]) -> ExposureResponse:
     return _calibrate(logs, ("demand", "aggregate"))
 
 
+@dataclass(frozen=True)
+class BudgetScaleResponse:
+    """The completions' slope on the block's total incentive: what logs whose only randomised move
+    is the budget's scale identify without a model (:func:`calibrate_budget_scale`)."""
+
+    marginal: Array  # (n_zones,) each zone's completions per unit of the total, its demand held
+    se: Array  # (n_zones,) HC0 heteroskedasticity-robust SE of ``marginal``
+    total: float  # the block's total completions per unit of the total, every zone's demand held
+    total_se: float  # HC0 SE of ``total``
+    # the same slope read on the fitted equilibrium's completions at the logged blocks; nan where
+    # no equilibrium was given
+    fitted_total: float
+    z: float  # ``(total - fitted_total) / total_se``; nan where no equilibrium was given
+
+
+def calibrate_budget_scale(
+    logs: dict[str, Array], *, equilibrium: FittedEquilibrium | None = None
+) -> BudgetScaleResponse:
+    """The one response the logs identify with no model: completions per unit of the block's total
+    incentive, along the split the logging policy made.
+
+    :meth:`SharedStateMarket.generate_logs` draws each block's budget scale independently of its
+    demand and splits it by a softmax of every zone's demand. Given the demand, the scale is the
+    only randomised move, so the slope of a zone's completions on the block's total, its own demand
+    held, is unconfounded for ``sum_j (dY_i/du_j) pi_j``, the response along the logged split
+    ``pi``, averaged over the blocks with the weights an OLS slope puts on a uniform regressor
+    (Yitzhaki 1996). The demand is held only to narrow the error. Neither the ``n x n`` response
+    nor a zone's response net of what it draws from the others is identified from one randomised
+    number per block (Berry and Haile 2014); only a model reads them, as :func:`fit_equilibrium`'s
+    does. :func:`calibrate_shared_state` holds this very total fixed, which takes out the
+    randomised move.
+
+    With ``equilibrium``, :attr:`BudgetScaleResponse.z` compares the total's slope with the one the
+    fit's own completions read at the logged blocks: a check of the model along the one randomised
+    direction, and a weak one. The slope is one number per market, and a fit of the wrong class can
+    match it.
+
+    Args:
+        logs: ``u``, ``demand`` and ``y`` of shape ``(n_blocks, n_zones)``, finite.
+        equilibrium: a fit to check against the logs, :func:`fit_equilibrium`'s.
+
+    Raises:
+        ValueError: on columns that are not finite matrices of one shape, or an equilibrium whose
+            zones are not the logs'.
+    """
+    read = _real_entries(logs, ("u", "demand", "y"), "logs")
+    u, demand, y = (jnp.asarray(read[name]) for name in ("u", "demand", "y"))
+    for name, column in (("u", u), ("demand", demand), ("y", y)):
+        if column.ndim != 2 or column.shape != u.shape:
+            raise ValueError(
+                f"logs[{name!r}] has shape {column.shape}; the logs are (n_blocks, n_zones) and"
+                f" logs['u'] is {u.shape}"
+            )
+        if not bool(jnp.all(jnp.isfinite(column))):
+            raise ValueError(f"logs[{name!r}] is not finite")
+    dtype = jnp.result_type(u, demand, y, float)
+    u, demand, y = (column.astype(dtype) for column in (u, demand, y))
+    total_incentive = jnp.sum(u, axis=1)
+    marginal, se = jax.vmap(lambda i: _zone_slope(total_incentive, y[:, i], demand[:, i][:, None]))(
+        jnp.arange(u.shape[1])
+    )
+    total, total_se = _zone_slope(total_incentive, jnp.sum(y, axis=1), demand)
+    fitted_total = z = math.nan
+    if equilibrium is not None:
+        if equilibrium.demand.shape != (u.shape[1],):
+            raise ValueError(
+                f"the equilibrium has {equilibrium.demand.shape[0]} zones and the logs {u.shape[1]}"
+            )
+        beta, congestion, mass = (jnp.asarray(part, dtype) for part in equilibrium._parameters())
+        parameters = (beta, congestion, mass)
+        attract = jnp.asarray(equilibrium.attract, dtype)
+        drivers = jax.vmap(lambda d, v: _fitted_drivers(attract * d, v, parameters))(demand, u)
+        completed = jnp.sum(jnp.minimum(demand, drivers), axis=1)
+        fitted_total = float(_zone_slope(total_incentive, completed, demand)[0])
+        z = (float(total) - fitted_total) / float(total_se)
+    return BudgetScaleResponse(
+        marginal=marginal,
+        se=se,
+        total=float(total),
+        total_se=float(total_se),
+        fitted_total=fitted_total,
+        z=z,
+    )
+
+
 def sutva_allocation(market: SharedStateMarket, response: ExposureResponse, radius: float) -> Array:
     """Baseline allocation: fund zones by their pessimistic local uplift (the SUTVA assumption)."""
     pess = jnp.maximum(response.marginal - radius * response.se, 0.0)  # W-DRO shrink of a reward
@@ -289,6 +374,14 @@ class FittedEquilibrium:
     # against the same fit with no incentive; below the one-sided 5% quantile the drivers' answer
     # to an incentive is not told from none, and the planner refuses the fit
     incentive_z: float
+    # (n_zones + 3, n_zones + 3) the block-clustered sandwich of the parameters ``(attract,
+    # log beta, log congestion, log mass)``, read over the zones :func:`_identified` keeps and the
+    # three market parameters; nan in a held zone's row and column, and everywhere where the
+    # Gauss-Newton matrix of the kept parameters is singular (:func:`_sandwich`). None in a fit
+    # built by hand without it
+    covariance: Array | None = None
+    # (n_zones, n_zones) the covariance of ``demand``: the logged blocks' over their count
+    demand_covariance: Array | None = None
 
     def drivers(self, u: Array) -> Array:
         """The equilibrium driver distribution at the planning demand under incentive ``u``."""
@@ -457,6 +550,51 @@ def _attract_se(
     return np.where(outside > bound, np.inf, spread)
 
 
+def _identified(attract: NDArray[np.float64], attract_se: NDArray[np.float64]) -> NDArray[np.intp]:
+    """The zones whose attractiveness the logs identify: an error finite and within its size. The
+    planner holds every other zone at zero incentive."""
+    return np.flatnonzero(np.isfinite(attract_se) & (attract_se <= np.abs(attract)))
+
+
+def _sandwich(
+    p: NDArray[np.float64],
+    drivers: Callable[[NDArray[np.float64]], NDArray[np.float64]],
+    jacobian: Callable[[NDArray[np.float64]], NDArray[np.float64]],
+    demand: NDArray[np.float64],
+    y: NDArray[np.float64],
+    eps: float,
+    kept: NDArray[np.intp],
+) -> NDArray[np.float64]:
+    """The block-clustered sandwich ``H^-1 M H^-1`` of the least-squares parameters ``p`` over the
+    indices ``kept``, the others held at their fit: ``H = sum_b J_b'J_b``, the Gauss-Newton matrix,
+    and ``M = sum_b (J_b'r_b)(J_b'r_b)'``, each block's score once, so the zones' residuals within a
+    block may correlate (Cameron and Miller 2015, no small-sample factor). ``J_b`` is the block's
+    drivers' Jacobian on the rows :func:`_attract_se` reads, ``r_b`` its residual.
+
+    nan in every entry where ``H`` is singular at the cut :func:`_attract_se` makes, a singular
+    value of the stacked Jacobian at or below ``eps`` times the largest times its larger dimension:
+    the logs do not read some combination of the kept parameters, and a pseudo-inverse would report
+    its variance as zero. In a held parameter's row and column, nan."""
+    n_parameters = p.size
+    x = drivers(p)
+    reach = 1e-6 * np.maximum(1.0, np.linalg.norm(x, axis=1, keepdims=True))
+    read = (x < demand) | (np.abs(x - demand) <= reach)
+    rows = np.where(read[..., None], -jacobian(p), 0.0)[..., kept]
+    residual = np.where(read, y - np.minimum(demand, x), 0.0)
+    stacked = rows.reshape(-1, kept.size)
+    covariance = np.full((n_parameters, n_parameters), np.nan)
+    _, singular, basis = np.linalg.svd(stacked, full_matrices=False)
+    if not singular[0] > 0.0 or singular[-1] <= singular[0] * max(stacked.shape) * eps:
+        return covariance
+    # H^-1 = V diag(1/s^2) V' from the stacked Jacobian's SVD: no Gram is formed, whose condition
+    # is the Jacobian's squared
+    bread = basis.T / singular**2 @ basis
+    scores = np.einsum("bip,bi->bp", rows, residual)
+    meat = scores.T @ scores
+    covariance[np.ix_(kept, kept)] = bread @ meat @ bread
+    return covariance
+
+
 def _lack_of_fit(
     residual: NDArray[np.float64], demand: NDArray[np.float64], u: NDArray[np.float64]
 ) -> float:
@@ -536,7 +674,7 @@ def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEqu
 
     The fit reads its ``n_zones + 3`` parameters from at least as many blocks: on five markets of
     12 zones, 3 blocks read the sensitivity 1.7 off at the median and 94 at worst, and 15 blocks
-    0.055 and 0.26. The parameters' sampling error is not carried into the plan. A zone that draws
+    0.055 and 0.26. A zone that draws
     almost no drivers in any logged block tells little of its attractiveness: the default market's
     zone 8 averages 0.0008 drivers on a demand of 0.50, and its attractiveness read 0.73 for 0.63
     on 400 blocks and 0.67 on 6400, where moving it from 0.63 to 0.95 moves the mean squared
@@ -552,6 +690,18 @@ def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEqu
     error infinite or above its attractiveness's size: those four, and on 400 blocks one zone read
     -0.01 with an error of 0.40. :func:`pessimistic_equilibrium_allocation` holds such a zone at
     zero incentive.
+
+    :attr:`FittedEquilibrium.covariance` is the parameters' block-clustered sandwich
+    ``H^-1 M H^-1`` (Cameron and Miller 2015): ``H`` the Gauss-Newton matrix on the same rows, ``M``
+    the blocks' scores, so the zones' errors within a block may correlate. It is read over the zones
+    the planner does not hold and the three market parameters, the held zones' attractiveness
+    fixed at the fit, and is nan where the logs leave a combination of those unread.
+    :attr:`FittedEquilibrium.demand_covariance` is the planning demand's. The planner's expected
+    objective reads both; the tilted one reads neither. Over 100 logs of 400 blocks of market 0
+    (market 1), its 95% intervals held the sensitivity, the penalty and the total in 99% (96%),
+    98% (96%) and 96% (97%) of the logs, and the median zone's attractiveness in 96% (94%), the
+    worst zone's in 83% (87%). On 50 blocks of market 0, in 94%, 95% and 89%, and 96% at the median
+    zone; a zone that draws almost no drivers, held on 64 of those logs, in 64% of the rest.
 
     Args:
         logs: :meth:`SharedStateMarket.generate_logs`'s, or any with ``u``, ``demand`` and ``y``
@@ -645,6 +795,16 @@ def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEqu
         eps,
         n_zones,
     )
+    kept = np.concatenate([_identified(fitted[:n_zones], attract_se), n_zones + np.arange(3)])
+    covariance = _sandwich(
+        fitted,
+        lambda p: np.asarray(drivers_at(jnp.asarray(p, dtype=dtype), u), np.float64),
+        lambda p: np.asarray(jacobians(jnp.asarray(p, dtype=dtype), demand, u), np.float64),
+        demand_64,
+        y_64,
+        eps,
+        kept.astype(np.intp),
+    )
     lack_of_fit = _lack_of_fit(left, np.asarray(demand, np.float64), np.asarray(u, np.float64))
     attract, (beta, congestion, total) = unpack(jnp.asarray(fitted, dtype=dtype))
     rmse = math.sqrt(float(np.mean(left**2)))
@@ -668,16 +828,21 @@ def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEqu
         converged=converged,
         lack_of_fit=lack_of_fit,
         incentive_z=_incentive_z(left, idle),
+        covariance=jnp.asarray(covariance, dtype=dtype),
+        demand_covariance=jnp.asarray(
+            np.atleast_2d(np.cov(demand_64, rowvar=False)) / n_blocks, dtype=dtype
+        ),
     )
 
 
 def pessimistic_equilibrium_allocation(
     market: SharedStateMarket,
-    response: ExposureResponse,
+    response: ExposureResponse | None,
     *,
     radius: float = 1.0,
     steps: int = 600,
     equilibrium: FittedEquilibrium | None = None,
+    objective: PlanObjective = "tilted",
 ) -> Array:
     """CHC allocation: plan the budget *through* the congestion equilibrium (``chc.games``) so the
     driver-conservation (cannibalisation) channel the SUTVA baselines assume away is structural. The

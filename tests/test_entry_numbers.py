@@ -1113,6 +1113,12 @@ ENTRIES = (
         _entries("logs", "u", "y", "demand", "aggregate"),
     ),
     Entry(
+        "marketplace.calibrate_budget_scale",
+        _market,
+        lambda a: marketplace.calibrate_budget_scale(a["logs"]),
+        _entries("logs", "u", "y", "demand"),
+    ),
+    Entry(
         "residual.fit_spectral_residual",
         _fields,
         lambda a: residual.fit_spectral_residual(
