@@ -301,6 +301,9 @@ def delay_estimate(
     its bin, which is the correct interval for a delay that is an exact multiple of ``dt``.
 
     ``refine`` is forwarded to :func:`peak_lag`; read its warning before turning it on.
+
+    Whether a fitted model's plant reads its lever late at all is
+    :func:`chc.dynamics_id.lag_check`'s question: the fit's residual against its earlier levers.
     """
     if not 0.0 < level < 1.0:
         raise ValueError(f"level must lie in (0, 1); got {level}")

@@ -1,0 +1,95 @@
+/* The channel region's grid radius (chc.dynamics_id.channel_region, form="grid"; ADR 0138):
+   Simpson, Baumgartner, Koehler and Diehl, "Finite-sample bounds for multi-output system
+   identification", arXiv 2603.19073 v2 (2026), Theorem 2 and Corollary 1, read here step by step
+   on one state's scalar output.
+
+   With V_t = D'D, P the ridge's prior, c the prior's bound ||c_true||_P, R the noise's
+   sub-Gaussian scale and V_bar >= 0 fixed before the log, with probability at least 1 - delta
+       ||c_hat - c_true||_(P + V_t) <= sqrt(1 + rho((P + V_t)^-1 V_bar))
+                                         sqrt(c^2 + R^2 log det(I + (P + V_bar)^-1 V_t)
+                                              + 2 R^2 log(1/delta)).
+   A union over J fixed members at delta / J each takes the least of them.
+
+   Checked here:
+   (1) Lemma 1 holds with equality for a Gaussian v ~ N(0, R): E exp((x + v)^2 / (2 (H + R)))
+       / sqrt(H + R) = exp(x^2 / (2 H)) / sqrt(H), symbolic;
+   (2) the step (19): ||x||^2_(A^-1) <= rho(A^-1 B) ||x||^2_(B^-1) for A, B > 0, and
+       rho(I + A^-1 V_bar) = 1 + rho(A^-1 V_bar), at rational sample points;
+   (3) the step after (21): P (P + V_bar)^-1 P <= P, its difference's eigenvalues not negative,
+       at a sample point;
+   (4) Corollary 1 is never wider than Abbasi-Yadkori et al.'s: (c + R sqrt(M))^2 -
+       (c^2 + R^2 M) = 2 c R sqrt(M) >= 0, symbolic;
+   (5) the grid's members (chc.dynamics_id._grid_members): for V_bar = 2^j P, with mu the
+       eigenvalues of P^(-1/2) V_t P^(-1/2), rho((P + V_t)^-1 V_bar) = 2^j / (1 + min mu) and
+       log det(I + (P + V_bar)^-1 V_t) = sum log(1 + mu / (1 + 2^j)), at a sample point;
+   (6) the radius at the sample spectrum mu = (4e8, 2.5e7), R = (0.5, 2), c = (1e-3, 0), two
+       states at delta = 0.05: the grid reads 2.525683 and 10.102732, the ridge's form 3.325873
+       and 13.299492, as chc.dynamics_id.ChannelRegion reads them.
+*/
+display2d : false$
+ratprint : false$
+fpprec : 30$
+/* a check that fails stops the batch with "-- an error.", which validation/run_all.sh reads */
+vanishes(label, x) := if is(x = 0) then print(label, "= 0") else error(label, "is not zero:", x)$
+holds(label, claim) := if is(claim) then print(label, "(PASS)") else error(label, "(FAIL)")$
+near(label, x, y, tol) := if is(abs(x - y) <= tol) then print(label, x, "(PASS)")
+                           else error(label, x, "against", y, "(FAIL)")$
+
+/* (1) */
+assume(H > 0, R > 0)$
+mean : integrate(exp((x + v)^2/(2*(H + R)) - v^2/(2*R))/sqrt(2*%pi*R), v, minf, inf)$
+vanishes("(1) E exp(||x + v||^2_(H+R)^-1 / 2) / sqrt(H + R) - exp(x^2/(2 H)) / sqrt(H)",
+         radcan(mean/sqrt(H + R) - exp(x^2/(2*H))/sqrt(H)))$
+forget(H > 0, R > 0)$
+
+/* (2) */
+A : matrix([3, 1], [1, 2])$
+B : matrix([5, -1], [-1, 4])$
+Vb : matrix([2, 1], [1, 1])$
+rhoof(m) := lmax(map(lambda([v], float(realpart(v))), first(eigenvalues(m))))$
+for xv in [[1, 0], [0, 1], [1, -2], [3, 5]] do block([lhs, rhs],
+  lhs : xv . invert(A) . xv,
+  rhs : rhoof(invert(A) . B) * (xv . invert(B) . xv),
+  holds(sconcat("(2) x = ", xv, ": ||x||^2_(A^-1) <= rho(A^-1 B) ||x||^2_(B^-1)"),
+        is(float(lhs) <= rhs + 1e-12)))$
+near("(2) rho(I + A^-1 V_bar) - 1 - rho(A^-1 V_bar)",
+     rhoof(ident(2) + invert(A) . Vb) - 1 - rhoof(invert(A) . Vb), 0, 1e-12)$
+
+/* (3) */
+Pp : matrix([1/1000, 0], [0, 3/1000])$
+gap : Pp - Pp . invert(Pp + Vb) . Pp$
+holds("(3) P - P (P + V_bar)^-1 P has no negative eigenvalue",
+      is(lmin(map(lambda([v], float(v)), first(eigenvalues(gap)))) >= -1e-15))$
+
+/* (4) */
+assume(cc >= 0, RR >= 0, MM >= 0)$
+vanishes("(4) (c + R sqrt M)^2 - (c^2 + R^2 M) - 2 c R sqrt M",
+         expand((cc + RR*sqrt(MM))^2 - (cc^2 + RR^2*MM) - 2*cc*RR*sqrt(MM)))$
+forget(cc >= 0, RR >= 0, MM >= 0)$
+
+/* (5) P diagonal, V_t a sample; mu by the whitened matrix */
+Pd : matrix([2, 0], [0, 1/2])$
+Vt : matrix([7, 2], [2, 3])$
+whiten : matrix([1/sqrt(2), 0], [0, sqrt(2)])$
+Mw : whiten . Vt . whiten$
+mus : map(lambda([v], float(v)), first(eigenvalues(Mw)))$
+for j in [1, 3, 10] do block([Vbar : 2^j*Pd],
+  near(sconcat("(5) j = ", j, ": rho((P + V_t)^-1 V_bar) - 2^j/(1 + min mu)"),
+       rhoof(invert(Pd + Vt) . Vbar) - 2^j/(1 + lmin(mus)), 0, 1e-9),
+  near(sconcat("(5) j = ", j, ": log det(I + (P + V_bar)^-1 V_t) - sum log(1 + mu/(1 + 2^j))"),
+       float(log(determinant(ident(2) + invert(Pd + Vbar) . Vt)))
+       - lsum(log(1 + mu/(1 + 2^j)), mu, mus), 0, 1e-12))$
+near("(5) V_bar = 0: log det(I + P^-1 V_t) - sum log(1 + mu)",
+     float(log(determinant(ident(2) + invert(Pd) . Vt))) - lsum(log(1 + mu), mu, mus), 0, 1e-12)$
+
+/* (6) J = 65 members: V_bar = 0 and 2^j P, j = 1 .. 64; a state's share delta / (n J) */
+spec : [4b8, 25b6]$
+members : cons([0, lsum(log(1 + mu), mu, spec)],
+               makelist([2^j/(1 + lmin(spec)), lsum(log(1 + mu/(1 + 2^j)), mu, spec)], j, 1, 64))$
+gridradius(r, c, delta) := block([share : delta/(2*65)],
+  lmin(map(lambda([m], sqrt(1 + m[1])*sqrt(c^2 + r^2*(m[2] + 2*log(1/share)))), members)))$
+ridgeradius(r, c, delta) := r*sqrt(2*log(2/delta) + lsum(log(1 + mu), mu, spec)) + c$
+near("(6) grid, state 1:", bfloat(gridradius(0.5b0, 1b-3, 0.05b0)), 2.52568319b0, 1b-8)$
+near("(6) grid, state 2:", bfloat(gridradius(2b0, 0b0, 0.05b0)), 10.10273191b0, 1b-8)$
+near("(6) ridge, state 1:", bfloat(ridgeradius(0.5b0, 1b-3, 0.05b0)), 3.32587295b0, 1b-8)$
+near("(6) ridge, state 2:", bfloat(ridgeradius(2b0, 0b0, 0.05b0)), 13.29949179b0, 1b-8)$

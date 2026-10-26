@@ -44,6 +44,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from numpy.typing import ArrayLike, NDArray
+from scipy.special import owens_t
 from scipy.stats import chi2
 from scipy.stats import t as student_t
 
@@ -89,7 +90,7 @@ from chc.evaluation import (
 from chc.frames import _not_numbers, _real_numbers
 from chc.graph import AdjustmentSet, CausalGraph
 from chc.independence import gcm_test
-from chc.integrate import rk4_step
+from chc.integrate import rk4_step, rollout
 from chc.lqr import linearize_continuous, linearize_discrete
 from chc.mpc import PeriodBudget, _period_rows
 from chc.panel import Panel, PanelError, Provenance, _grid_steps, _ordinals, _x64_enabled
@@ -104,7 +105,9 @@ from chc.plan import (
     RowPrice,
     _audit,
     _carried_along,
+    _certified,
     _diagnostic_status,
+    _integrator,
     _Rule,
     _Ruled,
     _RuledCost,
@@ -112,7 +115,14 @@ from chc.plan import (
     plan_regret_bound,
 )
 from chc.residual import ControlAffineResidual, ZeroResidual, control_affine_features
-from chc.uncertainty import _TUBE_COVERAGE, _NoiseRead, _read_covariances
+from chc.uncertainty import (
+    _TUBE_COVERAGE,
+    _linear_tube,
+    _noise_covariance,
+    _noise_tube,
+    _NoiseRead,
+    _read_covariances,
+)
 
 SCHEMA_VERSION = 2
 """``to_json``'s schema version. Bumped when a field changes meaning, not when one is added: 2
@@ -180,6 +190,13 @@ affine in the state, both carried through RK4's step matrix of the field's slope
 action, so the radius is the exact 0.95 quantile of the two at that step under the fitted field.
 ``bound``: both carried by a bound on the norm of the slope, so the radius holds at least 0.95,
 exactly at the first step."""
+
+TubeActions = Literal["box", "plan"]
+"""Which actions the error tube's field part holds for. ``box``: any action of the levers' box,
+each step's error read at the box's worst vertex and the steps' carried by their gains' norms
+(ADR 0133). ``plan``: the plan's own actions, the fit's error carried through the plan's rollout
+as one vector, so the steps' errors cancel where the actions change sign (ADR 0138).
+*Experimental.*"""
 
 TimeZero = Literal["calendar", "unit"]
 """Where :meth:`Prescription.evaluate`'s windows start: on one calendar for every unit, or cut back
@@ -666,6 +683,19 @@ class DecisionCertificate:
     # not split by state. None under ``bound``, whose covariance is a bound on the largest
     # variance alone, and where no tube was evaluated.
     tube_state_noise: tuple[tuple[float, ...], ...] | None = None
+    # Under ``exact``, the standard deviation over logs of the share of the plant's paths the tube
+    # holds at each step, steps 0 to the horizon. The tube holds 0.95 on average over logs, and
+    # each log's fitted field is off by its own error, which all of its paths share: so one log's
+    # share spreads about 0.95, more as the field's part grows against the noise's
+    # (``_per_log_spread``), on one state exactly, on several along the noise's widest direction.
+    # At a spread of 0.082, where the field's part equals the noise's, 0.136 of logs hold less
+    # than 0.90. A report, not a guarantee per log; it moves no radius. None under ``bound`` and
+    # where no tube was evaluated.
+    # *Experimental.*
+    tube_per_log_spread: tuple[float, ...] | None = None
+    # Which actions the tube's field part holds for (:data:`TubeActions`), as asked of
+    # :func:`prescribe` and possible there; None where no tube was evaluated. *Experimental.*
+    tube_actions: TubeActions | None = None
     # The column whose groups ``channel_error`` sums the scores within before squaring them
     # (CR1): the panel's cluster where it declares one, else its unit, whose transitions share any
     # persistent noise; ``error_clusters`` counts the groups. ``error_periods`` counts the periods
@@ -1433,6 +1463,7 @@ class Prescription:
             + f"certified horizon {_show(certificate.certified_horizon)}"
             + ("" if certificate.tube_rate is None else f", {certificate.tube_rate} rate"),
             *self._noise_lines(),
+            *self._per_log_lines(),
             *self._lever_range_lines(),
             *self._barrier_lines(),
             "- solver: not run"
@@ -1521,6 +1552,10 @@ class Prescription:
                 "tube_state_noise": None
                 if certificate.tube_state_noise is None
                 else [list(radii) for radii in certificate.tube_state_noise],
+                "tube_per_log_spread": None
+                if certificate.tube_per_log_spread is None
+                else list(certificate.tube_per_log_spread),
+                "tube_actions": certificate.tube_actions,
                 "error_clustered_by": certificate.error_clustered_by,
                 "error_clusters": certificate.error_clusters,
                 "error_periods": certificate.error_periods,
@@ -1740,6 +1775,25 @@ class Prescription:
         )
         return [f"- each state's own 0.95 radius of the noise at step {step}: {each}"]
 
+    def _per_log_lines(self) -> list[str]:
+        certificate = self.certificate
+        spreads = certificate.tube_per_log_spread
+        if spreads is None:
+            return []
+        step = max(certificate.certified_horizon or 0, 1)
+        if step >= len(spreads):
+            return []
+        actions = (
+            "at the plan's own actions; "
+            if certificate.tube_actions == "plan"
+            else "over the levers' box; "
+        )
+        return [
+            f"- the tube's field part is read {actions}one log's share of the plant's paths in the "
+            f"tube at step {step} spreads about 0.95 over logs by {spreads[step]:.3g}: a report, "
+            "not a guarantee per log"
+        ]
+
     def _logger_line(self) -> str:
         check = self.logger_check
         if check is None:
@@ -1840,6 +1894,7 @@ def prescribe(
     neighbours: Mapping[Any, Iterable[Any]] | str | None = None,
     clusters: str | None = None,
     nuisance_knots: int | Literal["auto"] | None = "auto",
+    tube_actions: TubeActions = "box",
 ) -> Prescription:
     """Fit the causal control channel from ``panel`` and plan a certified schedule on it.
 
@@ -2040,6 +2095,16 @@ def prescribe(
             integer, that many knots; ``None``, none, the default up to 0.19.0. With ``None`` the
             fit warns where the spline would move the channel by more than 3 errors of the move,
             more on few clusters or periods. :attr:`RunProvenance.nuisance_knots` records it.
+        tube_actions: which actions the tube's field part holds for (:data:`TubeActions`).
+            ``"box"``, the default, any action of the levers' box. ``"plan"``, *experimental*,
+            the plan's own actions alone: the fit's error is carried through the plan's rollout as
+            one vector, ``S_k Sigma S_k'`` (Lutkepohl 2005, section 3.5), so the steps' errors
+            cancel where the actions change sign, where the box's form adds their norms. The
+            guarantee narrows with it: a schedule changed after the plan, a lever moved by hand,
+            is outside it. It needs a field affine in the state, whose tube is ``exact``, and a
+            fit that keeps its field's terms; elsewhere a warning says so and the box's form is
+            read. The tube moves no action; the certificate says which form it read
+            (:attr:`DecisionCertificate.tube_actions`, ADR 0138).
 
     Returns:
         A :class:`Prescription`. Read :attr:`DecisionCertificate.identification` before
@@ -2138,6 +2203,11 @@ def prescribe(
             f"radius={radius!r} is none of 'auto', the absolute radius where the fit gives one, "
             "'absolute', the fit's sensitivity model of its channel, and 'relative', a share of "
             "the fitted channel's size"
+        )
+    if tube_actions not in get_args(TubeActions):
+        raise DecisionError(
+            f"tube_actions={tube_actions!r} is neither 'box', the field's error at any action of "
+            "the levers' box, nor 'plan', at the plan's own actions"
         )
     if np.shape(target.value) not in ((), (horizon,)):
         raise DecisionError(
@@ -2643,6 +2713,21 @@ def prescribe(
             0.0,
         )
     step_read = _noise_read(fit, dt, labels) if step_noise.any() else None
+    # the field's error at the plan's own actions (ADR 0138): a first-order form, carried through
+    # the field's own rollout, read where the tube is exact and the fit keeps its field's terms
+    at_plan = (
+        tube_actions == "plan"
+        and model_error > 0.0
+        and slopes is not None
+        and fit._field_terms is not None
+    )
+    if tube_actions == "plan" and model_error > 0.0 and not at_plan:
+        _log.warning(
+            "the error tube reads the field's error over the levers' box, not at the plan's "
+            "actions: that form needs a field affine in the state and a fit that keeps its "
+            "field's terms",
+            extra={"chc_event": "tube", "tube_mode": "exact" if slopes is not None else "bound"},
+        )
 
     if (
         tolerance is not None
@@ -2686,6 +2771,21 @@ def prescribe(
             constraints=(rate, *relation_rows, *spend_rows),
             barrier=held,
         )
+        if at_plan:
+            assert slopes is not None
+            assert field_scale is not None
+            return _carried_at_plan(
+                solved,
+                fit,
+                model,
+                slopes(np.asarray(solved.actions, dtype=np.float64)),
+                step_noise,
+                step_carry,
+                dt,
+                float("inf") if tolerance is None else tolerance,
+                field_scale,
+                step_read,
+            )
         # the field's error read where the plan goes, at the state each of its steps starts from
         return _carried_along(
             solved,
@@ -2830,6 +2930,37 @@ def prescribe(
             step_read,
             integrator=integrator,
         ),
+        tube_per_log_spread=None
+        if plan.certified_horizon is None or slopes is None or field_scale is None
+        else _per_log_spreads(
+            field_scale
+            * (
+                _plan_field(fit, model, plan.trajectory[0], plan.actions, dt)
+                if at_plan
+                else np.zeros(horizon + 1)
+                if model_error == 0.0
+                else _box_field(
+                    fit,
+                    reach,
+                    plan,
+                    slopes(np.asarray(plan.actions, dtype=np.float64)),
+                    driver_reads,
+                    box,
+                    dt,
+                    integrator,
+                )
+            ),
+            _read_covariances(
+                slopes(np.asarray(plan.actions, dtype=np.float64)),
+                step_noise,
+                step_carry,
+                dt,
+                horizon,
+                step_read,
+                integrator=integrator,
+            ),
+        ),
+        tube_actions=None if plan.certified_horizon is None else "plan" if at_plan else "box",
         error_clustered_by=clustered_by,
         error_clusters=groups if clustered_by is not None else None,
         error_periods=periods if two_way else None,
@@ -4153,6 +4284,172 @@ def _state_noise(
         for covariance in _read_covariances(
             slopes, noise, persistence, dt, horizon, read, integrator=integrator
         )
+    )
+
+
+def _per_log_spread(kappa: float) -> float:
+    """The standard deviation over logs of the share of the plant's paths a 0.95 radius holds, on
+    one state whose noise has standard deviation ``sigma`` and whose fitted field is off by an
+    error of standard deviation ``kappa sigma`` across logs, at the radius ``z sqrt(1 + kappa^2)
+    sigma`` that holds the two together, ``z`` the normal's two-sided 0.95 quantile.
+
+    One log's field is off by ``kappa sigma W``, ``W`` standard normal, and every path of that log
+    shares it, so its share is ``C(W) = Phi(z sqrt(1 + kappa^2) - kappa W) - Phi(-z sqrt(1 +
+    kappa^2) - kappa W)``: 0.95 on average over logs, spread by
+
+        ``Var C(W) = 4 (2 T(z, 1) - T(z, a) - T(z, 1 / a))``,  ``a = sqrt(1 + 2 kappa^2)``,
+
+    ``T`` Owen's (1956): ``E C(W)^2`` is the chance that two paths of one log both lie within the
+    radius, a bivariate normal's at correlation ``kappa^2 / (1 + kappa^2)``, and ``8 T(z, 1) = 1 -
+    0.95^2``. It is 0 at ``kappa = 0``; 0.0324, 0.0822 and 0.1394 at ``kappa`` 0.5, 1 and 2; and
+    ``sqrt(0.95 * 0.05) = 0.218`` as ``kappa`` grows, where a log's paths all lie within the radius
+    or all without (``validation/tube_per_log_content.mac``, ``tube_per_log_content.gp``)."""
+    if kappa == 0.0:
+        return 0.0
+    if math.isinf(kappa):
+        return math.sqrt(_TUBE_COVERAGE * (1.0 - _TUBE_COVERAGE))
+    level = math.sqrt(float(chi2.ppf(_TUBE_COVERAGE, 1)))
+    a = math.sqrt(1.0 + 2.0 * kappa * kappa)
+    variance = 4.0 * (
+        2.0 * float(owens_t(level, 1.0)) - float(owens_t(level, a)) - float(owens_t(level, 1.0 / a))
+    )
+    return math.sqrt(max(variance, 0.0))
+
+
+def _per_log_spreads(
+    field: NDArray[np.float64], covariances: Sequence[NDArray[np.float64]]
+) -> tuple[float, ...]:
+    """:attr:`DecisionCertificate.tube_per_log_spread`: :func:`_per_log_spread` at each step, its
+    ``kappa`` the standard deviation the tube reads the field's part at, ``field`` ``(H + 1,)``,
+    over the root of the largest variance of the noise's part, ``covariances`` its ``P_k``, along
+    whose direction the tube places the field's. 0 at a step with no field part, where each log's
+    share is the noise's alone, 0.95."""
+    spreads = []
+    for scale, covariance in zip(field, covariances, strict=True):
+        noise = math.sqrt(max(float(np.linalg.eigvalsh(np.atleast_2d(covariance))[-1]), 0.0))
+        kappa = 0.0 if not scale > 0.0 else math.inf if noise == 0.0 else float(scale) / noise
+        spreads.append(_per_log_spread(kappa))
+    return tuple(spreads)
+
+
+def _box_field(
+    fit: CausalDynamicsFit,
+    reach: NDArray[np.float64],
+    plan: CausalPlan,
+    state_matrices: NDArray[np.float64],
+    drivers: NDArray[np.float64],
+    box: tuple[NDArray[np.float64], NDArray[np.float64]],
+    dt: float,
+    integrator: Integrator,
+) -> NDArray[np.float64]:
+    """``(H + 1,)``: what the tube carries of the field's error over the levers' box, each step's
+    read at its worst vertex (:func:`_field_errors`) and carried by its gains' norms
+    (:func:`chc.uncertainty._linear_tube`), as :func:`prescribe`'s solve carries it."""
+    errors = _field_errors(
+        fit, reach, np.asarray(plan.trajectory, dtype=np.float64)[:-1], drivers, box
+    )
+    return _linear_tube(
+        state_matrices, [float(error) for error in errors], dt, integrator=integrator
+    )
+
+
+class _MovedField(eqx.Module):
+    """``field`` with the fitted coefficients off by ``theta``, to first order: ``field(t, x, u) +
+    jacobian(t, x, u) theta`` (:func:`_plan_field`)."""
+
+    field: Dynamics
+    jacobian: Callable[[Array, Array, Array], Array] = eqx.field(static=True)
+    theta: Array
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return self.field(t, x, u) + self.jacobian(jnp.asarray(t), x, u) @ self.theta
+
+
+def _plan_field(
+    fit: CausalDynamicsFit, model: Dynamics, start: Array, actions: Array, dt: float
+) -> NDArray[np.float64]:
+    """``(H + 1,)``: the standard deviation of the gap the fitted field's error opens at each of a
+    plan's steps, at the plan's own ``actions``, to first order: ``sqrt(tr(S_k Sigma S_k'))``.
+
+    The fit's error is one vector ``theta = (e, d_1 .. d_n, p)``: the channel's coefficients',
+    each state's drift's own and the push's mean (:class:`chc.dynamics_id._FieldTerms`), of
+    covariance ``Sigma`` (:meth:`~chc.dynamics_id._FieldTerms.joints`, the largest read at each
+    step). It moves the field at ``(x, u)`` by ``H(x, u) theta``, ``H``'s row ``s`` the field's
+    gradient in them: ``e_s (x) g(x, u) - projection[s]' phi(x)``, ``phi(x)`` and a one. ``S_k`` is
+    the plan's state at step ``k`` differentiated in ``theta`` through ``model``'s own rollout
+    (``jax.jacfwd``), RK4 or the Euler map, the field read where each stage reads it, so one
+    error's move at every step is carried with its sign, and the steps' errors cancel where the
+    actions change sign (Lutkepohl 2005, section 3.5: the estimated coefficients' share of a
+    forecast's error). :func:`_field_errors` instead reads each step's error alone, at the box's
+    worst vertex, and :func:`chc.uncertainty._linear_tube` adds their gains' norms. Under the
+    Euler map that is never less than this at the plan's actions, by Minkowski's inequality, and
+    equal on one state where the steps' errors are one (``validation/plan_action_tube.mac``).
+    Under RK4 the stages read the error at states the field has moved, a term of order ``dt^2``
+    the box's form does not carry, so this may be the wider: on 400 logs of an exact flow, the
+    box's form at the plan's actions was 0.88 of this at the first step (median), and its misses
+    had a root mean square of 1.19 standard deviations, this one's 1.04."""
+    terms = fit._field_terms
+    assert terms is not None
+    euler = isinstance(model, _EulerStep)
+    inner = model.field if isinstance(model, _EulerStep) else model
+    driven = inner if isinstance(inner, DrivenDynamics) else None
+    projection = jnp.asarray(terms.projection)
+    count = projection.shape[0]
+    eye = jnp.eye(count)
+    degree, channel_degree = fit.residual.degree, fit.residual.channel_degree
+
+    def jacobian(t: Array, x: Array, u: Array) -> Array:
+        own = control_affine_features(x, degree)
+        if driven is not None:
+            own = jnp.concatenate([own, driven.drivers(t)])
+        lifted = jnp.outer(u, control_affine_features(x, channel_degree)).ravel()
+        channel = jnp.kron(eye, lifted[None, :]) - jnp.einsum("sca,c->sa", projection, own)
+        return jnp.concatenate([channel, jnp.kron(eye, own[None, :]), eye], axis=1)
+
+    def path(theta: Array) -> Array:
+        moved = _MovedField(inner, jacobian, theta)
+        return rollout(_EulerStep(moved) if euler else moved, start, actions, dt)
+
+    joints = terms.joints()
+    zero = jnp.zeros(joints[0].shape[0], dtype=jnp.result_type(start))
+    sensitivity = np.asarray(jax.jacfwd(path)(zero), dtype=np.float64)
+    variances = np.max(
+        [np.einsum("kip,pq,kiq->k", sensitivity, joint, sensitivity) for joint in joints], axis=0
+    )
+    return np.sqrt(np.maximum(variances, 0.0))
+
+
+def _carried_at_plan(
+    plan: CausalPlan,
+    fit: CausalDynamicsFit,
+    model: Dynamics,
+    state_matrices: NDArray[np.float64],
+    noise: NDArray[np.float64],
+    persistence: NDArray[np.float64],
+    dt: float,
+    tolerance: float,
+    field_scale: float,
+    read: _NoiseRead | None,
+) -> CausalPlan:
+    """``plan`` with its tube's field part read at its own actions (:func:`_plan_field`), at
+    ``field_scale`` times itself and along the noise's widest direction, as
+    :func:`chc.plan._carried_along` reads the box's (:func:`chc.uncertainty._noise_tube`). The
+    tube moves no action."""
+    field = _plan_field(fit, model, plan.trajectory[0], plan.actions, dt)
+    tube = _noise_tube(
+        state_matrices,
+        _noise_covariance(noise, plan.trajectory.shape[-1]),
+        persistence,
+        dt,
+        len(plan.actions),
+        field_scale * field,
+        read,
+        integrator=_integrator(model),
+    )
+    return replace(
+        plan,
+        uncertainty_tube=jnp.asarray(tube),
+        certified_horizon=_certified(tube, tolerance, plan.trajectory),
     )
 
 

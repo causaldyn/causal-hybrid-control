@@ -63,6 +63,7 @@ import numpy as np
 from jax import Array
 from numpy.typing import ArrayLike, NDArray
 from scipy.optimize import brentq
+from scipy.stats import f as fisher
 from scipy.stats import t as student_t
 
 from chc import _units
@@ -192,7 +193,13 @@ class _FieldTerms:
     ``cross``, ``(r', n q, n, C)``; ``push``, ``(r', n)``. ``r'`` is 1 where the drift's side is
     pooled over the rows, as without clusters or periods, and ``r`` where it is read as the
     channel's is. ``states`` ``(N, n)`` and ``drivers`` ``(N, d)`` are the log's rows, which the
-    field's error over the log is read at. Equal where every array is."""
+    field's error over the log is read at. Equal where every array is.
+
+    The field's errors at two states, or at two of a plan's steps, move together: one error of
+    the coefficients makes them all. ``drift_joint``, ``(r', n C, n C)``, is the drift's own
+    covariance over every state's carried coefficients, a state's beside each other, whose blocks
+    on the diagonal are ``drift``'s; ``push_joint``, ``(r', n, n)``, the push's mean's over the
+    states, whose diagonal is ``push``. :meth:`joints` puts them together."""
 
     mean_action: np.ndarray
     projection: np.ndarray
@@ -202,6 +209,8 @@ class _FieldTerms:
     push: np.ndarray
     states: np.ndarray
     drivers: np.ndarray
+    drift_joint: np.ndarray
+    push_joint: np.ndarray
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, _FieldTerms) and all(
@@ -210,6 +219,27 @@ class _FieldTerms:
         )
 
     __hash__ = None  # type: ignore[assignment]
+
+    def joints(self) -> list[np.ndarray]:
+        """The covariance of the whole error ``(e, d_1 .. d_n, p)``, ``(n q + n C + n)`` square,
+        at each of the reads: the channel's ``e``, each state's drift's own ``d_s`` and the push's
+        mean ``p``, a state each. The push's mean moves with neither of the others: its error is
+        the adjustment set's sampling mean, which the noise does not move."""
+        reads = max(self.channel.shape[0], self.drift_joint.shape[0])
+        size, count = self.channel.shape[1], self.push.shape[1]
+        drift = self.drift_joint.shape[1]
+        joints = []
+        for read in range(reads):
+            side = read if self.drift_joint.shape[0] > 1 else 0
+            joint = np.zeros((size + drift + count, size + drift + count))
+            joint[:size, :size] = self.channel[read if self.channel.shape[0] > 1 else 0]
+            cross = self.cross[side].reshape(size, drift)
+            joint[:size, size : size + drift] = cross
+            joint[size : size + drift, :size] = cross.T
+            joint[size : size + drift, size : size + drift] = self.drift_joint[side]
+            joint[size + drift :, size + drift :] = self.push_joint[side]
+            joints.append(joint)
+        return joints
 
 
 @dataclass(frozen=True)
@@ -946,6 +976,7 @@ def _field_terms(
     conditional: Array,
     projection: Array,
     pooled: ArrayLike,
+    pooled_joint: ArrayLike,
     noise: Array,
     score: Array,
     residual: Array,
@@ -973,7 +1004,9 @@ def _field_terms(
     hold the adjustment set's push, whose value the field leaves at its mean on the log.
 
     Without ``clusters`` or ``periods`` the drift's side is pooled, as ``drift_error`` pools it:
-    ``pooled`` is that covariance's ``(G, C, C)`` blocks, ``noise`` ``(n,)`` the noise each
+    ``pooled`` is that covariance's ``(G, C, C)`` blocks and ``pooled_joint`` the whole of it over
+    every state's carried coefficients, ``(n C, n C)``, a state's beside each other, ``noise``
+    ``(n,)`` the noise each
     state's residual pools, the drift's covariance with the channel is ``sum_i M_i noise W_i'``,
     nothing under Euler but for cross-fitting (Frisch and Waugh 1933), and the push's mean has the
     variance its rows give independent, ``sum pushed^2 / N^2``. With them, the channel's scores,
@@ -1001,7 +1034,10 @@ def _field_terms(
         )
         crosses = by_state(cross)[None]
         drifts = np.asarray(pooled, dtype=np.float64)[None]
-        pushes = (np.sum(np.asarray(pushed, dtype=np.float64) ** 2, axis=0) / rows**2)[None]
+        drift_joints = np.asarray(pooled_joint, dtype=np.float64)[None]
+        moved = np.asarray(pushed, dtype=np.float64)
+        pushes = (np.sum(moved**2, axis=0) / rows**2)[None]
+        push_joints = (moved.T @ moved / rows**2)[None]
     else:
         q = size // count
         stacked = jnp.concatenate(
@@ -1029,9 +1065,17 @@ def _field_terms(
                 for joint in joints
             ]
         )
-        pushes = np.stack(
-            [np.diag(joint[drift.stop :, drift.stop :]) / rows**2 for joint in joints]
+        drift_joints = np.stack(
+            [
+                joint[drift, drift]
+                .reshape(features, count, features, count)[:carried, :, :carried, :]
+                .transpose(1, 0, 3, 2)
+                .reshape(count * carried, count * carried)
+                for joint in joints
+            ]
         )
+        push_joints = np.stack([joint[drift.stop :, drift.stop :] / rows**2 for joint in joints])
+        pushes = np.diagonal(push_joints, axis1=1, axis2=2).copy()
     return _FieldTerms(
         mean_action=np.asarray(jnp.mean(actions, axis=0), dtype=np.float64),
         projection=np.asarray(projection, dtype=np.float64)
@@ -1043,6 +1087,8 @@ def _field_terms(
         push=pushes,
         states=np.asarray(states, dtype=np.float64),
         drivers=np.asarray(drivers, dtype=np.float64),
+        drift_joint=drift_joints,
+        push_joint=push_joints,
     )
 
 
@@ -2305,6 +2351,9 @@ def fit_causal_residual(
             conditional,
             projection,
             drift_blocks,
+            drift_covariance.reshape(rows, states, rows, states)[:carried, :, :carried, :]
+            .transpose(1, 0, 3, 2)
+            .reshape(states * carried, states * carried),
             noise,
             score,
             own_defect,
@@ -2382,6 +2431,8 @@ def fit_causal_residual(
             drift_direct(channel.size)[channel.size :],
             jnp.einsum("fa,st->fsta", weight @ raw, jnp.eye(states)).reshape(-1, channel.size),
             fit._drift_blocks,
+            # the states' blocks are one, and independent of each other's: one pooled noise
+            np.kron(np.eye(states), fit._drift_blocks[0]),
             # the noise _ols_blocks pools over the rows and the states
             jnp.full(
                 (states,),
@@ -2827,6 +2878,36 @@ def omitted_confounder_bound(
     )
 
 
+RegionForm = Literal["ridge", "grid"]
+""":func:`channel_region`'s radius. ``ridge``: Abbasi-Yadkori, Pal and Szepesvari's (2011), its
+log-determinant read against the fit's own ridge. ``grid``: Simpson, Baumgartner, Koehler and
+Diehl's (2026, Theorem 2), the least over a fixed grid of prior matrices, the prior's term inside
+the root. *Experimental.*"""
+
+# The grid's members besides the prior itself: ``V_bar = 2^j ridge P``, ``j = 1 .. 64``, so its
+# ratio to the ridge spans 2 to 2^64, past any log's ``D'D`` at the fit's ridge of 1e-6.
+_GRID_POWERS = 64
+
+
+def _grid_members(spectrum: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """``rho_j`` and ``l_j`` of the grid's ``J = 65`` members, from the eigenvalues ``mu`` of
+    ``D'D`` in the ridge's metric: the prior alone, ``V_bar = 0``, whose ``rho`` is 0 and ``l`` is
+    ``sum log(1 + mu) = log det(V) - log det(ridge P)``, Corollary 1's; and ``V_bar = 2^j ridge P``,
+    whose ``rho_j = rho((ridge P + D'D)^-1 V_bar) = 2^j / (1 + min mu)`` and ``l_j = log det(I +
+    (ridge P + V_bar)^-1 D'D) = sum log(1 + mu / (1 + 2^j))``
+    (``validation/channel_region_grid.mac``)."""
+    powers = 2.0 ** np.arange(1, _GRID_POWERS + 1)
+    smallest = float(np.min(spectrum))
+    inflation = np.concatenate([[0.0], powers / (1.0 + smallest)])
+    log_dets = np.concatenate(
+        [
+            [float(np.sum(np.log1p(spectrum)))],
+            np.sum(np.log1p(spectrum[None, :] / (1.0 + powers[:, None])), axis=1),
+        ]
+    )
+    return inflation, log_dets
+
+
 @dataclass(frozen=True)
 class ChannelRegion:
     """A region that holds the fitted channel's coefficients at a stated level, from one log.
@@ -2835,7 +2916,8 @@ class ChannelRegion:
     ``c_s`` (the channel's row ``s``, raveled lever by lever, each lever's features in turn) lie in
     ``{c : ||c_hat_s - c||_V <= radius[s]}`` for every state at once with probability at least
     ``level``. ``V = D'D + ridge P`` is the matrix the fit's least squares solved, ``D`` the
-    channel's design on the action residuals. :func:`channel_region` says where it holds.
+    channel's design on the action residuals. :func:`channel_region` says where it holds, and
+    ``form`` which radius it reads (:data:`RegionForm`).
     """
 
     level: float
@@ -2847,12 +2929,30 @@ class ChannelRegion:
     prior: np.ndarray  # (n,): each state's bound on its true coefficients in the ridge's norm
     log_det_ratio: float  # log det V - log det(ridge P)
     channel_degree: int
+    form: RegionForm = "ridge"
+    # (q,): the eigenvalues of D'D in the ridge's metric, (ridge P)^(-1/2) D'D (ridge P)^(-1/2),
+    # which the grid's radius reads; empty under ``ridge``
+    spectrum: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(0))
 
     def _radii(self, delta: float) -> np.ndarray:
-        """Each state's radius at ``1 - delta`` overall, ``delta / n`` a state: Abbasi-Yadkori,
-        Pal and Szepesvari's ``R sqrt(2 log(det(V)^(1/2) det(V0)^(-1/2) / delta)) + ||c||_V0``."""
+        """Each state's radius at ``1 - delta`` overall, ``delta / n`` a state. Under ``ridge``,
+        Abbasi-Yadkori, Pal and Szepesvari's ``R sqrt(2 log(det(V)^(1/2) det(V0)^(-1/2) /
+        delta)) + ||c||_V0``. Under ``grid``, the least over :func:`_grid_members` of Simpson,
+        Baumgartner, Koehler and Diehl's (2026, Theorem 2) ``sqrt(1 + rho_j) sqrt(||c||_V0^2 + R^2
+        (l_j + 2 log(J / delta)))``, a state's ``delta`` shared over the ``J`` members."""
         share = delta / self.noise.size
-        return self.noise * math.sqrt(2.0 * math.log(1.0 / share) + self.log_det_ratio) + self.prior
+        if self.form == "ridge":
+            return (
+                self.noise * math.sqrt(2.0 * math.log(1.0 / share) + self.log_det_ratio)
+                + self.prior
+            )
+        inflation, log_dets = _grid_members(self.spectrum)
+        level = log_dets + 2.0 * math.log(inflation.size / share)
+        return np.min(
+            np.sqrt(1.0 + inflation)[None, :]
+            * np.sqrt(self.prior[:, None] ** 2 + self.noise[:, None] ** 2 * level[None, :]),
+            axis=1,
+        )
 
     def contains(self, channel: ArrayLike) -> bool:
         """Whether every state's row of ``channel``, shaped as :attr:`channel`, lies in its
@@ -2931,6 +3031,18 @@ class ChannelRegion:
         if unit == 0.0:
             return 1.0
         target = rho / unit
+        if self.form == "grid":
+            # the radii shrink as delta grows: the largest level whose radii reach rho is a root
+            def excess(log_delta: float) -> float:
+                return float(np.linalg.norm(self._radii(math.exp(log_delta)))) - target
+
+            if excess(0.0) > 0.0:
+                return 0.0
+            # below the machine's epsilon ``1 - delta`` is 1, and past it ``J n / delta`` overflows
+            floor = math.log(np.finfo(np.float64).eps)
+            if excess(floor) <= 0.0:
+                return 1.0
+            return max(0.0, 1.0 - math.exp(brentq(excess, floor, 0.0, xtol=1e-12)))
         a2 = float(np.sum(self.noise**2))
         a1 = float(np.sum(self.noise * self.prior))
         a0 = float(np.sum(self.prior**2)) - target**2
@@ -2970,7 +3082,11 @@ def _whitened(square: np.ndarray, root: np.ndarray) -> np.ndarray:
 
 
 def channel_region(
-    fit: CausalDynamicsFit, level: float = 0.95, *, bound: float | None = None
+    fit: CausalDynamicsFit,
+    level: float = 0.95,
+    *,
+    bound: float | None = None,
+    form: RegionForm = "ridge",
 ) -> ChannelRegion:
     """The self-normalised confidence ellipsoid of the fitted channel, at ``level``.
 
@@ -3010,6 +3126,24 @@ def channel_region(
       theorem's terms.
     - **The prior term** ``||c||_V0`` is ``bound`` where given, else the estimate's own, a
       plug-in; at the default ridge it is about 1e-3 of the coefficients' effect on the rate.
+    - **The prior's scale is read off the log too.** ``P`` is the diagonal of the log's mean
+      squares of the channel's regressors, so ``V0`` is a plug-in as ``R`` is: the theorem's
+      ``V0`` is fixed before the log. The grid's members are multiples of it, on the same terms.
+
+    ``form="grid"``, *experimental*, reads the radius of Simpson, Baumgartner, Koehler and Diehl
+    (arXiv 2603.19073, 2026, Theorem 2), proved under the same premises: the noise conditionally
+    sub-Gaussian with a known ``R``, the regressors predictable, the true coefficients within
+    ``||c||_V0`` of nought. It puts the prior's term inside the root, ``sqrt(||c||_V0^2 + R^2
+    (...))`` where Abbasi-Yadkori et al. add it outside, and reads the log-determinant against a
+    prior matrix ``V_bar`` near ``D'D`` rather than the fit's ridge, paying ``sqrt(1 + rho((V0 +
+    D'D)^-1 V_bar))`` for it: the least over a fixed grid of 65 members, ``V_bar = 0`` and ``2^j
+    V0``, each at ``delta / 65`` (:func:`_grid_members`). At the fit's ridge of 1e-6 the
+    log-determinant against the ridge is the larger part of the radius, and the grid's is smaller:
+    on 2000 closed-loop logs of ``x' = 0.9 x + 0.5 u + e``, ``u = -0.6 x + e'``, 2400 rows, ``V0 =
+    1e-6 I``, the median radius of the region of ``(0.9, 0.5)`` read 7.06 by Abbasi-Yadkori et
+    al.'s form and 4.76 by the grid's; on 100 logs of 1500 rows of a feedback policy with an
+    adjusted confounder, the channel's region at 0.95 read 1.69 and 1.16. Each held the truth on
+    every log.
 
     Under a hidden confounder an instrument's sign-perturbed sums (Szentpeteri and Csaji, 2023)
     stay valid; they are not built here.
@@ -3020,12 +3154,15 @@ def channel_region(
         level: the joint level over the states, in ``(0, 1)``.
         bound: an upper bound, for every state, on the true coefficients' norm in the ridge's
             metric, ``sqrt(sum_l ridge P_l c_l^2)``; None reads the estimate's.
+        form: the radius (:data:`RegionForm`): ``"ridge"``, the default, or ``"grid"``.
 
     Raises:
         ValueError: on a fit that is not identified, read through an instrument, fitted under
             ``rk4``, weighted, with a direction its actions never move, or with no ridge; a
-            ``level`` outside ``(0, 1)``; or a negative ``bound``.
+            ``level`` outside ``(0, 1)``; a negative ``bound``; or a ``form`` not named.
     """
+    if form not in ("ridge", "grid"):
+        raise ValueError(f"form={form!r} is neither 'ridge' nor 'grid'")
     if not 0.0 < level < 1.0:
         raise ValueError(f"level={level!r} must be in (0, 1)")
     if bound is not None and not 0.0 <= bound < math.inf:
@@ -3095,6 +3232,14 @@ def channel_region(
         prior=prior,
         log_det_ratio=float(log_det - np.sum(np.log(ridge))),
         channel_degree=fit.residual.channel_degree,
+        form=form,
+        spectrum=np.zeros(0)
+        if form == "ridge"
+        else np.clip(
+            np.linalg.eigvalsh((gram - np.diag(ridge)) / np.sqrt(np.outer(ridge, ridge))),
+            0.0,
+            None,
+        ),
     )
     return dataclasses.replace(region, radius=region._radii(1.0 - level))
 
@@ -3162,6 +3307,9 @@ def persistence_check(
     levers and the adjustment set a period earlier removes the bias where the noise is AR(1): on
     panels of 200 units over 100 periods whose noise and lever are AR(0.7), a channel of 0.8 read
     0.0130 low, 0.0007 low with them, and 0.0250 low with the state's lag alone (ADR 0064).
+
+    A residual that moves with a lever some periods back, a dead time, is
+    :func:`lag_check`'s to read: the lag-1 autocorrelation does not name it.
 
     Raises:
         ValueError: the fit kept no moment residual, as where its channel is not identified; the
@@ -3395,6 +3543,151 @@ def _interference(
         else math.nan
     )
     return InterferenceCheck(coefficient, t, p_value, int(np.sum(keep)), count)
+
+
+@dataclass(frozen=True)
+class LagCheck:
+    """Whether a fit's moment residual moves with its levers some periods back, read by
+    :func:`lag_check`. *Experimental.*
+
+    The fit's premise is that a period's lever moves the state over that period alone. Where the
+    plant takes the lever some periods late, a dead time, the residual carries the late levers'
+    push, and the channel reads the share of it the current lever is correlated with.
+    """
+
+    # ``(n_states, lags, n_levers)``: each state's residual's slope on each lever ``lag`` periods
+    # back, ``lag`` 1 to ``lags``, the fit's own regressors held, in the state's rate per unit of
+    # the lever; nan for a column the log does not move once those are held
+    coefficient: NDArray[np.float64]
+    t: NDArray[np.float64]  # each slope over its CR1 error across the groups
+    # the smallest over the states of each state's joint Wald test of its slopes, against
+    # ``F(k, G - 1)`` for its ``k`` slopes, times the number of states, at most 1 (Bonferroni);
+    # nan below two groups or with no slope to read
+    p_value: float
+    lag: int | None  # the lag of the slope largest in ``t``, over the states and levers
+    transitions: int  # the transitions whose unit's levers ``lags`` periods back are in the log
+    groups: int  # ``G``: the groups among them
+
+
+def lag_check(
+    fit: CausalDynamicsFit,
+    data: dict[str, Array],
+    units: ArrayLike,
+    periods: ArrayLike,
+    *,
+    lags: int = 3,
+    adjust_for: tuple[str, ...] = (),
+) -> LagCheck:
+    """Regress ``fit``'s moment residual on its levers 1 to ``lags`` periods back. *Experimental.*
+
+    ``data`` holds the columns the fit was given, ``x (N, n)`` and ``u (N, m)``, and those named
+    in ``adjust_for``, the fit's adjustment set; ``units`` and ``periods`` label the transitions as
+    :func:`persistence_check` reads them. A transition's lever ``k`` periods back is its unit's
+    transition's that many periods earlier; a transition without all ``lags`` of them is left out.
+    The residual and the late levers are each taken less their least-squares fit on a constant,
+    the states, the levers and the adjustment set, the fit's own regressors, and each state's
+    residual is regressed on the late levers (Frisch and Waugh 1933). A slope's error is the CR1
+    sandwich over the units' sums of scores, or the fit's clusters' where it was given them; each
+    state's slopes are tested together by Wald's statistic against ``F(k, G - 1)``, and the check's
+    p-value is Bonferroni's over the states. This is the residual test of a model's dynamic part,
+    the residual's cross-correlation with past inputs (Ljung 1999, chapter 16).
+
+    Under the fit's premise the residual has mean zero given this period's state, levers and
+    adjustment set, and an earlier lever reaches it only through the state: its slope is zero.
+    A rejection says the plant reads a lever late. ``lag`` then names the lag that carries it;
+    :func:`chc.irf.delay_estimate` reads the delay off the response with an interval, and a state
+    that carries the levers' last ``lag`` values holds a discrete dead time exactly
+    (:class:`chc.delay.DelayedDynamics` holds a continuous one). It sees what
+    :func:`persistence_check` cannot name: on the misspecification suite's two-state plant whose
+    lever reaches it two periods late, 200 units over 12 periods, the check rejected on 6 logs of
+    6 and named lag 2 on each; on the same plant without the dead time it rejected at 0.05 on 5
+    logs of 60, its size.
+
+    Raises:
+        ValueError: the fit kept no moment residual, as where its channel is not identified; the
+            columns or the labels are not one row a transition; ``lags`` is not a positive whole
+            number; or a unit has two transitions starting in one period.
+    """
+    if fit.moment_residual is None:
+        raise ValueError("the fit kept no moment residual: its channel is not identified")
+    if not (isinstance(lags, (int, np.integer)) and lags >= 1):
+        raise ValueError(f"lags={lags!r} is not a positive whole number of periods")
+    residual = np.asarray(fit.moment_residual, dtype=np.float64)
+    rows = residual.shape[0]
+    levers = np.asarray(data["u"], dtype=np.float64).reshape(rows, -1)
+    held = np.column_stack(
+        [
+            np.ones(rows),
+            np.asarray(data["x"], dtype=np.float64).reshape(rows, -1),
+            levers,
+            *(np.asarray(data[name], dtype=np.float64).reshape(rows, -1) for name in adjust_for),
+        ]
+    )
+    labels, steps = np.asarray(units).reshape(-1), np.asarray(periods).reshape(-1)
+    if labels.size != rows or steps.size != rows:
+        raise ValueError(
+            f"units and periods label the fit's {rows} transitions, one each; got {labels.size} "
+            f"and {steps.size}"
+        )
+    codes = np.unique(labels, return_inverse=True)[1].reshape(-1)
+    pairs = list(zip(codes.tolist(), steps.tolist(), strict=True))
+    where = {pair: row for row, pair in enumerate(pairs)}
+    if len(where) != rows:
+        raise ValueError("a unit has two transitions starting in one period")
+    late = np.array(
+        [[where.get((code, step - lag), -1) for lag in range(1, lags + 1)] for code, step in pairs]
+    ).reshape(rows, lags)
+    keep = np.all(late >= 0, axis=1)
+    n_states, n_levers = residual.shape[1], levers.shape[1]
+    nan = np.full((n_states, lags, n_levers), math.nan)
+    clustered = codes if fit.clusters is None else np.asarray(fit.clusters).reshape(rows, -1)[:, 0]
+    groups = np.unique(clustered[keep], return_inverse=True)[1].reshape(-1)
+    count = int(groups.max()) + 1 if groups.size else 0
+    if count < 2:
+        return LagCheck(nan, nan.copy(), math.nan, None, int(np.sum(keep)), count)
+    design = levers[late[keep]].reshape(-1, lags * n_levers)
+    base = held[keep]
+
+    def partialled(values: NDArray[np.float64]) -> NDArray[np.float64]:
+        return values - base @ np.linalg.lstsq(base, values, rcond=None)[0]
+
+    design, outcome = partialled(design), partialled(residual[keep])
+    # a column whose spread is rounding of its size moves nothing once the regressors are held
+    size = np.max(np.abs(levers), axis=0)
+    size = np.tile(np.where(size > 0.0, size, 1.0), lags)
+    live = np.sqrt(np.mean(design**2, axis=0)) > 64.0 * np.finfo(np.float64).eps * size
+    if not np.any(live):
+        return LagCheck(nan, nan.copy(), math.nan, None, int(np.sum(keep)), count)
+    design = design[:, live]
+    scale = np.sqrt(np.mean(design**2, axis=0))
+    standard = design / scale
+    gram_inv = np.linalg.inv(standard.T @ standard)
+    slope = gram_inv @ standard.T @ outcome
+    left = outcome - standard @ slope
+    coefficient, t = nan.reshape(n_states, -1).copy(), nan.reshape(n_states, -1).copy()
+    p_values = []
+    for state in range(n_states):
+        scores = np.zeros((count, standard.shape[1]))
+        np.add.at(scores, groups, standard * left[:, state : state + 1])
+        cov = count / (count - 1) * gram_inv @ (scores.T @ scores) @ gram_inv
+        coefficient[state, live] = slope[:, state] / scale
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t[state, live] = slope[:, state] / np.sqrt(np.maximum(np.diag(cov), 0.0))
+        wald = float(slope[:, state] @ np.linalg.pinv(cov) @ slope[:, state])
+        p_values.append(float(fisher.sf(wald / standard.shape[1], standard.shape[1], count - 1)))
+    t = t.reshape(n_states, lags, n_levers)
+    lag = None
+    if np.any(np.isfinite(t)):
+        largest = np.argmax(np.where(np.isfinite(t), np.abs(t), -np.inf))
+        lag = int(np.unravel_index(largest, t.shape)[1]) + 1
+    return LagCheck(
+        coefficient.reshape(n_states, lags, n_levers),
+        t,
+        min(1.0, n_states * min(p_values)),
+        lag,
+        int(np.sum(keep)),
+        count,
+    )
 
 
 # --- What a tracked log identifies, and what it does not ---

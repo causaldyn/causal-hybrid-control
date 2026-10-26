@@ -1,0 +1,117 @@
+/* The tube's field part at the plan's own actions (chc.decision._plan_field, ADR 0138).
+
+   The fit's error is one vector theta of covariance Sigma. It moves the field at (x, u) by
+   H(x, u) theta, so the plan's state at step k moves by S_k theta, S_k its derivative in theta
+   through the plan's rollout, and the gap's variance is S_k Sigma S_k'. The box's form instead
+   reads each step's error alone, e_j = sqrt(tr(H_j Sigma H_j')), and adds the gains' norms,
+   sum_j ||G_kj|| e_j, G_kj what step j's error reaches step k by.
+
+   Checked here:
+   (1) under the Euler map S_{k+1} = (I + dt A_k) S_k + dt H(x_k, u_k), two steps, symbolic, with
+       an error whose gradient moves with the state;
+   (2) under RK4 one step's derivative is dt phi(z) delta f(x) + dt^2/2 delta_A f(x) + O(dt^3),
+       z = dt a: RK4 reads the error where each stage reads the field, so carrying one step's
+       error through the stage weights alone misses a term of the order of dt^2, which the
+       derivative through the rollout keeps;
+   (3) sqrt(tr(S Sigma S')) <= sum_j ||G_j|| sqrt(tr(H_j Sigma H_j')) for S = sum_j G_j H_j
+       (Minkowski), at rational sample points;
+   (4) equality on one state where every H_j is one row and every G_j >= 0, symbolic;
+   (5) the box's form over the plan's at the population covariance of a closed-loop log's least
+       squares, x+ = x + dt(a x + b u) + e, u = -x/2 + n/2, dt = 1/5, a = -1/2, b = 1, e of spread
+       1/20: a held plan 1.04, 1.02, 1.01 at steps 5, 10, 15; a plan +1 for 5 steps then -1,
+       1.61 and 1.89 at steps 10 and 15; one that alternates +-1, 1.95, 2.11, 2.15 at 5, 10, 15.
+*/
+display2d : false$
+ratprint : false$
+/* a check that fails stops the batch with "-- an error.", which validation/run_all.sh reads */
+vanishes(label, x) := if is(x = 0) or (listp(x) and every(lambda([v], is(v = 0)), x))
+                      then print(label, "= 0") else error(label, "is not zero:", x)$
+holds(label, claim) := if is(claim) then print(label, "(PASS)") else error(label, "(FAIL)")$
+
+/* (1) a scalar affine field f = a x + g u + c moved by H(x, u) theta, H = (1, x, u) */
+f(x, u) := a*x + g*u + c$
+moved(x, u, th) := f(x, u) + th[1] + th[2]*x + th[3]*u$
+eulerstep(x, u, th) := x + dt*moved(x, u, th)$
+th : [t1, t2, t3]$
+x1 : eulerstep(x0, u0, th)$
+x2 : eulerstep(x1, u1, th)$
+s1 : makelist(diff(x1, th[i]), i, 1, 3)$
+s2 : makelist(diff(x2, th[i]), i, 1, 3)$
+at0 : [t1 = 0, t2 = 0, t3 = 0]$
+vanishes("(1) S_1 - dt H(x_0, u_0)",
+         ratsimp(subst(at0, s1) - dt*[1, x0, u0]))$
+x1z : subst(at0, x1)$
+vanishes("(1) S_2 - ((1 + dt a) S_1 + dt H(x_1, u_1))",
+         ratsimp(subst(at0, s2) - ((1 + dt*a)*subst(at0, s1) + dt*[1, x1z, u1])))$
+
+/* (2) RK4 on (a + e al) x + (q + e be), q the held push of the action, moved by e */
+rk(x, aa, qq) := block([k1, k2, k3, k4],
+  k1 : aa*x + qq, k2 : aa*(x + dt/2*k1) + qq, k3 : aa*(x + dt/2*k2) + qq,
+  k4 : aa*(x + dt*k3) + qq, x + dt/6*(k1 + 2*k2 + 2*k3 + k4))$
+onestep : rk(x, a + e*al, q + e*be)$
+derivative : subst(e = 0, diff(onestep, e))$
+z : dt*a$
+phiz : 1 + z/2 + z^2/6 + z^3/24$
+stagefree : dt*phiz*(al*x + be)$
+vanishes("(2) the derivative - dt phi(z) delta f - dt^2/2 al f(x), through dt^2",
+         ratsimp(coeff(expand(derivative - stagefree - dt^2/2*al*(a*x + q)), dt, 2)))$
+gap2 : ratsimp(derivative - stagefree)$
+print("(2) what the stage weights alone miss:", factor(gap2))$
+holds("(2) it is not nothing", is(gap2 # 0))$
+
+/* (3) */
+fro2(m) := lsum(v^2, v, flatten(args(m)))$
+op2(m) := lmax(map(lambda([v], float(v)), eigenvalues_list(transpose(m) . m)))$
+eigenvalues_list(m) := block([ev : eigenvalues(m)], flatten(makelist(
+  makelist(ev[1][i], j, 1, ev[2][i]), i, 1, length(ev[1]))))$
+G1 : matrix([1, 1/3], [-1/2, 2])$
+G2 : matrix([3/4, -1], [1/5, 1/2])$
+H1 : matrix([1, 2, 0], [0, -1, 1])$
+H2 : matrix([-1, 1, 1], [2, 0, -1/2])$
+Sig : matrix([2, 1/2, 0], [1/2, 1, -1/4], [0, -1/4, 3/2])$
+S : G1 . H1 + G2 . H2$
+left : sqrt(float(mat_trace(S . Sig . transpose(S))))$
+right : sqrt(op2(G1))*sqrt(float(mat_trace(H1 . Sig . transpose(H1))))
+        + sqrt(op2(G2))*sqrt(float(mat_trace(H2 . Sig . transpose(H2))))$
+print("(3) sqrt(tr(S Sigma S')):", left, " the gains' norms times each step's error:", right)$
+holds("(3) Minkowski", is(left <= right))$
+S2 : G1 . H1 - G2 . H1$
+left2 : sqrt(float(mat_trace(S2 . Sig . transpose(S2))))$
+right2 : (sqrt(op2(G1)) + sqrt(op2(G2)))*sqrt(float(mat_trace(H1 . Sig . transpose(H1))))$
+print("(3) one row of errors, gains of opposite signs:", left2, " against", right2)$
+holds("(3) cancelled", is(left2 < right2/2))$
+
+/* (4) one state: S = (sum g_j) h, each g_j >= 0, h one row */
+hr : [h1, h2, h3]$
+quad : hr . genmatrix(lambda([i, j], sg[i, j]), 3, 3) . hr$
+vanishes("(4) tr(S Sigma S') - (sum g_j e_j)^2 with e_j^2 = h Sigma h'",
+         ratsimp((g1 + g2 + g3)^2*quad - (g1*sqrt(quad) + g2*sqrt(quad) + g3*sqrt(quad))^2))$
+
+/* (5) */
+kill(a, g, c, z)$
+dtv : 1/5$  av : -1/2$  bv : 1$
+rho : 1 + dtv*(av - bv/2)$
+vx : ((dtv*bv/2)^2 + (1/20)^2)/(1 - rho^2)$
+vanishes("(5) the log's state variance - 5/144", vx - 5/144)$
+moments2 : matrix([1, 0, 0], [0, vx, -vx/2], [0, -vx/2, vx/4 + 1/4])$
+P : invert(moments2)$
+growth : 1 + av*dtv$
+ratio(u, k) := block([x : [0], e, s : [0, 0, 0], line],
+  for j : 1 thru k do x : endcons(last(x) + dtv*(av*last(x) + bv*u[j]), x),
+  e : makelist(sqrt([1, x[j], u[j]] . P . [1, x[j], u[j]]), j, 1, k),
+  for j : 1 thru k do s : growth*s + dtv*[1, x[j], u[j]],
+  line : sum(abs(growth)^(k - j)*dtv*e[j], j, 1, k),
+  float(line/sqrt(s . P . s)))$
+held : makelist(3/5, j, 1, 15)$
+crossed : append(makelist(1, j, 1, 5), makelist(-1, j, 1, 10))$
+alternate : makelist((-1)^(j - 1), j, 1, 15)$
+near(label, x, y) := if is(abs(x - y) <= 0.005) then print(label, x, "(PASS)")
+                      else error(label, x, "against", y, "(FAIL)")$
+near("(5) held, step 5:", ratio(held, 5), 1.039)$
+near("(5) held, step 10:", ratio(held, 10), 1.025)$
+near("(5) held, step 15:", ratio(held, 15), 1.014)$
+near("(5) crossed, step 10:", ratio(crossed, 10), 1.612)$
+near("(5) crossed, step 15:", ratio(crossed, 15), 1.891)$
+near("(5) alternate, step 5:", ratio(alternate, 5), 1.951)$
+near("(5) alternate, step 10:", ratio(alternate, 10), 2.106)$
+near("(5) alternate, step 15:", ratio(alternate, 15), 2.148)$
