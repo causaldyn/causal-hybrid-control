@@ -61,9 +61,10 @@ HONEST SCOPE, and it bounds what the numbers below mean:
   ``(x_next - x)/dt`` while :func:`chc.plan.causal_plan` rolls out with RK4, so at a coarse ``dt``
   the residual quietly absorbed the gap between the two. It was not small and it was not noise: on
   the fastest-decaying channel (``theta*dt = 0.7``) the fitted decay came back ``-0.503`` against
-  the ``-0.7`` handed over as known, and the control channel with it. :func:`chc.decision.prescribe`
-  now fits with ``integrator="rk4"`` by default, which closes the gap by defect correction, and
-  plans an ``"euler"`` fit by the Euler map it reads; a test asserts both halves --- that the known
+  the ``-0.7`` handed over as known, and the control channel with it. :func:`run_marketing_mix`
+  fits with ``integrator="rk4"`` by default, which closes the gap by defect correction, and
+  :func:`chc.decision.prescribe`, whose own default is ``"euler"`` from 0.22.0, plans an
+  ``"euler"`` fit by the Euler map it reads; a test asserts both halves --- that the known
   rows come back empty under RK4, and that the same log read by
   :func:`~chc.dynamics_id.fit_causal_residual` with
   ``integrator="euler"`` still leaves exactly the closed-form amplification difference. Every

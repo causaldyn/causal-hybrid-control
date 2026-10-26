@@ -43,8 +43,8 @@ HONEST SCOPE:
   limit is what binds, not the limit: every schedule here stays below it.
 * The certificate's tube compounds at the norm of the field's slope in the state where the plan
   starts, which for a hanging pendulum is 15 per second: a ``local`` rate, since gravity bends the
-  field away from there. It is fed ``channel_error``, the channel's standard error at the states
-  the log visited, and the plan's one-step error on the log, which it holds with probability 0.95
+  field away from there. It is fed the fitted field's standard error, the channel's and the
+  drift's together, and the plan's one-step error on the log, which it holds with probability 0.95
   at each step, and compounds both at that rate, so the trusted prefix is short. The audit is what
   shows the rest of the schedule holding; the certificate does not claim it.
 

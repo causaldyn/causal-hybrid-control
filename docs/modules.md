@@ -106,8 +106,8 @@ column *and* the entity when it refuses.
 
 `DecisionCertificate` keeps identification and certification apart, and an unidentified effect
 yields **no schedule at all** rather than one that looks like every other schedule. Measured on one
-synthetic plant read three ways: the adjusted channel is `0.84` against a true `0.80`; an empty
-adjustment set asserted gives `2.15`; with the confounder latent there is no schedule.
+synthetic plant read three ways: the adjusted channel is `0.81` against a true `0.80`; an empty
+adjustment set asserted gives `2.08`; with the confounder latent there is no schedule.
 
 ## Offline safety
 
@@ -126,12 +126,13 @@ adjustment set asserted gives `2.15`; with the confounder latent there is no sch
   one very bad step away.
 - A **Wasserstein-1 DRO** margin for distribution shift.
 - **Rollout error tubes**: RK4 recursions at a Lipschitz rate or a state matrix, or Euler's on
-  request, giving a time-varying uncertainty tube, safety tightening, and the horizon the tube
-  trusts. The tube is a bound where the per-step error is one; given the plant's one-step noise, it
-  adds the radius that holds the noise at each step with probability 0.95. Under `prescribe`,
-  whose per-step error is a standard error read at the state each planned step starts from, the
-  radius holds the noise and that error together at 0.95 a step, the error read at its studentised
-  quantile. Rocq proves that the recursions bound the error under those premises.
+  request and under `prescribe` by default, giving a time-varying uncertainty tube, safety
+  tightening, and the horizon the tube trusts. The tube is a bound where the per-step error is one;
+  given the plant's one-step noise, it adds the radius that holds the noise at each step with
+  probability 0.95. Under `prescribe`, whose per-step error is a standard error read at the state
+  each planned step starts from, the radius holds the noise and that error together at 0.95 a step,
+  the error read at its studentised quantile. Rocq proves that the recursions bound the error under
+  those premises.
 
 The ensemble trains as one sharded program (`vmap` over a member axis, `lax.scan` over the Adam
 steps, `NamedSharding` over the device mesh) rather than K sequential fits: 3.6× on one device and
@@ -264,23 +265,23 @@ log credits the channel with the season. Each channel acts twice: an immediate i
 (the **control channel**, and what gets confounded) and a carried-over one through a saturating
 adstock (the **drift**); the mechanical adstock rows go in as `known=`. Two readings of one log and
 three fixed rules, every arm audited on the *true* plant. At matched budget the prescribed schedule
-buys **+4.2 % more lift** (cumulative sales over the do-nothing arm) than an equal split, and the
+buys **+6.7 % more lift** (cumulative sales over the do-nothing arm) than an equal split, and the
 myopic rule on the same fit, which only splits each week's budget across the channels differently,
-buys +7.3 %: on this plant the gain is the identified allocation, and the whole-horizon plan buys
-2.9 % less than the myopic rule. The confounded arm inflates the channels `2.5–15.4x`, under-invests
-by 14 % and buys 87 % of the lift. It also shows why return per unit of spend is the wrong
-scoreboard: under diminishing returns the confounded arm scores *higher* on it while earning less.
-`uv run python scripts/mmm_demo.py`
+buys +5.2 %: on this plant most of the gain is the identified allocation, and the whole-horizon
+plan buys 1.5 % more than the myopic rule. The confounded arm inflates the channels `2.5–4.6x`,
+under-invests by 25 % and buys 77 % of the lift. It also shows why return per unit of spend is the
+wrong scoreboard: under diminishing returns the confounded arm scores *higher* on it while earning
+less. `uv run python scripts/mmm_demo.py`
 
 **A pendulum**: Pendulum-v1 raised 0.30 rad from hanging and held there, planned by `prescribe`
 from a log in which an operator cancelled half the wind torque it measured. So the logged torque
 moves with a disturbance that enters `omega'` exactly where the torque does, and the confounding
 sits on the control channel itself. Gravity goes in as `known=`, the actuator is what the log has
 to identify, and every schedule is run on the *true* pendulum. Adjusted for the wind (the graph
-derives `{wind}`), the torque channel is `+3.001` against a true `3.000`, and the schedule ends
-`0.006` rad from the target, with the speed held within `1.0` rad/s in the solve as the barrier.
+derives `{wind}`), the torque channel is `+3.000` against a true `3.000`, and the schedule ends
+`0.001` rad from the target, with the speed held within `1.0` rad/s in the solve as the barrier.
 Asserting an empty adjustment set returns `-1.090` (the white-wind omitted-variable formula
-predicts `-1.052`), so the plan pushes the wrong way and ends `0.607` rad off, `2.0x` as far as
+predicts `-1.052`), so the plan pushes the wrong way and ends `0.624` rad off, `2.1x` as far as
 never acting; declared latent, the wind leaves no schedule. The certificate trusts the adjusted
 schedule for 1 step of 40 and the asserted one for none. Printed in float32, the default, and the
 script says which of its numbers float64 moves. `uv run python scripts/pendulum_demo.py`

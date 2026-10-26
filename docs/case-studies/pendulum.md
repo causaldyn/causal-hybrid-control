@@ -41,15 +41,16 @@ Scope, and it bounds what the numbers mean:
 - `|omega| <= 1` is held in the solve as the barrier, at the library's class-K gain of 1 per second,
   so what binds is the approach to the speed limit, not the limit.
 - The certificate's trusted prefix is short. Its tube compounds at the norm of the hanging
-  pendulum's slope, 15 per second, a `local` rate, since gravity bends the field away from where
-  the plan starts. It is fed the channel's standard error at the states the log visited, and the
-  plan's one-step error on the log, which it holds with probability 0.95 at each step. The run
-  on the true plant shows the rest of the schedule holding; the certificate does not claim it.
-- The log moved the torque within about `+-0.3`, and the plan sets it outside that range from its
-  first step, to `-1.8` at most. The fitted channel is extrapolated there, and its error, read at
-  the log's actions, does not price that, so the certified horizon ends at that step
-  (`lever_range_step`) and the certificate trusts no step of the schedule. That the true pendulum
-  is affine in the torque far past the log is first principles, not something the log shows.
+  pendulum's slope, 15 per second, a `local` rate, since gravity bends the field away from where the
+  plan starts. It is fed the fitted field's standard error, the channel's and the drift's together,
+  and the plan's one-step error on the log, which it holds with probability 0.95 at each step. The
+  run on the true plant shows the rest of the schedule holding; the certificate does not claim it.
+- The log moved the torque within `[-0.36, +0.41]`, and the plan leaves that range at its sixth step
+  (`lever_range_step` 5), down to `-1.60`. The fitted channel is extrapolated there, and its error,
+  read at the log's actions, does not price that, so the certified horizon would end at that step;
+  the tube ends it sooner, and the certificate trusts the schedule's first step alone. That the true
+  pendulum is affine in the torque far past the log is first principles, not something the log
+  shows.
 
 Code:
 [`scripts/pendulum_demo.py`](https://github.com/causaldyn/causal-hybrid-control/blob/main/scripts/pendulum_demo.py),
