@@ -92,6 +92,7 @@ from chc.graph import AdjustmentSet, CausalGraph
 from chc.independence import gcm_test
 from chc.integrate import rk4_step, rollout
 from chc.lqr import linearize_continuous, linearize_discrete
+from chc.misspecification import MisspecificationCost, _contrast
 from chc.mpc import PeriodBudget, _period_rows
 from chc.panel import Panel, PanelError, Provenance, _grid_steps, _ordinals, _x64_enabled
 from chc.plan import (
@@ -854,6 +855,62 @@ class LeverSelection:
         return tuple(step.lever for step in self.steps)
 
 
+DitherStatus = Literal["tested", "void"]
+"""What :class:`DitherCheck` read: ``"tested"``, the contrast and its p-value; ``"void"``, no test,
+since the two fits are one up to rounding."""
+
+
+@dataclass(frozen=True)
+class DitherCheck:
+    """The channel the plan was made on against the channel the logged draw instruments, priced in
+    the plan's own regret. *Experimental.*
+
+    A logger that sets the levers from the state, a draw and a column the graph leaves out leaves
+    an adjusted channel that is biased by that column's push, and a log of the states and the
+    levers alone has the law of a loop without it where the column is drawn afresh and Gaussian:
+    no test that reads only those can see it (``validation/confounded_log_equivalence.mac``). The
+    draw, logged, can: it moves the levers apart from anything the plant reads, so the channel it
+    instruments, conditioned on the states alone, holds whatever the graph says, and its distance
+    from the adjusted one is a Durbin-Wu-Hausman contrast (Hausman, Econometrica 1978; as a test of
+    unconfoundedness against an instrument, Donald, Hsu and Lieli, JBES 2014).
+    :func:`prescribe` reads it by :func:`chc.misspecification.misspecification_cost`, with the
+    plan's fit as the reference and the instrumented one as the alternative: a Hausman test in the
+    plan's regret metric, its power where the plan's cost is.
+
+    A rejection says that the graph or the model's class is wrong, not which: where the class
+    misses the plant, the two fits estimate different projections of it. ``contrast.cost`` says
+    what it would cost the plan, to second order, were the instrumented fit's model the plant's,
+    and a stop rule reads the two together: reject at its level, and a cost above what the caller
+    tolerates. On a scalar plant ``x' = a x + b u + c w + sg e`` whose logger sets ``u = d w + s
+    eta``, ``w`` the omitted column and ``eta`` the logged draw, both drawn afresh, the test's
+    noncentrality grows by ``c^2 s^2 / (sg^2 (d^2 + s^2))`` a transition
+    (``validation/dither_hausman.mac``): a small draw pays for the instrument's variance, and a
+    draw of a tenth of the logger's spread needs about fifty times the transitions of one as large.
+
+    ``"void"``: the logger read nothing but the states and its draw, and the plan's fit conditions
+    on the states alone: the levers are, to rounding, the nuisances' polynomial of the states plus
+    a linear map of the draw. The two fits then draw the channel from one variation, the draw's,
+    and there is nothing to falsify: the plan's fit is the design's own. Their difference's
+    ``tr(W S)`` is zero but for the nuisances' own error, which the cross-fitted fits keep apart:
+    on 500 transitions of a scalar plant it read 0.001 to 0.013 of the instrumented fit's, where
+    a contrast made without cross-fitting would read rounding, and test it. ``contrast`` is None
+    there, and ``share`` is still read.
+    """
+
+    dither: tuple[str, ...]  # the panel's columns holding the logged draw
+    status: DitherStatus
+    # the plan's fit as the reference, the instrumented fit as the alternative; None where void
+    contrast: MisspecificationCost | None
+    # the difference's tr(W S) over the instrumented fit's own: how much of the instrument's own
+    # variance the contrast keeps, 0 where the two fits are one
+    share: float
+    # the instrumented fit's instrument_relevance: how far the draw moves each direction of the
+    # channel the log moves, given the states; the smallest grades the instrument where it is
+    # weakest
+    relevance: tuple[float, ...]
+    instrumented: CausalDynamicsFit = field(repr=False, compare=False)
+
+
 @dataclass(frozen=True)
 class _Columns:
     """What evaluating a plan needs to know of the panel it was made from."""
@@ -999,6 +1056,9 @@ class Prescription:
     budgets: tuple[PeriodBudget, ...] = ()  # what the plan was held to spend
     start: StartState | None = None  # where the plan starts, or would have; None if not recorded
     run: RunProvenance | None = None  # what the run used; None if not recorded
+    # The plan's channel against the one the logged draw instruments, where ``dither`` was given
+    # and a plan was made; reported, not acted on. *Experimental.*
+    dither_check: DitherCheck | None = None
     _columns: _Columns | None = field(default=None, repr=False, compare=False)
     # The state the plan starts from, or would have: where :meth:`reach` reads the channel.
     _start: Array | None = field(default=None, repr=False, compare=False)
@@ -1456,6 +1516,7 @@ class Prescription:
             + self._error_grouping(),
             f"- overlap (residualised action variance): {certificate.overlap:.4g}",
             self._logger_line(),
+            *self._dither_lines(),
             self._persistence_line(),
             *self._interference_lines(),
             f"- error tube: **{certificate.certificate_status}**, "
@@ -1794,6 +1855,27 @@ class Prescription:
             "not a guarantee per log"
         ]
 
+    def _dither_lines(self) -> list[str]:
+        check = self.dither_check
+        if check is None:
+            return []
+        if check.contrast is None:
+            return [
+                f"- dither check: void, the logger read nothing but the state and its draw "
+                f"{list(check.dither)}, so the plan's fit is the draw's own"
+            ]
+        contrast = check.contrast
+        head = (
+            f"p = {contrast.p_value:.3g}, priced cost {contrast.cost:.4g} "
+            f"± {contrast.cost_error:.2g}, share {check.share:.2g}"
+        )
+        if contrast.p_value <= _DITHER_ALPHA:
+            return [
+                f"- dither check: **the plan's channel is not the one the draw "
+                f"{list(check.dither)} instruments** ({head})"
+            ]
+        return [f"- dither check: passed ({head})"]
+
     def _logger_line(self) -> str:
         check = self.logger_check
         if check is None:
@@ -1895,6 +1977,7 @@ def prescribe(
     clusters: str | None = None,
     nuisance_knots: int | Literal["auto"] | None = "auto",
     tube_actions: TubeActions = "box",
+    dither: str | Sequence[str] | None = None,
 ) -> Prescription:
     """Fit the causal control channel from ``panel`` and plan a certified schedule on it.
 
@@ -2105,6 +2188,16 @@ def prescribe(
             fit that keeps its field's terms; elsewhere a warning says so and the box's form is
             read. The tube moves no action; the certificate says which form it read
             (:attr:`DecisionCertificate.tube_actions`, ADR 0138).
+        dither: the column, or columns, holding the random draw the logger added to the levers,
+            logged: drawn apart from everything the plant reads, at most given the states. Given,
+            the channel is fitted a second time, with the draw as its instrument and the states
+            as its only covariates, never the adjustment set, which may hold a column the levers
+            move; and the plan's channel is read against it in the plan's own regret
+            (:class:`DitherCheck`, *experimental*). :attr:`Prescription.dither_check` holds the
+            result, a rejection at 5 % is logged as a warning and named in the report. It reports;
+            the plan, its fit and its certificate are those without it, bit for bit. A draw
+            that does not move every direction of the channel the log moves, given the states,
+            identifies no channel, and is refused. ``None``, the default, fits nothing more.
 
     Returns:
         A :class:`Prescription`. Read :attr:`DecisionCertificate.identification` before
@@ -2133,11 +2226,15 @@ def prescribe(
             the one state, under which the transitions hold the levers, the states a period on
             and the states, or one named for a driver's level a period on, ``f"{driver}_next"``;
             ``neighbours`` that name a unit the panel does not have, or a unit, under ``clusters``
-            a cluster, that ``clusters`` or a ``neighbours`` column puts in two groups.
-        KeyError: a lever, target, constraint, driver, asserted covariate, ``clusters`` or a
-            ``neighbours`` column names a column the panel does not have. The message lists the
-            panel's columns. Also a graph that has no node for a lever, the target or a
-            constrained column.
+            a cluster, that ``clusters`` or a ``neighbours`` column puts in two groups;
+            ``dither`` beside ``hold_constraints`` or ``drivers``, whose plans have no regret
+            metric to price the contrast in, naming a lever, a state, a driver or a column of the
+            adjustment set, beside levers that follow their logged rule or an asserted empty
+            adjustment set, or a draw that does not identify the channel given the states.
+        KeyError: a lever, target, constraint, driver, asserted covariate, ``clusters``, a
+            ``neighbours`` column or ``dither`` names a column the panel does not have. The
+            message lists the panel's columns. Also a graph that has no node for a lever, the
+            target or a constrained column.
         PanelError: a column the fit reads as numbers --- a lever's, a state's, a covariate's or
             a driver's --- holds text, dates, times, durations, complex numbers or any other value
             that is not a real number, or a number finite in its own type that is an infinity in
@@ -2269,6 +2366,12 @@ def prescribe(
             "action moves"
         )
     driver_names = _check_drivers(drivers, horizon=horizon, taken=(*states, *lever_names))
+    draws = _check_dither(
+        dither,
+        hold_constraints=hold_constraints,
+        drivers=driver_names,
+        taken=(*states, *lever_names),
+    )
     # read as floats here: an integer start failed inside the fit's linearisation
     given = None if x0 is None else np.asarray(_real_numbers(x0, "x0", DecisionError), dtype=float)
     if given is not None:
@@ -2279,13 +2382,20 @@ def prescribe(
             )
         if not np.all(np.isfinite(given)):
             raise DecisionError(f"x0 is {given.tolist()}, and a start must be finite")
-    for name in (*states, *lever_names, *driver_names, *_named(clusters), *_named(neighbours)):
+    for name in (
+        *states,
+        *lever_names,
+        *driver_names,
+        *_named(clusters),
+        *_named(neighbours),
+        *draws,
+    ):
         if name not in panel.columns:
             raise KeyError(
                 f"column {name!r} is not in the panel; columns are {sorted(panel.names)}"
             )
     if clusters is not None:
-        numbers = (*states, *lever_names, *driver_names)
+        numbers = (*states, *lever_names, *driver_names, *draws)
         panel = _cluster_panel(panel, clusters, numbers, _named(neighbours))
 
     # the run's precision; the panel's flag was read when the panel was built, and need not match
@@ -2297,6 +2407,12 @@ def prescribe(
         )
 
     resolved = _resolve_adjustment(adjustment, panel=panel, states=states, levers=lever_names)
+    adjusted_draws = sorted(set(draws) & set(resolved.covariates))
+    if adjusted_draws:
+        raise DecisionError(
+            f"the draw {adjusted_draws} is in the adjustment set: adjusted for, it lends the "
+            "levers no move of its own to instrument the channel with"
+        )
     if isinstance(adjustment, CausalGraph):
         column = _start_nodes(adjustment, panel.names)
         acting = tuple(node for node, name in column.items() if name in lever_names)
@@ -2343,25 +2459,23 @@ def prescribe(
 
     base = known or LinearDynamics(jnp.zeros((n_states, n_states)), jnp.zeros((n_states, n_levers)))
     started = time.perf_counter()
-    fit = fit_causal_residual(
-        base,
-        data,
-        dt,
-        adjust_for=resolved.covariates,
-        folds=folds,
-        seed=seed,
-        integrator=integrator,
-        drivers=driver_names,
-        clusters=None if groups == 1 else labels[:, :2] if two_way else labels[:, 0],
-        periods=labels[:, 1] if serial else None,
-        nuisance_degree=_NUISANCE_DEGREE,
-        nuisance_knots=nuisance_knots,
-        ridge=_RIDGE,
-        times=labels[:, 1] * dt,
+    fit_options: dict[str, Any] = {
+        "adjust_for": resolved.covariates,
+        "folds": folds,
+        "seed": seed,
+        "integrator": integrator,
+        "drivers": driver_names,
+        "clusters": None if groups == 1 else labels[:, :2] if two_way else labels[:, 0],
+        "periods": labels[:, 1] if serial else None,
+        "nuisance_degree": _NUISANCE_DEGREE,
+        "nuisance_knots": nuisance_knots,
+        "ridge": _RIDGE,
+        "times": labels[:, 1] * dt,
         # a graph that finds the empty set enough proves the levers unconfounded; an asserted
         # empty set stays the observational fit it always was
-        unconfounded=isinstance(adjustment, CausalGraph) and resolved.status == "identified",
-    )
+        "unconfounded": isinstance(adjustment, CausalGraph) and resolved.status == "identified",
+    }
+    fit = fit_causal_residual(base, data, dt, **fit_options)
     _log.info(
         "control channel fitted",
         extra={
@@ -2537,6 +2651,12 @@ def prescribe(
         raise DecisionError(
             f"a budget prices {priced}, which follow the rule of the state the log set them by: "
             "their spend is set by the path, and a budget's rows hold the plan's own actions"
+        )
+    if draws and rule_levers:
+        raise DecisionError(
+            f"{list(rule_levers)} follow the rule of the state the log set them by, so the plan's "
+            "model is not the fit's alone and has no regret metric in the fit's parameters to "
+            "price the dither check in"
         )
     if max_levers is not None and any(relation.level != 0.0 for relation in kept.relations):
         raise DecisionError(
@@ -2872,6 +2992,31 @@ def prescribe(
     else:
         safety = None
     gap = regret(plan)
+    dither_check = (
+        _check_dither_contrast(
+            plan,
+            fit,
+            # refitted with its influence, not fitted so once: keeping the influence compiles
+            # another program, whose rounding moved the channel's error by an ulp on jax 0.4.30
+            lambda: fit_causal_residual(base, data, dt, **fit_options, influence=True),
+            panel,
+            draws,
+            base=base,
+            dt=dt,
+            states=states,
+            levers=lever_names,
+            adjusted=bool(resolved.covariates),
+            folds=folds,
+            seed=seed,
+            integrator=integrator,
+            clusters=None if groups == 1 else labels[:, :2] if two_way else labels[:, 0],
+            periods=labels[:, 1] if serial else None,
+            times=labels[:, 1] * dt,
+            nuisance_knots=nuisance_knots,
+        )
+        if draws
+        else None
+    )
     directions, response = _absorbed(
         fit,
         data["x"],
@@ -3029,6 +3174,7 @@ def prescribe(
         _alone=alone,
         _budget_rows=tuple(rows.matrix.shape[0] for rows in spend_rows),
         _magnitudes=_ruled_schedule(model, plan),
+        dither_check=dither_check,
     )
 
 
@@ -3828,6 +3974,7 @@ _LOGGER_CHECK_ALPHA = 0.05  # the level at which the check reports a rejection
 _PERSISTENCE_ALPHA = 0.05  # the level at which the report names the noise's persistence
 _JACKKNIFE_GROUPS = 50  # the most groups of units the tube's noise read is jackknifed over
 _INTERFERENCE_ALPHA = 0.05  # the level at which a spillover is logged and named in the report
+_DITHER_ALPHA = 0.05  # the level at which the dither check is logged as a warning and named
 # The fit's ridge and each descent's budget of steps, the fit's and the planner's defaults, passed
 # by name so that the run's record holds what the calls were given (ADR 0063).
 _RIDGE = 1e-6
@@ -4073,6 +4220,164 @@ def _check_drivers(
         if not np.all(np.isfinite(levels)):
             raise DecisionError(f"driver {driver.name!r} has a forecast that is not finite")
     return names
+
+
+def _check_dither(
+    dither: str | Sequence[str] | None,
+    *,
+    hold_constraints: bool,
+    drivers: tuple[str, ...],
+    taken: tuple[str, ...],
+) -> tuple[str, ...]:
+    """The draw's column names, each once, refused where the check has no regret metric to price
+    the contrast in or a name holds a column the decision reads in another role."""
+    if dither is None:
+        return ()
+    names = (dither,) if isinstance(dither, str) else tuple(dither)
+    if not names:
+        raise DecisionError("dither names no column; leave it None to fit nothing more")
+    twice = sorted({name for name in names if names.count(name) > 1})
+    if twice:
+        raise DecisionError(f"dither names {twice} more than once")
+    clash = sorted(set(names) & {*taken, *drivers})
+    if clash:
+        raise DecisionError(
+            f"columns {clash} are named as the draw and as a lever, a state or a driver; the draw "
+            "is the logger's own randomness, which nothing else in the decision reads"
+        )
+    if hold_constraints:
+        raise DecisionError(
+            "dither with hold_constraints: a plan held under the barrier has no regret in the "
+            "channel to second order, since the barrier's condition moves with it, so there is no "
+            "metric to price the contrast in"
+        )
+    if drivers:
+        raise DecisionError(
+            f"dither with drivers {list(drivers)}: their gain's price needs the plan's forecast, "
+            "which the contrast does not read"
+        )
+    return names
+
+
+def _check_dither_contrast(
+    plan: CausalPlan,
+    fit: CausalDynamicsFit,
+    refit: Callable[[], CausalDynamicsFit],
+    panel: Panel,
+    draws: tuple[str, ...],
+    *,
+    base: Dynamics,
+    dt: float,
+    states: tuple[str, ...],
+    levers: tuple[str, ...],
+    adjusted: bool,
+    folds: int,
+    seed: int,
+    integrator: Integrator,
+    clusters: NDArray[np.int64] | None,
+    periods: NDArray[np.int64] | None,
+    times: NDArray[Any],
+    nuisance_knots: int | Literal["auto"] | None,
+) -> DitherCheck:
+    """``fit``'s channel against the one ``draws`` instrument given the states alone, on the same
+    transitions, groups and nuisances, priced at ``plan`` (:class:`DitherCheck`). ``refit`` fits
+    ``fit`` again, keeping its influence. ``adjusted``: whether ``fit`` conditioned on more than the
+    states."""
+    if not fit.identified:
+        raise DecisionError(
+            "dither with an asserted empty adjustment set: the plan's fit was handed no word that "
+            "the levers are unconfounded, so it keeps no influence to contrast; name the "
+            "covariates, or give a graph that proves the effect identified with nothing to adjust"
+        )
+    data, _ = _transitions(panel, states=states, levers=levers, adjust_for=draws)
+    draw = jnp.concatenate([data[name] for name in draws], axis=1)
+    instrumented = fit_causal_residual(
+        base,
+        {
+            "x": data["x"],
+            "u": data["u"],
+            "x_next": data["x_next"],
+            "draw": draw,
+        },
+        dt,
+        instrument="draw",
+        folds=folds,
+        seed=seed,
+        integrator=integrator,
+        clusters=clusters,
+        periods=periods,
+        nuisance_degree=_NUISANCE_DEGREE,
+        nuisance_knots=nuisance_knots,
+        ridge=_RIDGE,
+        times=times,
+        influence=True,
+    )
+    relevance = (
+        ()
+        if instrumented.instrument_relevance is None
+        else tuple(float(value) for value in np.asarray(instrumented.instrument_relevance))
+    )
+    if not instrumented.identified:
+        raise DecisionError(
+            f"the draw {list(draws)} does not move every direction of the channel the log moves, "
+            f"given the states (relevances {[round(value, 4) for value in relevance]}), so it "
+            "instruments no channel to read the plan's against"
+        )
+    reference = refit()
+    ours, theirs = (() if f.unmoved is None else f.unmoved.shape for f in (reference, instrumented))
+    if ours != theirs:
+        raise DecisionError(
+            f"the adjustment set leaves {ours[1]} directions of the channel unmoved and the states "
+            f"alone {theirs[1]}: the two fits hold different parameters, and their difference is "
+            "not a contrast of one channel"
+        )
+    contrast, own = _contrast(plan, reference, instrumented, None)
+    share = contrast.noise / own if own > 0.0 else 0.0
+    void = not adjusted and _set_by_states_and_draw(data["x"], data["u"], draw)
+    rejected = not void and contrast.p_value <= _DITHER_ALPHA
+    (_log.warning if rejected else _log.info)(
+        "the plan's channel is not the one the logged draw instruments"
+        if rejected
+        else "the plan's channel and the one the logged draw instruments are one estimator"
+        if void
+        else "the plan's channel read against the one the logged draw instruments",
+        extra={
+            "chc_event": "dither",
+            "status": "void" if void else "tested",
+            "p_value": None if void else contrast.p_value,
+            "cost": None if void else contrast.cost,
+            "cost_error": None if void else contrast.cost_error,
+            "share": share,
+            "relevance": list(relevance),
+        },
+    )
+    return DitherCheck(
+        dither=draws,
+        status="void" if void else "tested",
+        contrast=None if void else contrast,
+        share=share,
+        relevance=relevance,
+        instrumented=instrumented,
+    )
+
+
+def _set_by_states_and_draw(x: Array, u: Array, draw: Array) -> bool:
+    """Whether the levers are, to rounding, the nuisances' polynomial of the states plus a linear
+    map of the draw: least squares on those leaves less than ``sqrt(eps)`` of their spread."""
+    rows = np.asarray(x, dtype=np.float64)
+    spread = rows.std(axis=0)
+    standard = (rows - rows.mean(axis=0)) / np.where(spread > 0.0, spread, 1.0)
+    design = np.hstack(
+        [
+            np.asarray(_polynomial_features(jnp.asarray(standard), _NUISANCE_DEGREE)),
+            np.asarray(draw, dtype=np.float64),
+        ]
+    )
+    actions = np.asarray(u, dtype=np.float64)
+    coefficients = np.linalg.lstsq(design, actions, rcond=None)[0]
+    left = float(np.linalg.norm(actions - design @ coefficients))
+    whole = float(np.linalg.norm(actions - actions.mean(axis=0)))
+    return left <= math.sqrt(float(jnp.finfo(u.dtype).eps)) * whole
 
 
 def _warn_outside_logged_range(panel: Panel, drivers: Sequence[Driver]) -> None:

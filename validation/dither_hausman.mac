@@ -1,0 +1,103 @@
+/* THE ADJUSTED CHANNEL AGAINST THE ONE A LOGGED DRAW INSTRUMENTS: what chc.decision.DitherCheck
+   tests, and how fast it sees an omitted confounder.
+
+   A unit's plant and logger, with a confounder w the plan's fit leaves out and a draw eta the
+   logger adds and logs:
+
+       x' = a x + b u + c w + sg e,        u = k x + d w + s eta,
+
+   w, e and eta independent N(0, 1), drawn afresh each step.  The fit adjusted on the state reads
+   the channel through the action's residual v = u - k x = d w + s eta; the fit instrumented by eta
+   reads it through eta.  Their difference, studentised by the variance of the difference of their
+   influences, is a Durbin-Wu-Hausman contrast (Hausman 1978; Donald, Hsu and Lieli 2014), the one
+   chc.misspecification.misspecification_cost prices in the plan's regret.
+
+     STEP 1  the two limits: the adjusted channel reads b + beta0, beta0 = c d / (d^2 + s^2); the
+             instrumented one reads b.
+     STEP 2  the influences, E[.] = 0, and the null variance of sqrt(n) times the difference,
+             V0 = sg^2 (1/s^2 - 1/(d^2 + s^2)): the instrument's variance less the adjustment's.
+     STEP 3  the local noncentrality a transition, beta0^2 / V0 = c^2 s^2 / (sg^2 (d^2 + s^2)), and
+             at a fixed alternative c^2 s^2 / (sg^2 (d^2 + s^2) + c^2 (d^2 + 4 s^2)).
+     STEP 4  the void case: the difference's share of the instrument's own variance is
+             d^2 / (d^2 + s^2), zero exactly where the logger read nothing but the state and its
+             draw, d = 0, where beta0 = 0 too: nothing to falsify.  Near it the test is consistent
+             without being relevant: the noncentrality tends to c^2/sg^2 while the bias vanishes.
+     STEP 5  numbers: a draw of a tenth of the logger's spread against one as large, at d = sg = 1,
+             needs 50.5 times the transitions; the calibration test's plant, a = 9/10, b = 1/2,
+             d = s = sg = 1 on 500 transitions, its noncentrality and the one-degree power at the
+             two confounders it plants.
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/dither_hausman.mac */
+
+display2d : false$
+linel : 110$
+ratprint : false$
+
+verdict(ok) := if ok then "(PASS)" else "(FAIL)"$
+/* the expectation of a polynomial in independent standard normals w, eta, e */
+EG(expr) := block([ex : expand(expr)],
+   ex : subst([w^4 = 3, eta^4 = 3, e^4 = 3], ex),
+   ex : ratsubst(1, w^2, ratsubst(1, eta^2, ratsubst(1, e^2, ex))),
+   ex : subst([w = 0, eta = 0, e = 0], ex), ratsimp(ex))$
+
+/* ===== STEP 1: the two limits ===== */
+print("=== STEP 1: the adjusted and the instrumented channel's limits ===")$
+v : d*w + s*eta$                      /* the action's residual on the state */
+eps : c*w + sg*e$                     /* what the plant adds beyond a x + b u */
+beta0 : EG(v*eps)/EG(v^2)$
+print("STEP 1a the adjusted channel less b:", beta0,
+      verdict(ratsimp(beta0 - c*d/(d^2 + s^2)) = 0))$
+iv_gap : EG(eta*eps)/EG(eta*v)$
+print("STEP 1b the instrumented channel less b:", iv_gap, verdict(iv_gap = 0))$
+
+/* ===== STEP 2: the influences and the null variance ===== */
+print("=== STEP 2: the null variance of the difference ===")$
+/* each estimator's influence on the channel, about its own limit */
+psi_iv : eta*eps/EG(eta*v)$
+psi_adj : v*(eps - beta0*v)/EG(v^2)$
+print("STEP 2a E[psi_iv] =", EG(psi_iv), "; E[psi_adj] =", EG(psi_adj),
+      verdict(EG(psi_iv) = 0 and EG(psi_adj) = 0))$
+V0 : ratsimp(subst(c = 0, EG((psi_iv - psi_adj)^2)))$
+print("STEP 2b n Var(difference) at c = 0:", factor(V0),
+      verdict(ratsimp(V0 - sg^2*(1/s^2 - 1/(d^2 + s^2))) = 0))$
+Viv : ratsimp(subst(c = 0, EG(psi_iv^2)))$
+Vadj : ratsimp(subst(c = 0, EG(psi_adj^2)))$
+print("STEP 2c it is Var(instrumented) - Var(adjusted):", factor(Viv), "-", factor(Vadj),
+      verdict(ratsimp(V0 - (Viv - Vadj)) = 0))$
+
+/* ===== STEP 3: the noncentrality ===== */
+print("=== STEP 3: the noncentrality a transition ===")$
+lam : ratsimp(beta0^2/V0)$
+print("STEP 3a local, beta0^2 / V0 =", factor(lam),
+      verdict(ratsimp(lam - c^2*s^2/(sg^2*(d^2 + s^2))) = 0))$
+V1 : ratsimp(EG((psi_iv - psi_adj)^2) - EG(psi_iv - psi_adj)^2)$
+lam1 : ratsimp(beta0^2/V1)$
+print("STEP 3b fixed alternative, beta0^2 / Var =", factor(lam1),
+      verdict(ratsimp(lam1 - c^2*s^2/(sg^2*(d^2 + s^2) + c^2*(d^2 + 4*s^2))) = 0))$
+
+/* ===== STEP 4: the void case ===== */
+print("=== STEP 4: the logger read nothing but the state and its draw ===")$
+share : ratsimp(V0/Viv)$
+print("STEP 4a the difference's share of the instrument's variance:", factor(share),
+      verdict(ratsimp(share - d^2/(d^2 + s^2)) = 0))$
+print("STEP 4b at d = 0: share", subst(d = 0, share), ", bias", subst(d = 0, beta0),
+      verdict(subst(d = 0, share) = 0 and subst(d = 0, beta0) = 0))$
+print("STEP 4c as d -> 0 the noncentrality tends to", limit(lam, d, 0), "while the bias tends to",
+      limit(beta0, d, 0), verdict(limit(lam, d, 0) = c^2/sg^2 and limit(beta0, d, 0) = 0))$
+
+/* ===== STEP 5: numbers ===== */
+print("=== STEP 5: numbers ===")$
+ratio : subst([d = 1, sg = 1, s = 1], lam)/subst([d = 1, sg = 1, s = 1/10], lam)$
+print("STEP 5a transitions a draw of s = 1/10 needs against s = 1, at d = sg = 1:", ratio, "=",
+      float(ratio), verdict(ratio = 101/2))$
+Phi(x) := (1 + erf(x/sqrt(2)))/2$
+z95 : 1.959963984540054$
+power1(nc) := float(Phi(nc - z95) + Phi(-nc - z95))$
+plant : [d = 1, s = 1, sg = 1]$
+for cc in [3/20, 27/100] do block([nl : float(500*subst(append(plant, [c = cc]), lam)),
+                                   nf : float(500*subst(append(plant, [c = cc]), lam1))],
+  print("STEP 5b c =", cc, ": 500 lambda =", nl, "(local),", nf, "(fixed); one-degree power at 5 %",
+        power1(sqrt(nl)), power1(sqrt(nf))))$
+print("STEP 5c the test's planted c = 27/100 has 500 lambda/n of",
+      float(500*subst(append(plant, [c = 27/100]), lam1)), "at the fixed alternative",
+      verdict(float(500*subst(append(plant, [c = 27/100]), lam1)) > 15))$

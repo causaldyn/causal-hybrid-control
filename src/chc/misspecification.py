@@ -143,6 +143,18 @@ def misspecification_cost(
             plan that was not made on ``reference``'s model; and whatever
             :meth:`chc.plan.CausalPlan.decision_weight` refuses.
     """
+    return _contrast(plan, reference, alternative, tolerance)[0]
+
+
+def _contrast(
+    plan: CausalPlan,
+    reference: CausalDynamicsFit,
+    alternative: CausalDynamicsFit,
+    tolerance: float | None,
+) -> tuple[MisspecificationCost, float]:
+    """:func:`misspecification_cost`, and ``tr(W S_a) / 2``, ``S_a`` the alternative's own
+    covariance read as ``S`` is, over the same groups: what the alternative alone would cost the
+    plan on average, against which the difference's ``noise`` is read."""
     for name, fit in (("reference", reference), ("alternative", alternative)):
         if not fit.identified:
             raise ValueError(
@@ -215,13 +227,16 @@ def misspecification_cost(
     # are its largest's rounding, and W, large where S is small, made that rounding weights: with
     # both states logged at 1e-12 of their units they summed to 31.7, against tr(W S) = 3.3e-5.
     mixture = _mixture_weights(scaled, covariance * np.outer(size, size))
+    own = max(
+        float(np.trace(weight @ square)) for square in _clustered_squares(other, clusters, periods)
+    )
     return MisspecificationCost(
         cost=(quadratic - trace) / 2.0,
         cost_error=math.sqrt(4.0 * leverage + 2.0 * trace_squared) / 2.0,
         noise=trace / 2.0,
         p_value=_chi_square_mixture_survival(quadratic, mixture),
         unseen=_unseen(weight, unmoved, size),
-    )
+    ), own / 2.0
 
 
 def planned_cost_bias(
