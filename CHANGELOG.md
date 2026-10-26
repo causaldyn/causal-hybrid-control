@@ -7,6 +7,114 @@ still change).
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-10-26
+
+### Changed
+
+- **`prescribe` fits and plans by `"euler"` when no integrator is given** (ADR 0129), as 0.21.0
+  announced; the `FutureWarning` is gone, and `integrator="rk4"` keeps 0.21's reading. The Euler
+  fit gives the barrier an absolute radius, a bound on the channel's error, where the `"rk4"` fit
+  gives a relative one: under a hidden confounder that moved the channel from 0.8 to about 0.41,
+  held at `gamma = 2`, the `"rk4"` fit certified all 15 steps on six logs of six and the plant
+  left the set; the Euler fit's held to margins of +0.38 to +0.42. A held plan mostly pays for
+  it: the median held task cost rose in five worlds of seven, most under dead time (5.36 → 7.10).
+  A log sampled from a plant in continuous time, such as the heating notebook's room, passes
+  `"rk4"`.
+- **The logger check's rejection is logged at INFO, not WARNING** (ADR 0136; ADR 0028 amended).
+  The message and its fields do not change. Under an i.i.d. Gaussian latent confounder the logged
+  path has exactly the law of an unconfounded loop whose channel is `b + cd/(d^2 + s^2)`, so every
+  test that reads the log alone has power equal to its size, at every `n`. The check stays as a
+  diagnostic of the logger's memory and of the columns it read.
+- **The report's settings line names `nuisance_knots`** (`auto`, an integer or `none`), as the
+  JSON does.
+- **`drift_error` reads clusters and periods.** Given `clusters` or `periods`, a fit's
+  `drift_error`, and the error of its adjustment set's push mean, are read from the cluster sums
+  or the period cosines, as `channel_error` is; without them nothing moves. The tube is wider on
+  short logs: the short-log bench's last step covers 0.974 (one lever, was 0.969) and 0.994 (two
+  levers, was 0.985).
+- **`FittedEquilibrium` has a new required field, `attract_se`**, so an instance built by hand
+  passes it.
+- **`hatchling` and `twine` are pinned to exact versions**, so a release builds the same
+  artefact from the same tree.
+- **The installation page names the conda-forge package**, `conda install causal-hybrid-control
+  -c conda-forge`.
+
+### Added
+
+- **`chc.games.exact_congestion_allocation`** and `CongestionAllocation` (ADR 0134). They return
+  the split of a lump-sum budget that completes the most rides through a logit congestion
+  equilibrium, exactly: Berry's inversion, a Lambert W level shared by the unpaid zones, a
+  vertex enumeration of the paid ones and a bisection on the level, with the vertex that
+  certifies the optimum. Past 20 zones it refuses.
+- **`FittedEquilibrium.attract_se`**: each zone's attractiveness standard error, from the
+  Gauss–Newton covariance at the fit; `inf` where the logs do not identify it.
+- **A floor on the Bayes regret itself** (ADR 0136). `InformationLowerBoundCurve` gains
+  `weighted_bayes_floor` and `best_weighted_bayes_floor`, and `MultivariateVanTreesCurve` gains
+  `weighted_bayes_floor`, by van Trees weighted by `C(b)` (Gill and Levit, Bernoulli 1995), beside
+  the existing floors. At `rr = 0.5`, `b ~ N(0, 1)`, `I_n = 5` the regret's valid floor goes from
+  0.0172 (0.230 of the Bayes regret) to 0.0489 (0.652) in closed form and 0.0596 (0.795) with the
+  best weight; at `I_n = 1e4` both read 0.9997 of it. The matrix floor is `nan` where its
+  Gauss–Hermite rule does not settle. `information_lower_bound_certificate(prior_width=0.25)`
+  names the van Trees prior's width, which was fixed at 0.25.
+- **`GateConfig(centred=True)`** (*experimental*, ADR 0135). The experiment reads each reward
+  less a predictable level from the arms' earlier rewards, the doubly robust increment of
+  Waudby-Smith et al. (2024); the guarantees hold, and shadow and deployed increments do not
+  change. In blocks of one period at `mu = 0.5`, `s = 0.05`, an effect of 0.03 is deployed on
+  200 of 200 paths at a median of 230 blocks, where 25 of 200 were within 3000. The gate's log
+  records and `scripts/bench_gate.py` say which increments produced the e-values, under
+  `centred`.
+- **`GateConfig(check_burn_in=True)`** (*experimental*, ADR 0135): an exact randomisation test
+  (Liu and Zhong, 2026) that a block's read mean does not move with the block before. It warns
+  once per zone to raise `burn_in`, and moves no verdict. Its size was 1/400 where the burn-in
+  covers the carryover and its power 400/400 where it does not. In blocks, set it beside
+  `centred`.
+- **`certify_safety(centre=, curvature=)`, `BarrierConstraint(centre=, curvature=)`,
+  `SafetyCertificate.room_model` and `chc.plan.RoomModel`** (ADR 0132).
+
+### Deprecated
+
+- **`oracle_allocation(steps=...)` is deprecated**: the argument is ignored with a
+  `DeprecationWarning` and leaves in 0.23.0. The ascent it ran is `chc.games.stackelberg_allocation`.
+
+### Fixed
+
+- **The channel's sensitivity radius is sharp** (ADR 0132). A confounder explains at most
+  `(1 − 1/Γ)^2` of an action's variance, not `(Γ − 1)^2/Γ`, so `κ(Γ) = (Γ − 1)/sqrt(2Γ − 1)`: κ
+  narrows by 1.05–4.0 at Γ 1.1–2.5, every Γ* under `sensitivity=` rises, and κ = 1 sits at
+  Γ = 2 + √2, not 2. No finite level is refused: `certify_safety`, `BarrierConstraint` and
+  `prescribe` no longer raise from Γ = (3 + √5)/2 on.
+- **`prescribe`'s barrier reads each action from the log's mean action**, so Γ* and the certified
+  steps no longer depend on where a lever's zero is. ADR 0091's example: Γ* 1.04 → ∞.
+- **The barrier's room is read less half its curvature times the squared deviation** on a curved
+  barrier. On a disk the first-order room certified a step whose plant reached `h = −0.10`.
+  Affine barriers, which include all of `prescribe`'s, are unchanged bit for bit.
+- **The tube's field part is one first-order term** (ADR 0133): the channel's error times the
+  action's distance from the log's projected action, the drift's own error, their covariance and
+  the push mean's, read at the box's vertex where it is largest. Before, the channel's and the
+  inherited parts were added in quadrature from the mean action. At the far vertex, Euler:
+  coverage 0.89–0.90 → 0.925–0.94 (rms z 1.18–1.19 → 1.04).
+- **An rk4 fit's tube carries what its field inherits through the fixed point**, and the cross
+  term rk4 adds. At the mean action on exact flows: coverage 0.70–0.80 → 0.935–0.95 (rms z
+  1.53–1.88 → 1.02–1.03). Under an AR(0.8) push with periods, ±t13 coverage 0.75 (Euler) and 0.55
+  (rk4) → 0.94.
+- **`SharedStateMarket.oracle_allocation()` returns the exact optimum** (ADR 0134), where it ran
+  a 1200-step ascent that stopped at a local maximum. Over markets 0–29 the 2500-step ascent fell
+  short on 17 in float64 (by up to 0.215 rides) and 13 in float32 (0.303); market 1 at the default
+  1200 steps: 10.55 → 11.22 rides.
+- **`fit_equilibrium` stops where it has converged** (ADR 0134). It stopped on SciPy's default
+  relative fall of the objective and reported `converged=True` at Bates and Watts' relative
+  offsets up to 2.6. It now polishes by Levenberg–Marquardt and Gauss–Newton steps to an offset of
+  1e-3, and `converged` says whether that held. Market 2's mean squared residual falls 2.1 %.
+- **The marketplace planner holds a zone the fit does not identify at zero incentive**: one whose
+  `attract_se` is infinite or exceeds its attractiveness. The polished fit had run such a zone's
+  attractiveness freely, and the plan spent 3.1 of 6 on it in market 2's 50 blocks, winning 0.15
+  of the lift; now 0.68. Over markets 0–29 at 50 blocks the worst share goes 0.150 → 0.507 in
+  float64 and −0.564 → 0.155 in float32; the medians are the early stop's within noise. The tilt
+  is unchanged and is re-measured in the docs: −0.022 ± 0.012 at 400 blocks and −0.057 ± 0.025 at
+  50 over 30 markets.
+- **`information_lower_bound_certificate` raises `ValueError`** for an `rr` or a `prior_width`
+  that is not positive and finite, where it returned numbers.
+
 ## [0.21.0] — 2026-10-24
 
 ### Changed
@@ -7626,6 +7734,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.22.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.22.0
 [0.21.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.21.0
 [0.20.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.20.1
 [0.20.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.20.0
