@@ -7,6 +7,48 @@ still change).
 
 ## [Unreleased]
 
+### Added
+
+- `Prescription.from_json(record, panel, *, model=None)` (experimental): re-runs `prescribe` from
+  the record's new `inputs` and returns only if it gives the record back to the bit; otherwise it
+  raises `DecisionError` naming the field (another chc release or precision, other data, a missing
+  or different known model, a missing input, or the first field the replay changed). A record
+  replays on the chc release and the precision that wrote it (ADR 0145).
+- `Prescription.to_json` gains the keys `inputs` (every `prescribe` argument that changes the
+  result, the panel's digest, the graph with each edge's source, the known model's digest),
+  `logger_check` and `dither_check`. Every key 0.23.0 wrote keeps its value; `SCHEMA_VERSION`
+  stays 2, as a new key changes no key's meaning (ADR 0130).
+- `chc.graph.EdgeProvenance` and `CausalGraph.from_edges(..., provenance=)`: an edge is asserted,
+  discovered (with its test and p-value) or a known mechanism. Not part of the graph's equality.
+- `prescribe(planned_cost_bias=True)` (experimental): the certificate's `planned_cost_bias` holds
+  the planned cost, the second-order bias with its sign and the corrected cost, and
+  `planned_cost_bias_reason` says why it is `None`. Opt-in, as it refits the channel with its
+  influence rows (ADR 0088, ADR 0145). On the quickstart: planned cost 2.150022, bias +2.84e-5.
+- `PlanEvaluation.to_json()` with `EVALUATION_SCHEMA_VERSION = 1`: the estimate, interval, level,
+  certificate fields, the logger check and the evaluation's own settings.
+- `GateConfig(rollback_baseline_share=q)` (experimental, needs `block_length`): a deployed zone of
+  a gate in blocks runs the baseline in each block with probability q, and its rollback e-process
+  reads their contrast after the burn-in, inverse-probability weighted (plain or `centred`).
+  Before, only a drift alarm rolled such a zone back. On the lab plant a candidate that turns
+  0.157 worse after its DEPLOY is rolled back on 96.5 % of paths at q = 0.2 (median 215 blocks,
+  centred), against 0 %; wrong rollbacks 0 of 1000. Cost: q × the sustained gain a period
+  (ADR 0146).
+- `BlankPeriodInference.ar_check_p_value`: a portmanteau check of the AR(1) model on the donors'
+  filtered gaps under `serial="ar1"`, reported, never a refusal. Size 2.5–4.9 %; power 62 %
+  against an AR(2) alternative, weak against factors persisting at different rates.
+- `chc._removals` lists everything that leaves at 1.0: the 421 top-level names, eight renamed
+  names, two re-exports and the record's `identification_radius` key, each with its replacement.
+  A test holds the list equal to the library's deprecation warnings, re-exports and record keys
+  (ADR 0147). No behaviour changes.
+
+### Fixed
+
+- `blank_period_inference(serial="ar1")`'s intervals are the k-step AR(1) forecast's t prediction
+  intervals from the blank innovations (normal innovations assumed; the test itself assumes no
+  distribution). At AR 0.8 the 80 % intervals covered 70.3 % and now cover 79.6 %; at levels 90 %
+  and 95 % they were unbounded with five blank periods and now cover 89.6 % and 94.8 %. The
+  default reading is unchanged (ADR 0146).
+
 ## [0.23.0] — 2026-10-27
 
 Opt-in modes and fixes; no default moves.
