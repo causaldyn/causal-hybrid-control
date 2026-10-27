@@ -456,7 +456,7 @@ print(
 # error adds up in the worst direction every hour, and it holds the noise with probability 0.95 at
 # every hour. Here the logs pin the heater's effect down to a standard error of 0.015 °C per hour
 # for each kW, and the room moves by 0.05 °C an hour that the fitted model does not explain. The
-# two together reach 0.59 °C by 07:00, within the 1 °C tolerance. But that error is measured at
+# two together reach 0.53 °C by 07:00, within the 1 °C tolerance. But that error is measured at
 # the powers the logs saw. It says nothing about powers they did not.
 #
 # The certificate's **barrier** answers a separate question: does the model's forecast keep the
@@ -508,7 +508,7 @@ print(
 
 # %% [markdown]
 # Inside the logged range, the certificate trusts all 8 hours, and the error bound reaches only
-# 0.30 °C by 07:00. The room stays inside the band all night, as before. The trust costs comfort:
+# 0.33 °C by 07:00. The room stays inside the band all night, as before. The trust costs comfort:
 # without full power before dawn, the room reaches only 18.8 °C at 07:00, 2.2 degrees short of
 # the target, where the plan with the full range reached 20.6 °C. The certificate does not choose
 # between the two plans. It says which one the logs back. Whether trust or comfort matters more
