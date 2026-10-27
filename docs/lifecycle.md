@@ -134,7 +134,7 @@ documented, and what is not built yet. Every name below is importable from `chc`
 - **A logged draw tests the graph** (*experimental*). Where the logger added a random draw to the
   levers and logged it, `prescribe(..., dither=<column>)` fits the channel again with the draw as
   its instrument and reads the plan's channel against it in the plan's own regret.
-  The prescription's `dither_check` holds the contrast and its p-value, and a rejection at 5 % is
+  The prescription's field `.dither_check` holds the contrast and its p-value, and a rejection at 5 % is
   logged as a warning and named in the report; the plan is the one without it, bit for bit.
   See [`chc.decision`](api/decision.md).
 - **`off_policy_value`.** It weights one step at a time. So it estimates a candidate's value on
