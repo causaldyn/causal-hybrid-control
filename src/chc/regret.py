@@ -24,6 +24,7 @@ actions, moves and LQ policies.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -33,8 +34,11 @@ from numpy.typing import NDArray
 from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
 from scipy.optimize import brentq
 from scipy.special import erf, ndtr, psi
+from scipy.stats import beta as beta_law
+from scipy.stats import chi2
 
 from chc._action_units import action_units
+from chc.uncertainty import _chi_square_mixture_survival
 
 Matrix = NDArray[np.float64]
 Vector = NDArray[np.float64]
@@ -88,6 +92,233 @@ def certainty_equivalence_gap(
     dk = k_hat - k_star
     d = solve_discrete_lyapunov(a_cl.T, dk.T @ (r + b.T @ p_star @ b) @ dk)
     return float(x0 @ d @ x0)
+
+
+@dataclass(frozen=True)
+class CERegretLaw:
+    """The law of the certainty-equivalent controller's regret under a Gaussian model error, to
+    second order, beside the exact regret's: what :func:`ce_regret_law` returns.
+
+    ``weights`` are the generalised chi-square's, largest first: the second-order regret is
+    ``sum_k weights_k chi2_1``. ``mean`` is their sum, the second-order mean, and ``quantiles`` the
+    law's quantiles at ``levels``. ``exact_quantiles`` are the exact regret's at the same levels
+    over ``draws`` model errors, ``inf`` where the destabilising draws reach them.
+    ``destabilise_probability`` is the share of draws whose gain does not stabilise the true plant
+    or does not exist, and ``destabilise_upper`` its one-sided 95 % Clopper-Pearson bound.
+    ``fourth_order_share`` is the next term of the mean over the second-order one, ``c4 / c2`` at
+    the covariance given, and ``valid`` holds when it is at most the tolerance asked."""
+
+    weights: Vector
+    mean: float
+    levels: Vector
+    quantiles: Vector
+    exact_quantiles: Vector
+    destabilise_probability: float
+    destabilise_upper: float
+    fourth_order_share: float
+    valid: bool
+    draws: int
+
+
+def _gain_jacobian(a: Matrix, b: Matrix, k: Matrix, p: Matrix, r: Matrix) -> NDArray[np.float64]:
+    """``dK* / dtheta`` for ``theta = (A.ravel(), B.ravel())``, shaped ``(directions, m, n)``.
+
+    The Riccati equation differentiated with the gain held, which its optimality allows: ``dP``
+    solves ``dP = A_cl' dP A_cl + E + E'`` with ``E = A_cl' P (dA - dB K)``, and
+    ``dK = H^-1 (dB' P A_cl + B' dP A_cl + B' P (dA - dB K))``, ``H = R + B' P B``."""
+    n, m = b.shape
+    a_cl = a - b @ k
+    h = r + b.T @ p @ b
+    rows = []
+    for j in range(n * n + n * m):
+        unit = np.zeros(n * n + n * m)
+        unit[j] = 1.0
+        d_a, d_b = unit[: n * n].reshape(n, n), unit[n * n :].reshape(n, m)
+        push = p @ (d_a - d_b @ k)
+        d_p = solve_discrete_lyapunov(a_cl.T, a_cl.T @ push + push.T @ a_cl)
+        rows.append(np.linalg.solve(h, d_b.T @ p @ a_cl + b.T @ d_p @ a_cl + b.T @ push))
+    return np.stack(rows)
+
+
+def _stroud_rule(d: int) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """A degree-5 rule for the standard normal on ``R^d`` (Stroud 1971, E_n^{r^2} 5-2): the origin,
+    ``+-sqrt(d + 2) e_i`` and ``+-sqrt((d + 2) / 2) (e_i +- e_j)``, ``2 d^2 + 1`` points."""
+    points, weights = [np.zeros(d)], [2.0 / (d + 2.0)]
+    for i in range(d):
+        for sign in (1.0, -1.0):
+            point = np.zeros(d)
+            point[i] = sign * math.sqrt(d + 2.0)
+            points.append(point)
+            weights.append((4.0 - d) / (2.0 * (d + 2.0) ** 2))
+    for i in range(d):
+        for j in range(i + 1, d):
+            for si in (1.0, -1.0):
+                for sj in (1.0, -1.0):
+                    point = np.zeros(d)
+                    point[i], point[j] = si, sj
+                    points.append(point * math.sqrt((d + 2.0) / 2.0))
+                    weights.append(1.0 / (d + 2.0) ** 2)
+    return np.array(points), np.array(weights)
+
+
+def _chi_square_mixture_quantile(level: float, weights: Vector) -> float:
+    """The ``level`` quantile of ``sum_k weights_k chi2_1``, weights largest first, between
+    ``w_max chi2_1(level)`` and ``w_max chi2_d(level)``: the sum is at least its largest term and
+    at most ``w_max`` times ``d`` such terms."""
+    largest = float(weights[0])
+    if largest <= 0.0:
+        return 0.0
+    scaled = weights / largest
+    low = float(chi2.ppf(level, 1))
+    high = float(chi2.ppf(level, scaled.size))
+
+    def excess(quantile: float) -> float:
+        return _chi_square_mixture_survival(quantile, scaled) - (1.0 - level)
+
+    # one term, or terms all equal, is chi-square itself, and the inversion's rounding can put the
+    # root a hair outside the bracket there
+    if excess(low) <= 0.0:
+        return largest * low
+    if excess(high) >= 0.0:
+        return largest * high
+    return largest * float(brentq(excess, low, high, xtol=1e-14 * high, rtol=1e-12))
+
+
+def ce_regret_law(
+    a: Matrix,
+    b: Matrix,
+    q: Matrix,
+    r: Matrix,
+    covariance: Matrix,
+    state_moment: Matrix,
+    *,
+    levels: Sequence[float] = (0.5, 0.9, 0.99),
+    draws: int = 10_000,
+    tolerance: float = 0.05,
+    seed: int = 0,
+) -> CERegretLaw:
+    """The law of the certainty-equivalent LQ regret when the model ``(A_hat, B_hat)`` is the
+    truth plus a Gaussian error of ``covariance``.
+
+    ``covariance`` is over ``theta = (A.ravel(), B.ravel())``, row-major, ``n^2 + n m`` entries.
+    The regret is ``tr(state_moment D)``, ``D`` that of :func:`certainty_equivalence_gap`:
+    ``np.outer(x0, x0)`` reads the cost from a start ``x0``, as that function does, and a noise
+    covariance reads the long-run average cost per step.
+
+    The exact regret is ``tr(W D)`` with ``W = state_moment`` and
+    ``D = A_cl_hat' D A_cl_hat + dK' (R + B' P* B) dK``, and ``+inf`` where ``A - B K_hat`` is not
+    stable. **Its mean is infinite** under any Gaussian error: destabilising errors have positive
+    probability, and even given stability the spectral radius of ``A - B K_hat`` has a positive
+    density at 1, where the regret has a simple pole, so the conditional mean diverges as well. Its
+    quantiles exist, which is why they are reported, and why
+    :func:`chc.research.regret.regret_scaling` reads medians.
+
+    To second order ``dK = G e``, ``G`` the gain's Jacobian, with the closed loop at the optimum,
+    so the regret is ``e' M e``, ``M = G' (Sigma* (x) (R + B' P* B)) G`` and
+    ``Sigma* = sum_j A_cl^j W A_cl'^j``: under ``e ~ N(0, S)`` a generalised chi-square whose
+    weights are the eigenvalues of ``S^1/2 M S^1/2``. Its quantiles
+    are inverted from Imhof's (1961) formula. ``P(destabilise)`` and the exact quantiles are read
+    off ``draws`` draws of the exact identity.
+
+    The second-order law is the small-error limit. How far it holds is read off the next term of
+    the mean of an estimator safeguarded away from the stability edge, ``E R = c2 + c4 + ...``,
+    ``c4 = (1/8) (S : grad^2)^2 R`` the Gaussian mean of the regret's fourth-order Taylor term:
+    ``fourth_order_share = c4 / c2``, read by a degree-5 Gaussian rule (Stroud 1971) on the exact
+    regret at three small scales of the covariance and extrapolated to zero. On the scalar plant
+    ``x' = a x + b u + w`` with unit noise and ``q = 1`` under an isotropic error ``s^2 I``,
+    ``c2 = 2.3416 s^2`` and ``c4 = 10.401 s^4`` at ``(a, b, r) = (1, 1, 1)``, ``20.191`` and
+    ``348.37`` at ``(1.2, 0.5, 1)``, ``1.1000`` and ``5.6069`` at ``(0.5, 1, 0.1)``
+    (``validation/ce_regret_law.mac``). Over 2 000 000 draws on those plants the exact median
+    stayed within 1 % of the law's while no draw destabilised, and the mean truncated at a
+    stability margin of 0.01 was within 0.3 % of ``c2 + c4`` wherever the share was 0.05 or less;
+    at shares of 0.17 and 0.18 it was 1.29 and 1.33 times the second-order mean. ``valid`` is
+    ``fourth_order_share <= tolerance``. A Gaussian error is itself an asymptotic statement about
+    a fitted model.
+
+    Raises:
+        ValueError: when the shapes disagree, ``covariance`` or ``state_moment`` is not symmetric
+            positive semi-definite, a level lies outside ``(0, 1)``, ``draws`` is below 1, or the
+            true plant has no stabilising gain.
+    """
+    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
+    q, r = np.asarray(q, dtype=np.float64), np.asarray(r, dtype=np.float64)
+    n, m = b.shape
+    d = n * n + n * m
+    covariance = np.asarray(covariance, dtype=np.float64)
+    weight = np.asarray(state_moment, dtype=np.float64)
+    if a.shape != (n, n) or covariance.shape != (d, d) or weight.shape != (n, n):
+        raise ValueError(
+            f"A is {a.shape} and B {b.shape}: covariance must be ({d}, {d}) over their entries and "
+            f"state_moment ({n}, {n}); got {covariance.shape} and {weight.shape}"
+        )
+    for name, matrix in (("covariance", covariance), ("state_moment", weight)):
+        size = max(1.0, float(np.abs(matrix).max()))
+        if not np.allclose(matrix, matrix.T) or np.linalg.eigvalsh(matrix)[0] < -1e-12 * size:
+            raise ValueError(f"{name} must be symmetric positive semi-definite")
+    grid = np.asarray(levels, dtype=np.float64)
+    if not ((grid > 0.0) & (grid < 1.0)).all():
+        raise ValueError(f"levels must lie in (0, 1), got {levels}")
+    if draws < 1:
+        raise ValueError(f"draws must be at least 1, got {draws}")
+    try:
+        k_star, p_star = dlqr(a, b, q, r)
+    except (np.linalg.LinAlgError, ValueError) as error:
+        raise ValueError("the true plant has no stabilising LQR gain") from error
+    curvature = r + b.T @ p_star @ b
+    values, vectors = np.linalg.eigh(covariance)
+    root = vectors * np.sqrt(np.clip(values, 0.0, None))
+
+    def regret(theta: Vector) -> float:
+        a_hat, b_hat = theta[: n * n].reshape(n, n), theta[n * n :].reshape(n, m)
+        try:
+            k_hat, _ = dlqr(a_hat, b_hat, q, r)
+        except (np.linalg.LinAlgError, ValueError):
+            return math.inf  # no certainty-equivalent gain exists
+        closed = a - b @ k_hat
+        if np.max(np.abs(np.linalg.eigvals(closed))) >= 1.0:
+            return math.inf
+        dk = k_hat - k_star
+        return float(np.sum(weight * solve_discrete_lyapunov(closed.T, dk.T @ curvature @ dk)))
+
+    # dK row-major against kron(H, Sigma*): tr(Sigma* dK' H dK) = vec(dK)' (H (x) Sigma*) vec(dK)
+    gradient = _gain_jacobian(a, b, k_star, p_star, r).reshape(d, m * n)
+    spread = solve_discrete_lyapunov(a - b @ k_star, weight)
+    second = gradient @ np.kron(curvature, spread) @ gradient.T
+    mixture = np.clip(np.linalg.eigvalsh(root.T @ second @ root)[::-1], 0.0, None)
+    quantiles = np.array([_chi_square_mixture_quantile(float(v), mixture) for v in grid])
+
+    truth = np.concatenate([a.ravel(), b.ravel()])
+    scale = float(np.abs(root).max())
+    share = 0.0
+    if scale > 0.0 and mixture[0] > 0.0:
+        # E[R(truth + h e)] = c2 h^2 + c4 h^4 + c6 h^6 + ... over e ~ N(0, S / scale^2): the rule
+        # is exact on the Taylor terms of degree 5 and less, and the odd ones vanish on it
+        points, rule = _stroud_rule(d)
+        unit = root / scale
+        steps = 1e-2 * max(1.0, float(np.abs(truth).max())) / math.sqrt(d + 2.0)
+        steps = steps / np.array([1.0, 2.0, 4.0])
+        offsets = points @ unit.T
+        means = np.array([sum(rule * [regret(truth + h * o) for o in offsets]) for h in steps])
+        fit = np.linalg.solve(np.vander(steps**2, 3, increasing=True), means / steps**2)
+        share = float(fit[1] / fit[0]) * scale**2
+
+    rng = np.random.default_rng(seed)
+    exact = np.sort([regret(truth + root @ rng.standard_normal(d)) for _ in range(draws)])
+    unstable = int(np.isinf(exact).sum())
+    upper = float(beta_law.ppf(0.95, unstable + 1, draws - unstable)) if unstable < draws else 1.0
+    picks = np.clip(np.ceil(grid * draws).astype(int) - 1, 0, draws - 1)
+    return CERegretLaw(
+        weights=mixture,
+        mean=float(mixture.sum()),
+        levels=grid,
+        quantiles=quantiles,
+        exact_quantiles=exact[picks],
+        destabilise_probability=unstable / draws,
+        destabilise_upper=upper,
+        fourth_order_share=share,
+        valid=share <= tolerance,
+        draws=draws,
+    )
 
 
 @dataclass(frozen=True)

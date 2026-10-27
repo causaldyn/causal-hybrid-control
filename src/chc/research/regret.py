@@ -88,6 +88,16 @@ def regret_scaling(
     the explicit radius ``rho`` inside which it is 0 by construction, and a safeguarded policy
     (fall back to a known stabilising gain when the checkable Lyapunov test fails) is what restores
     an unconditional finite expectation.
+
+    WHY MEDIANS. Under a Gaussian model error the mean regret is infinite even conditional on
+    stability: the spectral radius of the closed loop has a positive density at 1, where the regret
+    has a simple pole, so a mean over the stabilising draws grows without bound as their margin
+    shrinks (on ``x' = x + u + w``, ``q = r = 1``, at an error of 0.2 in each parameter: 0.1205,
+    0.1244, 0.1263 and 0.1322 at margins of 0.1, 0.01, 0.001 and 0.0001, over 2 000 000 draws). The
+    median exists at every error and follows the second-order law's within 1 % while no draw
+    destabilises; :func:`chc.regret.ce_regret_law` gives that law, its quantiles and its range of
+    validity.
+
     """
     rng = np.random.default_rng(seed)
     median_errors: list[float] = []

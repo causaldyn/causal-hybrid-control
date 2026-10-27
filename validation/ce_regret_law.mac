@@ -1,0 +1,192 @@
+/* The law of the certainty-equivalent LQ regret under a Gaussian model error
+   (chc.regret.ce_regret_law).
+
+   The exact regret of the gain K_hat, the LQR gain of the estimate, on the true plant (A, B) is
+   tr(W D), D = (A - B K_hat)' D (A - B K_hat) + dK' H dK, dK = K_hat - K*, H = R + B' P* B
+   (validation/ce_gap_cost_difference.mac). To second order in the error e of theta =
+   (A.ravel(), B.ravel()), dK = G e and the closed loop sits at the optimum, so the regret is
+   e' G' (H (x) Sigma*) G e, Sigma* = sum_j A_cl^j W A_cl'^j: under e ~ N(0, S) a generalised
+   chi-square with the eigenvalues of S^1/2 M S^1/2 as weights. The gain's Jacobian G comes from
+   the Riccati equation differentiated with the gain held:
+       dP = A_cl' dP A_cl + E + E',  E = A_cl' P (dA - dB K),
+       dK = H^-1 (dB' P A_cl + B' dP A_cl + B' P (dA - dB K)).
+
+   STEP 1  the scalar plant: the formula's dK equals the derivative of the explicit gain
+           k* = a b p / (r + b^2 p) with p implicit in the DARE (q eliminated through it).
+   STEP 2  a rational point, (a, b, q, r) = (1, 1, 4/3, 1), where p* = 2, k* = 2/3: the weight,
+           and the fourth-order mean c4 from the exact regret's Taylor series and Isserlis'
+           moments, both exact rationals; the extrapolated share c4 / c2 the code reads.
+   STEP 3  the plants A (1, 1, 1, 1), B (6/5, 1/2, 1, 1), C (1/2, 1, 1, 1/10): c2 and c4 under
+           s^2 I, which the docstring quotes.
+   STEP 4  Stroud's degree-5 rule E_n^{r^2} 5-2 for N(0, I_d) integrates every monomial of degree
+           at most 5 exactly, d = 1..7.
+   STEP 5  a 2-state, 1-input plant at 60 digits: the formula's G against a central difference of
+           the gain, and the second-order weight matrix M against the exact regret's t^2
+           coefficient along three directions.
+   Maxima is the source of truth. */
+display2d : false$
+ratprint : false$
+
+/* ---------- STEP 1: the scalar gain's gradient ---------- */
+dare : b^2*p^2 + (r - q*b^2 - a^2*r)*p - q*r$
+kstar : a*b*p/(r + b^2*p)$
+Fp : diff(dare, p)$
+pa : -diff(dare, a)/Fp$  pb : -diff(dare, b)/Fp$
+ka : diff(kstar, a) + diff(kstar, p)*pa$
+kb : diff(kstar, b) + diff(kstar, p)*pb$
+qsol : rhs(solve(dare, q)[1])$
+acl : a - b*kstar$
+h : r + b^2*p$
+/* the formula: dP = 2 acl p (da - db k)/(1 - acl^2), dK = (db p acl + b dP acl + b p (da - db k))/h */
+dPf(da, db) := 2*acl*p*(da - db*kstar)/(1 - acl^2)$
+dKf(da, db) := (db*p*acl + b*dPf(da, db)*acl + b*p*(da - db*kstar))/h$
+r1a : ratsimp(subst(q = qsol, ka - dKf(1, 0)))$
+r1b : ratsimp(subst(q = qsol, kb - dKf(0, 1)))$
+print("STEP 1 implicit dk/da - formula =", r1a, "; dk/db - formula =", r1b,
+      if r1a = 0 and r1b = 0 then "(PASS)" else "(FAIL)")$
+
+/* ---------- STEP 2: a rational point ---------- */
+pt : [a = 1, b = 1, q = 4/3, r = 1]$
+pstar : 2$
+print("STEP 2 DARE residual at p = 2:", subst(pt, subst(p = pstar, dare)),
+      if subst(pt, subst(p = pstar, dare)) = 0 then "(PASS)" else "(FAIL)")$
+g : ratsimp(subst(p = pstar, subst(pt, [ka, kb])))$
+aclr : ratsimp(subst(p = pstar, subst(pt, acl)))$
+cr : ratsimp(subst(p = pstar, subst(pt, h))/(1 - aclr^2))$
+print("STEP 2 k* =", subst(p = pstar, subst(pt, kstar)), " a - b k* =", aclr,
+      " grad k* =", g, " (r + b^2 p)/(1 - acl^2) =", cr)$
+Mr : cr*transpose(matrix(g)) . matrix(g)$
+print("STEP 2 second-order matrix M =", Mr, " c2 under s^2 I = tr M s^2 =", ratsimp(Mr[1,1] + Mr[2,2]))$
+/* the gain as a function of the estimate, the stabilising root written to stay rational here */
+kfun : block([big, disc, pp],
+    big : r - q*bh^2 - ah^2*r, disc : sqrt(big^2 + 4*bh^2*q*r),
+    pp : (disc - big)/(2*bh^2),
+    ah*bh*pp/(r + bh^2*pp))$
+kfun : subst([q = 4/3, r = 1], kfun)$
+print("STEP 2 explicit gain at the truth - k* =", ratsimp(subst([ah = 1, bh = 1], kfun) - 2/3))$
+Rexact : (1 + 1*pstar)*(kh - 2/3)^2/(1 - (1 - 1*kh)^2)$
+ser : taylor(subst(kh = subst([ah = 1 + t*ea, bh = 1 + t*eb], kfun), Rexact), t, 0, 4)$
+mom(e) := block([ex : expand(e)],
+    ex : subst([ea^4 = 3*saa^2, eb^4 = 3*sbb^2], ex),
+    ex : ratsubst(3*saa*sab, ea^3*eb, ex),
+    ex : ratsubst(3*sbb*sab, ea*eb^3, ex),
+    ex : ratsubst(saa*sbb + 2*sab^2, ea^2*eb^2, ex),
+    ex : ratsubst(saa, ea^2, ex), ex : ratsubst(sbb, eb^2, ex), ex : ratsubst(sab, ea*eb, ex),
+    ex)$
+E2 : ratsimp(mom(ratsimp(coeff(ser, t, 2))))$
+E4 : ratsimp(mom(ratsimp(coeff(ser, t, 4))))$
+r2 : ratsimp(E2 - (Mr[1,1]*saa + 2*Mr[1,2]*sab + Mr[2,2]*sbb))$
+print("STEP 2 series t^2 mean - tr(M S) =", r2, if r2 = 0 then "(PASS)" else "(FAIL)")$
+print("STEP 2 E[t^4 term] =", E4)$
+c2i : subst([saa = 1, sbb = 1, sab = 0], E2)$
+c4i : subst([saa = 1, sbb = 1, sab = 0], E4)$
+print("STEP 2 isotropic S = s^2 I: c2 =", c2i, "=", float(c2i), "; c4 =", c4i, "=", float(c4i),
+      "; c4/c2 per s^2 =", ratsimp(c4i/c2i), "=", float(c4i/c2i))$
+/* a correlated S = [[1, 1/2], [1/2, 2]] s^2 */
+c2c : subst([saa = 1, sbb = 2, sab = 1/2], E2)$
+c4c : subst([saa = 1, sbb = 2, sab = 1/2], E4)$
+print("STEP 2 S = [[1, 1/2], [1/2, 2]] s^2: c2 =", c2c, "=", float(c2c), "; c4 =", c4c,
+      "; c4/c2 per s^2 =", ratsimp(c4c/c2c), "=", float(c4c/c2c))$
+
+/* ---------- STEP 3: plants A, B, C ---------- */
+series_c(pl) := block([pnum, kf, knum, expr, sr, e2, e4],
+    pnum : radcan(sublis(pl, rhs(solve(dare, p)[2]))),
+    if float(pnum) < 0 then pnum : radcan(sublis(pl, rhs(solve(dare, p)[1]))),
+    kf : block([big, disc, pp],
+        big : r - q*bh^2 - ah^2*r, disc : sqrt(big^2 + 4*bh^2*q*r),
+        pp : (disc - big)/(2*bh^2), ah*bh*pp/(r + bh^2*pp)),
+    kf : sublis([q = rhs(pl[3]), r = rhs(pl[4])], kf),
+    knum : radcan(subst(p = pnum, sublis(pl, kstar))),
+    expr : subst(p = pnum, sublis(pl, (r + b^2*p)*(kh - knum)^2/(1 - (a - b*kh)^2))),
+    expr : subst(kh = subst([ah = rhs(pl[1]) + t*ea, bh = rhs(pl[2]) + t*eb], kf), expr),
+    sr : taylor(expr, t, 0, 4),
+    e2 : float(subst([saa = 1, sbb = 1, sab = 0], mom(radcan(coeff(sr, t, 2))))),
+    e4 : float(subst([saa = 1, sbb = 1, sab = 0], mom(radcan(coeff(sr, t, 4))))),
+    [e2, e4, e4/e2])$
+print("STEP 3 plant A (c2, c4, c4/c2):", series_c([a = 1, b = 1, q = 1, r = 1]))$
+print("STEP 3 plant B (c2, c4, c4/c2):", series_c([a = 6/5, b = 1/2, q = 1, r = 1]))$
+print("STEP 3 plant C (c2, c4, c4/c2):", series_c([a = 1/2, b = 1, q = 1, r = 1/10]))$
+
+/* ---------- STEP 4: Stroud's degree-5 rule ---------- */
+stroud(d) := block([pts : [], wts : [], v],
+    pts : endcons(makelist(0, i, 1, d), pts), wts : endcons(2/(d + 2), wts),
+    for i : 1 thru d do for s in [1, -1] do (
+        v : makelist(0, k, 1, d), v[i] : s*sqrt(d + 2),
+        pts : endcons(v, pts), wts : endcons((4 - d)/(2*(d + 2)^2), wts)),
+    for i : 1 thru d do for j : i + 1 thru d do for si in [1, -1] do for sj in [1, -1] do (
+        v : makelist(0, k, 1, d), v[i] : si*sqrt((d + 2)/2), v[j] : sj*sqrt((d + 2)/2),
+        pts : endcons(v, pts), wts : endcons(1/(d + 2)^2, wts)),
+    [pts, wts])$
+/* the standard normal's moment of x^alpha: prod over i of (alpha_i - 1)!! for even alpha_i, 0 if any is odd */
+gmom(al) := product(if oddp(al[i]) then 0 else (if al[i] = 0 then 1 else (al[i] - 1)!!), i, 1, length(al))$
+exponents(d, deg) := block([out : [[]]],
+    for i : 1 thru d do out : apply(append, map(lambda([v], makelist(endcons(k, v), k, 0, deg)), out)),
+    sublist(out, lambda([v], apply("+", v) <= deg)))$
+stroud_worst(d) := block([rl : stroud(d), worst : 0],
+    for al in exponents(d, 5) do
+        worst : max(worst, abs(ratsimp(
+            sum(rl[2][k]*product(if al[i] = 0 then 1 else rl[1][k][i]^al[i], i, 1, d), k, 1, length(rl[2])) - gmom(al)))),
+    worst)$
+for d : 1 thru 7 do block([w : stroud_worst(d)],
+    print("STEP 4 d =", d, ": largest error over the monomials of degree <= 5 =", w,
+          if w = 0 then "(PASS)" else "(FAIL)"))$
+/* and it is not exact at degree 6: E[x1^6] = 15 */
+block([rl : stroud(2)],
+    print("STEP 4 d = 2, x1^6:", ratsimp(sum(rl[2][k]*rl[1][k][1]^6, k, 1, length(rl[2]))),
+          "against 15 (degree 6 is not integrated, as the extrapolation assumes)"))$
+
+/* ---------- STEP 5: a 2-state, 1-input plant at 60 digits ---------- */
+fpprec : 60$
+A5 : matrix([1, 1/2], [0, 9/10])$
+B5 : matrix([0], [1])$
+Q5 : ident(2)$
+R5 : matrix([1])$
+W5 : matrix([1, 1/4], [1/4, 2])$
+riccati(A, B) := block([P : bfloat(ident(2)), Pn, Hk],
+    for it : 1 thru 600 do (
+        Hk : R5 + transpose(B) . P . B,
+        Pn : bfloat(Q5 + transpose(A) . P . A
+                    - transpose(A) . P . B . invert(Hk) . transpose(B) . P . A),
+        P : Pn),
+    P)$
+gainof(A, B) := block([P : riccati(A, B)],
+    bfloat(invert(R5 + transpose(B) . P . B) . transpose(B) . P . A))$
+P5 : riccati(A5, B5)$
+K5 : gainof(A5, B5)$
+Acl5 : bfloat(A5 - B5 . K5)$
+H5 : bfloat(R5 + transpose(B5) . P5 . B5)$
+print("STEP 5 Riccati residual:", bfloat(lmax(map(abs, flatten(args(
+    Q5 + transpose(A5) . P5 . A5 - transpose(A5) . P5 . B5 . invert(H5) . transpose(B5) . P5 . A5 - P5))))))$
+print("STEP 5 K* =", K5)$
+/* Lyapunov X = M' X M + F by iteration: the closed loop is stable */
+lyap(M, F) := block([X : F], for it : 1 thru 1200 do X : bfloat(F + transpose(M) . X . M), X)$
+units : makelist(block([v : makelist(0, k, 1, 6)], v[j] : 1, v), j, 1, 6)$
+dA(v) := matrix([v[1], v[2]], [v[3], v[4]])$
+dB(v) := matrix([v[5]], [v[6]])$
+Gf(v) := block([push, dP],
+    push : P5 . (dA(v) - dB(v) . K5),
+    dP : lyap(Acl5, transpose(Acl5) . push + transpose(push) . Acl5),
+    bfloat(invert(H5) . (transpose(dB(v)) . P5 . Acl5 + transpose(B5) . dP . Acl5 + transpose(B5) . push)))$
+hstep : 1b-20$
+Gd(v) := bfloat((gainof(A5 + hstep*dA(v), B5 + hstep*dB(v))
+                 - gainof(A5 - hstep*dA(v), B5 - hstep*dB(v)))/(2*hstep))$
+G5 : makelist(Gf(units[j]), j, 1, 6)$
+gerr : lmax(makelist(lmax(map(abs, flatten(args(G5[j] - Gd(units[j]))))), j, 1, 6))$
+print("STEP 5 largest |G formula - central difference| =", gerr,
+      if gerr < 1b-30 then "(PASS)" else "(FAIL)")$
+for j : 1 thru 6 do print("STEP 5 G column", j, "=", float(G5[j]))$
+/* Sigma* = sum_j Acl^j W Acl'^j solves X = Acl X Acl' + W */
+Sig5 : lyap(transpose(Acl5), W5)$
+Mof(u, v) := block([ku : sum(u[j]*G5[j], j, 1, 6), kv : sum(v[j]*G5[j], j, 1, 6)],
+    bfloat(mat_trace(Sig5 . transpose(ku) . H5 . kv)))$
+M5 : genmatrix(lambda([i, j], Mof(units[i], units[j])), 6, 6)$
+for i : 1 thru 6 do print("STEP 5 M row", i, "=", float(M5[i]))$
+exactR(v, t) := block([Kh : gainof(A5 + t*dA(v), B5 + t*dB(v)), dK, Ac],
+    dK : Kh - K5, Ac : bfloat(A5 - B5 . Kh),
+    bfloat(mat_trace(W5 . lyap(Ac, transpose(dK) . H5 . dK))))$
+for v in [[1, 0, 0, 0, 0, 0], [0, 1, 0, -1, 1/2, 0], [1/3, -1, 1/2, 1, -1, 2]] do block(
+    [qform, rel],
+    qform : bfloat(transpose(matrix(v)) . M5 . matrix(v)),
+    rel : exactR(v, 1b-15)/1b-30/qform,
+    print("STEP 5 direction", v, ": exact R(t)/t^2 at t = 1e-15 over e'Me =", float(rel),
+          if abs(rel - 1) < 1b-12 then "(PASS)" else "(FAIL)"))$

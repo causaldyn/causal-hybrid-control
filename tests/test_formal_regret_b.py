@@ -161,6 +161,14 @@ FORMAL_LINKS = {
         "cites": ("ce_gap_cost_difference.mac",),
         "tests": ("test_ce_gap_matches_the_60_digit_cost_difference_at_small_error",),
     },
+    "chc.regret.ce_regret_law": {
+        "cites": ("ce_regret_law.mac",),
+        "tests": (
+            "test_ce_regret_law.py::test_the_second_and_fourth_order_terms_are_maximas",
+            "test_ce_regret_law.py::test_a_rational_point_reads_maximas_exact_terms",
+            "test_ce_regret_law.py::test_the_weights_are_maximas_second_order_matrix",
+        ),
+    },
     "chc.regret.minimax_action": {
         "cites": ("minimax_lq.mac", "minimax_lq.v"),
         "tests": (
