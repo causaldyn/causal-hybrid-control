@@ -266,9 +266,11 @@ class Lever:
                 )
         if self.lo > self.hi:
             raise DecisionError(f"lever {self.name!r} has lo={self.lo} above hi={self.hi}")
-        if not math.isfinite(self.unit_cost):
+        if not 0.0 <= self.unit_cost < math.inf:
             raise DecisionError(
-                f"lever {self.name!r} has unit_cost={self.unit_cost}; a price is a finite number"
+                f"lever {self.name!r} has unit_cost={self.unit_cost}; a price is a finite number, "
+                "never negative: a negative one pays the plan to move the lever, which on an open "
+                "side has no least cost"
             )
         if self.cap_per_step is not None and not self.cap_per_step >= 0.0:
             raise DecisionError(
@@ -302,9 +304,10 @@ class Target:
                 f"target {self.name!r} has value {values[bad[0]]} at entry {bad[0]}; a level to "
                 "steer to is a finite number"
             )
-        if not math.isfinite(self.weight):
+        if not 0.0 < self.weight < math.inf:
             raise DecisionError(
-                f"target {self.name!r} has weight={self.weight}; a weight is a finite number"
+                f"target {self.name!r} has weight={self.weight}; a weight is a finite positive "
+                "number: zero steers nothing, and a negative one steers away from the target"
             )
 
 
@@ -1393,14 +1396,15 @@ class Prescription:
             _settings={
                 "entry": "Prescription.evaluate",
                 "method": "pdis",
-                "smoothing": smoothing,
-                "model_error": model_error,
-                "min_effective": min_effective,
+                "smoothing": None if smoothing is None else float(smoothing),
+                "model_error": float(model_error),
+                "min_effective": float(min_effective),
                 "logger": _policy_json(logger),
                 "time_zero": time_zero,
-                "n_resamples": n_resamples,
-                "seed": seed,
-                "max_refused": max_refused,
+                "n_resamples": int(n_resamples),
+                "seed": int(seed),
+                "max_refused": float(max_refused),
+                "panel_sha256": panel.provenance.data_sha256,
             },
         )
 
@@ -1605,11 +1609,11 @@ class Prescription:
           correlation or an infinite detectable one None; None where it was not run;
         * ``dither_check``, the dither check's (:class:`DitherCheck`), None where none was asked;
         * ``inputs``, every argument of :func:`prescribe` that moves the result, the panel's
-          ``data_sha256`` as handed in, and the graph with each edge's provenance
-          (:class:`~chc.graph.EdgeProvenance`); a known model is recorded by a digest of its
-          arrays and structure alone. In ``inputs`` an infinite number is the text ``"inf"`` or
-          ``"-inf"``, so that it stays apart from None, which there means not given. None on a
-          prescription :func:`prescribe` did not build.
+          ``data_sha256`` and its declared ``cluster`` (``panel_cluster``) as handed in, and the
+          graph with each edge's provenance (:class:`~chc.graph.EdgeProvenance`); a known model
+          is recorded by a digest of its arrays and structure alone. In ``inputs`` an infinite
+          number is the text ``"inf"`` or ``"-inf"``, so that it stays apart from None, which
+          there means not given. None on a prescription :func:`prescribe` did not build.
         """
         certificate = self.certificate
         record = {
@@ -1737,11 +1741,12 @@ class Prescription:
         """The decision ``record`` holds, made again: :func:`prescribe` on ``panel`` with the
         record's ``inputs``, checked to give the record back. *Experimental.*
 
-        ``panel`` is the panel the decision was made from: its ``data_sha256`` must be the one the
-        record names. ``model`` is the known model the decision was made with, where it was made
-        with one: the record holds its digest alone, and refuses a model of another. The replay
-        reproduces the record, every number to the bit, on the versions and the precision that
-        wrote it (ADR 0145).
+        ``panel`` is the panel the decision was made from: its ``data_sha256`` and its declared
+        ``cluster``, which moves the channel's error and is not part of the digest, must be the
+        ones the record names. ``model`` is the known model the decision was made with, where it
+        was made with one: the record holds its digest alone, and refuses a model of another. The
+        replay reproduces the record, every number to the bit, on the versions and the precision
+        that wrote it (ADR 0145).
 
         The rule: a record replays on the release of the library that wrote it, under the same
         ``jax_enable_x64``, with ``schema_version`` 2 and ``inputs``, which records of 0.23.0 and
@@ -1753,8 +1758,12 @@ class Prescription:
             DecisionError: naming the field, on a record of another ``schema_version``, without
                 ``inputs`` or a field the replay needs, written by another release of the library
                 (``run.versions``) or under another precision (``run.x64``), on a panel of other
-                data (``inputs.panel_sha256``), without the known model the record names, or with
-                one of another digest or where the record names none (``inputs.known``); and where
+                data (``inputs.panel_sha256``) or of another declared cluster
+                (``inputs.panel_cluster``), without the known model the record names, or with
+                one of another digest or where the record names none (``inputs.known``); on an
+                input that does not read as :func:`prescribe`'s argument, or that it refuses,
+                naming ``inputs.<key>`` where the refusal names the argument and ``inputs`` where
+                it does not, with the refusal's own words; and where
                 the replay does not give the record back, naming the first field that differs and
                 the versions that differ from the record's.
         """
@@ -1789,7 +1798,13 @@ class Prescription:
                 f"process runs with {_x64_enabled()}"
             )
         arguments = _replay_arguments(inputs, panel, model)
-        replayed = prescribe(panel, **arguments)
+        try:
+            replayed = prescribe(panel, **arguments)
+        except (KeyError, TypeError, ValueError) as refusal:  # the record's inputs, refused
+            message = _refusal(refusal)
+            raise DecisionError(
+                f"{_refused_input(message)}: prescribe refuses the record's inputs: {message}"
+            ) from refusal
         difference = _first_difference(replayed.to_json(), dict(record))
         if difference is not None:
             moved = sorted(
@@ -2434,6 +2449,20 @@ def prescribe(
     recorded parents: :attr:`Prescription.logger_check` (*experimental*). It reports, at ``INFO``;
     it changes nothing else.
     """
+    # Each collection read once, here: the record, the checks and the fit read it again, and an
+    # iterator handed in would have been spent by the first of them.
+    levers, constraints, budgets, drivers = (
+        tuple(levers),
+        tuple(constraints),
+        tuple(budgets),
+        tuple(drivers),
+    )
+    if not isinstance(adjustment, CausalGraph):
+        adjustment = tuple(adjustment)
+    if neighbours is not None and not isinstance(neighbours, str):
+        neighbours = {unit: tuple(others) for unit, others in neighbours.items()}
+    if dither is not None and not isinstance(dither, str):
+        dither = tuple(dither)
     if not levers:
         raise DecisionError(
             "prescribe needs at least one lever; there is nothing to decide otherwise"
@@ -5673,6 +5702,7 @@ def _inputs_record(
     value = np.asarray(target.value, dtype=np.float64)
     return {
         "panel_sha256": panel.provenance.data_sha256,
+        "panel_cluster": panel.cluster,
         "levers": [
             {
                 "name": lever.name,
@@ -5736,6 +5766,7 @@ def _inputs_record(
 
 _INPUT_KEYS = (
     "panel_sha256",
+    "panel_cluster",
     "levers",
     "target",
     "horizon",
@@ -5778,6 +5809,12 @@ def _replay_arguments(
             f"inputs.panel_sha256: the record was made from data {inputs['panel_sha256']!r}, and "
             f"this panel holds {panel.provenance.data_sha256!r}"
         )
+    # the declared cluster groups the channel's error and is not part of the data's digest
+    if inputs["panel_cluster"] != panel.cluster:
+        raise DecisionError(
+            f"inputs.panel_cluster: the record was made from a panel that declared cluster "
+            f"{inputs['panel_cluster']!r}, and this panel declares {panel.cluster!r}"
+        )
     known = inputs["known"]
     if known is None and model is not None:
         raise DecisionError(
@@ -5794,74 +5831,103 @@ def _replay_arguments(
                 f"inputs.known: the model given reads digest {_model_digest(model)!r}, and the "
                 f"record's was {known!r}"
             )
-    try:
-        adjustment = _read_adjustment(inputs["adjustment"])
-        target = inputs["target"]
-        neighbours = inputs["neighbours"]
-        arguments: dict[str, Any] = {
-            "levers": [
-                Lever(
-                    lever["name"],
-                    lo=_read_setting(lever["lo"]),
-                    hi=_read_setting(lever["hi"]),
-                    unit_cost=_read_setting(lever["unit_cost"]),
-                    cap_per_step=_read_setting(lever["cap_per_step"]),
-                )
-                for lever in inputs["levers"]
-            ],
-            "target": Target(
-                target["name"],
-                value=target["value"]
-                if np.ndim(target["value"]) == 0
-                else np.asarray(target["value"], dtype=np.float64),
-                weight=_read_setting(target["weight"]),
-            ),
-            "horizon": inputs["horizon"],
-            "adjustment": adjustment,
-            "constraints": [
-                Constraint(c["state"], lo=_read_setting(c["lo"]), hi=_read_setting(c["hi"]))
-                for c in inputs["constraints"]
-            ],
-            "hold_constraints": inputs["hold_constraints"],
-            "budgets": [
-                PeriodBudget(
-                    np.asarray(budget["weights"], dtype=np.float64),
-                    amount=_read_setting(budget["amount"]),
-                    period=budget["period"],
-                    start=_read_setting(budget["start"]),
-                )
-                for budget in inputs["budgets"]
-            ],
-            "max_levers": inputs["max_levers"],
-            "known": model,
-            "dt": _read_setting(inputs["dt"]),
-            "gamma": _read_setting(inputs["gamma"]),
-            "radius": inputs["radius"],
-            "tolerance": _read_setting(inputs["tolerance"]),
-            "x0": None if inputs["x0"] is None else np.asarray(inputs["x0"], dtype=np.float64),
-            "folds": inputs["folds"],
-            "seed": inputs["seed"],
-            "integrator": inputs["integrator"],
-            "drivers": [
-                Driver(driver["name"], np.asarray(driver["forecast"], dtype=np.float64))
-                for driver in inputs["drivers"]
-            ],
-            "neighbours": None
+    target, neighbours = inputs["target"], inputs["neighbours"]
+    readers: dict[str, Callable[[], Any]] = {
+        "levers": lambda: [
+            Lever(
+                lever["name"],
+                lo=_read_setting(lever["lo"]),
+                hi=_read_setting(lever["hi"]),
+                unit_cost=_read_setting(lever["unit_cost"]),
+                cap_per_step=_read_setting(lever["cap_per_step"]),
+            )
+            for lever in inputs["levers"]
+        ],
+        "target": lambda: Target(
+            target["name"],
+            value=target["value"]
+            if np.ndim(target["value"]) == 0
+            else np.asarray(target["value"], dtype=np.float64),
+            weight=_read_setting(target["weight"]),
+        ),
+        "horizon": lambda: _whole(inputs["horizon"]),
+        "adjustment": lambda: _read_adjustment(inputs["adjustment"]),
+        "constraints": lambda: [
+            Constraint(c["state"], lo=_read_setting(c["lo"]), hi=_read_setting(c["hi"]))
+            for c in inputs["constraints"]
+        ],
+        "hold_constraints": lambda: inputs["hold_constraints"],
+        "budgets": lambda: [
+            PeriodBudget(
+                np.asarray(budget["weights"], dtype=np.float64),
+                amount=_read_setting(budget["amount"]),
+                period=budget["period"],
+                start=_read_setting(budget["start"]),
+            )
+            for budget in inputs["budgets"]
+        ],
+        "max_levers": lambda: (
+            None if inputs["max_levers"] is None else _whole(inputs["max_levers"])
+        ),
+        "dt": lambda: _read_setting(inputs["dt"]),
+        "gamma": lambda: _read_setting(inputs["gamma"]),
+        "radius": lambda: inputs["radius"],
+        "tolerance": lambda: _read_setting(inputs["tolerance"]),
+        "x0": lambda: None if inputs["x0"] is None else np.asarray(inputs["x0"], dtype=np.float64),
+        "folds": lambda: _whole(inputs["folds"]),
+        "seed": lambda: _whole(inputs["seed"]),
+        "integrator": lambda: inputs["integrator"],
+        "drivers": lambda: [
+            Driver(driver["name"], np.asarray(driver["forecast"], dtype=np.float64))
+            for driver in inputs["drivers"]
+        ],
+        "neighbours": lambda: (
+            None
             if neighbours is None
             else neighbours["column"]
             if "column" in neighbours
-            else _read_neighbours(neighbours["units"], panel, inputs["clusters"]),
-            "clusters": inputs["clusters"],
-            "nuisance_knots": inputs["nuisance_knots"],
-            "tube_actions": inputs["tube_actions"],
-            "dither": inputs["dither"],
-            "planned_cost_bias": inputs["planned_cost_bias"],
-        }
-    except (KeyError, TypeError) as error:  # a record's own shape, read at its boundary
-        raise DecisionError(
-            f"inputs: the record's inputs do not read as prescribe's: {error!r}"
-        ) from error
+            else _read_neighbours(neighbours["units"], panel, inputs["clusters"])
+        ),
+        "clusters": lambda: inputs["clusters"],
+        "nuisance_knots": lambda: inputs["nuisance_knots"],
+        "tube_actions": lambda: inputs["tube_actions"],
+        "dither": lambda: inputs["dither"],
+        "planned_cost_bias": lambda: inputs["planned_cost_bias"],
+    }
+    arguments: dict[str, Any] = {"known": model}
+    for key, read in readers.items():
+        try:
+            arguments[key] = read()
+        except (KeyError, TypeError, ValueError) as error:  # a record's own shape, at its boundary
+            raise DecisionError(
+                f"inputs.{key}: the record's value does not read as prescribe's: {_refusal(error)}"
+            ) from error
     return arguments
+
+
+def _whole(value: Any) -> int:
+    """A count or a seed as the record holds it: a JSON integer, not a number of another kind."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{value!r} is not a whole number")
+    return value
+
+
+def _refusal(error: Exception) -> str:
+    """An exception's own words: a ``KeyError``'s without the quotes its text adds."""
+    return str(error.args[0]) if isinstance(error, KeyError) and error.args else str(error)
+
+
+def _refused_input(message: str) -> str:
+    """The record's ``inputs.<key>`` that :func:`prescribe`'s refusal ``message`` names, as its
+    messages open with the argument they refuse (``gamma=0.5 is ...``, ``lever 'u' has ...``), or
+    ``inputs`` where it opens with none."""
+    match = re.match(r"[a-z_0-9]+", message)
+    word = "" if match is None else match.group()
+    key = _REFUSED_BY.get(word, word)
+    return f"inputs.{key}" if key in _INPUT_KEYS else "inputs"
+
+
+_REFUSED_BY = {"lever": "levers", "constraint": "constraints", "driver": "drivers"}
 
 
 def _read_adjustment(written: Mapping[str, Any]) -> CausalGraph | list[str]:

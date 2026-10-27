@@ -2,6 +2,14 @@
 
 **Status:** accepted, 2026-10-27. Experimental. Adds keys to the decision record of ADR 0055 and
 ADR 0130, a field to the certificate for ADR 0088's bias, and a record of `PlanEvaluation`.
+Amended 2026-10-27, before its release: `inputs` holds the panel's declared cluster
+(`panel_cluster`), which moves the channel's error and is not in `data_sha256`, and a replay on a
+panel that declares another is refused naming it; `prescribe` reads each collection it is handed
+once, so neighbours given as iterators are recorded and fitted alike; a record whose input does not
+read as `prescribe`'s argument, or that `prescribe` refuses, raises a `DecisionError` that opens
+with `inputs.<key>`, or `inputs` where the refusal names no argument; and `PlanEvaluation`'s
+`settings` name the data: `panel_sha256` from `Prescription.evaluate`, `logs_sha256` (the float64
+bytes and shapes of `"x"` and `"u"`) from `evaluate_plan`, with `schema_version` still 1.
 
 ## Context
 
