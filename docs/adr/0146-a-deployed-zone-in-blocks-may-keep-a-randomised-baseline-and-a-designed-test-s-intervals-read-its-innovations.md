@@ -124,7 +124,10 @@ the bounds, the second moments, the planning approximation and the sample-point 
   with coefficients 0.5 and 0.3, it rejected at 5% on 62%. On panels whose factors persist at 0.8
   and errors at 0, or the reverse, the gaps are not AR(1), and it rejected on 12% and 8%. A
   single AR(1) coefficient fitted to them filters most of their persistence.
-- **Ten mutations of the change were each caught by a test** (listed in the report of the change).
+- **Thirteen mutations of the change were each caught by a test:** six of the rollback (no burn-in
+  in deployed blocks, the wrong bound, the wrong share in the centred increment, the logging
+  check, the reward for its complement, the share ignored), four of the intervals and three of the
+  check.
 
 ## Alternatives considered
 
