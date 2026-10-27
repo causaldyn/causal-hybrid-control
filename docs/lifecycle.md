@@ -126,15 +126,15 @@ documented, and what is not built yet. Every name below is importable from `chc`
   quadratic, and warns when they did (*experimental*): a premise failing, not a measured cost
   ([ADR 0028](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0028-asking-the-panel-what-the-logger-read.md)).
   See [`chc.decision`](api/decision.md).
-- **`PlanEvaluation.to_json`** (*experimental*). An evaluation, from `evaluate_plan` or a
-  prescription's `evaluate`, as plain JSON beside the decision's record: the estimate, its
+- **An evaluation's record** (*experimental*). `to_json()` writes an evaluation, from
+  `evaluate_plan` or a prescription's `evaluate`, as plain JSON beside the decision's record: the estimate, its
   intervals, the certificate, the logger check and how it was asked for. It has no reader; an
   audit makes the evaluation again from the panel and the plan. See
   [`chc.evaluation`](api/evaluation.md).
 - **A logged draw tests the graph** (*experimental*). Where the logger added a random draw to the
   levers and logged it, `prescribe(..., dither=<column>)` fits the channel again with the draw as
   its instrument and reads the plan's channel against it in the plan's own regret.
-  `Prescription.dither_check` holds the contrast and its p-value, and a rejection at 5 % is
+  The prescription's `dither_check` holds the contrast and its p-value, and a rejection at 5 % is
   logged as a warning and named in the report; the plan is the one without it, bit for bit.
   See [`chc.decision`](api/decision.md).
 - **`off_policy_value`.** It weights one step at a time. So it estimates a candidate's value on
