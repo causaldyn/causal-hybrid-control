@@ -28,7 +28,7 @@ from chc.control import Bound, LinearConstraint, broadcast_box, projected_gradie
 from chc.cost import QuadraticCost
 from chc.dynamics import Dynamics
 from chc.integrate import rk4_step
-from chc.plan import _TOLERANCE_DEFAULT, BarrierConstraint, CausalPlan, _plan
+from chc.plan import _TOLERANCE_DEFAULT, BarrierConstraint, CausalPlan, InnerSolve, _plan
 from chc.support import PenaltyModel, SupportModel
 
 _log = logging.getLogger(__name__)
@@ -250,6 +250,7 @@ class RecedingHorizon:
     steps: int = 10_000
     constraints: Sequence[LinearConstraint] = ()
     barrier: BarrierConstraint | None = None
+    inner: InnerSolve = "diagonal"
     budget: PeriodBudget | None = None
     _warm: tuple[NDArray[np.float64], NDArray[np.float64] | None] | None = field(
         default=None, init=False, repr=False
@@ -301,6 +302,7 @@ class RecedingHorizon:
             barrier=self.barrier,
             warm_start=actions,
             multipliers=multipliers,
+            inner=self.inner,
         )
         self._warm = (
             _shift(np.asarray(plan.actions, dtype=np.float64)),

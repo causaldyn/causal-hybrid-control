@@ -54,7 +54,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from numpy.typing import ArrayLike, NDArray
-from scipy.linalg import null_space
+from scipy.linalg import cho_factor, cho_solve, null_space
 from scipy.optimize import linprog, lsq_linear, minimize
 
 from chc.adjoint import control_gradient_adjoint
@@ -123,6 +123,11 @@ _TOLERANCE_DEFAULT = 1.0
 given: one unit of the state, the radius a caller who logs each state in units of the error accepted
 on it passes (ADR 0091)."""
 PriceStatus = Literal["exact", "weakly_active", "degenerate", "inactive"]
+InnerSolve = Literal["diagonal", "newton"]
+"""How each augmented-Lagrangian round of a held barrier is solved (:func:`causal_plan`'s
+``inner``): ``diagonal``, the penalised descent in the round's diagonal Gauss-Newton metric, or
+``newton``, Bertsekas' projected Newton method on the round's dense curvature, the descent taking
+over where a Newton step fails."""
 DiagnosticStatus = Literal["within", "beyond", "not_finite", "not_evaluated"]
 """How a plan's stationarity or constraint violation reads against its tolerance: ``within`` it,
 ``beyond`` it, ``not_finite`` where the number is nan or infinite, as where the rollout left the
@@ -135,6 +140,8 @@ _PENALTY_RANGE = 1e8  # how far the penalty may grow past its start before the r
 _DESCENT_TOL = 1e-14  # the share of the cost at the guess a step must buy: the descents' default
 _LOOSE_TOL = 1e-9  # a barrier round's ``tol`` while the last one ended short of the condition
 _RESTORE_STEPS = 20  # Gauss-Newton projections onto the held condition before it is given up
+_NEWTON_HALVINGS = 40  # halvings of a projected Newton step before the round's descent takes over
+_NEWTON_SIZE = 4096  # the most actions a projected Newton round factors its dense matrix for
 
 _log = logging.getLogger(__name__)
 """Barrier rounds of :func:`causal_plan`, keyed by ``chc_event`` as in :mod:`chc.decision`."""
@@ -1123,6 +1130,155 @@ def _round_metric(
     return jnp.asarray(np.sqrt(curvature), actions.dtype)
 
 
+@eqx.filter_jit
+def _round_terms(
+    model: Dynamics, x0: Array, actions: Array, dt: float, cost: QuadraticCost, held: _HeldBarrier
+) -> tuple[Array, Array, Array, Array]:
+    """A barrier round's objective at ``actions``, its gradient, and two matrices over the
+    flattened actions, each the cost's Gauss-Newton matrix, its second derivative along the
+    rollout's first-order answer to the actions, ``sum_k S_k' L_k S_k`` with ``S_k`` the
+    sensitivity of ``(x_k, u_k)`` to them and ``L_k`` the cost's Hessian in ``(x_k, u_k)``, plus
+    the penalty's curvature: first its Hessian, ``rho sum g g' + sum (lam + rho c) H_c`` over the
+    held columns whose term is on, ``lam + rho (c + backoff) > 0``, ``g`` and ``H_c`` a column's
+    gradient and Hessian; then its Gauss-Newton part ``rho sum g g'`` alone, whose diagonal with
+    the cost's is :func:`_round_metric`'s square wherever the cost's curvature along an action is
+    positive. On a plant linear in the state and the action the cost's matrix is its Hessian
+    (``validation/projected_newton_round.mac``)."""
+    horizon, size = actions.shape[0], actions.size
+
+    def objective(us: Array) -> Array:
+        return _augmented(model, x0, us, dt, cost, None, 0.0, held, 1.0)
+
+    def path(us: Array) -> Array:
+        return rollout(model, x0, us, dt)
+
+    value, gradient = jax.value_and_grad(objective)(actions)
+    states = path(actions)
+    # reverse mode, as the planner's metric: a plant with a reverse rule only has no forward one
+    moved = jax.jacrev(path)(actions).reshape(horizon + 1, -1, size)
+    targets = cost.targets(horizon)
+    (xx, xu), (_, uu) = jax.vmap(jax.hessian(cost.running, argnums=(0, 1)))(
+        states[:-1], actions, targets[:-1]
+    )
+    terminal = jax.hessian(cost.terminal)(states[-1], targets[-1])
+    running = moved[:-1]
+    matrix = jnp.einsum("kia,kij,kjb->ab", running, xx, running)
+    matrix = matrix + jnp.einsum("ia,ij,jb->ab", moved[-1], terminal, moved[-1])
+    cross = jnp.einsum("kia,kij->akj", running, xu).reshape(size, size)
+    matrix = matrix + cross + cross.T
+    matrix = matrix + jnp.einsum("kij,kl->kilj", uu, jnp.eye(horizon, dtype=uu.dtype)).reshape(
+        size, size
+    )
+    shortfall = held.shortfall(states[:-1], actions)
+    slopes = jax.jacrev(lambda us: held.shortfall(path(us)[:-1], us))(actions).reshape(-1, size)
+    on = (held.multipliers + held.weight * (shortfall + held.backoff)).ravel() > 0.0
+    slopes = jnp.where(on[:, None], slopes, 0.0)
+    penalty = jax.hessian(lambda us: held.penalty_trajectory(path(us)[:-1], us))(actions)
+    return (
+        value,
+        gradient,
+        matrix + penalty.reshape(size, size),
+        matrix + held.weight * slopes.T @ slopes,
+    )
+
+
+def _newton_round(
+    model: Dynamics,
+    x0: Array,
+    dt: float,
+    cost: QuadraticCost,
+    lo: Array,
+    hi: Array,
+    actions: Array,
+    held: _HeldBarrier,
+    metric: Array,
+    tol: float,
+    cap: int,
+) -> tuple[Array, int, bool]:
+    """A barrier round by Bertsekas' projected Newton method on the box (1982), on the round's
+    matrix (:func:`_round_terms`): the one with the penalty's Hessian, or, where its free block is
+    not positive definite, the Gauss-Newton one. The penalty's own curvature is a norm's where the
+    condition reads the confounding radius, ``d ||u||``, convex and unbounded near ``u = 0``, and
+    the Gauss-Newton matrix, which drops it, took steps the line search cut by thousands.
+
+    Steps are read in the round's variables ``v = metric * u`` (:func:`_round_metric`). An action
+    within ``w`` of a side, ``w`` the length of the projected gradient step, whose gradient pushes
+    it out, takes that step; the others take the Newton step on their block of the matrix; the
+    step is halved along the projection arc until it buys a ``1e-4`` share of the fall its
+    gradient predicts (Armijo). The round stops where the fall the step predicts is within
+    ``tol`` of the round's objective at its start, the descent's own rule, or after ``cap`` steps.
+
+    Returns:
+        The actions, the Newton steps taken, and whether the round stopped on its rule or its
+        ``cap``: ``False`` where neither matrix's free block is positive definite, or no halving
+        buys the share above rounding, where the diagonal descent goes on from the actions.
+    """
+    shape, dtype = actions.shape, actions.dtype
+    rounding = 64.0 * float(jnp.finfo(dtype).eps)
+    scale = np.asarray(metric, np.float64).ravel()
+    low = np.asarray(lo, np.float64).ravel() * scale
+    high = np.asarray(hi, np.float64).ravel() * scale
+    value, gradient, curved, matrix = _round_terms(model, x0, actions, dt, cost, held)
+    start = float(value)
+    level = abs(start) if math.isfinite(start) else 0.0
+    taken = 0
+    while taken < cap:
+        current = float(value)
+        point = scale * np.asarray(actions, np.float64).ravel()
+        pull = np.asarray(gradient, np.float64).ravel() / scale
+        if not (math.isfinite(current) and np.all(np.isfinite(pull))):
+            return actions, taken, False
+        reach = point - np.clip(point - pull, low, high)
+        width = _length(reach)
+        bound = ((point <= low + width) & (pull > 0.0)) | ((point >= high - width) & (pull < 0.0))
+        free = ~bound
+        direction = -pull
+        if free.any():
+            factor = _free_factor((curved, matrix), scale, free)
+            if factor is None:
+                return actions, taken, False
+            direction[free] = -cho_solve(factor, pull[free])
+        predicted = -0.5 * float(pull[free] @ direction[free]) + float(pull[bound] @ reach[bound])
+        if not predicted > tol * level:
+            return actions, taken, True
+        step, accepted = 1.0, False
+        for _ in range(_NEWTON_HALVINGS):
+            moved = np.clip(point + step * direction, low, high)
+            fall = float(pull @ (point - moved))
+            trial = np.where(
+                moved <= low,
+                np.asarray(lo, np.float64).ravel(),
+                np.where(moved >= high, np.asarray(hi, np.float64).ravel(), moved / scale),
+            )
+            candidate = jnp.asarray(trial.reshape(shape), dtype)
+            reached = float(_objective(model, x0, candidate, dt, cost, None, 0.0, held, 1.0))
+            if fall > 0.0 and reached <= current - 1e-4 * fall:
+                accepted = True
+                break
+            step *= 0.5
+        if not accepted:
+            return actions, taken, predicted <= rounding * level
+        actions, taken = candidate, taken + 1
+        value, gradient, curved, matrix = _round_terms(model, x0, actions, dt, cost, held)
+    return actions, taken, True
+
+
+def _free_factor(
+    matrices: tuple[Array, ...], scale: NDArray[np.float64], free: NDArray[np.bool_]
+) -> tuple[NDArray[np.float64], bool] | None:
+    """The Cholesky factor of the first of ``matrices`` whose block on the ``free`` actions, in
+    the variables ``v = scale * u``, is positive definite; None where none is."""
+    for matrix in matrices:
+        block = (np.asarray(matrix, np.float64) / np.outer(scale, scale))[np.ix_(free, free)]
+        if not np.all(np.isfinite(block)):
+            continue
+        try:
+            return cho_factor(block)
+        except np.linalg.LinAlgError:
+            continue
+    return None
+
+
 def _condition_pushes(
     problem: _PlanProblem, actions: Array, factor: NDArray[np.float64]
 ) -> NDArray[np.float64]:
@@ -1559,6 +1715,7 @@ def causal_plan(
     constraints: Sequence[LinearConstraint] = (),
     barrier: BarrierConstraint | None = None,
     warm_start: Array | None = None,
+    inner: InnerSolve = "diagonal",
 ) -> CausalPlan:
     """Plan under box constraints, optional offline pessimism, and a certified error tube.
 
@@ -1637,6 +1794,20 @@ def causal_plan(
             and the plan reports that problem's cost as :attr:`CausalPlan.relaxed_cost`: such a
             curve has no slope at zero spend, so zeros are a stationary point the descent would stop
             at, reporting convergence.
+        inner: how each of a barrier's rounds is solved (*experimental*). ``"diagonal"``, the
+            default, is the descent in the round's diagonal Gauss-Newton metric. ``"newton"`` is
+            Bertsekas' projected Newton method on the box (1982), on a dense matrix over the
+            actions: the cost's Gauss-Newton matrix, its second derivative along the rollout's
+            first-order answer to the actions, plus the penalty's Hessian on the steps whose term
+            is on, or, where that is not positive definite on the actions off the box, the
+            penalty's Gauss-Newton part, which with the cost's has the square of that metric for
+            its diagonal. A diagonal metric does not solve a round the penalty has made
+            ill-conditioned, and its rounds can spend ``steps`` with the plan's
+            :attr:`~CausalPlan.stationarity_status` ``beyond``; Newton's do not stall there. A
+            Newton step whose block of the matrix does not factor, or that buys no fall, hands the
+            round to the descent. It takes the box alone, and factors an ``(H m, H m)`` matrix at
+            each step: a support model, linear rows, or more than 4096 actions are refused.
+            Without a barrier there are no rounds, and it changes nothing.
 
     Raises:
         ValueError: if an uncertainty penalty is given without a support model, which would
@@ -1654,8 +1825,10 @@ def causal_plan(
             barrier is given and the path from the descent's start or from the rounds' start is
             not a finite number at some state, or the model is not affine in the action there or
             at a finite side of the box, which :func:`certify_safety` refuses of the finished plan
-            and is now refused before the solve; or if ``warm_start`` is not a finite
-            ``(horizon, m)`` array.
+            and is now refused before the solve; if ``warm_start`` is not a finite
+            ``(horizon, m)`` array; or if ``inner`` is neither ``"diagonal"`` nor ``"newton"``,
+            or is ``"newton"`` beside a barrier and a support model, linear rows, or more than
+            4096 actions.
     """
     plan, _ = _plan(
         model,
@@ -1679,6 +1852,7 @@ def causal_plan(
         barrier=barrier,
         warm_start=warm_start,
         multipliers=None,
+        inner=inner,
     )
     return plan
 
@@ -1820,6 +1994,7 @@ def _plan(
     multipliers: NDArray[np.float64] | None,
     noise: ArrayLike = 0.0,
     noise_persistence: float | ArrayLike = 0.0,
+    inner: InnerSolve = "diagonal",
 ) -> tuple[CausalPlan, NDArray[np.float64] | None]:
     """:func:`causal_plan`, with the barrier's multipliers passed in and handed back.
 
@@ -1830,6 +2005,19 @@ def _plan(
     """
     if uncertainty is not None and support is None:
         raise ValueError("uncertainty penalty requires a support model; it is unused without one")
+    if inner not in ("diagonal", "newton"):
+        raise ValueError(f"inner={inner!r} is not a round's solve: 'diagonal' or 'newton'")
+    if inner == "newton" and barrier is not None:
+        if support is not None or any(row.matrix.shape[0] for row in constraints):
+            raise ValueError(
+                "inner='newton' steps on the box alone: a support model's penalty or linear rows "
+                "take the diagonal descent, inner='diagonal'"
+            )
+        if horizon * cost.R.shape[0] > _NEWTON_SIZE:
+            raise ValueError(
+                f"inner='newton' factors a dense matrix over the {horizon * cost.R.shape[0]} "
+                f"actions, past its limit of {_NEWTON_SIZE}: use inner='diagonal'"
+            )
     # A nan budget passed `model_error < 0` and then read as no budget, `model_error > 0` being
     # false too: the plan came back unevaluated with no word of why.
     if not 0.0 <= model_error < math.inf:
@@ -1901,6 +2089,7 @@ def _plan(
             multipliers=multipliers,
             noise=noise,
             noise_persistence=noise_persistence,
+            inner=inner,
         )
         warm_start = first.actions
         _log.info(
@@ -1969,6 +2158,7 @@ def _plan(
             lam_unc=lam_unc,
             steps=steps,
             multipliers=multipliers,
+            inner=inner,
         )
 
     if first is not None:
@@ -2182,6 +2372,7 @@ def _hold_barrier(
     lam_unc: float,
     steps: int,
     multipliers: NDArray[np.float64] | None,
+    inner: InnerSolve = "diagonal",
 ) -> tuple[Array, SolverStatus, int, NDArray[np.float64], _HeldBarrier]:
     """Hold ``barrier`` by augmented-Lagrangian rounds started from the unconstrained ``start``.
 
@@ -2234,6 +2425,9 @@ def _hold_barrier(
     at ``dt = 1`` and ``alpha = 0.2`` a plan whose path never leaves the set stopped as converged
     38% above the one the conditions alone give.
 
+    With ``inner="newton"`` each round is first solved by projected Newton on the round's dense
+    curvature (:func:`_newton_round`), and the descent takes over only from a Newton step that
+    fails; a Newton step counts as one descent step.
     A diagonal metric does not solve an ill-conditioned round, and rounds that each run out of
     descent steps end where rounding leaves them: on an unstable plant at ``dt = 1`` a warm start
     moved by 1e-15 moved the task cost from 12.20 to 14.16, against an optimum of 11.39, and one
@@ -2428,6 +2622,7 @@ def _hold_barrier(
             lam_supp=lam_supp,
             problem=problem,
             keep=keep,
+            newton=inner == "newton",
         )
         iterations += taken
         # rounds that held their columns leave a new problem where a next state joins them
@@ -2596,6 +2791,7 @@ def _rounds(
     lam_supp: float,
     problem: _PlanProblem,
     keep: Callable[[Array], None],
+    newton: bool = False,
 ) -> tuple[
     Array,
     SolverStatus,
@@ -2639,26 +2835,36 @@ def _rounds(
             ),
         )
         loose = measure > backoff
-        actions, _, taken = _pessimistic_loop(
-            model,
-            x0,
-            actions,
-            dt,
-            cost,
-            support,
-            lam_supp,
-            lo,
-            hi,
-            steps,
-            1.0,
-            jnp.asarray(_LOOSE_TOL if loose else _DESCENT_TOL),  # weak: one program for both
-            held,
-            1.0,
-            blocks,
-            False,
-            _round_metric(model, x0, actions, dt, cost, lo, hi, held, excess),
-            jnp.asarray(cap),
-        )
+        tol = _LOOSE_TOL if loose else _DESCENT_TOL
+        metric = _round_metric(model, x0, actions, dt, cost, lo, hi, held, excess)
+        taken, solved = 0, False
+        if newton:
+            actions, taken, solved = _newton_round(
+                model, x0, dt, cost, lo, hi, actions, held, metric, tol, cap
+            )
+        newton_steps = taken
+        if not solved and taken < cap:
+            actions, _, descended = _pessimistic_loop(
+                model,
+                x0,
+                actions,
+                dt,
+                cost,
+                support,
+                lam_supp,
+                lo,
+                hi,
+                steps,
+                1.0,
+                jnp.asarray(tol),  # weak: one program for both
+                held,
+                1.0,
+                blocks,
+                False,
+                metric,
+                jnp.asarray(cap - taken),
+            )
+            taken += int(descended)
         iterations += int(taken)
         exhausted = int(taken) >= cap
         keep(actions)
@@ -2675,6 +2881,7 @@ def _rounds(
                 "measure": measure,
                 "worst_shortfall": float(np.max(excess)) - backoff,
                 "descent_steps": int(taken),
+                "newton_steps": newton_steps,
             },
         )
         within = measure <= 0.5 * backoff

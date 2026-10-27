@@ -65,7 +65,7 @@ on the zone plant, for the response curves `response` in the plans they warm-sta
 the geo world `geo_world` in the geo models scored on it. They may change or be withdrawn in
 any release. Pin an exact version if you depend on one.
 
-Seventy-one entries in modules of other tiers are experimental on the same terms, for the same
+Seventy-two entries in modules of other tiers are experimental on the same terms, for the same
 reason:
 the `weights` argument of `fit_causal_residual` and `solve_channel_moment`, its `influence` argument
 with the fields it keeps, `nuisance_shift`, the `unmoved`, `moment_residual`, `instrument_relevance` and
@@ -89,7 +89,8 @@ and the `per_driver` payment of `SharedStateMarket` in `chc.marketplace`, `chann
 `chc.gate`, the `instrument_relevance` diagnostic of `IV2SLS` in `chc.estimators`,
 `minimax_regret_move`, `MinimaxRegretMove` and `MoveRule` in `chc.regret`, and
 `CausalPlan.decision_weight`, `DecisionWeight`, `CausalPlan.relaxed_cost`,
-`CausalPlan.planned_cost_bias`, `PlannedCostBias` and `CostBiasDirection` in `chc.plan`.
+`CausalPlan.planned_cost_bias`, `PlannedCostBias`, `CostBiasDirection` and the `inner`
+argument of `causal_plan` in `chc.plan`, with the `inner` field of `RecedingHorizon` in `chc.mpc`.
 
 ## Research
 
