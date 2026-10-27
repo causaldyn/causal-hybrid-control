@@ -1,6 +1,6 @@
 # ADR 0143 — A jackknifed switchback, the certainty-equivalent regret's law, and the level bound per covariate cell
 
-**Status:** proposed, 2026-10-27. Amends ADR 0012: its "Not built" bias-corrected reading is built.
+**Status:** accepted, 2026-10-27. Amends ADR 0012: its "Not built" bias-corrected reading is built.
 Every addition is opt-in or a new function; no default moves, and every existing output is the
 same to the bit.
 
