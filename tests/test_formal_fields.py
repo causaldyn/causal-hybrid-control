@@ -167,6 +167,19 @@ FORMAL_LINKS = {
             "test_games.py::test_the_per_driver_allocation_s_dual_bound_meets_it_and_its_price_is_its_slope",
         ),
     },
+    "chc.marketplace.dither_check": {
+        "cites": ("marketplace_dither.mac",),
+        "tests": (
+            "test_marketplace.py::test_the_dither_check_reads_a_gradient_error_planted_in_the_completions",
+        ),
+    },
+    "chc.marketplace.dither_size": {
+        "cites": ("marketplace_dither.mac",),
+        "tests": (
+            "test_marketplace.py::test_the_dither_s_size_falls_as_the_root_of_the_blocks_and_as_the_error",
+            "test_marketplace.py::test_the_dither_s_size_reads_the_detectable_error_it_was_sized_for",
+        ),
+    },
     "chc.marketplace._driver_jacobians": {
         "cites": ("marketplace_expected_completions.mac",),
         "tests": ("test_marketplace.py::test_the_driver_jacobians_are_the_solve_s_in_closed_form",),

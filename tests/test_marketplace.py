@@ -10,6 +10,7 @@ exact oracle's lift in float64, up to 0.79.
 """
 
 import dataclasses
+import functools
 import importlib
 import math
 
@@ -19,9 +20,10 @@ import numpy as np
 import pytest
 from scipy import integrate
 
-from chc.games import exact_congestion_allocation, fixed_point
+from chc.games import exact_congestion_allocation, fixed_point, per_driver_congestion_allocation
 from chc.marketplace import (
     ExposureResponse,
+    FittedEquilibrium,
     SharedStateMarket,
     _attract_se,
     _driver_jacobians,
@@ -34,6 +36,8 @@ from chc.marketplace import (
     calibrate_naive_causal,
     calibrate_predictive,
     calibrate_shared_state,
+    dither_check,
+    dither_size,
     fit_equilibrium,
     interference_bias,
     pessimistic_equilibrium_allocation,
@@ -221,11 +225,11 @@ def test_the_oracle_is_the_exact_optimum(seed: int, rides: float) -> None:
     assert market.value(market.oracle_allocation()) == pytest.approx(rides, abs=2e-6)
 
 
-def test_an_oracle_given_its_old_step_count_warns_and_ignores_it() -> None:
-    market = SharedStateMarket(seed=4)
-    with pytest.warns(DeprecationWarning, match=r"oracle_allocation\(steps=...\) is ignored"):
-        stepped = market.oracle_allocation(steps=1200)
-    np.testing.assert_array_equal(stepped, market.oracle_allocation())
+def test_the_oracle_takes_no_step_count() -> None:
+    """``steps`` was ignored with a warning in 0.22.0 and is gone: the oracle is the exact optimum,
+    and the ascent it ran is ``chc.games.stackelberg_allocation``."""
+    with pytest.raises(TypeError, match="steps"):
+        SharedStateMarket(seed=4).oracle_allocation(steps=1200)  # type: ignore[call-arg]
 
 
 def test_an_attractiveness_no_block_moves_reads_an_infinite_error() -> None:
@@ -917,3 +921,215 @@ def test_the_budget_scale_refuses_logs_outside_its_contract(env: dict) -> None:
         calibrate_budget_scale(
             {name: logs[name][:, :11] for name in ("u", "demand", "y")}, equilibrium=env["fitted"]
         )
+
+
+def _published_logs(market: SharedStateMarket, n_blocks: int, key: jax.Array) -> dict:
+    """The logs as 0.22.0 generated them, its method's body copied: with no dither the method
+    gives these, bit for bit."""
+    base_demand, base_attract = market._base()
+
+    def block(carry: None, k: jax.Array) -> tuple[None, dict]:
+        k_season, k_scale, k_noise = jax.random.split(k, 3)
+        season = 0.5 + jax.random.uniform(k_season, (market.n_zones,))
+        demand = base_demand * season
+        attract = base_attract * season
+        scale = 0.4 + 1.2 * jax.random.uniform(k_scale)
+        u = scale * market.budget * jax.nn.softmax(market.confounding * demand)
+        x = market._equilibrium(attract, u)
+        y = jnp.minimum(demand, x) + 0.02 * jax.random.normal(k_noise, (market.n_zones,))
+        agg = jnp.full(market.n_zones, jnp.sum(u))
+        return None, {"u": u, "demand": demand, "aggregate": agg, "y": y}
+
+    _, logs = jax.lax.scan(block, None, jax.random.split(key, n_blocks))
+    return logs
+
+
+@pytest.mark.parametrize("x64", [True, False], ids=["float64", "float32"])
+def test_logs_with_no_dither_are_the_published_logs_bit_for_bit(x64: bool) -> None:
+    with enable_x64(x64):
+        market = SharedStateMarket(seed=3)
+        want = _published_logs(market, 60, jax.random.key(4))
+        for logs in (
+            market.generate_logs(60, jax.random.key(4)),
+            market.generate_logs(60, jax.random.key(4), dither=0.0),
+        ):
+            assert sorted(logs) == sorted(want)
+            for name in want:
+                np.testing.assert_array_equal(np.asarray(logs[name]), np.asarray(want[name]))
+
+
+@pytest.mark.parametrize("zones", [12, 5])
+def test_a_dither_moves_the_logits_and_holds_each_block_s_total(zones: int) -> None:
+    """Each block's logits move by +-h with as many signs of each kind (a 0 on the odd zone out):
+    the incentives stay positive, the block's total holds, the demand is the undithered logs', and
+    each rate is the undithered one times ``exp(shift)``, renormalised."""
+    market = SharedStateMarket(n_zones=zones, seed=3)
+    plain = market.generate_logs(60, jax.random.key(4))
+    logs = market.generate_logs(60, jax.random.key(4), dither=0.3)
+    shift = np.asarray(logs["dither"])
+    assert np.all((shift == 0.3).sum(axis=1) == zones // 2)
+    assert np.all((shift == -0.3).sum(axis=1) == zones // 2)
+    assert np.all((shift == 0.0).sum(axis=1) == zones % 2)
+    assert len({tuple(row) for row in shift}) > 20  # the signs' order is drawn block by block
+    np.testing.assert_array_equal(np.asarray(logs["demand"]), np.asarray(plain["demand"]))
+    u, u0 = np.asarray(logs["u"]), np.asarray(plain["u"])
+    assert np.all(u > 0.0)
+    np.testing.assert_allclose(u.sum(axis=1), u0.sum(axis=1), rtol=1e-14, atol=0.0)
+    moved = np.log(u / u0) - shift
+    np.testing.assert_allclose(moved - moved[:, :1], 0.0, rtol=0.0, atol=1e-13)
+
+
+def _true_fit(market: SharedStateMarket, logs: dict) -> FittedEquilibrium:
+    """The market's own parameters as a fit: attractiveness per unit of demand is the base's."""
+    demand, attract = market._base()
+    return FittedEquilibrium(
+        demand=jnp.mean(logs["demand"], axis=0),
+        attract=attract / demand,
+        attract_se=jnp.zeros(market.n_zones),
+        beta=market.beta,
+        congestion=market.congestion,
+        mass=market.mass,
+        rmse=0.02,
+        converged=True,
+        lack_of_fit=1.0,
+        incentive_z=math.inf,
+    )
+
+
+@pytest.mark.parametrize("key", [11, 12, 13])
+def test_the_dither_check_reads_a_gradient_error_planted_in_the_completions(key: int) -> None:
+    """Completions that follow the true equilibrium plus ``e . du``, ``du`` the dither's first-order
+    move of the rates: the check, read through the true parameters, recovers the zero-sum part of
+    ``e`` within 4 of its own standard errors in every zone (each 12 zones' worth of normal reads
+    passes so with probability 1 - 8e-4), and rejects. Unplanted, it does not."""
+    market = SharedStateMarket(seed=3)
+    logs = market.generate_logs(400, jax.random.key(key), dither=0.3)
+    truth = _true_fit(market, logs)
+    u, shift = np.asarray(logs["u"]), np.asarray(logs["dither"])
+    total = u.sum(axis=1, keepdims=True)
+    weights = u * np.exp(-shift)
+    base = total * weights / weights.sum(axis=1, keepdims=True)
+    move = base * (shift - (base / total * shift).sum(axis=1, keepdims=True))
+    planted = np.linspace(-1.5, 1.5, market.n_zones)
+    y = np.asarray(logs["y"]).copy()
+    y[:, 0] += move @ planted
+    read = dither_check(logs | {"y": y}, truth)
+    se = np.sqrt(np.diag(read.covariance))
+    assert np.all(np.abs(read.error - (planted - planted.mean())) <= 4.0 * se)
+    assert read.p_value < 1e-6
+    assert abs(math.fsum(read.error)) <= 1e-12
+    assert dither_check(logs, truth).p_value > 0.01
+
+
+def test_the_dither_check_refuses_logs_it_cannot_read(env: dict) -> None:
+    market = SharedStateMarket(seed=3)
+    logs = market.generate_logs(40, jax.random.key(4), dither=0.3)
+    truth = _true_fit(market, logs)
+    with pytest.raises(ValueError, match="carry no dither"):
+        dither_check(env["logs"], truth)
+    with pytest.raises(ValueError, match="carry no dither"):
+        dither_check(logs | {"dither": jnp.zeros_like(logs["dither"])}, truth)
+    with pytest.raises(ValueError, match="blocks for 12 zones"):
+        dither_check({name: column[:12] for name, column in logs.items()}, truth)
+    with pytest.raises(ValueError, match="zones and the logs"):
+        dither_check({name: column[:, :11] for name, column in logs.items()}, truth)
+    with pytest.raises(ValueError, match="0 < level < power < 1"):
+        dither_check(logs, truth, level=0.9, power=0.8)
+
+
+@pytest.fixture(scope="module")
+def pilot() -> dict:
+    market = SharedStateMarket(seed=3)
+    logs = market.generate_logs(200, jax.random.key(5))
+    return {"market": market, "logs": logs, "truth": _true_fit(market, logs)}
+
+
+def test_the_dither_s_size_falls_as_the_root_of_the_blocks_and_as_the_error(pilot: dict) -> None:
+    """``h = sqrt(lambda * rho / N) / error``: four times the blocks halve it, as does twice the
+    error, where it is affordable."""
+    read = functools.partial(dither_size, pilot["logs"], pilot["truth"], max_cost=1.0)
+    base = read(error=1.0, blocks=400)
+    assert base.affordable
+    assert base.blocks == 400
+    assert read(error=1.0, blocks=1600).size == pytest.approx(base.size / 2.0, rel=1e-12, abs=0.0)
+    assert read(error=2.0, blocks=400).size == pytest.approx(base.size / 2.0, rel=1e-12, abs=0.0)
+
+
+def test_a_dither_that_costs_too_much_is_cut_and_the_blocks_grow(pilot: dict) -> None:
+    """Where the size that finds the error costs more than the cap, the size is cut to what costs
+    the cap and the blocks grow by the square of the cut: a capped perturbation is a rate
+    constraint, so the remedy is duration."""
+    free = dither_size(pilot["logs"], pilot["truth"], error=0.5, blocks=400, max_cost=1.0)
+    cap = 0.25 * free.cost
+    capped = dither_size(pilot["logs"], pilot["truth"], error=0.5, blocks=400, max_cost=cap)
+    assert not capped.affordable
+    assert capped.size < free.size
+    assert 0.9 * cap <= capped.cost <= cap
+    assert capped.blocks == math.ceil(400 * (free.size / capped.size) ** 2)
+
+
+def test_the_dither_s_size_reads_the_detectable_error_it_was_sized_for(pilot: dict) -> None:
+    """Logs dithered at the size :func:`dither_size` returns for an error of 0.5 at 400 blocks:
+    the check on them reads a least detectable error near 0.5. Over five logs of each of markets
+    3 and 7 it read 0.51 to 0.70, above the target by 14% at the median: the rule reads the pilot's
+    undithered residuals, the check the dithered logs' HC3 sandwich."""
+    market = pilot["market"]
+    design = dither_size(pilot["logs"], pilot["truth"], error=0.5, blocks=400, max_cost=1.0)
+    logs = market.generate_logs(400, jax.random.key(6), dither=design.size)
+    read = dither_check(logs, _true_fit(market, logs))
+    assert 0.4 <= read.minimum_detectable <= 0.75
+
+
+def test_the_per_driver_market_pays_each_driver_and_its_oracle_is_the_convex_optimum() -> None:
+    """Paid per driver, the money is ``sum(u * x)``; the oracle is
+    :func:`chc.games.per_driver_congestion_allocation`'s, whose drivers at the market's own
+    equilibrium are paid the budget at most (to the solve's tolerance of 1e-6 of the drivers) and
+    complete the rides it says; the lump-sum oracle on the same market completes more for the
+    same money as a sum of rates."""
+    market = SharedStateMarket(seed=1, payment="per_driver")
+    demand, attract = market._base()
+    u = jnp.linspace(0.1, 0.5, market.n_zones)
+    x = market._equilibrium(attract, u)
+    assert float(market.spend(u)) == pytest.approx(float(jnp.dot(u, x)), rel=1e-15, abs=0.0)
+    lump = dataclasses.replace(market, payment="lump_sum")
+    assert float(lump.spend(u)) == pytest.approx(float(jnp.sum(u)), rel=1e-15, abs=0.0)
+    found = per_driver_congestion_allocation(
+        attract, demand, market.beta, market.congestion, market.mass, market.budget
+    )
+    oracle = market.oracle_allocation()
+    np.testing.assert_array_equal(np.asarray(oracle), found.allocation)
+    assert float(market.spend(oracle)) <= market.budget * (1.0 + 1e-5)
+    assert market.value(oracle) == pytest.approx(found.value, abs=2e-5)
+    assert market.value(lump.oracle_allocation()) > found.value
+
+
+def test_per_driver_logs_pay_each_block_its_scale_of_the_budget() -> None:
+    """Each block's rates are scaled so that its drivers are paid the block's budget scale times
+    the budget, logged as ``spend``; the lump-sum logs carry no ``spend``."""
+    market = SharedStateMarket(seed=1, payment="per_driver")
+    key = jax.random.key(7)
+    logs = market.generate_logs(30, key)
+    scale = jnp.stack(
+        [
+            0.4 + 1.2 * jax.random.uniform(jax.random.split(k, 3)[1])
+            for k in jax.random.split(key, 30)
+        ]
+    )
+    np.testing.assert_allclose(logs["spend"][:, 0], scale * market.budget, rtol=1e-5, atol=0.0)
+    np.testing.assert_allclose(logs["aggregate"][:, 0], jnp.sum(logs["u"], axis=1), rtol=1e-14)
+    assert "spend" not in dataclasses.replace(market, payment="lump_sum").generate_logs(3, key)
+
+
+def test_a_market_s_payment_is_one_it_knows_and_the_lump_sum_planners_refuse_the_other(
+    env: dict,
+) -> None:
+    with pytest.raises(ValueError, match="'lump_sum' or 'per_driver'"):
+        SharedStateMarket(payment="per_ride")  # type: ignore[arg-type]
+    market = dataclasses.replace(env["market"], payment="per_driver")
+    response = calibrate_shared_state(env["logs"])
+    with pytest.raises(ValueError, match="pays per driver"):
+        pessimistic_equilibrium_allocation(market, response, equilibrium=env["fitted"])
+    with pytest.raises(ValueError, match="pays per driver"):
+        sutva_allocation(market, response, 1.0)
+    with pytest.raises(ValueError, match="finite non-negative logit shift"):
+        env["market"].generate_logs(3, jax.random.key(0), dither=-0.1)

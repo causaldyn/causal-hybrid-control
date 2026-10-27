@@ -42,9 +42,10 @@ from __future__ import annotations
 
 import math
 import warnings
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -53,16 +54,38 @@ from jax import Array
 from jax.scipy.stats import norm
 from numpy.typing import NDArray
 from scipy import special, stats
-from scipy.optimize import least_squares, lsq_linear, minimize
+from scipy.optimize import brentq, least_squares, lsq_linear, minimize
 
 from chc import _units
 from chc.frames import _real_entries
 from chc.games import (
     exact_congestion_allocation,
     fixed_point,
+    per_driver_congestion_allocation,
     softmax_congestion_equilibrium,
     stackelberg_allocation,
 )
+
+Payment = Literal["lump_sum", "per_driver"]
+"""How :class:`SharedStateMarket` pays its incentives: a lump sum per zone, ``sum(u)`` the money
+paid, or a rate per driver, ``sum(u * x(u))`` the money paid."""
+
+_DITHER_STREAM = zlib.crc32(b"dither") | 1 << 31
+"""The tag folded into a logged block's key for its dither's signs: at least ``2**31``, past the
+block's own children, so the published draws of the block do not move."""
+
+_BISECTION_STEPS = 64
+"""Bisection steps for the per-driver logging policy's total: past float64's resolution."""
+
+
+def _balanced_signs(key: Array, n: int, dtype: Any) -> Array:
+    """``n // 2`` signs of +1 and as many of -1 in a random order, and a 0 where ``n`` is odd:
+    they sum to zero exactly. Drawn from ``key``'s stream tagged ``_DITHER_STREAM``."""
+    half = n // 2
+    signs = jnp.concatenate(
+        [jnp.ones(half, dtype), -jnp.ones(half, dtype), jnp.zeros(n - 2 * half, dtype)]
+    )
+    return jax.random.permutation(jax.random.fold_in(key, _DITHER_STREAM), signs)
 
 
 @dataclass(frozen=True)
@@ -73,6 +96,16 @@ class SharedStateMarket:
     so an incentive to one zone is a driver *taken from* the others -- the interference channel).
     ``attract`` is aligned with ``demand`` so the zones a naive allocator wants to feed (high local
     uplift) are the already-saturated ones, where extra drivers only cannibalise.
+
+    ``payment`` says what the budget pays for. ``"lump_sum"``, the default and the published world,
+    pays ``u_i`` to zone ``i`` whatever its drivers: the money paid is ``sum(u)``. ``"per_driver"``,
+    opt-in and experimental, pays ``u_i`` to each driver in zone ``i``, as the drivers' utility
+    reads it: the money paid is ``sum(u * x(u))`` (:meth:`spend`). The plans the lump sum budgets
+    are a sum of rates no incentive programme pays; paid per driver, the shares the budget reaches
+    are convex, and the plug-in plan through a fit is a convex program,
+    :func:`chc.games.per_driver_congestion_allocation` on the fit's game. Its logs split each
+    block's money, not its rates, and :func:`pessimistic_equilibrium_allocation` and
+    :func:`sutva_allocation`, which split a lump sum, refuse it.
     """
 
     n_zones: int = 12
@@ -82,6 +115,11 @@ class SharedStateMarket:
     budget: float = 6.0
     confounding: float = 2.0  # how strongly the logging policy chases demand (the confounder)
     seed: int = 0
+    payment: Payment = "lump_sum"  # what the budget pays: a lump sum per zone, or each driver
+
+    def __post_init__(self) -> None:
+        if self.payment not in ("lump_sum", "per_driver"):
+            raise ValueError(f"payment is {self.payment!r}; it is 'lump_sum' or 'per_driver'")
 
     def _base(self) -> tuple[Array, Array]:
         """Reference (planning-time) demand and attractiveness."""
@@ -105,39 +143,78 @@ class SharedStateMarket:
     def value(self, u: Array) -> float:
         return float(self.completions(u))
 
-    def oracle_allocation(self, steps: int | None = None) -> Array:
+    def spend(self, u: Array) -> Array:
+        """The money the incentive ``u`` pays: ``sum(u)`` as a lump sum, ``sum(u * x(u))`` paid per
+        driver, ``x(u)`` the equilibrium's drivers at the base demand."""
+        if self.payment == "lump_sum":
+            return jnp.sum(u)
+        _, attract = self._base()
+        return jnp.sum(u * self._equilibrium(attract, u))
+
+    def oracle_allocation(self) -> Array:
         """The allocation that completes the most rides at the market's equilibrium, with full
-        model access: the regret reference, exact (:func:`chc.games.exact_congestion_allocation`).
+        model access, its money paid at most the budget: the regret reference.
 
-        Its value moves with the machine only through the equilibrium solve, to about its
-        tolerance of 1e-6. The ascent it ran before, a local maximum at best, stays
-        :func:`chc.games.stackelberg_allocation`; ``steps``, its length, is ignored, and leaves in
-        0.23.0.
-
-        Warns:
-            DeprecationWarning: where ``steps`` is given.
+        Paid as a lump sum it is exact (:func:`chc.games.exact_congestion_allocation`); paid per
+        driver it is the convex program's optimum,
+        :func:`chc.games.per_driver_congestion_allocation`, whose duality gap certifies it. Its
+        value moves with the machine only through the equilibrium solve, to about its tolerance
+        of 1e-6. The ascent it ran before 0.22.0, a local maximum at best, is
+        :func:`chc.games.stackelberg_allocation`.
         """
-        if steps is not None:
-            warnings.warn(
-                "SharedStateMarket.oracle_allocation(steps=...) is ignored and leaves in 0.23.0:"
-                " the oracle is the exact optimum, chc.games.exact_congestion_allocation. The"
-                " ascent it ran is chc.games.stackelberg_allocation(market.completions,"
-                " market.n_zones, market.budget, steps=steps)",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         demand, attract = self._base()
-        exact = exact_congestion_allocation(
-            attract, demand, self.beta, self.congestion, self.mass, self.budget
+        solve = (
+            exact_congestion_allocation
+            if self.payment == "lump_sum"
+            else per_driver_congestion_allocation
         )
-        return jnp.asarray(exact.allocation, dtype=demand.dtype)
+        found = solve(attract, demand, self.beta, self.congestion, self.mass, self.budget)
+        return jnp.asarray(found.allocation, dtype=demand.dtype)
 
-    def generate_logs(self, n_blocks: int, key: Array) -> dict[str, Array]:
+    def _per_driver_total(self, attract: Array, split: Array, money: Array) -> Array:
+        """The total ``k`` of the rates ``k * split`` whose drivers are paid ``money``: the money
+        ``k * split . x(k * split)`` rises with ``k`` (the drivers' Jacobian in the incentive is
+        positive semidefinite), and ``split . x(0)`` bounds its slope below, so bisection on
+        ``[0, money / split . x(0)]`` finds it."""
+
+        def paid(total: Array) -> Array:
+            return total * jnp.dot(split, self._equilibrium(attract, total * split))
+
+        high = money / jnp.dot(split, self._equilibrium(attract, jnp.zeros_like(split)))
+
+        def step(_: int, bounds: tuple[Array, Array]) -> tuple[Array, Array]:
+            low, high = bounds
+            middle = 0.5 * (low + high)
+            short = paid(middle) < money
+            return jnp.where(short, middle, low), jnp.where(short, high, middle)
+
+        _, high = jax.lax.fori_loop(0, _BISECTION_STEPS, step, (jnp.zeros_like(high), high))
+        return high
+
+    def generate_logs(self, n_blocks: int, key: Array, *, dither: float = 0.0) -> dict[str, Array]:
         """Confounded switchback logs, shape ``(n_blocks, n_zones)``: each block draws a demand
         season and a budget scale (switchback), assigns a demand-chasing (confounded) allocation,
         and records the shared-state exposure aggregate and realised completions.
+
+        Paid per driver, a block's rates are scaled so that its drivers are paid the budget scale's
+        share of the budget, and ``spend``, each block's money paid, is logged beside them.
+
+        ``dither``, opt-in, moves the logging policy's logits by ``+-dither``: each block draws
+        ``n_zones // 2`` signs of each kind, a 0 on an odd zone out, so every incentive stays
+        positive and each block's total of the rates holds (paid per driver, the money paid moves
+        with the dither, to first order by nothing on average). The logits' shift is logged as
+        ``dither``, which :func:`dither_check` reads. The signs come from a stream of the block's
+        key apart from its other draws, so the demand, the scale and the noise are those of the
+        logs without a dither. With no dither the logs are the published ones, bit for bit, and
+        carry no ``dither``.
+
+        Raises:
+            ValueError: on a dither that is not a finite non-negative number.
         """
+        if not (math.isfinite(dither) and dither >= 0.0):
+            raise ValueError(f"dither is {dither!r}; it is a finite non-negative logit shift")
         base_demand, base_attract = self._base()
+        dithered, per_driver = dither > 0.0, self.payment == "per_driver"
 
         def block(carry: None, k: Array) -> tuple[None, dict[str, Array]]:
             k_season, k_scale, k_noise = jax.random.split(k, 3)
@@ -145,11 +222,23 @@ class SharedStateMarket:
             demand = base_demand * season
             attract = base_attract * season
             scale = 0.4 + 1.2 * jax.random.uniform(k_scale)  # switchback block-level budget scale
-            u = scale * self.budget * jax.nn.softmax(self.confounding * demand)  # chases demand
+            logits = self.confounding * demand  # chases demand
+            total = scale * self.budget
+            if per_driver:
+                total = self._per_driver_total(attract, jax.nn.softmax(logits), total)
+            record = {}
+            if dithered:
+                shift = dither * _balanced_signs(k, self.n_zones, demand.dtype)
+                u = total * jax.nn.softmax(logits + shift)
+                record["dither"] = shift
+            else:
+                u = total * jax.nn.softmax(logits)
             x = self._equilibrium(attract, u)
             y = jnp.minimum(demand, x) + 0.02 * jax.random.normal(k_noise, (self.n_zones,))
             agg = jnp.full(self.n_zones, jnp.sum(u))  # shared-state exposure (total incentive)
-            return None, {"u": u, "demand": demand, "aggregate": agg, "y": y}
+            if per_driver:
+                record["spend"] = jnp.full(self.n_zones, jnp.dot(u, x))
+            return None, {"u": u, "demand": demand, "aggregate": agg, "y": y, **record}
 
         _, logs = jax.lax.scan(block, None, jax.random.split(key, n_blocks))
         return logs  # each (n_blocks, n_zones)
@@ -337,8 +426,319 @@ def calibrate_budget_scale(
     )
 
 
+@dataclass(frozen=True)
+class DitherCheck:
+    """A Wald test of the fit's gradient in the incentive, read off a zero-sum dither
+    (:func:`dither_check`)."""
+
+    # (n_zones,) the gradient of a block's completions in the incentive, the logs' less the fit's,
+    # in the zero-sum directions: completions per unit of incentive, summing to zero
+    error: NDArray[np.float64]
+    covariance: NDArray[np.float64]  # (n_zones, n_zones) its HC3 covariance, of rank n_zones - 1
+    wald: float  # error' covariance^+ error
+    # its p-value, the Wald over n_zones - 1 against F on n_zones - 1 and n_blocks - n_zones degrees
+    p_value: float
+    # the norm of the least error the test finds with ``power`` at ``level`` in every direction
+    minimum_detectable: float
+
+
+@dataclass(frozen=True)
+class DitherSize:
+    """The dither a study logs, sized from a pilot fit (:func:`dither_size`)."""
+
+    size: float  # the logits' shift to log: generate_logs(..., dither=size)
+    blocks: int  # the blocks at which ``size`` finds the error: the planned ones where affordable
+    cost: float  # the share of the logged completions the dither costs at ``size``, through the fit
+    # whether the smallest size that finds the error at the planned blocks costs at most the cap;
+    # where not, ``size`` costs the cap and ``blocks`` is how many the study needs: add blocks
+    affordable: bool
+
+
+def _undithered(u: NDArray[np.float64], shift: NDArray[np.float64]) -> tuple[Any, Any]:
+    """The rates the logging policy would have set with no dither, and the dither's move of the
+    rates to first order: a block's ``u = T * softmax(z + shift)`` gives ``u0 = T * softmax(z)``,
+    ``u * exp(-shift)`` normalised to the block's total ``T``, and the first-order move
+    ``T * (diag(pi) - pi pi') shift = u0 * (shift - pi . shift)``, ``pi = u0 / T``. Given the
+    block's demand and scale the move's mean is zero, since the signs' is."""
+    total = u.sum(axis=1, keepdims=True)
+    weights = u * np.exp(-shift)
+    base = total * weights / weights.sum(axis=1, keepdims=True)
+    pulled = (base / total * shift).sum(axis=1, keepdims=True)
+    return base, base * (shift - pulled)
+
+
+def _noncentrality(df: int, level: float, power: float) -> float:
+    """The noncentrality at which a chi-square test on ``df`` degrees at ``level`` has ``power``."""
+    critical = stats.chi2.isf(level, df)
+
+    def short(shift: float) -> float:
+        return float(stats.ncx2.sf(critical, df, shift)) - power
+
+    high = 1.0
+    while short(high) < 0.0:
+        high *= 2.0
+    return float(brentq(short, 0.0, high, xtol=1e-12))
+
+
+def _dither_logs(
+    logs: dict[str, Array], equilibrium: FittedEquilibrium, *, dithered: bool
+) -> tuple[NDArray[np.float64], ...]:
+    names = ("u", "demand", "y", "dither") if dithered else ("u", "demand", "y")
+    read = _real_entries(logs, names, "logs")
+    columns = [np.asarray(read[name], np.float64) for name in names]
+    for name, column in zip(names, columns, strict=True):
+        if column.ndim != 2 or column.shape != columns[0].shape:
+            raise ValueError(
+                f"logs[{name!r}] has shape {column.shape}; the logs are (n_blocks, n_zones) and"
+                f" logs['u'] is {columns[0].shape}"
+            )
+        if not np.all(np.isfinite(column)):
+            raise ValueError(f"logs[{name!r}] is not finite")
+    n_blocks, n_zones = columns[0].shape
+    if equilibrium.demand.shape != (n_zones,):
+        raise ValueError(
+            f"the equilibrium has {equilibrium.demand.shape[0]} zones and the logs {n_zones}"
+        )
+    if n_blocks <= n_zones:
+        raise ValueError(
+            f"{n_blocks} blocks for {n_zones} zones: the test reads n_zones - 1 directions and an"
+            " intercept from more blocks than that"
+        )
+    if np.any(columns[0] < 0.0) or np.any(columns[0].sum(axis=1) <= 0.0):
+        raise ValueError("logs['u'] is negative or a block's total is not positive")
+    return tuple(columns)
+
+
+def _fitted_completions(equilibrium: FittedEquilibrium) -> Callable[[Array, Array], Array]:
+    dtype = equilibrium.attract.dtype
+    attract = equilibrium.attract
+    parameters = equilibrium._parameters()
+
+    def completed(d: Array, v: Array) -> Array:
+        d, v = d.astype(dtype), v.astype(dtype)
+        return jnp.sum(jnp.minimum(d, _fitted_drivers(attract * d, v, parameters)))
+
+    return completed
+
+
+def dither_check(
+    logs: dict[str, Array],
+    equilibrium: FittedEquilibrium,
+    *,
+    level: float = 0.05,
+    power: float = 0.8,
+) -> DitherCheck:
+    """Whether the fit's gradient in the incentive is the logs', read off the dither
+    :meth:`SharedStateMarket.generate_logs` logs (Wager and Xu 2021's local perturbations).
+
+    The dither moves each block's rates by ``du``, to first order ``u0 * (shift - pi . shift)``
+    (:func:`_undithered`), zero-sum and of mean zero given the block's demand and scale. The
+    block's completions less the fit's prediction at the logged rates are regressed on ``du`` in
+    ``n_zones - 1`` of its coordinates and an intercept. Where the fit is right the residual does
+    not follow ``du`` and the coefficients are zero; where its gradient errs by ``e``, they read
+    ``e`` in the zero-sum directions, which is what a plan on a fixed budget reads. The fit's
+    prediction as an offset makes the test model-assisted: the completions' variation with the
+    demand and the scale leaves the residual, which the design-based reading, on the completions
+    alone, keeps. The Wald statistic, with the HC3 sandwich, is referred to F on ``n_zones - 1``
+    and ``n_blocks - n_zones`` degrees: on markets 3 and 7 with the true fit, a dither of 0.3 and
+    400 blocks, it rejected 15 and 16 of 200 logs at 5% and 2 and 4 at 1%, against 21 and 25 with
+    HC0 and 10 and 14 with the homoskedastic covariance. ``minimum_detectable`` is
+    ``sqrt(lambda * l_max)``, ``lambda`` the chi-square noncentrality at which the test has
+    ``power`` at ``level`` (the F's limit in the blocks), ``l_max`` the largest eigenvalue of the
+    error's covariance: the least norm of an error it finds in every direction. It and
+    :attr:`FittedEquilibrium.lack_of_fit` read different things: the F test the residuals' level,
+    the dither the gradient a plan follows. ``validation/marketplace_dither.mac`` checks the first-
+    order move, its zero mean and its second moment.
+
+    Args:
+        logs: ``u``, ``demand``, ``y`` and ``dither`` of shape ``(n_blocks, n_zones)``, as
+            ``generate_logs(..., dither=h)`` records them, ``n_blocks`` above ``n_zones``.
+        equilibrium: the fit to test, :func:`fit_equilibrium`'s, of the logs' zones.
+        level: the test's size, in (0, 1).
+        power: the power ``minimum_detectable`` is read at, in (level, 1).
+
+    Raises:
+        ValueError: on columns that are not finite matrices of one shape, negative rates, logs
+            with no dither, an equilibrium of other zones, too few blocks, or a level or a power
+            outside its range.
+    """
+    if not (0.0 < level < power < 1.0):
+        raise ValueError(f"level {level!r} and power {power!r}: 0 < level < power < 1")
+    if "dither" not in logs:
+        raise ValueError("the logs carry no dither: log one with generate_logs(..., dither=h)")
+    u, demand, y, shift = _dither_logs(logs, equilibrium, dithered=True)
+    if not np.any(shift):
+        raise ValueError("the logs carry no dither: log one with generate_logs(..., dither=h)")
+    n_blocks, n_zones = u.shape
+    _, move = _undithered(u, shift)
+    completed = _fitted_completions(equilibrium)
+    predicted = np.asarray(
+        jax.vmap(completed)(jnp.asarray(demand), jnp.asarray(u)), dtype=np.float64
+    )
+    residual = y.sum(axis=1) - predicted
+    design = np.column_stack([np.ones(n_blocks), move[:, :-1]])
+    coefficients, *_ = np.linalg.lstsq(design, residual, rcond=None)
+    left = residual - design @ coefficients
+    bread = np.linalg.inv(design.T @ design)
+    leverage = np.einsum("ij,jk,ik->i", design, bread, design)
+    scores = design * (left / (1.0 - leverage))[:, None]
+    covariance = (bread @ scores.T @ scores @ bread)[1:, 1:]
+    slopes = coefficients[1:]
+    wald = float(slopes @ np.linalg.solve(covariance, slopes))
+    # the slopes read e_i - e_n; padded with that zone's 0 and centred they read the zero-sum e
+    centring = np.eye(n_zones)[:, :-1] - 1.0 / n_zones
+    error_covariance = centring @ covariance @ centring.T
+    lam = _noncentrality(n_zones - 1, level, power)
+    return DitherCheck(
+        error=centring @ slopes,
+        covariance=error_covariance,
+        wald=wald,
+        p_value=float(stats.f.sf(wald / (n_zones - 1), n_zones - 1, n_blocks - n_zones)),
+        minimum_detectable=math.sqrt(lam * float(np.linalg.eigvalsh(error_covariance)[-1])),
+    )
+
+
+def dither_size(
+    logs: dict[str, Array],
+    equilibrium: FittedEquilibrium,
+    *,
+    error: float,
+    blocks: int | None = None,
+    level: float = 0.05,
+    power: float = 0.8,
+    max_cost: float = 0.01,
+    draws: int = 16,
+    seed: int = 0,
+) -> DitherSize:
+    """The smallest dither at which :func:`dither_check` finds a gradient error of norm ``error``
+    with ``power`` at ``level`` on ``blocks`` blocks, from a pilot's logs and fit; or, where that
+    dither costs more than ``max_cost`` of the logged completions, the blocks the study needs at
+    the dither that costs that much.
+
+    The rule: a study pre-registers the error it must find, the gradient error that would cost
+    its tolerance of the plan's lift. A plan on a concave objective of curvature ``H`` along the
+    budget, read with its gradient off by ``e``, loses ``e' (-H)^-1 e / 2``, at most
+    ``|e|**2 / (2 * k)``, ``k`` the least eigenvalue of ``-H``; so the error that costs a share
+    ``tau`` of a lift ``L`` is ``sqrt(2 * k * tau * L)``. The dither that finds it is
+    ``h = sqrt(lambda * rho / N) / error``: ``lambda`` the noncentrality at which the test has the
+    power, ``N`` the blocks, and ``rho / (N * h**2)`` the largest variance of the test's error,
+    ``rho`` the largest eigenvalue of ``G^-1 K G^-1`` in the zero-sum coordinates, where ``G`` and
+    ``K`` are the pilot blocks' means of the dither's second moment ``M_b`` and of ``r_b**2 M_b``,
+    ``r_b`` a block's residual about its mean. Per unit of ``h``, the balanced signs have the
+    covariance ``c_n (I - 11'/n)``, ``c_n = n/(n - 1)`` for an even count of zones and 1 for an
+    odd one, so ``M_b = c_n D(u0) (I - 1 pi')(I - pi 1') D(u0)``. The cost is what the fit says
+    the dither loses: its completions at the undithered rates less at ``draws`` dithers a block,
+    over the pilot blocks, as a share of the logged completions. Where it exceeds ``max_cost``
+    the dither is cut to the size that costs ``max_cost`` and the blocks grow as ``(h / size)**2``:
+    a capped perturbation is a rate constraint, and the remedy is a longer study, not a larger
+    move. ``validation/marketplace_dither.mac`` checks ``M_b``, ``c_n`` and the loss.
+
+    Args:
+        logs: the pilot's ``u``, ``demand`` and ``y``, shape ``(n_blocks, n_zones)``; a ``dither``
+            column, where logged, is taken out of the rates.
+        equilibrium: the pilot's fit, :func:`fit_equilibrium`'s.
+        error: the norm of the gradient error to find, positive.
+        blocks: the study's blocks; the pilot's where None.
+        level: the test's size, in (0, 1).
+        power: its power at ``error``, in (level, 1).
+        max_cost: the share of the logged completions the dither may cost, positive.
+        draws: dithers drawn a pilot block to read the cost.
+        seed: the cost's draws' seed.
+
+    Raises:
+        ValueError: on logs or an equilibrium :func:`dither_check` refuses, or arguments outside
+            their ranges.
+    """
+    if not (0.0 < level < power < 1.0):
+        raise ValueError(f"level {level!r} and power {power!r}: 0 < level < power < 1")
+    if not (math.isfinite(error) and error > 0.0):
+        raise ValueError(f"error is {error!r}; it is a positive gradient error's norm")
+    if not (math.isfinite(max_cost) and max_cost > 0.0):
+        raise ValueError(f"max_cost is {max_cost!r}; it is a positive share of the completions")
+    if draws < 1:
+        raise ValueError(f"draws is {draws}; at least one dither a block reads the cost")
+    dithered = "dither" in logs
+    columns = _dither_logs(logs, equilibrium, dithered=dithered)
+    u, demand, y = columns[:3]
+    base = _undithered(u, columns[3])[0] if dithered else u
+    n_blocks, n_zones = u.shape
+    planned = n_blocks if blocks is None else int(blocks)
+    if planned <= n_zones:
+        raise ValueError(f"blocks is {blocks}; the test reads from more blocks than zones")
+    one = _fitted_completions(equilibrium)
+    completed = jax.jit(jax.vmap(one))
+    dtype = equilibrium.attract.dtype
+    pilot = np.asarray(completed(jnp.asarray(demand, dtype), jnp.asarray(u, dtype)), np.float64)
+    residual = y.sum(axis=1) - pilot
+    residual = residual - residual.mean()
+    total = base.sum(axis=1, keepdims=True)
+    split = base / total
+    spread = n_zones / (n_zones - 1) if n_zones % 2 == 0 else 1.0
+    centred = np.eye(n_zones)[None, :, :] - np.ones((1, n_zones, 1)) * split[:, None, :]
+    lifted = base[:, :, None] * centred  # D(u0) (I - 1 pi'), block by block
+    moment = spread * lifted @ np.swapaxes(lifted, 1, 2)
+    moment = moment[:, :-1, :-1]
+    gram = moment.mean(axis=0)
+    meat = (residual[:, None, None] ** 2 * moment).mean(axis=0)
+    inverse = np.linalg.inv(gram)
+    centring = np.eye(n_zones)[:, :-1] - 1.0 / n_zones
+    rho = float(np.linalg.eigvalsh(centring @ inverse @ meat @ inverse @ centring.T)[-1])
+    lam = _noncentrality(n_zones - 1, level, power)
+    size = math.sqrt(lam * rho / planned) / error
+
+    keys = jax.random.split(jax.random.key(seed), n_blocks * draws)
+    signs = jax.vmap(lambda k: _balanced_signs(k, n_zones, dtype))(keys).reshape(
+        n_blocks, draws, n_zones
+    )
+    with np.errstate(divide="ignore"):
+        logits = jnp.asarray(np.log(split), dtype)
+    totals = jnp.asarray(total, dtype)
+    demands = jnp.asarray(demand, dtype)
+    undithered = np.asarray(completed(demands, jnp.asarray(base, dtype)), np.float64)
+    logged = float(np.mean(y.sum(axis=1)))
+
+    @jax.jit
+    def lost(h: Array) -> Array:
+        moved = totals[:, None, :] * jax.nn.softmax(logits[:, None, :] + h * signs, axis=-1)
+        reads = jax.vmap(lambda d, v: jax.vmap(lambda w: one(d, w))(v))(demands, moved)
+        return reads.mean(axis=1)
+
+    def cost(h: float) -> float:
+        return (
+            float(np.mean(undithered - np.asarray(lost(jnp.asarray(h, dtype)), np.float64)))
+            / logged
+        )
+
+    spent = cost(size)
+    if spent <= max_cost:
+        return DitherSize(size=size, blocks=planned, cost=spent, affordable=True)
+    low, high = 0.0, size
+    for _ in range(_BISECTION_STEPS // 2):
+        middle = 0.5 * (low + high)
+        low, high = (middle, high) if cost(middle) <= max_cost else (low, middle)
+    return DitherSize(
+        size=low,
+        blocks=math.ceil(planned * (size / low) ** 2),
+        cost=cost(low),
+        affordable=False,
+    )
+
+
+def _lump_sum(market: SharedStateMarket, planner: str) -> None:
+    if market.payment != "lump_sum":
+        raise ValueError(
+            f"{planner} splits a lump-sum budget, and this market pays per driver: plan it with"
+            " chc.games.per_driver_congestion_allocation on the fitted game"
+        )
+
+
 def sutva_allocation(market: SharedStateMarket, response: ExposureResponse, radius: float) -> Array:
-    """Baseline allocation: fund zones by their pessimistic local uplift (the SUTVA assumption)."""
+    """Baseline allocation: fund zones by their pessimistic local uplift (the SUTVA assumption).
+
+    Raises:
+        ValueError: on a market that pays per driver, whose budget is not a sum of rates.
+    """
+    _lump_sum(market, "sutva_allocation")
     pess = jnp.maximum(response.marginal - radius * response.se, 0.0)  # W-DRO shrink of a reward
     total = jnp.sum(pess)
     # Shares of the budget, so the uplift's units cancel. A floor of 1e-9 added to the total was
@@ -889,7 +1289,8 @@ def pessimistic_equilibrium_allocation(
     uncorrelated though read from the same logs, and a plan is scored at the planning demand.
 
     Raises:
-        ValueError: on a response or an equilibrium whose zones are not ``market``'s, an
+        ValueError: on a market that pays per driver, whose budget is not a sum of rates; on a
+            response or an equilibrium whose zones are not ``market``'s, an
             equilibrium whose drivers do not tell an incentive from none
             (:attr:`FittedEquilibrium.incentive_z`): every plan through it reads the same, or one
             that identifies no zone's attractiveness; under ``"expected"``, an equilibrium with no
@@ -897,6 +1298,7 @@ def pessimistic_equilibrium_allocation(
         TypeError: when ``equilibrium`` is not given, or ``response`` is None under
             ``"tilted"``.
     """
+    _lump_sum(market, "pessimistic_equilibrium_allocation")
     if objective not in ("tilted", "expected"):
         raise ValueError(f"objective is {objective!r}; it is 'tilted' or 'expected'")
     if response is None and objective == "tilted":

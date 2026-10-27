@@ -542,6 +542,26 @@ def _market() -> dict[str, Any]:
 
 
 @functools.cache
+def _dithered_market() -> dict[str, Any]:
+    market = marketplace.SharedStateMarket(seed=0)
+    logs = dict(market.generate_logs(200, jax.random.key(1), dither=0.2))
+    demand, attract = market._base()
+    fitted = marketplace.FittedEquilibrium(
+        demand=jnp.mean(logs["demand"], axis=0),
+        attract=attract / demand,
+        attract_se=jnp.zeros(market.n_zones),
+        beta=market.beta,
+        congestion=market.congestion,
+        mass=market.mass,
+        rmse=0.02,
+        converged=True,
+        lack_of_fit=1.0,
+        incentive_z=math.inf,
+    )
+    return {"logs": logs, "equilibrium": fitted}
+
+
+@functools.cache
 def _fields() -> dict[str, Any]:
     rng = np.random.default_rng(25)
     xs, us = rng.standard_normal((40, 8)), rng.standard_normal((40, 8))
@@ -1117,6 +1137,18 @@ ENTRIES = (
         _market,
         lambda a: marketplace.calibrate_budget_scale(a["logs"]),
         _entries("logs", "u", "y", "demand"),
+    ),
+    Entry(
+        "marketplace.dither_check",
+        _dithered_market,
+        lambda a: marketplace.dither_check(a["logs"], a["equilibrium"]),
+        _entries("logs", "u", "demand", "y", "dither"),
+    ),
+    Entry(
+        "marketplace.dither_size",
+        _dithered_market,
+        lambda a: marketplace.dither_size(a["logs"], a["equilibrium"], error=1.0),
+        _entries("logs", "u", "demand", "y", "dither"),
     ),
     Entry(
         "residual.fit_spectral_residual",
