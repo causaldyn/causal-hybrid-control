@@ -18,7 +18,7 @@ import math
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from scipy import integrate
 from scipy.optimize import brentq, linprog, minimize
@@ -323,6 +323,7 @@ def _maximal_correlation(p: np.ndarray, q: np.ndarray, ratio: np.ndarray) -> flo
 
 @settings(max_examples=30, deadline=None)
 @given(gamma=st.floats(1.0, 50.0))
+@example(gamma=1.000443760738591)
 def test_channel_factor_is_the_sharp_share(gamma) -> None:
     """channel_bias_bound.mac STEP 3a and 4a-4b: the lever of two values that takes the
     confounder's sign with probability 1 - 1/(2 Gamma) has density ratios 1/Gamma and
@@ -336,7 +337,8 @@ def test_channel_factor_is_the_sharp_share(gamma) -> None:
     assert _maximal_correlation(half, half, ratio) == pytest.approx(
         1.0 - 1.0 / gamma, rel=1e-12, abs=1e-15
     )
-    rho2 = (1.0 - 1.0 / gamma) ** 2
+    # (gamma - 1) is exact near 1, where 1 - 1/gamma cancels to eps / (gamma - 1) relative
+    rho2 = ((gamma - 1.0) / gamma) ** 2
     assert ChannelSensitivity.factor(gamma) == pytest.approx(
         math.sqrt(rho2 / (1.0 - rho2)), rel=1e-13, abs=0.0
     )
