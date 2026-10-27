@@ -1063,7 +1063,8 @@ def _half_panel(u, y, estimand: Horizon, analysis: SwitchbackAnalysis, z: float)
     """The half-panel jackknife of the plug-in or the local projection, ``2 tau_T - (tau_1 +
     tau_2) / 2`` over the run and its two halves, each half fitted on its own periods, and its
     standard error from the three fits' influences on each row: twice the run's, less half of
-    each half's. The steady state's interval is Fieller's at the jackknifed ``(a, b)``."""
+    each half's. The steady state is ``b_J / (1 - a_J)`` at the jackknifed ``(a, b)``, with its
+    delta-method error and Fieller's interval there."""
     periods = u.shape[1]
     h = estimand.periods
     projection = analysis == "local_projection"
@@ -1124,15 +1125,26 @@ def _half_panel(u, y, estimand: Horizon, analysis: SwitchbackAnalysis, z: float)
         _log.warning(
             "a_hat = %.4f, and one zone's standard error on it is %.0f%% of 1 - a_hat: each half "
             "reads a_hat on half the periods, closer still to the unit root, and the jackknife "
-            "spreads further (3.3 times the uncorrected reading at a = 0.95 over 200 periods)",
+            "spreads further (its steady state's interquartile range 1.9 to 2.0 times the "
+            "uncorrected reading's at a = 0.95 over 200 periods)",
             a,
             100.0 * near,
             extra={"chc_event": "switchback_near_unit_root", "a_hat": a, "ratio": near},
         )
     if math.isinf(h):
+        # the steady state at the jackknifed (a, b), where Fieller's statistic is zero, so it lies
+        # in its own interval: 2 tau_T - (tau_1 + tau_2) / 2 fell outside it on 6 runs of 3000
         jack = 2.0 * parameters[0] - 0.5 * (parameters[1] + parameters[2])
+        a_jack, b_jack = float(jack[0]), float(jack[1])
+        if a_jack >= 1.0:
+            raise ValueError(
+                f"the jackknifed persistence 2 a_T - (a_1 + a_2) / 2 = {a_jack:.4f} is at or past "
+                "1: the jackknife has no steady state to read"
+            )
         cov = np.einsum("izt,jzt->ij", q[1:], q[1:])
-        return estimate, se, _fieller(float(jack[0]), float(jack[1]), cov, z)
+        gradient = np.array([b_jack, 1.0 - a_jack]) / (1.0 - a_jack) ** 2
+        se = math.sqrt(float(gradient @ cov @ gradient))
+        return b_jack / (1.0 - a_jack), se, _fieller(a_jack, b_jack, cov, z)
     return estimate, se, (estimate - z * se, estimate + z * se)
 
 
@@ -1278,20 +1290,35 @@ def read_switchback(
     2610.26427) show it stays effective for persistent local projections.
     Its standard error is its own, from each row's influence on the three fits, twice the run's
     less half each half's, summed within a zone over the lags the reading keeps, so it is read on
-    one zone as on many. The steady state's interval is Fieller's at the jackknifed ``a`` and
-    ``b``, and every other interval is normal. On ``x' = a x + u + eps`` with fair coins (1000 to
-    6000 runs a cell), the steady state at ``a = 0.9`` over 200 periods read -0.68 of its 10 on
-    one zone and -0.73 on 16 zones, and the jackknife -0.12 and -0.04; their intervals covered
-    0.965 and 0.934 of 0.95, against 0.931 and 0.821 for the uncorrected reading's Fieller
-    interval, since ``a_hat``'s bias does not shrink with zones. Over 400 periods the bias went
-    from -0.33 to -0.02 (covered 0.942); ``tau_5`` at ``a = 0.9`` over 200, -0.120 to -0.002
-    (0.931 to 0.943); ``tau_3``'s local projection at ``a = 0.8`` over 60, 100 and 200 periods,
-    -0.082, -0.060 and -0.040 to +0.031, +0.005 and -0.011 (0.895, 0.912 and 0.932 to 0.935,
-    0.945 and 0.949). Its standard error was 0.94 to 1.06 of its spread. The correction costs
-    spread, 3 % to 19 % where there is a bias to remove, and 0.6 % on the channel at an i.i.d.
-    lever, which has none. On a short run near the unit root each half reads ``a_hat`` closer
-    still to it: at ``a = 0.95`` over 200 periods the jackknife spread 3.3 times as far as the
-    uncorrected reading, and it warns where the run's own reading does.
+    one zone as on many. Every interval but the steady state's is normal. On ``x' = a x + u + eps``
+    with fair coins, ``tau_5`` at ``a = 0.9`` over 200 periods went from a bias of -0.120 to -0.002
+    (covered 0.931 to 0.943); ``tau_3``'s local projection at ``a = 0.8`` over 60, 100 and 200
+    periods, -0.082, -0.060 and -0.040 to +0.031, +0.005 and -0.011 (0.895, 0.912 and 0.932 to
+    0.935, 0.945 and 0.949). Their standard error was 0.94 to 1.06 of their spread. The correction
+    costs spread, 3 % to 19 % where there is a bias to remove, and 0.6 % on the channel at an
+    i.i.d. lever, which has none.
+
+    The steady state is read at the jackknifed parameters, ``b_J / (1 - a_J)`` with ``(a_J, b_J) =
+    2 (a, b)_T - ((a, b)_1 + (a, b)_2) / 2``, its standard error the delta method's there, and its
+    interval Fieller's there, which holds the estimate, since Fieller's statistic is zero at it;
+    where ``a_J >= 1`` there is no steady state to read, and the reading is refused.
+    ``b / (1 - a)`` has no mean, since ``a_hat`` has a density at 1, so its bias is read as a
+    median. Jackknifing ``(a, b)`` leaves the ratio's curvature, ``b var(a) / (1 - a)^3 + cov(a,
+    b) / (1 - a)^2``, of order 1/T and above the truth. Over 2000 runs a cell and four seeds, at
+    ``a = 0.9`` over 200 periods the uncorrected steady state's median read -0.96 to -1.17 of its
+    10 on one zone and -0.74 to -0.78 on 16 zones, and the jackknife's +0.07 to +0.43 and +0.05
+    to +0.09; their intervals covered 0.958 to 0.964 and 0.924 to 0.940 of 0.95, against 0.922 to
+    0.932 and 0.816 to 0.838 for the uncorrected reading's Fieller interval, since ``a_hat``'s
+    bias does not shrink with zones. Over 400 periods the median went from -0.51 to -0.56 to
+    +0.16 to +0.24 (covered 0.940 to 0.946), and at ``a = 0.5`` over 40 from -0.14 to -0.18 to
+    +0.01 to +0.03 (0.944 to 0.956). The jackknife refused 10 to 14 runs of 2000 at ``a = 0.9``
+    over 200 periods on one zone, none on 16, and 109 to 147 at ``a = 0.95``. Its standard error
+    is first order: the law is skewed, and its median was 0.88 to 0.91 of the interquartile range
+    over 1.349 on one zone and 0.91 to 0.97 on 16 at ``a = 0.9``, 0.82 to 0.85 at ``a = 0.95``;
+    Fieller's interval carries the level. On a short run near the unit root each half reads
+    ``a_hat`` closer still to it: at ``a = 0.95`` over 200 periods the jackknife's interquartile
+    range was 1.9 to 2.0 times the uncorrected reading's, and it warns where the run's own
+    reading does.
 
     Raises:
         ValueError: when the shapes disagree, the lever is not 0 or 1 or never switches, the
@@ -1306,7 +1333,7 @@ def read_switchback(
             off its first reading; and when ``jackknife`` is asked of another analysis or with
             ``se="design"``, of a run whose halves leave fewer than 3 rows a zone, of a half in
             which the lever never switches, or of a steady state some half fits ``a_hat >= 1``
-            to.
+            to or whose jackknifed ``a_J`` is at or past 1.
     """
     u = np.atleast_2d(np.asarray(_real_numbers(lever, "lever"), dtype=np.float64))
     y = np.atleast_2d(np.asarray(_real_numbers(outcome, "outcome"), dtype=np.float64))
