@@ -12,15 +12,21 @@ exact oracle's lift in float64, up to 0.79.
 import dataclasses
 import functools
 import importlib
+import inspect
 import math
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from scipy import integrate
+from scipy import integrate, stats
 
-from chc.games import exact_congestion_allocation, fixed_point, per_driver_congestion_allocation
+from chc.games import (
+    exact_congestion_allocation,
+    fixed_point,
+    per_driver_congestion_allocation,
+    softmax_congestion_equilibrium,
+)
 from chc.marketplace import (
     ExposureResponse,
     FittedEquilibrium,
@@ -28,6 +34,7 @@ from chc.marketplace import (
     _attract_se,
     _driver_jacobians,
     _expected_completions,
+    _fitted_completions,
     _fitted_drivers,
     _fitted_step,
     _sandwich,
@@ -149,10 +156,31 @@ def test_chc_recovers_the_oracle_where_baselines_do_not(env: dict) -> None:
 def test_the_planner_refuses_to_plan_without_a_fitted_equilibrium(env: dict) -> None:
     """Handed no equilibrium, the planner went through the simulator's own, which no log supplies,
     and planned as close to the oracle from a response of zero as from the adjusted one: the
-    comparison measured knowing the equilibrium. It now refuses, and names the fit."""
+    comparison measured knowing the equilibrium. The fit is a keyword with no default, so its
+    signature says so and a type checker flags the omission: annotated optional, it was not."""
     market = env["market"]
-    with pytest.raises(TypeError, match=r"equilibrium=fit_equilibrium\(logs\)"):
-        pessimistic_equilibrium_allocation(market, calibrate_shared_state(env["logs"]))
+    parameter = inspect.signature(pessimistic_equilibrium_allocation).parameters["equilibrium"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is inspect.Parameter.empty
+    assert parameter.annotation == "FittedEquilibrium"
+    with pytest.raises(TypeError, match="required keyword-only argument: 'equilibrium'"):
+        pessimistic_equilibrium_allocation(market, calibrate_shared_state(env["logs"]))  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("radius", [math.nan, math.inf, -5.0])
+def test_both_planners_refuse_a_radius_that_is_no_count_of_standard_errors(
+    env: dict, radius: float
+) -> None:
+    """A nan radius made the SUTVA plan nan and sent the equilibrium planner back to the even split
+    without a word (10.94 rides where radius 1 plans 11.91); a negative one turned the pessimism
+    into a bonus."""
+    market, logs = env["market"], env["logs"]
+    with pytest.raises(ValueError, match="radius is"):
+        sutva_allocation(market, calibrate_naive_causal(logs), radius)
+    with pytest.raises(ValueError, match="radius is"):
+        pessimistic_equilibrium_allocation(
+            market, calibrate_shared_state(logs), radius=radius, equilibrium=env["fitted"]
+        )
 
 
 def test_the_fitted_equilibrium_recovers_the_market_s_parameters(env: dict) -> None:
@@ -223,6 +251,55 @@ def test_the_oracle_is_the_exact_optimum(seed: int, rides: float) -> None:
     )
     assert exact.value == pytest.approx(rides, abs=1e-9)
     assert market.value(market.oracle_allocation()) == pytest.approx(rides, abs=2e-6)
+
+
+def test_past_the_certified_crowding_the_market_damps_its_solve_and_reads_the_equilibrium() -> None:
+    """At ``beta*congestion = 20`` the solve damped by 1/2 2-cycled at a residual of 0.26, and the
+    market read 11.43 rides at the oracle's incentive where its equilibrium completes 12.0. Damped
+    by ``4/(4 + beta*congestion)`` it converges, and reads the rides of the exact allocation's own
+    equilibrium, found by inverting the shares rather than iterating."""
+    market = SharedStateMarket(seed=0, congestion=8.0)
+    demand, attract = market._base()
+    found = exact_congestion_allocation(
+        attract, demand, market.beta, market.congestion, market.mass, market.budget
+    )
+    assert market.value(jnp.asarray(found.allocation)) == pytest.approx(found.value, abs=2e-5)
+
+
+def test_a_solve_that_ends_unconverged_raises_rather_than_return_drivers() -> None:
+    """Drivers this price-sensitive leave the least attractive zones almost empty, and there the
+    damping ``4/(4 + beta*congestion)`` at ``beta*congestion = 10**4`` closes 0.04% of the gap a
+    step: 500 steps leave the residual far above its tolerance. The market raises, eagerly and
+    inside the logs' scan, where it returned the unconverged drivers as an equilibrium."""
+    market = SharedStateMarket(seed=0, beta=1e4, congestion=1.0)
+    with pytest.raises(RuntimeError, match="did not converge"):
+        market.value(jnp.zeros(market.n_zones))
+    with pytest.raises(RuntimeError, match="did not converge"):
+        market.generate_logs(3, jax.random.key(0))
+
+
+@pytest.mark.parametrize(
+    ("seed", "payment", "dither"),
+    [(0, "lump_sum", 0.0), (1, "lump_sum", 0.3), (2, "per_driver", 0.0)],
+)
+def test_below_the_certified_crowding_the_logs_keep_their_bits(
+    seed: int, payment: str, dither: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The published markets, ``beta*congestion = 5``, log what the plain solve damped by 1/2 logs,
+    bit for bit, with and without a dither and paid either way."""
+    market = SharedStateMarket(seed=seed, payment=payment)  # type: ignore[arg-type]
+    logs = market.generate_logs(40, jax.random.key(seed + 5), dither=dither)
+    monkeypatch.setattr(
+        SharedStateMarket,
+        "_equilibrium",
+        lambda self, attract, u: (
+            softmax_congestion_equilibrium(attract, u, self.congestion, self.mass, self.beta).x
+        ),
+    )
+    plain = market.generate_logs(40, jax.random.key(seed + 5), dither=dither)
+    assert sorted(logs) == sorted(plain)
+    for name in logs:
+        np.testing.assert_array_equal(np.asarray(logs[name]), np.asarray(plain[name]))
 
 
 def test_the_oracle_takes_no_step_count() -> None:
@@ -1016,14 +1093,62 @@ def test_the_dither_check_reads_a_gradient_error_planted_in_the_completions(key:
     read = dither_check(logs | {"y": y}, truth)
     se = np.sqrt(np.diag(read.covariance))
     assert np.all(np.abs(read.error - (planted - planted.mean())) <= 4.0 * se)
-    assert read.p_value < 1e-6
+    assert read.p_value == 1.0 / 2000.0  # no bootstrap draw reaches it
+    assert dither_check(logs | {"y": y}, truth, reference="f").p_value < 1e-6
     assert abs(math.fsum(read.error)) <= 1e-12
     assert dither_check(logs, truth).p_value > 0.01
 
 
+def _hc3_wald(design: np.ndarray, residual: np.ndarray) -> float:
+    """The HC3 Wald statistic of the slopes, every coefficient but the intercept, by least squares
+    and the sandwich written out: the check's statistic read another way."""
+    coefficients, *_ = np.linalg.lstsq(design, residual, rcond=None)
+    bread = np.linalg.inv(design.T @ design)
+    leverage = np.array([row @ bread @ row for row in design])
+    scaled = (residual - design @ coefficients) / (1.0 - leverage)
+    meat = sum(np.outer(row, row) * e**2 for row, e in zip(design, scaled, strict=True))
+    covariance = (bread @ meat @ bread)[1:, 1:]
+    return float(coefficients[1:] @ np.linalg.solve(covariance, coefficients[1:]))
+
+
+def test_the_dither_check_refers_its_wald_to_a_wild_bootstrap_by_default() -> None:
+    """Referred to F, the HC3 Wald rejected the true fit on 14.5% of logs of 25 blocks at 5%, on
+    12.5% of 50 (market 3): the sandwich's own noise, with 12 regressors, is not small there. By
+    default the p-value is now the share of a wild bootstrap's statistics at or above the logs'
+    (Rademacher signs on the residuals about their mean, the null's fit), ``(1 + count) / (1 +
+    draws)``: here rebuilt draw by draw, each statistic by least squares, from the same signs."""
+    market = SharedStateMarket(seed=3)
+    logs = market.generate_logs(48, jax.random.key(8), dither=0.3)
+    truth = _true_fit(market, logs)
+    draws, seed = 99, 5
+    read = dither_check(logs, truth, draws=draws, seed=seed)
+    u, shift = np.asarray(logs["u"]), np.asarray(logs["dither"])
+    total = u.sum(axis=1, keepdims=True)
+    weights = u * np.exp(-shift)
+    base = total * weights / weights.sum(axis=1, keepdims=True)
+    move = base * (shift - (base / total * shift).sum(axis=1, keepdims=True))
+    completed = _fitted_completions(truth)
+    predicted = np.asarray(jax.vmap(completed)(logs["demand"], logs["u"]), np.float64)
+    residual = np.asarray(logs["y"]).sum(axis=1) - predicted
+    design = np.column_stack([np.ones(len(residual)), move[:, :-1]])
+    wald = _hc3_wald(design, residual)
+    assert read.wald == pytest.approx(wald, rel=1e-9, abs=0.0)
+    rng = np.random.default_rng(seed)
+    signs = rng.choice(np.array([-1.0, 1.0]), size=(draws, len(residual)))
+    centred = residual - residual.mean()
+    boot = [_hc3_wald(design, residual.mean() + sign * centred) for sign in signs]
+    beyond = sum(b >= wald * (1.0 - 1e-9) for b in boot)
+    assert sum(b >= wald * (1.0 + 1e-9) for b in boot) == beyond  # no tie within rounding
+    assert read.p_value == (1 + beyond) / (draws + 1)
+    f = dither_check(logs, truth, reference="f")
+    assert f.p_value == pytest.approx(float(stats.f.sf(wald / 11, 11, 48 - 12)), rel=1e-9, abs=0.0)
+    assert f.wald == read.wald
+    assert dither_check(logs, truth, draws=draws, seed=seed).p_value == read.p_value
+
+
 def test_the_dither_check_refuses_logs_it_cannot_read(env: dict) -> None:
     market = SharedStateMarket(seed=3)
-    logs = market.generate_logs(40, jax.random.key(4), dither=0.3)
+    logs = market.generate_logs(44, jax.random.key(4), dither=0.3)
     truth = _true_fit(market, logs)
     with pytest.raises(ValueError, match="carry no dither"):
         dither_check(env["logs"], truth)
@@ -1031,10 +1156,16 @@ def test_the_dither_check_refuses_logs_it_cannot_read(env: dict) -> None:
         dither_check(logs | {"dither": jnp.zeros_like(logs["dither"])}, truth)
     with pytest.raises(ValueError, match="blocks for 12 zones"):
         dither_check({name: column[:12] for name, column in logs.items()}, truth)
+    with pytest.raises(ValueError, match="below 4 blocks a direction"):
+        dither_check({name: column[:43] for name, column in logs.items()}, truth)
     with pytest.raises(ValueError, match="zones and the logs"):
         dither_check({name: column[:, :11] for name, column in logs.items()}, truth)
     with pytest.raises(ValueError, match="0 < level < power < 1"):
         dither_check(logs, truth, level=0.9, power=0.8)
+    with pytest.raises(ValueError, match="reference is"):
+        dither_check(logs, truth, reference="chi2")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="draws is"):
+        dither_check(logs, truth, draws=0)
 
 
 @pytest.fixture(scope="module")
@@ -1053,6 +1184,11 @@ def test_the_dither_s_size_falls_as_the_root_of_the_blocks_and_as_the_error(pilo
     assert base.blocks == 400
     assert read(error=1.0, blocks=1600).size == pytest.approx(base.size / 2.0, rel=1e-12, abs=0.0)
     assert read(error=2.0, blocks=400).size == pytest.approx(base.size / 2.0, rel=1e-12, abs=0.0)
+
+
+def test_the_dither_is_not_sized_for_a_study_the_check_would_refuse(pilot: dict) -> None:
+    with pytest.raises(ValueError, match="reads at least 4 blocks a direction, 44 here"):
+        dither_size(pilot["logs"], pilot["truth"], error=1.0, blocks=43)
 
 
 def test_a_dither_that_costs_too_much_is_cut_and_the_blocks_grow(pilot: dict) -> None:
