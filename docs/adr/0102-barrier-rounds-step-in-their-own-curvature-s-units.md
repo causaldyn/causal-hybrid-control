@@ -3,6 +3,8 @@
 **Status:** accepted, 2026-10-19. Amends the barrier rounds of ADR 0059 and ADR 0073, and the
 stationarity of a held plan (ADR 0097). Amended by ADR 0112, 2026-10-19: the rounds also hold
 `h` at each next state the path falls short at.
+Amended by ADR 0144, 2026-10-27: `inner="newton"` solves each round by projected Newton, opt-in;
+the diagonal metric stays the default and the fallback.
 
 ## Context
 

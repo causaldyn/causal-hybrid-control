@@ -1,0 +1,82 @@
+/* A barrier round by projected Newton (ADR 0144; chc.plan._round_terms, _newton_round).
+
+   Setting. A round minimises J(u) + sum_i (max(0, l_i + rho c_i(u))^2 - l_i^2) / (2 rho) over a
+   box. The Newton rounds step on the Gauss-Newton matrix
+     G = sum_k S_k' L_k S_k + rho sum_{i on} grad c_i grad c_i',
+   S_k the sensitivity of (x_k, u_k) to the actions and L_k the cost's Hessian in (x_k, u_k); the
+   diagonal rounds step in the metric sqrt(diag G) (_round_metric). Checked here:
+   (1) on a plant linear in the state and the action, G's cost part is J's Hessian;
+   (2) its diagonal is r + B' P_{k+1} B with P_H = Qf, P_k = Q + A' P_{k+1} A, the planner's
+       curvature (chc.control._action_units), so the metric is the root of G's diagonal;
+   (3) on affine columns the penalty's Hessian on the terms that are on is rho sum g g';
+   (4) Bertsekas' (1982) step on a box QP: with the bound action held, the free actions' Newton
+       step lands on the KKT point, and a diagonal rescaling of the actions does not move it;
+   (5) the Jacobi-scaled condition number of the SIR round's matrix (the ADR's numbers), from the
+       matrix exported by projected_newton_round_sir.py. */
+display2d : false$
+load("linearalgebra")$
+
+/* (1)-(2): two states, one lever, three steps, every entry a symbol. */
+A : matrix([a11, a12], [a21, a22])$
+B : matrix([b1], [b2])$
+Q : matrix([q1, q12], [q12, q2])$
+F : matrix([f1, f12], [f12, f2])$
+x0 : matrix([s1], [s2])$
+us : [u0, u1, u2]$
+xs : [x0]$
+for k : 1 thru 3 do xs : endcons(A . last(xs) + B * us[k], xs)$
+cost : sum((transpose(xs[k]) . Q . xs[k] + r * us[k]^2) / 2, k, 1, 3)
+       + (transpose(xs[4]) . F . xs[4]) / 2$
+hess : hessian(cost, us)$
+sens(k) := genmatrix(lambda([i, j], diff(xs[k][i, 1], us[j])), 2, 3)$
+lever(k) := genmatrix(lambda([i, j], if j = k then 1 else 0), 1, 3)$
+gn : sum(transpose(sens(k)) . Q . sens(k) + r * transpose(lever(k)) . lever(k), k, 1, 3)
+     + transpose(sens(4)) . F . sens(4)$
+print("(1) Gauss-Newton less Hessian:", expand(gn - hess), "  (=0)")$
+P[3] : F$
+for k : 2 step -1 thru 0 do P[k] : Q + transpose(A) . P[k + 1] . A$
+diagonal : makelist(r + (transpose(B) . P[k] . B), k, 1, 3)$
+print("(2) diagonal less r + B'P B:",
+      expand(makelist(gn[k, k], k, 1, 3) - diagonal), "  (=[0,0,0])")$
+
+/* (3) Two affine columns c_i = g_i'u + e_i, both terms on (l_i + rho c_i > 0). */
+g1 : [g11, g12, g13]$
+g2 : [g21, g22, g23]$
+c1 : g1 . us + e1$
+c2 : g2 . us + e2$
+penalty : ((l1 + rho * c1)^2 - l1^2 + (l2 + rho * c2)^2 - l2^2) / (2 * rho)$
+outer : rho * (transpose(matrix(g1)) . matrix(g1) + transpose(matrix(g2)) . matrix(g2))$
+print("(3) penalty Hessian less rho sum g g':", expand(hessian(penalty, us) - outer), "  (=0)")$
+
+/* (4) min (1/2) u'Hu + p'u over 0 <= u, u2 <= 1, at a point where u2 sits on its upper side
+   and its gradient pushes it out. Newton on u1 with u2 held is the KKT point, the bound's
+   multiplier -(gradient) >= 0; scaling u = D w leaves u1's step where it was. */
+H : matrix([4, 1], [1, 3])$
+p : matrix([-3], [-5])$
+grad(u) := H . u + p$
+start : matrix([1/5], [1])$
+g0 : grad(start)$
+print("(4) gradient at the start:", g0, "  (u2's entry < 0: pushed out of the box, held)")$
+u1n : start[1, 1] - g0[1, 1] / H[1, 1]$
+kkt : grad(matrix([u1n], [1]))$
+print("    free action:", u1n, "  (inside the box)  gradient there:", kkt,
+      "  (first = 0, second <= 0)")$
+D : matrix([d1, 0], [0, d2])$
+Hs : D . H . D$
+ws : start[1, 1] / d1 - (D . g0)[1, 1] / Hs[1, 1]$
+print("    scaled step's action less the unscaled:", ratsimp(d1 * ws - u1n), "  (=0)")$
+
+/* (5) The SIR round's matrix, Jacobi-scaled over the free actions, read from the exported file:
+   the condition numbers the ADR states, by Jacobi's eigenvalue method in 32 digits. */
+if file_search("projected_newton_round_sir.dat") # false then block(
+  [kappa],
+  batchload("projected_newton_round_sir.dat"),
+  fpprec : 32,
+  for i thru length(sir_matrices) do block([S, spectrum],
+    S : bfloat(sir_matrices[i]),
+    spectrum : sort(first(eigens_by_jacobi(S, bigfloatfield))),
+    kappa : last(spectrum) / first(spectrum),
+    print("(5)", sir_labels[i], " size", length(S), " least", float(first(spectrum)),
+          " largest", float(last(spectrum)), " condition", float(kappa),
+          " numpy's", sir_numpy[i], " relative difference", float(abs(kappa / sir_numpy[i] - 1)))))
+else print("(5) projected_newton_round_sir.dat not found: run projected_newton_round_sir.py")$
