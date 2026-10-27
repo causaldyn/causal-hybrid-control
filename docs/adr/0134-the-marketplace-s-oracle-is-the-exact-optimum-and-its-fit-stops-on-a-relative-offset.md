@@ -3,6 +3,8 @@
 **Status:** accepted, 2026-10-25. Amends ADR 0114 (the best plan's lift, read against an oracle
 that was a local ascent) and ADR 0123 (the numbers its Consequences quote, read through a fit that
 stopped early).
+Amended 2026-10-27 by ADR 0140: `oracle_allocation(steps=)`, ignored with a `DeprecationWarning`
+in 0.22.0, is removed in 0.23.0 as announced; passing it is a `TypeError`.
 
 ## Context
 
