@@ -1970,6 +1970,24 @@ def _last_safe_step(margins: Array) -> int:
     return int(np.argmax(past)) - 1 if past.any() else past.size - 1
 
 
+def _outcome_vector(outcomes: ArrayLike) -> NDArray[np.float64]:
+    """``outcomes``, one per unit, as a float64 vector: shape ``(n,)`` or the column ``(n, 1)``.
+
+    The MSM bounds sort the outcomes, and a sort of a column moves nothing: its "top tail" was the
+    last rows in input order. Any other shape is refused rather than read one way or another, and
+    so is a non-finite outcome, which carried a nan to the bound."""
+    y = np.asarray(_real_numbers(outcomes, "outcomes"), dtype=np.float64)
+    if y.ndim == 2 and y.shape[1] == 1:
+        y = y[:, 0]
+    if y.ndim != 1 or y.size == 0:
+        raise ValueError(
+            f"outcomes must be one per unit, of shape (n,) or (n, 1); got shape {y.shape}"
+        )
+    if not np.isfinite(y).all():
+        raise ValueError("outcomes must be finite")
+    return y
+
+
 def _top_tail_mean(outcomes: NDArray[np.float64], tau: float) -> float:
     """Mean of the top ``tau``-fraction (by mass) of ``outcomes`` -- the upper CVaR / superquantile.
 
@@ -2139,10 +2157,13 @@ def msm_worst_case_mean(
     (``validation/msm_level_bound.mac``). Without it the box ``[1/Gamma, Gamma]`` is that of a
     continuous dose, and on a binary lever's odds it overstates the inflation by ``1 / (1 - e)``.
 
+    ``outcomes`` are one per unit, of shape ``(n,)`` or the column ``(n, 1)``.
+
     Raises:
-        ValueError: when ``Gamma`` is below 1 or not finite, ``covariates`` do not have one row a
-            outcome or are not finite, there are too few outcomes to cross-fit their
-            coefficients, or ``propensity`` is not one number or one per outcome in ``(0, 1)``.
+        ValueError: when ``outcomes`` have another shape, none, or one not finite, ``Gamma`` is
+            below 1 or not finite, ``covariates`` do not have one row a outcome or are not
+            finite, there are too few outcomes to cross-fit their coefficients, or
+            ``propensity`` is not one number or one per outcome in ``(0, 1)``.
     """
     # a nan Gamma reached the tail's length as nan, and an infinite one an empty tail
     if not math.isfinite(gamma):
@@ -2150,9 +2171,8 @@ def msm_worst_case_mean(
     # below 1 the weight box [1/Gamma, Gamma] is empty, and the sample mean came back as its bound
     if gamma < 1.0:
         raise ValueError(f"MSM sensitivity Gamma must be >= 1, got {gamma}")
-    y = np.asarray(_real_numbers(outcomes, "outcomes"), dtype=np.float64)
+    y = _outcome_vector(outcomes)
     if covariates is not None or propensity is not None:
-        y = y.ravel()
         fitted = np.zeros_like(y) if covariates is None else _cross_fitted(y, covariates)
         return _level_bound(y, gamma, fitted, propensity)[0]
     mu = float(np.mean(y))
@@ -2180,10 +2200,11 @@ def confounding_robust_radius(
     ``robust_radius_ge_nominal`` / ``robust_radius_monotone`` prove both for the closed form at a
     fixed tail gap; here the tail, and so the gap, moves with ``Gamma``, which those lemmas do not
     cover. Feeds :func:`chc.support.pessimistic_control` as a widened uncertainty budget.
-    ``covariates`` and ``propensity`` are :func:`msm_worst_case_mean`'s.
+    ``outcomes``, ``covariates`` and ``propensity`` are :func:`msm_worst_case_mean`'s, refused as
+    it refuses them.
     """
-    outcomes = _real_numbers(outcomes, "outcomes")
-    mu = float(np.mean(np.asarray(outcomes, dtype=np.float64)))
+    outcomes = _outcome_vector(outcomes)
+    mu = float(np.mean(outcomes))
     worst = msm_worst_case_mean(outcomes, gamma, covariates=covariates, propensity=propensity)
     return nominal_radius + (worst - mu)
 
@@ -2650,11 +2671,10 @@ def negative_control_gamma(
     confounding; with them it reads 1.285 at each. At ``level`` the endpoint's standard error is
     that of each unit's prediction plus its residual's term, and leaves out the prediction's own
     error, which enters at first order only where the residual's law moves with the covariates.
+    ``outcomes`` are :func:`msm_worst_case_mean`'s, refused as it refuses them.
     """
-    y = np.asarray(_real_numbers(outcomes, "outcomes"), dtype=np.float64).ravel()
     # a nan returned gamma_max, as if it were the confounding measured
-    if not np.isfinite(y).all():
-        raise ValueError("the negative control's outcomes must be finite")
+    y = _outcome_vector(outcomes)
     if not (tol > 0.0 and 1.0 <= gamma_max < math.inf):
         raise ValueError(
             f"tol must be positive and gamma_max at least 1 and finite, got {tol} and {gamma_max}"
@@ -2712,7 +2732,7 @@ def _msm_endpoint_se(outcomes: NDArray[np.float64], gamma: float) -> float:
     (Gamma + 1)``, at the point ``q`` that weighs the top ``tau`` of the sample, the one
     :func:`_top_tail_mean` reads fractionally: that ``q`` minimises the mean over ``q``
     (Rockafellar and Uryasev 2000), so its own error moves the endpoint at second order only."""
-    y = np.asarray(outcomes, dtype=np.float64)
+    y = _outcome_vector(outcomes)
     tau = 1.0 / (gamma + 1.0)
     q = float(np.sort(y)[::-1][min(int(tau * y.size), y.size - 1)])
     term = y / gamma + (1.0 - 1.0 / gamma) * (q + np.maximum(y - q, 0.0) / tau)
