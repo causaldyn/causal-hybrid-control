@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 
 import chc.decision as decision
+import chc.evaluation as decision_evaluation
 from chc.cost import QuadraticCost
 from chc.decision import (
     Constraint,
@@ -287,6 +288,7 @@ def test_the_record_holds_every_input_and_the_checks_the_plan_was_read_with(
     inputs = record["inputs"]
     assert tuple(inputs) == decision._INPUT_KEYS
     assert inputs["panel_sha256"] == TWO.provenance.data_sha256
+    assert inputs["panel_cluster"] is None
     assert inputs["adjustment"] == {"kind": "asserted", "covariates": ["z"]}
     assert inputs["levers"][0] == {
         "name": "u1",
@@ -720,6 +722,7 @@ def test_a_prescription_s_evaluation_goes_to_json() -> None:
         "n_resamples": 20,
         "seed": 3,
         "max_refused": 0.05,
+        "panel_sha256": panel.provenance.data_sha256,
     }
     check = evaluation.logger_check
     assert (record["logger_check"] is None) == (check is None)
@@ -746,12 +749,170 @@ def test_an_evaluation_of_logs_goes_to_json_with_the_logger_it_was_given() -> No
         "model_error": 1.0,
         "min_effective": 100.0,
         "logger": {"gain": [[0.0]], "offset": [0.0], "covariance": [[1.0]]},
+        "logs_sha256": decision_evaluation._logs_sha256({"x": x, "u": u}),
     }
     assert record["degrees_of_freedom"] == evaluation.degrees_of_freedom
     assert record["bootstrap"] is None
     assert record["versus_logger"] is None
     # the settings are a record, not part of the evaluation's equality
     assert dataclasses.replace(evaluation, _settings=None) == evaluation
+
+
+def test_an_evaluation_names_the_logs_it_was_read_from_and_takes_array_keywords() -> None:
+    """The logs' digest moves with any of their numbers and their shape, and a keyword passed as a
+    0-d array is written as the float it holds: up to 0.24.0 ``json.dumps`` refused the record."""
+    rng = np.random.default_rng(4)
+    x, u = np.zeros((2001, 1)), rng.normal(0.0, 1.0, (2000, 1))
+    for t in range(2000):
+        x[t + 1] = 0.8 * x[t] + 0.5 * u[t] + rng.normal(0.0, 0.2)
+    plant = LinearGaussianPlant(
+        np.array([[0.8]]), np.array([[0.5]]), np.zeros(1), np.array([[0.04]])
+    )
+    cost = QuadraticCost(Q=jnp.eye(1), R=jnp.array([[0.1]]), Qf=jnp.eye(1), x_target=jnp.zeros(1))
+    plan = AffinePolicy(np.array([[-0.4]]), np.zeros(1), np.array([[0.25]]))
+    evaluation = evaluate_plan(
+        {"x": x, "u": u},
+        plan,
+        "mis",
+        plant=plant,
+        cost=cost,
+        model_error=np.array(0.5),  # type: ignore[arg-type]
+        min_effective=np.float64(100.0),  # type: ignore[arg-type]
+    )
+    record = evaluation.to_json()
+    assert json.loads(json.dumps(record, allow_nan=False)) == record
+    assert type(record["settings"]["model_error"]) is float
+    assert record["settings"]["model_error"] == 0.5
+    digest = decision_evaluation._logs_sha256
+    assert record["settings"]["logs_sha256"] == digest({"x": x, "u": u})
+    assert digest({"x": x.astype(np.float32).astype(np.float64), "u": u}) != digest(
+        {"x": x, "u": u}
+    )
+    assert digest({"x": x, "u": u.reshape(1, -1)}) != digest({"x": x, "u": u})
+    assert digest({"x": x.tolist(), "u": u, "y": 1.0}) == digest({"x": x, "u": u})
+    assert decision_evaluation._json_safe({"a": np.array(2.0), "b": np.array(3)}) == {
+        "a": 2.0,
+        "b": 3,
+    }
+
+
+# ---- what a replay reads, and how it refuses ----
+
+
+def _iterators(**options: Any) -> Prescription:
+    """``_two_levers`` with every collection handed in as a one-shot iterator."""
+    return _two_levers(
+        levers=iter(
+            [
+                Lever("u1", lo=-1.5, hi=2.0, unit_cost=0.05, cap_per_step=0.8),
+                Lever("u2", lo=-1.0, hi=1.0, unit_cost=0.1),
+            ]
+        ),
+        constraints=iter([Constraint("w", lo=-0.6)]),
+        budgets=iter([chc_budget()]),
+        adjustment=iter(["z"]),
+        neighbours={unit: iter([unit ^ 1]) for unit in range(40)},
+        dither=iter(["eta1", "eta2"]),
+        **options,
+    )
+
+
+def test_collections_handed_in_as_iterators_decide_and_replay_as_lists(
+    two_levers: Prescription,
+) -> None:
+    """``neighbours`` is a mapping of iterables, and the others are read more than once: up to
+    0.24.0 the record spent the neighbours' iterators, the interference check read no neighbour
+    and reported not tested, and the record did not replay."""
+    made = _iterators()
+    assert made.interference is not None
+    assert two_levers.interference is not None
+    assert made.interference.p_value == two_levers.interference.p_value
+    record = _text(made.to_json())
+    assert record == _text(two_levers.to_json())
+    assert Prescription.from_json(record, TWO).to_json() == record
+
+
+def test_a_panel_s_declared_cluster_is_part_of_the_record() -> None:
+    """The declared cluster groups the channel's error and is not in the data's digest: a replay
+    on the same data without it is refused naming it, where it once read as a numerical
+    difference in ``certificate.channel_error``."""
+    logs = _quickstart_logs(regions=60, weeks=8)
+    logs["zone"] = np.asarray([f"z{region // 5}" for region in logs["region"]], dtype=object)
+    declared = Panel.from_frame(logs, unit="region", time="week", cluster="zone", seed=0)
+    plain = Panel.from_frame(logs, unit="region", time="week", seed=0)
+    assert declared.provenance.data_sha256 == plain.provenance.data_sha256
+    made = prescribe(
+        declared,
+        adjustment=CausalGraph.from_edges(QUICKSTART_EDGES),
+        levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+        target=Target("supply", value=1.0),
+        horizon=4,
+        dt=DT,
+        tolerance=0.5,
+        integrator="euler",
+    )
+    record = _text(made.to_json())
+    assert record["inputs"]["panel_cluster"] == "zone"
+    assert Prescription.from_json(record, declared).to_json() == record
+    with pytest.raises(
+        DecisionError, match=r"^inputs\.panel_cluster: .* declared cluster 'zone', and this panel"
+    ):
+        Prescription.from_json(record, plain)
+
+
+def _tampered(record: dict[str, Any], path: tuple[Any, ...], value: Any) -> dict[str, Any]:
+    changed = copy.deepcopy(record)
+    holder: Any = changed["inputs"]
+    for step in path[:-1]:
+        holder = holder[step]
+    if value is _APPEND:
+        cycle = {"parent": "supply", "child": "demand", "source": "asserted", "test": None}
+        holder[path[-1]].append({**cycle, "p_value": None})
+    else:
+        holder[path[-1]] = value
+    return changed
+
+
+_APPEND = object()
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "named"),
+    [
+        (("horizon",), "four", "inputs.horizon"),
+        (("folds",), 2.5, "inputs.folds"),
+        (("adjustment", "edges"), _APPEND, "inputs.adjustment"),
+        (("adjustment", "edges", 0, "source"), "guessed", "inputs.adjustment"),
+        (("levers", 0, "lo"), 5.0, "inputs.levers"),
+        (("target", "weight"), -1.0, "inputs.target"),
+        (("gamma",), 0.5, "inputs.gamma"),
+        (("radius",), "wide", "inputs.radius"),
+        (("tube_actions",), "vertex", "inputs.tube_actions"),
+        (("levers", 0, "name"), "bonus", "inputs"),
+    ],
+    ids=[
+        "horizon text",
+        "folds fraction",
+        "a cycle",
+        "an edge's source",
+        "a lever's box",
+        "a negative weight",
+        "gamma below 1",
+        "a radius",
+        "a tube form",
+        "a column not in the panel",
+    ],
+)
+def test_a_record_prescribe_refuses_is_refused_naming_its_input(
+    quickstart: Prescription, path: tuple[Any, ...], value: Any, named: str
+) -> None:
+    """Each refusal is a ``DecisionError`` that opens with the ``inputs`` key it reads, or with
+    ``inputs`` where the refusal names none; up to 0.24.0 four of them were a bare ``ValueError``,
+    a ``CyclicGraphError`` or prescribe's message with no path, and a negative weight replayed to
+    a schedule the record does not hold."""
+    record = _tampered(_text(quickstart.to_json()), path, value)
+    with pytest.raises(DecisionError, match=rf"^{named.replace('.', chr(92) + '.')}: "):
+        Prescription.from_json(record, QUICKSTART)
 
 
 # ---- the graph's edges ----

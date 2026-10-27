@@ -81,6 +81,7 @@ certificate, which is why this module exists.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from collections.abc import Callable, Iterator, Mapping
@@ -388,7 +389,10 @@ class PlanEvaluation:
         ``settings`` holds how it was asked for: ``entry``, :func:`evaluate_plan` or
         :meth:`chc.decision.Prescription.evaluate`, and their keywords, ``smoothing`` None where
         the certificate chose it, ``logger`` None where it was fitted to the logs and otherwise
-        the policy given. ``logger_check`` is the logger check's verdict, a nan partial
+        the policy given; and what it was read from: ``panel_sha256``, the evaluated panel's
+        ``data_sha256``, from :meth:`~chc.decision.Prescription.evaluate`, and ``logs_sha256``, a
+        sha256 over the logs' ``"x"`` and ``"u"`` as float64, their names and shapes, from
+        :func:`evaluate_plan`. ``logger_check`` is the logger check's verdict, a nan partial
         correlation or an infinite detectable one None. There is no reader: a record is for
         audit, and the evaluation is made again from the panel and the plan.
         """
@@ -562,7 +566,7 @@ def _logger_check_json(check: LoggerCheck) -> dict[str, Any]:
 
 def _json_safe(value: Any) -> Any:
     """``value`` with every number read as a plain one and every one that is not finite as None."""
-    if isinstance(value, np.generic):
+    if isinstance(value, np.generic) or (isinstance(value, np.ndarray) and value.ndim == 0):
         value = value.item()
     if isinstance(value, float):
         return value if math.isfinite(value) else None
@@ -571,6 +575,17 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, list | tuple):
         return [_json_safe(item) for item in value]
     return value
+
+
+def _logs_sha256(logs: Mapping[str, ArrayLike]) -> str:
+    """A sha256 over what :func:`evaluate_plan` reads of ``logs``: ``"x"`` and ``"u"``, each by its
+    name, its shape and its bytes as float64."""
+    digest = hashlib.sha256()
+    for name in ("x", "u"):
+        array = np.ascontiguousarray(np.asarray(logs[name], dtype=np.float64))
+        digest.update(f"{name}{array.shape}".encode())
+        digest.update(array.tobytes())
+    return digest.hexdigest()
 
 
 def _policy_json(policy: AffinePolicy | None) -> dict[str, Any] | None:
@@ -1843,10 +1858,11 @@ def evaluate_plan(
         _settings={
             "entry": "evaluate_plan",
             "method": method,
-            "smoothing": smoothing,
-            "model_error": model_error,
-            "min_effective": min_effective,
+            "smoothing": None if smoothing is None else float(smoothing),
+            "model_error": float(model_error),
+            "min_effective": float(min_effective),
             "logger": _policy_json(logger),
+            "logs_sha256": _logs_sha256(logs),
         },
     )
 

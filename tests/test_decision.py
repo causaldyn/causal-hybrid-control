@@ -2010,6 +2010,24 @@ def test_the_run_records_the_installed_versions_of_what_computed_it(
     assert default_run.to_json()["versions"] == expected
 
 
+def test_a_tube_read_against_no_tolerance_leaves_no_trustworthy_prefix() -> None:
+    """``tolerance=inf`` evaluates the tube and holds it at every step, which bounds nothing: the
+    tube's axis contributes zero to the prefix, as an unevaluated tube does, and the report says
+    why. Up to 0.24.0 the prefix read the whole horizon, 6 of 6, where a tolerance of 0.5 reads
+    fewer."""
+    endless = _small(tolerance=math.inf)
+    bounded = _small()
+    assert endless.certificate.certificate_status == "no_tolerance"
+    assert endless.certificate.certified_horizon == 6
+    assert endless.certificate.trustworthy_steps == 0
+    assert bounded.certificate.trustworthy_steps > 0
+    assert endless.to_json()["certificate"]["trustworthy_steps"] == 0
+    (line,) = [line for line in endless.report().splitlines() if "Trustworthy prefix" in line]
+    assert line.endswith("The tube was read against an infinite tolerance, which bounds nothing.")
+    (line,) = [line for line in bounded.report().splitlines() if "Trustworthy prefix" in line]
+    assert line.endswith("steps.**")
+
+
 def test_the_run_goes_to_json_as_plain_values(default_run: RunProvenance) -> None:
     """Under ``allow_nan=False``, as ADR 0055 holds the record to, inside the prescription's and on
     its own: the versions an object and an infinite tolerance null, as any number that is not
@@ -2350,11 +2368,16 @@ def test_held_constraints_move_the_schedule_rather_than_fail_its_audit(
     assert getattr(plan, "constraints_held", None) is True
 
 
-def test_a_replanning_loop_compiles_nothing_after_its_first_held_prescription() -> None:
+@pytest.mark.parametrize("tube_actions", ["box", "plan"])
+def test_a_replanning_loop_compiles_nothing_after_its_first_held_prescription(
+    tube_actions: str,
+) -> None:
     """A receding-horizon loop calls ``prescribe`` from every state it reaches, and a held bound
     may move between calls, as a comfort band's edge does. The bound reaches the held solve as an
     array, so the calls after the first compile nothing; closed over, it compiled the barrier's
-    programs afresh at every call, and a week of half-hour calls held gigabytes of them."""
+    programs afresh at every call, and a week of half-hour calls held gigabytes of them. The
+    tube's field part at the plan's actions, which either form now reads, compiled its rollout at
+    every call up to 0.24.0."""
     panel = _panel()
     graph = CausalGraph.from_edges(EDGES)
 
@@ -2370,6 +2393,7 @@ def test_a_replanning_loop_compiles_nothing_after_its_first_held_prescription() 
             dt=DT,
             tolerance=0.5,
             integrator="rk4",
+            tube_actions=tube_actions,  # type: ignore[arg-type]
         )
 
     jax.clear_caches()
@@ -2823,6 +2847,12 @@ def test_a_step_or_a_tolerance_that_is_no_number_is_refused_before_the_fit(
         (lambda: Target("supply", value=[1.0, 1.0, math.inf]), r"has value inf at entry 2"),
         (lambda: Target("supply", value=1.0, weight=math.nan), r"'supply' has weight=nan"),
         (lambda: Target("supply", value=1.0, weight=math.inf), r"'supply' has weight=inf"),
+        (lambda: Target("supply", value=1.0, weight=-1.0), r"'supply' has weight=-1.0; a weight"),
+        (lambda: Target("supply", value=1.0, weight=0.0), r"weight=0.0; .* zero steers nothing"),
+        (
+            lambda: Lever("incentive", lo=-2.0, hi=2.0, unit_cost=-0.05),
+            r"lever 'incentive' has unit_cost=-0.05; a price is .* never negative",
+        ),
         (lambda: Constraint("wait", hi=math.nan), r"constraint on 'wait' has hi=nan"),
         (lambda: Constraint("wait", lo=math.nan, hi=0.5), r"constraint on 'wait' has lo=nan"),
     ],
@@ -2830,7 +2860,9 @@ def test_a_step_or_a_tolerance_that_is_no_number_is_refused_before_the_fit(
 def test_a_lever_a_target_or_a_constraint_of_no_number_is_refused(build, match: str) -> None:
     """Each passed its checks or had none. A nan bound clipped every action to nan; a nan price,
     level or weight made the task cost nan, and the solve stopped where it started, a plan that
-    never moved and read certified at every level; a lone nan constraint bound went uncompared."""
+    never moved and read certified at every level; a lone nan constraint bound went uncompared.
+    A negative weight steered away from the target, to the box's edge, with the solver
+    converged; a negative price has no least cost on an open side."""
     with pytest.raises(DecisionError, match=match):
         build()
 

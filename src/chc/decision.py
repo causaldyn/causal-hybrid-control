@@ -49,7 +49,7 @@ import numpy as np
 from jax import Array
 from numpy.typing import ArrayLike, NDArray
 from scipy.special import owens_t
-from scipy.stats import chi2
+from scipy.stats import chi2, norm
 from scipy.stats import t as student_t
 
 from chc import _units
@@ -126,11 +126,15 @@ from chc.plan import (
 from chc.residual import ControlAffineResidual, ZeroResidual, control_affine_features
 from chc.uncertainty import (
     _TUBE_COVERAGE,
+    _chi_square_mixture_survival,
     _linear_tube,
     _noise_covariance,
+    _noise_covariances,
     _noise_tube,
     _NoiseRead,
     _read_covariances,
+    _step_parts,
+    _studentised,
 )
 
 SCHEMA_VERSION = 2
@@ -266,9 +270,11 @@ class Lever:
                 )
         if self.lo > self.hi:
             raise DecisionError(f"lever {self.name!r} has lo={self.lo} above hi={self.hi}")
-        if not math.isfinite(self.unit_cost):
+        if not 0.0 <= self.unit_cost < math.inf:
             raise DecisionError(
-                f"lever {self.name!r} has unit_cost={self.unit_cost}; a price is a finite number"
+                f"lever {self.name!r} has unit_cost={self.unit_cost}; a price is a finite number, "
+                "never negative: a negative one pays the plan to move the lever, which on an open "
+                "side has no least cost"
             )
         if self.cap_per_step is not None and not self.cap_per_step >= 0.0:
             raise DecisionError(
@@ -302,9 +308,10 @@ class Target:
                 f"target {self.name!r} has value {values[bad[0]]} at entry {bad[0]}; a level to "
                 "steer to is a finite number"
             )
-        if not math.isfinite(self.weight):
+        if not 0.0 < self.weight < math.inf:
             raise DecisionError(
-                f"target {self.name!r} has weight={self.weight}; a weight is a finite number"
+                f"target {self.name!r} has weight={self.weight}; a weight is a finite positive "
+                "number: zero steers nothing, and a negative one steers away from the target"
             )
 
 
@@ -693,13 +700,14 @@ class DecisionCertificate:
     # variance alone, and where no tube was evaluated.
     tube_state_noise: tuple[tuple[float, ...], ...] | None = None
     # Under ``exact``, the standard deviation over logs of the share of the plant's paths the tube
-    # holds at each step, steps 0 to the horizon. The tube holds 0.95 on average over logs, and
-    # each log's fitted field is off by its own error, which all of its paths share: so one log's
-    # share spreads about 0.95, more as the field's part grows against the noise's
-    # (``_per_log_spread``), on one state exactly, on several along the noise's widest direction.
-    # At a spread of 0.082, where the field's part equals the noise's, 0.136 of logs hold less
-    # than 0.90. A report, not a guarantee per log; it moves no radius. None under ``bound`` and
-    # where no tube was evaluated.
+    # holds at each step, steps 0 to the horizon. The tube holds 0.95 or more on average over
+    # logs, and each log's fitted path is off by its own error, the field's at the plan's actions
+    # and the noise's mean, which all of its paths share, and reads its radius with its own error:
+    # so one log's share spreads about its mean (``_per_log_spreads``), on one state along the
+    # noise's widest direction. Where the field's error equals the noise's and the radius is read
+    # exactly, the spread is 0.082, and 0.136 of logs hold less than 0.90. A report, not a
+    # guarantee per log; it moves no radius. None under ``bound``, on a fit that keeps no field
+    # terms, and where no tube was evaluated.
     # *Experimental.*
     tube_per_log_spread: tuple[float, ...] | None = None
     # Which actions the tube's field part holds for (:data:`TubeActions`), as asked of
@@ -814,14 +822,20 @@ class DecisionCertificate:
         tell apart predicts differently. The two ``None`` values mean different things.
         ``certified_horizon is None`` means the tube was not evaluated, so nothing bounds the
         trajectory's error and it contributes zero rather than infinity --- a barrier cleared by an
-        unbounded trajectory proves nothing. ``barrier_certified_steps is None`` means no state was
-        bounded, so there is no safety prefix to respect and the tube alone decides.
+        unbounded trajectory proves nothing. A tube read against an infinite ``tolerance``
+        (``certificate_status`` ``no_tolerance``) contributes zero as well: it holds every finite
+        radius at every step, and bounds nothing. ``barrier_certified_steps is None`` means no
+        state was bounded, so there is no safety prefix to respect and the tube alone decides.
 
         Where the channel's residual persists within units (``noise_persistence_p`` at most 0.05)
         the noise the tube reads may not be the plant's, and a ``tube`` warning says so; the
         prefix still counts the tube's steps (ADR 0105).
         """
-        if self.identification == "not_identified" or self.certified_horizon is None:
+        if (
+            self.identification == "not_identified"
+            or self.certified_horizon is None
+            or self.certificate_status == "no_tolerance"
+        ):
             return 0
         steps = self.certified_horizon
         if self.barrier_certified_steps is not None:
@@ -1393,14 +1407,15 @@ class Prescription:
             _settings={
                 "entry": "Prescription.evaluate",
                 "method": "pdis",
-                "smoothing": smoothing,
-                "model_error": model_error,
-                "min_effective": min_effective,
+                "smoothing": None if smoothing is None else float(smoothing),
+                "model_error": float(model_error),
+                "min_effective": float(min_effective),
                 "logger": _policy_json(logger),
                 "time_zero": time_zero,
-                "n_resamples": n_resamples,
-                "seed": seed,
-                "max_refused": max_refused,
+                "n_resamples": int(n_resamples),
+                "seed": int(seed),
+                "max_refused": float(max_refused),
+                "panel_sha256": panel.provenance.data_sha256,
             },
         )
 
@@ -1570,7 +1585,12 @@ class Prescription:
             + ("" if certificate.regret_status is None else f", {certificate.regret_status}"),
             *self._cost_bias_lines(),
             "",
-            f"**Trustworthy prefix: {certificate.trustworthy_steps} steps.**",
+            f"**Trustworthy prefix: {certificate.trustworthy_steps} steps.**"
+            + (
+                " The tube was read against an infinite tolerance, which bounds nothing."
+                if certificate.certificate_status == "no_tolerance"
+                else ""
+            ),
             "",
             "## Provenance",
             "",
@@ -1605,11 +1625,11 @@ class Prescription:
           correlation or an infinite detectable one None; None where it was not run;
         * ``dither_check``, the dither check's (:class:`DitherCheck`), None where none was asked;
         * ``inputs``, every argument of :func:`prescribe` that moves the result, the panel's
-          ``data_sha256`` as handed in, and the graph with each edge's provenance
-          (:class:`~chc.graph.EdgeProvenance`); a known model is recorded by a digest of its
-          arrays and structure alone. In ``inputs`` an infinite number is the text ``"inf"`` or
-          ``"-inf"``, so that it stays apart from None, which there means not given. None on a
-          prescription :func:`prescribe` did not build.
+          ``data_sha256`` and its declared ``cluster`` (``panel_cluster``) as handed in, and the
+          graph with each edge's provenance (:class:`~chc.graph.EdgeProvenance`); a known model
+          is recorded by a digest of its arrays and structure alone. In ``inputs`` an infinite
+          number is the text ``"inf"`` or ``"-inf"``, so that it stays apart from None, which
+          there means not given. None on a prescription :func:`prescribe` did not build.
         """
         certificate = self.certificate
         record = {
@@ -1737,11 +1757,12 @@ class Prescription:
         """The decision ``record`` holds, made again: :func:`prescribe` on ``panel`` with the
         record's ``inputs``, checked to give the record back. *Experimental.*
 
-        ``panel`` is the panel the decision was made from: its ``data_sha256`` must be the one the
-        record names. ``model`` is the known model the decision was made with, where it was made
-        with one: the record holds its digest alone, and refuses a model of another. The replay
-        reproduces the record, every number to the bit, on the versions and the precision that
-        wrote it (ADR 0145).
+        ``panel`` is the panel the decision was made from: its ``data_sha256`` and its declared
+        ``cluster``, which moves the channel's error and is not part of the digest, must be the
+        ones the record names. ``model`` is the known model the decision was made with, where it
+        was made with one: the record holds its digest alone, and refuses a model of another. The
+        replay reproduces the record, every number to the bit, on the versions and the precision
+        that wrote it (ADR 0145).
 
         The rule: a record replays on the release of the library that wrote it, under the same
         ``jax_enable_x64``, with ``schema_version`` 2 and ``inputs``, which records of 0.23.0 and
@@ -1753,8 +1774,12 @@ class Prescription:
             DecisionError: naming the field, on a record of another ``schema_version``, without
                 ``inputs`` or a field the replay needs, written by another release of the library
                 (``run.versions``) or under another precision (``run.x64``), on a panel of other
-                data (``inputs.panel_sha256``), without the known model the record names, or with
-                one of another digest or where the record names none (``inputs.known``); and where
+                data (``inputs.panel_sha256``) or of another declared cluster
+                (``inputs.panel_cluster``), without the known model the record names, or with
+                one of another digest or where the record names none (``inputs.known``); on an
+                input that does not read as :func:`prescribe`'s argument, or that it refuses,
+                naming ``inputs.<key>`` where the refusal names the argument and ``inputs`` where
+                it does not, with the refusal's own words; and where
                 the replay does not give the record back, naming the first field that differs and
                 the versions that differ from the record's.
         """
@@ -1789,7 +1814,13 @@ class Prescription:
                 f"process runs with {_x64_enabled()}"
             )
         arguments = _replay_arguments(inputs, panel, model)
-        replayed = prescribe(panel, **arguments)
+        try:
+            replayed = prescribe(panel, **arguments)
+        except (KeyError, TypeError, ValueError) as refusal:  # the record's inputs, refused
+            message = _refusal(refusal)
+            raise DecisionError(
+                f"{_refused_input(message)}: prescribe refuses the record's inputs: {message}"
+            ) from refusal
         difference = _first_difference(replayed.to_json(), dict(record))
         if difference is not None:
             moved = sorted(
@@ -1999,8 +2030,8 @@ class Prescription:
         )
         return [
             f"- the tube's field part is read {actions}one log's share of the plant's paths in the "
-            f"tube at step {step} spreads about 0.95 over logs by {spreads[step]:.3g}: a report, "
-            "not a guarantee per log"
+            f"tube at step {step} spreads over logs by {spreads[step]:.3g} about its mean, 0.95 or "
+            "more: a report, not a guarantee per log"
         ]
 
     def _dither_lines(self) -> list[str]:
@@ -2434,6 +2465,20 @@ def prescribe(
     recorded parents: :attr:`Prescription.logger_check` (*experimental*). It reports, at ``INFO``;
     it changes nothing else.
     """
+    # Each collection read once, here: the record, the checks and the fit read it again, and an
+    # iterator handed in would have been spent by the first of them.
+    levers, constraints, budgets, drivers = (
+        tuple(levers),
+        tuple(constraints),
+        tuple(budgets),
+        tuple(drivers),
+    )
+    if not isinstance(adjustment, CausalGraph):
+        adjustment = tuple(adjustment)
+    if neighbours is not None and not isinstance(neighbours, str):
+        neighbours = {unit: tuple(others) for unit, others in neighbours.items()}
+    if dither is not None and not isinstance(dither, str):
+        dither = tuple(dither)
     if not levers:
         raise DecisionError(
             "prescribe needs at least one lever; there is nothing to decide otherwise"
@@ -3252,6 +3297,46 @@ def prescribe(
             "first_loaded_step": first_loaded,
         },
     )
+    # the offset a log's paths share is the field's error at the plan's own actions whichever
+    # actions the tube was read for; a fit that keeps no field terms reads none, and no spread
+    per_log_spread = (
+        None
+        if plan.certified_horizon is None
+        or slopes is None
+        or field_scale is None
+        or (model_error > 0.0 and fit._field_terms is None)
+        else _per_log_spreads(
+            *(
+                (np.zeros(horizon + 1), np.zeros(horizon + 1))
+                if model_error == 0.0
+                else _shared_and_carried(
+                    _plan_field(fit, model, plan.trajectory[0], plan.actions, dt),
+                    field_scale,
+                    None
+                    if at_plan
+                    else _box_field(
+                        fit,
+                        reach,
+                        plan,
+                        slopes(np.asarray(plan.actions, dtype=np.float64)),
+                        driver_reads,
+                        box,
+                        dt,
+                        integrator,
+                        stages,
+                    ),
+                )
+            ),
+            np.asarray(plan.uncertainty_tube, dtype=np.float64),
+            slopes(np.asarray(plan.actions, dtype=np.float64)),
+            step_noise,
+            step_carry,
+            dt,
+            step_read,
+            _degrees_of_freedom(int(np.asarray(fit.defect).shape[0]), fit.clusters, fit.periods),
+            integrator,
+        )
+    )
     certificate = DecisionCertificate(
         identification=identification,
         adjustment=resolved,
@@ -3291,37 +3376,7 @@ def prescribe(
             step_read,
             integrator=integrator,
         ),
-        tube_per_log_spread=None
-        if plan.certified_horizon is None or slopes is None or field_scale is None
-        else _per_log_spreads(
-            field_scale
-            * (
-                _plan_field(fit, model, plan.trajectory[0], plan.actions, dt)
-                if at_plan
-                else np.zeros(horizon + 1)
-                if model_error == 0.0
-                else _box_field(
-                    fit,
-                    reach,
-                    plan,
-                    slopes(np.asarray(plan.actions, dtype=np.float64)),
-                    driver_reads,
-                    box,
-                    dt,
-                    integrator,
-                    stages,
-                )
-            ),
-            _read_covariances(
-                slopes(np.asarray(plan.actions, dtype=np.float64)),
-                step_noise,
-                step_carry,
-                dt,
-                horizon,
-                step_read,
-                integrator=integrator,
-            ),
-        ),
+        tube_per_log_spread=per_log_spread,
         tube_actions=None if plan.certified_horizon is None else "plan" if at_plan else "box",
         error_clustered_by=clustered_by,
         error_clusters=groups if clustered_by is not None else None,
@@ -4696,8 +4751,8 @@ def _sensitivity(fit: CausalDynamicsFit, required: bool) -> ChannelSensitivity |
         if required:
             raise DecisionError(
                 f"radius='absolute', but the fit gives no absolute radius on its channel: "
-                f"{refusal}. Fit with integrator='euler', or pass radius='relative' for a margin "
-                "on a share of the fitted channel"
+                f"{refusal}. Pass radius='relative' for a margin on a share of the fitted "
+                "channel"
             ) from refusal
         _log.info(
             "the barrier's radius is relative, a share of the fitted channel: the fit gives no "
@@ -4816,49 +4871,167 @@ def _state_noise(
     )
 
 
-def _per_log_spread(kappa: float) -> float:
-    """The standard deviation over logs of the share of the plant's paths a 0.95 radius holds, on
-    one state whose noise has standard deviation ``sigma`` and whose fitted field is off by an
-    error of standard deviation ``kappa sigma`` across logs, at the radius ``z sqrt(1 + kappa^2)
-    sigma`` that holds the two together, ``z`` the normal's two-sided 0.95 quantile.
+def _per_log_spread(kappa: float, radius: float | None = None, read: float = 0.0) -> float:
+    """The standard deviation over logs of the share of the plant's paths a radius holds, on one
+    state whose noise has standard deviation ``sigma`` and on which each log's fitted path is off
+    by an offset of standard deviation ``kappa sigma`` across logs, which all of that log's paths
+    share: the field's error, and the noise's mean the fitted drift absorbed.
 
-    One log's field is off by ``kappa sigma W``, ``W`` standard normal, and every path of that log
-    shares it, so its share is ``C(W) = Phi(z sqrt(1 + kappa^2) - kappa W) - Phi(-z sqrt(1 +
-    kappa^2) - kappa W)``: 0.95 on average over logs, spread by
+    ``radius`` is the radius over ``sigma``, ``rho``; by default ``z sqrt(1 + kappa^2)``, at which
+    it holds the two together with probability 0.95, ``z`` the normal's two-sided 0.95 quantile.
+    One log's offset is ``kappa sigma W``, ``W`` standard normal, so its share is ``C(W) =
+    Phi(rho - kappa W) - Phi(-rho - kappa W)``, ``2 Phi(h) - 1`` on average over logs, ``h = rho /
+    sqrt(1 + kappa^2)``, spread by
 
-        ``Var C(W) = 4 (2 T(z, 1) - T(z, a) - T(z, 1 / a))``,  ``a = sqrt(1 + 2 kappa^2)``,
+        ``Var C(W) = 4 (2 T(h, 1) - T(h, a) - T(h, 1 / a))``,  ``a = sqrt(1 + 2 kappa^2)``,
 
     ``T`` Owen's (1956): ``E C(W)^2`` is the chance that two paths of one log both lie within the
-    radius, a bivariate normal's at correlation ``kappa^2 / (1 + kappa^2)``, and ``8 T(z, 1) = 1 -
-    0.95^2``. It is 0 at ``kappa = 0``; 0.0324, 0.0822 and 0.1394 at ``kappa`` 0.5, 1 and 2; and
-    ``sqrt(0.95 * 0.05) = 0.218`` as ``kappa`` grows, where a log's paths all lie within the radius
-    or all without (``validation/tube_per_log_content.mac``, ``tube_per_log_content.gp``)."""
-    if kappa == 0.0:
+    radius, a bivariate normal's at correlation ``kappa^2 / (1 + kappa^2)``, and ``2 T(h, 1) =
+    Phi(h) Phi(-h)``. At the default radius ``h = z``: 0 at ``kappa = 0``; 0.0324, 0.0822 and
+    0.1394 at ``kappa`` 0.5, 1 and 2; and ``sqrt(0.95 * 0.05) = 0.218`` as ``kappa`` grows, where a
+    log's paths all lie within the radius or all without (``validation/tube_per_log_content.mac``,
+    ``tube_per_log_content.gp``).
+
+    ``read`` is the standard deviation over logs of ``rho`` itself: each log reads the noise and
+    the field's error the radius is made of, each with its own sampling error. With ``rho`` read
+    as ``rho + read D``, ``D`` standard normal independent of ``W``, the variance is, by the law of
+    total variance, ``E_D Var(C | D) + Var_D E(C | D)``: the closed form's mean over ``D`` and
+    the spread of ``2 Phi(h_D) - 1``, both over ``D`` by Gauss-Hermite quadrature at
+    :data:`_READ_NODES` nodes (``validation/tube_per_log_read.mac``)."""
+    if kappa == 0.0 and read == 0.0:
         return 0.0
     if math.isinf(kappa):
         return math.sqrt(_TUBE_COVERAGE * (1.0 - _TUBE_COVERAGE))
-    level = math.sqrt(float(chi2.ppf(_TUBE_COVERAGE, 1)))
+    z = math.sqrt(float(chi2.ppf(_TUBE_COVERAGE, 1)))
+    rho = z * math.sqrt(1.0 + kappa * kappa) if radius is None else radius
     a = math.sqrt(1.0 + 2.0 * kappa * kappa)
-    variance = 4.0 * (
-        2.0 * float(owens_t(level, 1.0)) - float(owens_t(level, a)) - float(owens_t(level, 1.0 / a))
-    )
+    if read == 0.0:
+        level = rho / math.sqrt(1.0 + kappa * kappa)
+        variance = 4.0 * (
+            2.0 * float(owens_t(level, 1.0))
+            - float(owens_t(level, a))
+            - float(owens_t(level, 1.0 / a))
+        )
+        return math.sqrt(max(variance, 0.0))
+    nodes, weights = np.polynomial.hermite_e.hermegauss(_READ_NODES)
+    weights = weights / math.sqrt(2.0 * math.pi)
+    levels = np.maximum(rho + read * nodes, 0.0) / math.sqrt(1.0 + kappa * kappa)
+    within = 4.0 * (2.0 * owens_t(levels, 1.0) - owens_t(levels, a) - owens_t(levels, 1.0 / a))
+    means = 2.0 * norm.cdf(levels) - 1.0
+    between = means - float(weights @ means)
+    variance = float(weights @ within) + float(weights @ (between * between))
     return math.sqrt(max(variance, 0.0))
 
 
+_READ_NODES = 40  # Gauss-Hermite nodes over a log's read of its radius (_per_log_spread)
+
+
 def _per_log_spreads(
-    field: NDArray[np.float64], covariances: Sequence[NDArray[np.float64]]
+    field: NDArray[np.float64],
+    tube_field: NDArray[np.float64],
+    tube: NDArray[np.float64],
+    slopes: NDArray[np.float64],
+    noise: NDArray[np.float64],
+    persistence: NDArray[np.float64],
+    dt: float,
+    read: _NoiseRead | None,
+    degrees: float,
+    integrator: Integrator,
 ) -> tuple[float, ...]:
-    """:attr:`DecisionCertificate.tube_per_log_spread`: :func:`_per_log_spread` at each step, its
-    ``kappa`` the standard deviation the tube reads the field's part at, ``field`` ``(H + 1,)``,
-    over the root of the largest variance of the noise's part, ``covariances`` its ``P_k``, along
-    whose direction the tube places the field's. 0 at a step with no field part, where each log's
-    share is the noise's alone, 0.95."""
-    spreads = []
-    for scale, covariance in zip(field, covariances, strict=True):
-        noise = math.sqrt(max(float(np.linalg.eigvalsh(np.atleast_2d(covariance))[-1]), 0.0))
-        kappa = 0.0 if not scale > 0.0 else math.inf if noise == 0.0 else float(scale) / noise
-        spreads.append(_per_log_spread(kappa))
+    """:attr:`DecisionCertificate.tube_per_log_spread`: :func:`_per_log_spread` at each step, on
+    one state along the widest direction ``v`` of the noise's part of the gap, ``P_k`` read
+    plug-in (:func:`chc.uncertainty._noise_covariances`), ``sigma^2 = v' P_k v``.
+
+    The offset every path of a log shares is the field's error at the plan's own actions,
+    ``field`` (:func:`_plan_field`, ``(H + 1,)``), whatever actions the tube was read for, placed
+    along ``v`` as the tube places it, and the noise's mean the fitted drift absorbed, of
+    covariance ``O_k = D_k V D_k'`` (``read.level``, :func:`chc.uncertainty._read_covariances`):
+    ``kappa^2 = (field_k^2 + v' O_k v) / sigma^2``. The radius, ``tube`` (``(H + 1,)``), holds a
+    share ``m_k`` of the paths on average over logs, a Gaussian of covariance ``P_k + O_k +
+    field_k^2 v v'`` within it (:func:`chc.uncertainty._chi_square_mixture_survival`): 0.95 where
+    the tube reads the field's error as it is, more where it reads a bound, as the box's form
+    does. On one state that is the radius ``rho = h sqrt(1 + kappa^2)`` over ``sigma``, ``2 Phi(h)
+    - 1 = m_k``, which :func:`_per_log_spread` is read at. The radius's own read over logs is
+    carried at the share of ``rho`` that the radius's parts move it by to first order: ``z^2 /
+    (2 r^2) sqrt(N^2 q + t^4 2 / degrees)``, ``r^2 = (N + v' O_k v + t^2) z^2`` the tube's own
+    radius on one state, ``N = c^2 sigma^2`` the noise part at its studentised factor ``c``
+    (:func:`chc.uncertainty._studentised`), ``q`` the jackknife variance of ``log sigma^2`` over
+    ``read``'s replicates, and ``t`` the field part the tube carried, ``tube_field``, whose
+    variance is read on ``degrees`` degrees of freedom. A step whose share rounds to 1 reads 0;
+    one with no noise reads ``sqrt(m (1 - m))``, each log's paths all in or all out.
+
+    Against the spread observed over 20 logs on six cells of two plants, Euler and RK4, either
+    form, it read 0.7 to 1.4 of it wherever the mean share is below 0.98. Past 0.99, under the
+    box's form, it overstates, the plug-in of one log's radius over its own noise read moving a
+    share that steep: 0.0074 for 0.0013 at the last step of one cell. Up to 0.24.0 ``kappa`` was
+    the tube's field part over ``sigma`` and the radius was taken to hold 0.95 exactly: under the
+    box's form, a bound rather than a standard deviation, it read 0.125 there, and it left out the
+    radius's own read, which spreads the share where the noise dominates: 0.0005 for 0.0061 at
+    the quickstart's third step (ADR 0138)."""
+    horizon = field.shape[0] - 1
+    covariances = _noise_covariances(slopes, noise, persistence, dt, horizon, integrator=integrator)
+    rates = slopes if slopes.ndim == 3 else np.broadcast_to(slopes, (horizon, *slopes.shape))
+    eye = np.eye(noise.shape[0])
+    offset, offsets = np.zeros_like(noise), [np.zeros_like(noise)]
+    for slope in rates[:horizon]:
+        offset = _step_parts(dt * np.asarray(slope), eye, integrator)[0] @ offset + eye
+        offsets.append(offset @ read.level @ offset.T if read is not None else np.zeros_like(noise))
+    replicates = (
+        None
+        if read is None
+        else [
+            _noise_covariances(slopes, np.asarray(cov), carry, dt, horizon, integrator=integrator)
+            for cov, carry in zip(read.covariances, read.carries, strict=True)
+        ]
+    )
+    spreads = [0.0]
+    for step in range(1, horizon + 1):
+        values, vectors = np.linalg.eigh(np.atleast_2d(covariances[step]))
+        widest = vectors[:, -1]
+        variance = max(float(values[-1]), 0.0)
+        shifted = max(float(widest @ offsets[step] @ widest), 0.0)
+        shared = float(field[step]) ** 2 + shifted
+        gap = covariances[step] + offsets[step] + float(field[step]) ** 2 * np.outer(widest, widest)
+        spread = np.clip(np.linalg.eigvalsh(gap), 0.0, None)
+        if not spread[-1] > 0.0:
+            spreads.append(0.0)
+            continue
+        missed = _chi_square_mixture_survival(
+            float(tube[step]) ** 2 / float(spread[-1]), spread / spread[-1]
+        )
+        if variance == 0.0:
+            spreads.append(math.sqrt(max(missed * (1.0 - missed), 0.0)))
+            continue
+        level = float(norm.isf(missed / 2.0))
+        if not math.isfinite(level):
+            spreads.append(0.0)
+            continue
+        logs, scale = 0.0, 1.0
+        if replicates is not None:
+            sizes = np.array([float(widest @ replicate[step] @ widest) for replicate in replicates])
+            scale = float(_studentised(sizes[:, None])[0])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                centred = np.log(sizes) - np.mean(np.log(sizes))
+                logs = (sizes.size - 1) / sizes.size * float(np.sum(centred * centred))
+            logs = logs if math.isfinite(logs) else 0.0
+        own = scale * scale * variance
+        carried = float(tube_field[step]) ** 2
+        moved = math.sqrt(own * own * logs + carried * carried * 2.0 / degrees) / (
+            2.0 * (own + shifted + carried)
+        )
+        kappa = math.sqrt(shared / variance)
+        rho = level * math.sqrt(1.0 + kappa * kappa)
+        spreads.append(_per_log_spread(kappa, rho, rho * moved))
     return tuple(spreads)
+
+
+def _shared_and_carried(
+    field: NDArray[np.float64], scale: float, box: NDArray[np.float64] | None
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """The field's error at the plan's actions, and the field part the tube carried: the same at
+    the tube's studentised ``scale`` under the plan's form, the box's bound ``box`` at it under
+    the box's."""
+    return field, scale * (field if box is None else box)
 
 
 def _box_field(
@@ -4887,16 +5060,56 @@ def _box_field(
     )
 
 
+class _FieldJacobian(eqx.Module):
+    """The field's gradient in the fit's error ``theta`` at ``(t, x, u)`` (:func:`_plan_field`):
+    a module rather than a closure, so that one fit's rollout traces and compiles once whatever
+    call reads it."""
+
+    projection: Array
+    driven: DrivenDynamics | None
+    degree: int = eqx.field(static=True)
+    channel_degree: int = eqx.field(static=True)
+
+    def __call__(self, t: Array, x: Array, u: Array) -> Array:
+        own = control_affine_features(x, self.degree)
+        if self.driven is not None:
+            own = jnp.concatenate([own, self.driven.drivers(t)])
+        lifted = jnp.outer(u, control_affine_features(x, self.channel_degree)).ravel()
+        eye = jnp.eye(self.projection.shape[0])
+        channel = jnp.kron(eye, lifted[None, :]) - jnp.einsum("sca,c->sa", self.projection, own)
+        return jnp.concatenate([channel, jnp.kron(eye, own[None, :]), eye], axis=1)
+
+
 class _MovedField(eqx.Module):
     """``field`` with the fitted coefficients off by ``theta``, to first order: ``field(t, x, u) +
     jacobian(t, x, u) theta`` (:func:`_plan_field`)."""
 
     field: Dynamics
-    jacobian: Callable[[Array, Array, Array], Array] = eqx.field(static=True)
+    jacobian: _FieldJacobian
     theta: Array
 
     def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
         return self.field(t, x, u) + self.jacobian(jnp.asarray(t), x, u) @ self.theta
+
+
+@eqx.filter_jit
+def _path_sensitivity(
+    inner: Dynamics,
+    jacobian: _FieldJacobian,
+    start: Array,
+    actions: Array,
+    dt: float,
+    euler: bool,
+    zero: Array,
+) -> Array:
+    """The plan's path differentiated in the fit's error ``theta`` at zero (:func:`_plan_field`),
+    compiled once per model's structure: up to 0.24.0 each call compiled its rollout afresh."""
+
+    def path(theta: Array) -> Array:
+        moved = _MovedField(inner, jacobian, theta)
+        return rollout(_EulerStep(moved) if euler else moved, start, actions, dt)
+
+    return jax.jacfwd(path)(zero)
 
 
 def _plan_field(
@@ -4930,26 +5143,18 @@ def _plan_field(
     euler = isinstance(model, _EulerStep)
     inner = model.field if isinstance(model, _EulerStep) else model
     driven = inner if isinstance(inner, DrivenDynamics) else None
-    projection = jnp.asarray(terms.projection)
-    count = projection.shape[0]
-    eye = jnp.eye(count)
-    degree, channel_degree = fit.residual.degree, fit.residual.channel_degree
-
-    def jacobian(t: Array, x: Array, u: Array) -> Array:
-        own = control_affine_features(x, degree)
-        if driven is not None:
-            own = jnp.concatenate([own, driven.drivers(t)])
-        lifted = jnp.outer(u, control_affine_features(x, channel_degree)).ravel()
-        channel = jnp.kron(eye, lifted[None, :]) - jnp.einsum("sca,c->sa", projection, own)
-        return jnp.concatenate([channel, jnp.kron(eye, own[None, :]), eye], axis=1)
-
-    def path(theta: Array) -> Array:
-        moved = _MovedField(inner, jacobian, theta)
-        return rollout(_EulerStep(moved) if euler else moved, start, actions, dt)
-
+    jacobian = _FieldJacobian(
+        jnp.asarray(terms.projection),
+        driven,
+        fit.residual.degree,
+        fit.residual.channel_degree,
+    )
     joints = terms.joints()
     zero = jnp.zeros(joints[0].shape[0], dtype=jnp.result_type(start))
-    sensitivity = np.asarray(jax.jacfwd(path)(zero), dtype=np.float64)
+    sensitivity = np.asarray(
+        _path_sensitivity(inner, jacobian, start, jnp.asarray(actions), dt, euler, zero),
+        dtype=np.float64,
+    )
     variances = np.max(
         [np.einsum("kip,pq,kiq->k", sensitivity, joint, sensitivity) for joint in joints], axis=0
     )
@@ -5673,6 +5878,7 @@ def _inputs_record(
     value = np.asarray(target.value, dtype=np.float64)
     return {
         "panel_sha256": panel.provenance.data_sha256,
+        "panel_cluster": panel.cluster,
         "levers": [
             {
                 "name": lever.name,
@@ -5736,6 +5942,7 @@ def _inputs_record(
 
 _INPUT_KEYS = (
     "panel_sha256",
+    "panel_cluster",
     "levers",
     "target",
     "horizon",
@@ -5778,6 +5985,12 @@ def _replay_arguments(
             f"inputs.panel_sha256: the record was made from data {inputs['panel_sha256']!r}, and "
             f"this panel holds {panel.provenance.data_sha256!r}"
         )
+    # the declared cluster groups the channel's error and is not part of the data's digest
+    if inputs["panel_cluster"] != panel.cluster:
+        raise DecisionError(
+            f"inputs.panel_cluster: the record was made from a panel that declared cluster "
+            f"{inputs['panel_cluster']!r}, and this panel declares {panel.cluster!r}"
+        )
     known = inputs["known"]
     if known is None and model is not None:
         raise DecisionError(
@@ -5794,74 +6007,103 @@ def _replay_arguments(
                 f"inputs.known: the model given reads digest {_model_digest(model)!r}, and the "
                 f"record's was {known!r}"
             )
-    try:
-        adjustment = _read_adjustment(inputs["adjustment"])
-        target = inputs["target"]
-        neighbours = inputs["neighbours"]
-        arguments: dict[str, Any] = {
-            "levers": [
-                Lever(
-                    lever["name"],
-                    lo=_read_setting(lever["lo"]),
-                    hi=_read_setting(lever["hi"]),
-                    unit_cost=_read_setting(lever["unit_cost"]),
-                    cap_per_step=_read_setting(lever["cap_per_step"]),
-                )
-                for lever in inputs["levers"]
-            ],
-            "target": Target(
-                target["name"],
-                value=target["value"]
-                if np.ndim(target["value"]) == 0
-                else np.asarray(target["value"], dtype=np.float64),
-                weight=_read_setting(target["weight"]),
-            ),
-            "horizon": inputs["horizon"],
-            "adjustment": adjustment,
-            "constraints": [
-                Constraint(c["state"], lo=_read_setting(c["lo"]), hi=_read_setting(c["hi"]))
-                for c in inputs["constraints"]
-            ],
-            "hold_constraints": inputs["hold_constraints"],
-            "budgets": [
-                PeriodBudget(
-                    np.asarray(budget["weights"], dtype=np.float64),
-                    amount=_read_setting(budget["amount"]),
-                    period=budget["period"],
-                    start=_read_setting(budget["start"]),
-                )
-                for budget in inputs["budgets"]
-            ],
-            "max_levers": inputs["max_levers"],
-            "known": model,
-            "dt": _read_setting(inputs["dt"]),
-            "gamma": _read_setting(inputs["gamma"]),
-            "radius": inputs["radius"],
-            "tolerance": _read_setting(inputs["tolerance"]),
-            "x0": None if inputs["x0"] is None else np.asarray(inputs["x0"], dtype=np.float64),
-            "folds": inputs["folds"],
-            "seed": inputs["seed"],
-            "integrator": inputs["integrator"],
-            "drivers": [
-                Driver(driver["name"], np.asarray(driver["forecast"], dtype=np.float64))
-                for driver in inputs["drivers"]
-            ],
-            "neighbours": None
+    target, neighbours = inputs["target"], inputs["neighbours"]
+    readers: dict[str, Callable[[], Any]] = {
+        "levers": lambda: [
+            Lever(
+                lever["name"],
+                lo=_read_setting(lever["lo"]),
+                hi=_read_setting(lever["hi"]),
+                unit_cost=_read_setting(lever["unit_cost"]),
+                cap_per_step=_read_setting(lever["cap_per_step"]),
+            )
+            for lever in inputs["levers"]
+        ],
+        "target": lambda: Target(
+            target["name"],
+            value=target["value"]
+            if np.ndim(target["value"]) == 0
+            else np.asarray(target["value"], dtype=np.float64),
+            weight=_read_setting(target["weight"]),
+        ),
+        "horizon": lambda: _whole(inputs["horizon"]),
+        "adjustment": lambda: _read_adjustment(inputs["adjustment"]),
+        "constraints": lambda: [
+            Constraint(c["state"], lo=_read_setting(c["lo"]), hi=_read_setting(c["hi"]))
+            for c in inputs["constraints"]
+        ],
+        "hold_constraints": lambda: inputs["hold_constraints"],
+        "budgets": lambda: [
+            PeriodBudget(
+                np.asarray(budget["weights"], dtype=np.float64),
+                amount=_read_setting(budget["amount"]),
+                period=budget["period"],
+                start=_read_setting(budget["start"]),
+            )
+            for budget in inputs["budgets"]
+        ],
+        "max_levers": lambda: (
+            None if inputs["max_levers"] is None else _whole(inputs["max_levers"])
+        ),
+        "dt": lambda: _read_setting(inputs["dt"]),
+        "gamma": lambda: _read_setting(inputs["gamma"]),
+        "radius": lambda: inputs["radius"],
+        "tolerance": lambda: _read_setting(inputs["tolerance"]),
+        "x0": lambda: None if inputs["x0"] is None else np.asarray(inputs["x0"], dtype=np.float64),
+        "folds": lambda: _whole(inputs["folds"]),
+        "seed": lambda: _whole(inputs["seed"]),
+        "integrator": lambda: inputs["integrator"],
+        "drivers": lambda: [
+            Driver(driver["name"], np.asarray(driver["forecast"], dtype=np.float64))
+            for driver in inputs["drivers"]
+        ],
+        "neighbours": lambda: (
+            None
             if neighbours is None
             else neighbours["column"]
             if "column" in neighbours
-            else _read_neighbours(neighbours["units"], panel, inputs["clusters"]),
-            "clusters": inputs["clusters"],
-            "nuisance_knots": inputs["nuisance_knots"],
-            "tube_actions": inputs["tube_actions"],
-            "dither": inputs["dither"],
-            "planned_cost_bias": inputs["planned_cost_bias"],
-        }
-    except (KeyError, TypeError) as error:  # a record's own shape, read at its boundary
-        raise DecisionError(
-            f"inputs: the record's inputs do not read as prescribe's: {error!r}"
-        ) from error
+            else _read_neighbours(neighbours["units"], panel, inputs["clusters"])
+        ),
+        "clusters": lambda: inputs["clusters"],
+        "nuisance_knots": lambda: inputs["nuisance_knots"],
+        "tube_actions": lambda: inputs["tube_actions"],
+        "dither": lambda: inputs["dither"],
+        "planned_cost_bias": lambda: inputs["planned_cost_bias"],
+    }
+    arguments: dict[str, Any] = {"known": model}
+    for key, read in readers.items():
+        try:
+            arguments[key] = read()
+        except (KeyError, TypeError, ValueError) as error:  # a record's own shape, at its boundary
+            raise DecisionError(
+                f"inputs.{key}: the record's value does not read as prescribe's: {_refusal(error)}"
+            ) from error
     return arguments
+
+
+def _whole(value: Any) -> int:
+    """A count or a seed as the record holds it: a JSON integer, not a number of another kind."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{value!r} is not a whole number")
+    return value
+
+
+def _refusal(error: Exception) -> str:
+    """An exception's own words: a ``KeyError``'s without the quotes its text adds."""
+    return str(error.args[0]) if isinstance(error, KeyError) and error.args else str(error)
+
+
+def _refused_input(message: str) -> str:
+    """The record's ``inputs.<key>`` that :func:`prescribe`'s refusal ``message`` names, as its
+    messages open with the argument they refuse (``gamma=0.5 is ...``, ``lever 'u' has ...``), or
+    ``inputs`` where it opens with none."""
+    match = re.match(r"[a-z_0-9]+", message)
+    word = "" if match is None else match.group()
+    key = _REFUSED_BY.get(word, word)
+    return f"inputs.{key}" if key in _INPUT_KEYS else "inputs"
+
+
+_REFUSED_BY = {"lever": "levers", "constraint": "constraints", "driver": "drivers"}
 
 
 def _read_adjustment(written: Mapping[str, Any]) -> CausalGraph | list[str]:
