@@ -437,6 +437,13 @@ MOPO-style and naive causal, capture a median of 0 % and 35 % of the lift on 400
 30 % and 79 %), and on 15 and 7 of the 30 markets less than no incentive at all.
 The planner requires the fitted equilibrium: through the simulator's own it landed near the oracle
 whatever response it was given, which measures knowing the equilibrium, not the response.
+On request, `pessimistic_equilibrium_allocation(objective="expected")` plans on the completions the
+fit expects under its own uncertainty in place of the tilt: on the 30 markets of 400 blocks its mean
+share of the lift is 0.971 against the tilt's 0.900, its least 0.920 against 0.754, and it wins on
+27 (float64; ADR 0137). `SharedStateMarket(payment="per_driver")`, experimental, is the world whose
+budget pays each driver in a zone rather than the zone, with its exact oracle a convex program,
+`chc.games.per_driver_congestion_allocation`, solved to a duality gap below 1.3e-13 on six markets;
+the planners, which split a lump sum, refuse it (ADR 0140).
 
 **The zones × time plant the marketplace loop runs on** (`zones`), control-affine by construction:
 idle supply, open requests and an incentive stock per zone; an incentive and a price per zone as
