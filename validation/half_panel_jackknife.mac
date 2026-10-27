@@ -53,3 +53,29 @@ print("STEP 5 the AR(1) slope's first-order mean, jackknifed:", j_ar,
       if ratsimp(j_ar - a) = 0 then "(PASS)" else "(FAIL)")$
 print("STEP 5 at a = 0.9: the slope's bias over 200 periods", float(-(1 + 3*0.9)/200),
       ", over a half of 100", float(-(1 + 3*0.9)/100))$
+
+/* STEP 6  the steady state at the jackknifed (a, b), f = b/(1 - a). Fieller's statistic,
+   (b - tau (1 - a))^2 - z^2 (c_bb - 2 tau c_ab + tau^2 c_aa) <= 0 on the interval, is
+   -z^2 times a variance at tau = f, so f lies in its own interval wherever the interval is
+   bounded; the delta method's gradient is (b, 1 - a)/(1 - a)^2. Jackknifing (a, b) removes their
+   1/T bias, not the ratio's curvature: to second order f's mean moves by
+   (1/2) f_aa c_aa + f_ab c_ab = b c_aa/(1 - a)^3 + c_ab/(1 - a)^2, of order 1/T. */
+f : b/(1 - a)$
+fieller(tau) := (b - tau*(1 - a))^2 - z^2*(cbb - 2*tau*cab + tau^2*caa)$
+at_f : ratsimp(fieller(f))$
+print("STEP 6 Fieller's statistic at b/(1 - a):", factor(at_f),
+      if ratsimp(at_f + z^2*(cbb - 2*f*cab + f^2*caa)) = 0 then "(PASS: -z^2 times a variance)"
+      else "(FAIL)")$
+grad : [diff(f, a), diff(f, b)]$
+print("STEP 6 gradient:", grad,
+      if ratsimp(grad - [b, 1 - a]/(1 - a)^2) = [0, 0] then "(PASS)" else "(FAIL)")$
+curv : ratsimp(diff(f, a, 2)*caa/2 + diff(f, a, 1, b, 1)*cab)$
+print("STEP 6 the curvature's shift:", curv,
+      if ratsimp(curv - (b*caa/(1 - a)^3 + cab/(1 - a)^2)) = 0 then "(PASS)" else "(FAIL)")$
+/* at a sample point: a = 0.9, b = 1, c_aa = 4e-4, c_ab = 1e-3, c_bb = 0.02, z = 1.96, the
+   interval's ends from the quadratic, and f between them */
+pt : [a = 0.9, b = 1, caa = 4/10000, cab = 1/1000, cbb = 2/100, z = 196/100]$
+ends : map(rhs, float(solve(subst(pt, fieller(tau)) = 0, tau)))$
+print("STEP 6 at the sample point: interval", sort(ends), ", f", float(subst(pt, f)),
+      if lmin(ends) <= float(subst(pt, f)) and float(subst(pt, f)) <= lmax(ends) then "(PASS: inside)"
+      else "(FAIL)")$

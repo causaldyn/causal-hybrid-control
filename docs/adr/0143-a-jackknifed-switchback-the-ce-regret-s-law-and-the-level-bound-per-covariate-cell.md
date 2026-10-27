@@ -2,7 +2,16 @@
 
 **Status:** accepted, 2026-10-27. Amends ADR 0012: its "Not built" bias-corrected reading is built.
 Every addition is opt-in or a new function; no default moves, and every existing output is the
-same to the bit.
+same to the bit. Amended 2026-10-27: the jackknifed steady state is `b_J / (1 - a_J)` at the
+jackknifed `(a, b)`, with the delta method's standard error and Fieller's interval there, which
+holds it; `2 tau_T - (tau_1 + tau_2)/2` fell outside that interval on 6 and 8 runs of 3000, once
+at -9.1 where the truth is 2. A jackknifed `a_J >= 1` is refused. The steady state has no mean,
+`a_hat` having a density at 1, so its bias is read as a median: at `a = 0.9` over 200 periods,
+2000 runs a cell over four seeds, the uncorrected median read -0.96 to -1.17 of 10 on one zone and
+-0.74 to -0.78 on 16, and the jackknife's +0.07 to +0.43 and +0.05 to +0.09, the ratio's curvature
+the jackknifed parameters leave (`validation/half_panel_jackknife.mac`, STEP 6). The -0.68 to
+-0.12 below was a sample mean of a law that has none; the mean-bias claims for `tau_H` and the
+local projection stand.
 
 ## Context
 

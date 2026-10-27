@@ -44,6 +44,12 @@ import jax.numpy as jnp
 from jax import Array
 
 
+def _share(mask: Array) -> float:
+    """The share of a grid's points a mask holds, a count over the size: exact in float64 where a
+    mean of the boolean mask is float32 whatever the ``x64`` flag says."""
+    return int(jnp.count_nonzero(mask)) / mask.size
+
+
 @dataclass(frozen=True)
 class ReachableTube:
     """``V(., T_k)`` on a grid: the guaranteed-safe value after ``T_k`` more seconds."""
@@ -64,7 +70,7 @@ class ReachableTube:
 
     def safe_fraction(self, index: int = -1) -> float:
         """Fraction of grid points still guaranteed safe at ``times[index]``."""
-        return float(jnp.mean(self.values[index] >= 0.0))
+        return _share(self.values[index] >= 0.0)
 
     def interpolate(self, point: Array, index: int = -1) -> Array:
         """Bilinear value at an arbitrary ``point``, so a plan's states can be scored off-grid."""
@@ -324,15 +330,15 @@ def barrier_reachability_gap(
     barrier_mask = safe_mask & holds
     reachable_mask = tube.final >= 0.0
 
-    safe = float(jnp.mean(safe_mask))
+    safe = _share(safe_mask)
     reachable = tube.safe_fraction()
     valid_cbf = bool(jnp.all(~safe_mask | holds))
     return BarrierReachabilityGap(
         safe_fraction=safe,
         reachable_fraction=reachable,
-        barrier_fraction=float(jnp.mean(barrier_mask)),
+        barrier_fraction=_share(barrier_mask),
         valid_cbf=valid_cbf,
-        certified_but_unreachable=float(jnp.mean(barrier_mask & ~reachable_mask)),
+        certified_but_unreachable=_share(barrier_mask & ~reachable_mask),
         radius=radius,
         ok=(not valid_cbf) or reachable >= safe - tolerance,
     )
@@ -431,11 +437,11 @@ def higher_order_barrier_gap(
     valid_cbf = bool(jnp.all(~working_mask | holds))
     # where the condition holds on the whole working set, the barrier mask is that set, so this is
     # the share of the grid the theorem says is safe and the tube leaves out
-    certified_but_unreachable = float(jnp.mean(barrier_mask & ~reachable_mask))
+    certified_but_unreachable = _share(barrier_mask & ~reachable_mask)
     return HigherOrderBarrierGap(
-        safe_fraction=float(jnp.mean(safe_mask)),
-        working_fraction=float(jnp.mean(working_mask)),
-        barrier_fraction=float(jnp.mean(barrier_mask)),
+        safe_fraction=_share(safe_mask),
+        working_fraction=_share(working_mask),
+        barrier_fraction=_share(barrier_mask),
         valid_cbf=valid_cbf,
         certified_but_unreachable=certified_but_unreachable,
         radius=radius,

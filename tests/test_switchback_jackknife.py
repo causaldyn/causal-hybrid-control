@@ -1,7 +1,8 @@
 """The half-panel jackknife of the switchback's plug-in and local projection: the estimator is
-``2 tau_T - (tau_1 + tau_2) / 2`` over the run and its halves, it removes the readings' 1/T bias
-(Dhaene and Jochmans, Review of Economic Studies 2015), and its standard error tracks its spread
-on one zone and on several.
+``2 tau_T - (tau_1 + tau_2) / 2`` over the run and its halves, and the steady state ``b_J / (1 -
+a_J)`` at the jackknifed parameters; it removes the readings' 1/T bias (Dhaene and Jochmans,
+Review of Economic Studies 2015), and its standard error tracks its spread on one zone and on
+several. The steady state has no mean, so its bias is read as a median.
 
 The plant is the working model ``x_{t+1} = a x_t + b u_t + eps_t``, fair coins, ``y = x``, started
 in its stationary law."""
@@ -41,10 +42,24 @@ def _tau(a: float, h: float, b: float = 1.0) -> float:
     return b / (1.0 - a) if math.isinf(h) else b * (1.0 - a**h) / (1.0 - a)
 
 
+def _fits(u, y):
+    """``(a, b)`` fitted on the run and on each of its halves."""
+    periods = u.shape[1]
+    half = (periods + 1) // 2
+    return [
+        _plant_fit(u[:, start:stop], y[:, start : stop + 1], "state_aware")[0]
+        for start, stop in ((0, periods), (0, half), (periods - half, periods))
+    ]
+
+
+def _jackknifed_parameters(u, y):
+    full, first, second = _fits(u, y)
+    return 2.0 * full - 0.5 * (first + second)
+
+
 @pytest.mark.parametrize("periods", [200, 201])
 @pytest.mark.parametrize(
-    ("estimand", "analysis"),
-    [(STEADY_STATE, "state_aware"), (Horizon(5), "state_aware"), (Horizon(3), "local_projection")],
+    ("estimand", "analysis"), [(Horizon(5), "state_aware"), (Horizon(3), "local_projection")]
 )
 def test_the_jackknife_is_twice_the_run_less_its_halves_each_read_on_its_own(
     periods, estimand, analysis
@@ -57,8 +72,6 @@ def test_the_jackknife_is_twice_the_run_less_its_halves_each_read_on_its_own(
     jackknife = read_switchback(u, y, estimand, analysis, jackknife=True)
     expected = 2.0 * full.estimate - 0.5 * (first.estimate + second.estimate)
     assert jackknife.estimate == pytest.approx(expected, rel=1e-12, abs=0.0)
-    if math.isinf(estimand.periods):
-        return
     assert jackknife.interval == pytest.approx(
         (jackknife.estimate - Z * jackknife.se, jackknife.estimate + Z * jackknife.se),
         rel=1e-12,
@@ -93,20 +106,66 @@ def _study(estimand, analysis, a, periods, zones, reps, seed):
         for _ in range(reps):
             u, y = _plant(rng, zones, periods, a)
             full = read_switchback(u, y, estimand, analysis)
-            jackknife = read_switchback(u, y, estimand, analysis, jackknife=True)
+            try:
+                jackknife = read_switchback(u, y, estimand, analysis, jackknife=True)
+            except ValueError as refused:
+                # a steady state whose jackknifed a_hat is past 1 has none to read
+                if "jackknifed persistence" not in str(refused):
+                    raise
+                continue
             rows.append((full.estimate, jackknife.estimate, jackknife.se))
     finally:
         logging.getLogger("chc.switchback").setLevel(logging.NOTSET)
     return np.array(rows).T
 
 
+@pytest.mark.parametrize("periods", [200, 201])
+def test_the_steady_state_is_the_ratio_at_the_jackknifed_parameters(periods):
+    u, y = _plant(np.random.default_rng(4), 3, periods, 0.8)
+    a, b = _jackknifed_parameters(u, y)
+    reading = read_switchback(u, y, STEADY_STATE, "state_aware", jackknife=True)
+    assert reading.estimate == pytest.approx(b / (1.0 - a), rel=1e-12, abs=0.0)
+
+
+@pytest.mark.parametrize(("a", "periods", "draw"), [(0.5, 40, 1336), (0.9, 200, 503)])
+def test_the_jackknifed_steady_state_lies_in_its_own_interval(a, periods, draw):
+    """``2 tau_T - (tau_1 + tau_2) / 2`` read -9.15 against Fieller's (-0.67, 16.96) on the first
+    of these runs, and 4.89 against (6.14, 39.84) on the second; ``b_J / (1 - a_J)`` is where
+    Fieller's statistic is zero (``validation/half_panel_jackknife.mac``, STEP 6)."""
+    u, y = _plant(np.random.default_rng([7, draw]), 1, periods, a)
+    reading = read_switchback(u, y, STEADY_STATE, "state_aware", jackknife=True)
+    low, high = reading.interval
+    assert low < reading.estimate < high
+
+
+def test_a_jackknifed_persistence_past_the_unit_root_has_no_steady_state():
+    """Each half and the run read ``a_hat`` below 1, and ``2 a_T - (a_1 + a_2) / 2`` above it."""
+    for draw in range(200):
+        u, y = _plant(np.random.default_rng([31, draw]), 1, 200, 0.95)
+        fits = _fits(u, y)
+        a, _ = 2.0 * fits[0] - 0.5 * (fits[1] + fits[2])
+        if a >= 1.0 and all(fit[0] < 1.0 for fit in fits):
+            break
+    else:
+        pytest.fail("no draw jackknifes a_hat past 1")
+    with pytest.raises(ValueError, match="jackknifed persistence"):
+        read_switchback(u, y, STEADY_STATE, "state_aware", jackknife=True)
+
+
 @pytest.mark.parametrize("seed", [21, 22])
-def test_the_jackknife_removes_the_plug_ins_bias_near_the_unit_root(seed):
-    # the steady state at a = 0.9 over 400 periods: the plug-in reads about -0.33 of tau = 10 and
-    # the jackknife about -0.02 (4000 runs), against a Monte Carlo error of about 0.06 here
-    a, reps = 0.9, 1200
-    full, jackknife, _ = _study(STEADY_STATE, "state_aware", a, 400, 1, reps, seed)
-    _the_correction_lands_on_tau(full, jackknife, _tau(a, math.inf))
+def test_the_jackknife_moves_the_steady_states_median_toward_the_truth(seed):
+    # the steady state at a = 0.9 over 400 periods, 2000 runs a seed over four seeds: the plug-in's
+    # median read -0.51 to -0.56 of tau = 10, the jackknife's +0.16 to +0.24, which is the
+    # ratio's curvature the jackknifed parameters leave; its mean does not exist
+    a = 0.9
+    full, jackknife, _ = _study(STEADY_STATE, "state_aware", a, 400, 1, 1200, seed)
+    reps = full.size
+    assert reps >= 1190  # a jackknifed a_hat past 1 refuses a run here rarely
+    tau = _tau(a, math.inf)
+    correction = jackknife - full
+    # a sign test: the correction is positive on more than half the runs, past 4.5 of its errors
+    assert (correction > 0.0).sum() > reps / 2 + 4.5 * math.sqrt(reps) / 2
+    assert abs(np.median(jackknife) - tau) < abs(np.median(full) - tau)
 
 
 def _the_correction_lands_on_tau(full, jackknife, tau):
@@ -131,7 +190,6 @@ def test_the_jackknife_removes_the_local_projections_bias(zones):
     [
         (Horizon(3), "local_projection", 0.8, 100, 1),
         (Horizon(5), "state_aware", 0.9, 200, 1),
-        (STEADY_STATE, "state_aware", 0.9, 200, 4),
     ],
 )
 def test_the_jackknifes_standard_error_is_its_spread(estimand, analysis, a, periods, zones):
@@ -140,6 +198,18 @@ def test_the_jackknifes_standard_error_is_its_spread(estimand, analysis, a, peri
     # the spread's own relative error over reps runs is about 1 / sqrt(2 (reps - 1)); the ratio
     # read over 2000-6000 runs was 0.96-1.05
     assert abs(se.mean() / jackknife.std(ddof=1) - 1.0) <= 0.06 + 4.5 / math.sqrt(2.0 * reps)
+
+
+def test_the_steady_states_standard_error_is_first_order():
+    # the delta method's at (a_J, b_J): against the interquartile spread over 1.349, whose relative
+    # error over reps runs is about 1.17 / sqrt(reps), its median read 0.88 to 0.91 on one zone and
+    # 0.91 to 0.97 on 16 at a = 0.9 over 200 periods (2000 runs, four seeds): the law is skewed
+    # there, and Fieller's interval, not the standard error, carries the level
+    reps = 1200
+    _, jackknife, se = _study(STEADY_STATE, "state_aware", 0.9, 200, 4, reps, 41)
+    q1, q3 = np.percentile(jackknife, [25, 75])
+    ratio = float(np.median(se)) / ((q3 - q1) / 1.349)
+    assert 0.85 - 4.5 * 1.17 / math.sqrt(reps) <= ratio <= 1.0 + 4.5 * 1.17 / math.sqrt(reps)
 
 
 def test_the_jackknifes_interval_covers_the_local_projection():

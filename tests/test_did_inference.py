@@ -159,7 +159,7 @@ def test_it_refuses_a_level_or_a_bootstrap_it_cannot_read() -> None:
 
 def test_it_refuses_a_first_treated_period_outside_the_panel() -> None:
     outcomes, group = _panel(6)
-    with pytest.raises(ValueError, match=r"outside the panel's 0\.\.7: \[9\]"):
+    with pytest.raises(ValueError, match=r"group is 9 at row \d+, outside the panel's 0\.\.7"):
         callaway_santanna_inference(outcomes, np.where(group == 5, 9, group))
 
 

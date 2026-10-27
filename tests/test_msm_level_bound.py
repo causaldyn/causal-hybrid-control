@@ -4,6 +4,7 @@ lever (``propensity=``), against ``validation/msm_level_bound.mac``."""
 from __future__ import annotations
 
 import math
+import re
 
 import numpy as np
 import pytest
@@ -152,3 +153,55 @@ def test_the_bound_refuses_what_it_cannot_read(kwargs, match) -> None:
     y = np.arange(10.0)
     with pytest.raises(ValueError, match=match):
         msm_worst_case_mean(y, 2.0, **kwargs)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_a_column_of_outcomes_reads_as_the_vector_it_holds(seed) -> None:
+    """A sort of an ``(n, 1)`` column moved nothing, so the bound's top tail was the last rows in
+    input order: -0.087 where the vector reads 0.529, below the sample's mean of 0.0."""
+    rng = np.random.default_rng(seed)
+    y = rng.normal(size=300)
+    x = rng.normal(size=300)
+    for gamma in (1.7, 2.0):  # a fractional tail at 1.7, a whole one at 2 on 300 outcomes
+        assert msm_worst_case_mean(y[:, None], gamma) == msm_worst_case_mean(y, gamma)
+        assert confounding_robust_radius(0.1, y[:, None], gamma) == confounding_robust_radius(
+            0.1, y, gamma
+        )
+        assert msm_worst_case_mean(y[:, None], gamma, covariates=x) == msm_worst_case_mean(
+            y, gamma, covariates=x
+        )
+    assert negative_control_gamma(y[:, None], level=0.95) == negative_control_gamma(y, level=0.95)
+    assert msm_worst_case_mean(y[:, None], 2.0) > y.mean()
+
+
+@pytest.mark.parametrize(
+    "outcomes",
+    [np.zeros((1, 10)), np.zeros((5, 2)), np.zeros((10, 1, 1)), np.float64(1.0), np.zeros(0)],
+    ids=["row", "matrix", "three-d", "scalar", "empty"],
+)
+def test_outcomes_of_another_shape_are_refused_naming_it(outcomes) -> None:
+    shape = re.escape(str(np.shape(outcomes)))
+    for call in (
+        lambda: msm_worst_case_mean(outcomes, 2.0),
+        lambda: confounding_robust_radius(0.1, outcomes, 2.0),
+        lambda: negative_control_gamma(outcomes),
+    ):
+        with pytest.raises(ValueError, match=rf"shape \(n,\) or \(n, 1\); got shape {shape}"):
+            call()
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_a_non_finite_outcome_is_refused_rather_than_carried_to_the_bound(bad) -> None:
+    """A nan outcome returned a nan bound and radius, on the pooled and Tan's paths alike, and an
+    infinite one a nan bound, where :func:`negative_control_gamma` refused the same input."""
+    y = np.random.default_rng(0).normal(size=300)
+    y[5] = bad
+    for call in (
+        lambda: msm_worst_case_mean(y, 2.0),
+        lambda: msm_worst_case_mean(y, 2.0, propensity=0.3),
+        lambda: msm_worst_case_mean(y, 2.0, covariates=np.arange(300.0)),
+        lambda: confounding_robust_radius(0.1, y, 2.0),
+        lambda: negative_control_gamma(y),
+    ):
+        with pytest.raises(ValueError, match="outcomes must be finite"):
+            call()

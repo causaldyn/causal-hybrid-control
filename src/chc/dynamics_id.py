@@ -50,6 +50,7 @@ HONEST SCOPE, four limits worth stating before the code:
 from __future__ import annotations
 
 import dataclasses
+import logging
 import math
 import warnings
 from collections.abc import Callable, Sequence
@@ -76,7 +77,7 @@ from chc.causal import (
     _stream_key,
 )
 from chc.dynamics import DrivenDynamics, Dynamics, HybridDynamics
-from chc.frames import _real_entries, _real_numbers
+from chc.frames import _at, _real_entries, _real_numbers, _unmasked
 from chc.integrate import rk4_step
 from chc.residual import ControlAffineResidual, control_affine_features
 
@@ -89,6 +90,8 @@ six steps up to ``|A|dt = 1.2``, so reaching the cap means there is no fixed poi
 _NUISANCE_SHIFT_WARN = 3.0
 """How far, in the errors of the move, a spline refit may move a fit with the polynomial
 nuisances alone before :func:`fit_causal_residual` warns that they miss the log's."""
+
+_log = logging.getLogger(__name__)
 
 _NOT_IDENTIFIED = (
     "no adjustment set and no instrument: the control channel is not identified from this log. "
@@ -247,9 +250,10 @@ class CausalDynamicsFit:
     """A fitted causal residual next to what is and is not known about it.
 
     ``identified`` is the load-bearing field: ``False`` means nothing the fit was given pins the
-    channel down from the log -- no adjustment set and no instrument, or an instrument whose moment
-    falls short of rank (``instrument_rank``) -- and the residual is then the observational fit,
-    kept only so the caller can compare.
+    channel down from the log -- no adjustment set and no instrument, an instrument whose moment
+    falls short of rank (``instrument_rank``), or a log that moves no direction of the channel
+    (``unmoved``) -- and the residual is then the observational fit, kept only so the caller can
+    compare.
     """
 
     residual: ControlAffineResidual
@@ -339,7 +343,8 @@ class CausalDynamicsFit:
     # ``channel_error`` says (ADR 0054). The directions are orthogonal with each channel coefficient
     # scaled to its column of the channel's design on the log's raw actions, and a span of them is
     # read there: in raw units, where the units of the state and of the actions set those columns'
-    # sizes apart, they lean together. ``r`` is 0 when the log moves every direction.
+    # sizes apart, they lean together. ``r`` is 0 when the log moves every direction, and ``m k``,
+    # each state's whole channel, when it moves none: the fit is then not identified.
     unmoved: Array | None = None
     # (N, n, q), kept with ``influence``, ``q`` the channel's size in its raveled order: ``N`` times
     # each transition's weight, per state, in each channel coefficient through the channel's moment
@@ -1315,6 +1320,35 @@ def _split_unmoved(directions: Array, raw: Array, design: Array) -> _Unmoved:
     )
 
 
+def _warn_unmoved(fit: CausalDynamicsFit, directions: Array, identified: bool) -> None:
+    """Log, at WARNING, the levers the log never moves along some direction of the channel, by
+    their columns of ``u``: those whose whole channel it never moves (:func:`_unmoved_actions`),
+    and those an unmoved direction ``directions`` ``(m k, r)``, scaled to the raw actions' size,
+    mixes."""
+    actions, features = fit.residual.channel.shape[1:]
+    blocks = np.asarray(directions).reshape(actions, features, -1)
+    precision = float(np.sqrt(np.finfo(blocks.dtype).eps))
+    mixed = tuple(a for a in range(actions) if float(np.linalg.norm(blocks[a])) > precision)
+    whole = _unmoved_actions(fit)
+    _log.warning(
+        "the log never moves the levers in columns %s of u along %d of the channel's %d "
+        "directions, apart from what the states and covariates predict (the whole channel of "
+        "%s); the fit holds the channel to the log there, which is not an effect%s",
+        list(mixed),
+        directions.shape[1],
+        directions.shape[0],
+        list(whole),
+        "" if identified else ", and identifies no direction of it",
+        extra={
+            "chc_event": "fit_unmoved",
+            "levers": list(mixed),
+            "whole": list(whole),
+            "directions": int(directions.shape[1]),
+            "identified": identified,
+        },
+    )
+
+
 def _unmoved_actions(fit: CausalDynamicsFit) -> tuple[int, ...]:
     """The actions whose whole channel the log never moved: every coefficient of theirs, on every
     feature of the channel, in the span of :attr:`CausalDynamicsFit.unmoved`'s directions.
@@ -1844,7 +1878,8 @@ def fit_causal_residual(
             Miller 2011), at CR1's factor for the smaller dimension's ``G`` and less any part that
             reads below nothing; and each dimension's sums alone, at its own. A shock every unit
             shares in a period, met by levers every unit moves together, makes one period's scores
-            move together across units, which a sum within units leaves out (ADR 0061).
+            move together across units, which a sum within units leaves out (ADR 0061). A missing
+            label, ``None``, nan or NaT, is refused.
         periods: each transition's period, a whole number of steps, on a log whose transitions
             fall in one group, one unit's or the units' of one declared cluster, which leaves no
             second cluster to sum within: one label a transition, two periods at least. The
@@ -1876,7 +1911,11 @@ def fit_causal_residual(
             its errors off.
 
     Returns:
-        A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``.
+        A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``. A log that moves
+        no direction of the channel apart from what the states and the covariates predict, a lever
+        held constant or set by its own covariate, leaves ``identified=False`` and no error, as
+        with no adjustment set; where it leaves any direction unmoved, the fit logs a WARNING
+        naming the levers by their columns of ``u`` (:attr:`CausalDynamicsFit.unmoved`).
 
     Raises:
         ValueError: on an ``integrator`` that is neither ``"euler"`` nor ``"rk4"``, which up to
@@ -1892,7 +1931,8 @@ def fit_causal_residual(
             covariate or a driver, at the step's start or its end. Each would read a column the fit
             reads in another role: adjusted for the action, the channel came back as the
             confounded regression's. On ``unconfounded=True`` with an instrument. On ``times``
-            that are not one finite number a transition.
+            that are not one finite number a transition. On ``clusters`` that hold a missing or a
+            masked label.
     """
     if integrator not in ("euler", "rk4"):
         raise ValueError(f"integrator={integrator!r} is neither 'euler' nor 'rk4'")
@@ -2047,6 +2087,10 @@ def fit_causal_residual(
             # its noise set the channel there, and an instrument of zeros read an exact zero, error
             # zero. Where the log moves no direction, the instrument identifies none.
             identified, method, instrument_action = False, "observational", None
+    if directions.shape[1] == directions.shape[0]:
+        # The moment has no data along any direction: a lever held constant, or set by its own
+        # covariate, read identified with the channel at zero and an error of exactly zero.
+        identified = False
 
     def moment(y_res: Array, u_res: Array, unmoved: _Unmoved | None = split) -> Array:
         regressor = _channel_design(u_res, x, channel_degree)
@@ -2489,6 +2533,8 @@ def fit_causal_residual(
         instrument_rank=rank,
         periods=steps,
     )
+    if directions.shape[1]:
+        _warn_unmoved(fit, directions * _units.norms(raw)[:, None], identified)
     error = fit.channel_error
     # under a weight the spline's own second-order error reaches past the channel's on a share of
     # well-specified logs, so the shift no longer separates a miss from noise
@@ -2676,14 +2722,41 @@ def _period_codes(periods: ArrayLike, rows: int) -> np.ndarray:
     return (steps - steps.min()).astype(np.int64)
 
 
+def _missing_labels(labels: np.ndarray) -> np.ndarray:
+    """Whether each label, flattened, is missing: ``None``, a nan, or a NaT."""
+    if labels.dtype.kind in "mM":
+        return np.isnat(labels).ravel()
+    if labels.dtype.kind in "fc":
+        return np.isnan(labels).ravel()
+    if labels.dtype.kind != "O":
+        return np.zeros(labels.size, dtype=bool)
+    return np.array(
+        [
+            label is None
+            or (isinstance(label, float | np.floating) and math.isnan(label))
+            or (isinstance(label, np.datetime64 | np.timedelta64) and bool(np.isnat(label)))
+            for label in labels.ravel()
+        ],
+        dtype=bool,
+    )
+
+
 def _cluster_codes(clusters: np.ndarray | Array, rows: int) -> np.ndarray:
     """Each transition's cluster as a code from 0, in the labels' sorted order, or two-way a code
     a dimension, ``(N, 2)``."""
-    labels = np.asarray(clusters)
+    labels = np.asarray(_unmasked("clusters", clusters))
     if labels.shape not in ((rows,), (rows, 2)):
         raise ValueError(
             f"clusters label each of the {rows} transitions once, shape ({rows},), or once in each "
             f"of two dimensions, shape ({rows}, 2); got an array of shape {labels.shape}"
+        )
+    # np.unique pools every nan into one label, so missing labels read as one cluster of their own
+    missing = np.flatnonzero(_missing_labels(labels))
+    if missing.size:
+        raise ValueError(
+            f"clusters hold a missing label at {_at(labels.shape, int(missing[0]))} "
+            f"({missing.size} of {labels.size}): a transition of no known cluster cannot be summed "
+            "with its own; label it, or drop it"
         )
     codes = []
     for column in labels.reshape(rows, -1).T:
@@ -3602,6 +3675,13 @@ def lag_check(
     lever reaches it two periods late, 200 units over 12 periods, the check rejected on 6 logs of
     6 and named lag 2 on each; on the same plant without the dead time it rejected at 0.05 on 5
     logs of 60, its size.
+
+    It reads across groups, the units or the fit's clusters, and not along one group's periods as
+    :func:`persistence_check` does: on one unit, or one cluster, it has no spread to read and
+    returns ``p_value`` nan and ``lag`` ``None``, as it does where no late lever moves once the
+    fit's regressors are held. With few groups it has little power: ``F(k, G - 1)``'s tail is
+    heavy at small ``G``, and at two groups ``F(1, 1)`` rejects at 0.05 only past
+    ``tan(0.475 pi)^2 = 161``.
 
     Raises:
         ValueError: the fit kept no moment residual, as where its channel is not identified; the

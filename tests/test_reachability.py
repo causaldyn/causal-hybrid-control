@@ -447,3 +447,32 @@ def test_higher_order_ok_holds_where_the_condition_fails_somewhere() -> None:
     assert not gap.valid_cbf
     assert gap.certified_but_unreachable > 0.0
     assert gap.ok
+
+
+def test_the_fractions_are_counts_over_the_grid_in_double_precision() -> None:
+    """A mean of a boolean mask is float32 under ``x64`` too: 121 safe points of 161 read
+    0.7515527606, where the share is 0.7515527950."""
+    common = {
+        "lower": (-2.0, -1.0),
+        "upper": (2.0, 1.0),
+        "resolution": (161, 11),
+        "horizon": 0.1,
+        "steps": 40,
+        "u_max": 1.0,
+        "radius": 0.0,
+    }
+    barrier = lambda x: 1.0 - x[0]  # noqa: E731, x[0] <= 1 holds 121 of the 161 grid columns
+    tube = backward_reachable_tube(barrier, _double_integrator, DI_B, **common)
+    assert tube.safe_fraction(0) == 121 / 161
+    gap = barrier_reachability_gap(barrier, _double_integrator, DI_B, **common)
+    higher = higher_order_barrier_gap(barrier, _double_integrator, DI_B, **common)
+    assert gap.safe_fraction == higher.safe_fraction == 121 / 161
+    for fraction in (
+        gap.reachable_fraction,
+        gap.barrier_fraction,
+        gap.certified_but_unreachable,
+        higher.working_fraction,
+        higher.barrier_fraction,
+        higher.certified_but_unreachable,
+    ):
+        assert fraction == round(fraction * 161 * 11) / (161 * 11)

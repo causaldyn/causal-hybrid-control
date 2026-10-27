@@ -341,8 +341,9 @@ class BlankPeriodInference:
     and Zhao's eq. 20, which reaches ``1 - alpha`` only as ``T_blank`` grows. Read with
     ``serial="ar1"``, ``intervals[k]`` is the prediction interval of a ``k + 1``-step forecast of
     the gaps from the last blank one, from the blank periods' innovations, with probability
-    ``1 - alpha`` when they are normal (see :func:`blank_period_inference`); infinite with fewer
-    than two blank periods.
+    ``1 - alpha`` when they are normal at the true ``rho`` (see :func:`blank_period_inference`);
+    with ``ar_coefficient`` estimated, few donors or a long post period lower it; infinite with
+    fewer than two blank periods.
 
     Measured on factor panels of 19 donors, 15 fitting, 5 blank and 5 post periods, the treated
     unit the one its donors fit best on the fitting periods, 4000 a case
@@ -442,6 +443,21 @@ def blank_period_inference(
       and 0.8 at ``alpha = 0.2``, 89.6%, 89.9% and 89.6% at 0.1, and 94.8%, 94.9% and 94.8% at
       0.05, where 5 blank periods leave the exchangeable ones unbounded; with 10 blank periods,
       at 0.8, 79.4%, 89.6% and 94.8%. They assume normal innovations, which the test does not.
+    - The intervals' level is the true ``rho``'s. They plug the estimate in as if it were known,
+      and its downward bias with few donors enters the forecast through ``rho^k`` and the level's
+      sum, so the shortfall grows with the post period. On factor panels whose factors and
+      errors are AR(1) at 0.95, 15 fitting, 5 blank and 10 post periods, at ``alpha = 0.1``
+      (2000 panels a case, 1000 at 19 donors; one standard error 0.007 and 0.010):
+
+      | donors | mean estimate | coverage at k = 1 .. 10 | at the true ``rho`` |
+      |---|---|---|---|
+      | 2 | 0.857 | 0.904 falling to 0.854-0.858 | 0.904-0.912 |
+      | 4 | 0.893 | 0.892 falling to 0.864-0.870 | 0.886-0.898 |
+      | 19 | 0.917 | 0.889 falling to 0.878 | 0.883-0.899 |
+
+      At ``alpha = 0.05`` on 4 donors they covered 0.946 falling to 0.920. Two donors' gaps are one
+      series and its negative, each donor fitted by the other, so the estimate reads one series
+      however the donors are resampled.
     - ``ar_check_p_value`` checks the AR(1) model on the donors' gaps the coefficient came from.
       Each donor's innovations less their mean are multiplied at lags 1 and 2 and summed over the
       donors period by period, since the donors' common factors correlate them; each lag's total,

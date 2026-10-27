@@ -84,3 +84,30 @@ def test_an_outcome_that_is_no_number_is_refused(estimator) -> None:
     outcomes[0, 4] = np.nan
     with pytest.raises(ValueError, match="outcomes must be finite"):
         estimator(outcomes, group)
+
+
+def _overall(outcomes, group, **kwargs) -> float:
+    return callaway_santanna(outcomes, group, **kwargs).overall
+
+
+@pytest.mark.parametrize("estimator", [twoway_fixed_effects_att, de_chaisemartin, _overall])
+@pytest.mark.parametrize(("label", "row"), [(-2, 600), (8, 601), (11, 899)])
+def test_a_group_outside_the_panel_is_refused_naming_its_row(estimator, label, row) -> None:
+    """A label of -2 marked a unit's last two periods treated in TWFE (0.98 -> 0.80 on a panel
+    of effect 1) and dropped it from CS's controls; a first-treated period past the panel crashed
+    CS with an IndexError, where TWFE and DID_M read it as never treated."""
+    outcomes, group, _ = _staggered_panel(0)
+    group[row] = label
+    with pytest.raises(
+        ValueError, match=rf"group is {label} at row {row}, outside the panel's 0\.\.7"
+    ):
+        estimator(outcomes, group)
+
+
+def test_another_never_treated_label_is_read_as_never_treated() -> None:
+    outcomes, group, _ = _staggered_panel(0)
+    relabelled = np.where(group == -1, 99, group)
+    assert _overall(outcomes, relabelled, never_treated=99) == _overall(outcomes, group)
+    assert twoway_fixed_effects_att(outcomes, relabelled, never_treated=99) == (
+        twoway_fixed_effects_att(outcomes, group)
+    )
