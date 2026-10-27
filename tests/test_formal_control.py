@@ -992,7 +992,10 @@ def test_barrier_margin_loss_saturates_at_the_channel(channel, radius, u_max) ->
     lost = robust_barrier_margin(0.0, channel, 0.0, u_max) - robust_barrier_margin(
         0.0, channel, radius, u_max
     )
-    assert lost == pytest.approx(u_max * min(radius, channel), rel=1e-12, abs=1e-15)
+    # both margins are near channel * u_max, so their difference carries that size's rounding
+    assert lost == pytest.approx(
+        u_max * min(radius, channel), rel=1e-12, abs=2 * np.finfo(float).eps * u_max * channel
+    )
 
 
 @settings(max_examples=40, deadline=None)
