@@ -28,6 +28,12 @@ from jax import Array
 from chc import _units
 from chc.frames import _real_entries, _real_numbers
 
+__all__ = [
+    "GaussianPolicy",
+    "fit_behavior_policy",
+    "off_policy_value",
+]
+
 
 class GaussianPolicy(eqx.Module):
     """Diagonal-Gaussian policy ``u ~ N(W x + b, diag(exp(log_std))^2)``."""

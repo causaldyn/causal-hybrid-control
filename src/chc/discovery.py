@@ -37,6 +37,12 @@ from jax import Array
 from chc.frames import _real_numbers
 from chc.independence import partial_corr_test
 
+__all__ = [
+    "LaggedGraph",
+    "TigramiteDiscovery",
+    "discover_lagged_parents",
+]
+
 
 @dataclass(frozen=True)
 class LaggedGraph:

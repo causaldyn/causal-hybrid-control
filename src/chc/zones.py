@@ -67,6 +67,12 @@ from chc.experiment import ZoneDecision
 from chc.graph import CausalGraph
 from chc.integrate import rk4_step
 
+__all__ = [
+    "Matching",
+    "ZoneMarketPlant",
+    "ZoneMarketSystem",
+]
+
 Matching = Literal["harmonic", "linear"]
 """How a zone's idle supply and open requests turn into trips:
 

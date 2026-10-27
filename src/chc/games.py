@@ -43,6 +43,20 @@ from numpy.typing import NDArray
 
 from chc.frames import _real_numbers
 
+__all__ = [
+    "CongestionAllocation",
+    "EquilibriumSolution",
+    "PerDriverAllocation",
+    "congestion_contraction_modulus",
+    "congestion_damping",
+    "exact_congestion_allocation",
+    "fixed_point",
+    "per_driver_congestion_allocation",
+    "project_simplex",
+    "softmax_congestion_equilibrium",
+    "stackelberg_allocation",
+]
+
 
 def project_simplex(v: Array, z: float) -> Array:
     """Euclidean projection of ``v`` onto ``{u >= 0, sum u = z}`` (Duchi et al. 2008)."""

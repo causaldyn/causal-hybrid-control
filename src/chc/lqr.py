@@ -18,6 +18,15 @@ from chc.dynamics import Dynamics
 from chc.integrate import rk4_step
 from chc.regret import certainty_equivalence_gap
 
+__all__ = [
+    "continuous_lqr",
+    "dlqr_feedback_controls",
+    "finite_horizon_dlqr",
+    "linearize_continuous",
+    "linearize_discrete",
+    "linearized_regret_certificate",
+]
+
 
 def linearize_continuous(dyn: Dynamics, x: Array, u: Array) -> tuple[Array, Array]:
     """Jacobians ``(A, B) = (∂f/∂x, ∂f/∂u)`` of the continuous vector field at ``(x, u)``."""

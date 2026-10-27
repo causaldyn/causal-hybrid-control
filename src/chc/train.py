@@ -20,6 +20,13 @@ from chc.dynamics import Dynamics, HybridDynamics
 from chc.frames import _real_entries
 from chc.integrate import rk4_step, rollout
 
+__all__ = [
+    "fit_residual",
+    "fit_residual_multistep",
+    "one_step_mse",
+    "rollout_mse",
+]
+
 
 def _train(
     known: Dynamics,

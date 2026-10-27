@@ -10,6 +10,11 @@ from jax import Array
 from chc.dynamics import Dynamics
 from chc.integrate import rollout
 
+__all__ = [
+    "QuadraticCost",
+    "total_cost",
+]
+
 
 class QuadraticCost(eqx.Module):
     """Bolza quadratic cost: running + terminal penalties on ``x - x_target`` and ``u``.

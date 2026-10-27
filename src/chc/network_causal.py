@@ -27,6 +27,24 @@ from chc.causal import _centred_ridge_predict, _polynomial_features, _stream_key
 from chc.frames import _real_entries, _real_numbers, _refuse_shared_names
 from chc.irf import peak_lag
 
+__all__ = [
+    "ConfoundedNetworkSystem",
+    "DelayedNetworkPanel",
+    "NeighbourMessagePassing",
+    "PropagationEstimate",
+    "ar1_innovations",
+    "cycle_shells",
+    "estimate_network_effects",
+    "estimate_network_effects_gnn",
+    "estimate_propagation",
+    "graph_shells",
+    "kronecker_spectrum",
+    "panel_covariance",
+    "propagate_shells",
+    "torus_adjacency",
+    "within_ar1",
+]
+
 
 def cycle_shells(m: int, dmax: int) -> list[NDArray[np.float64]]:
     """0/1 distance-``d`` indicator matrices of the cycle ``C_m``, for ``d = 0..dmax``.

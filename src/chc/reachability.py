@@ -43,6 +43,16 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+__all__ = [
+    "BarrierReachabilityGap",
+    "HigherOrderBarrierGap",
+    "ReachableTube",
+    "backward_reachable_tube",
+    "barrier_reachability_gap",
+    "higher_order_barrier_gap",
+    "robust_hamiltonian",
+]
+
 
 def _share(mask: Array) -> float:
     """The share of a grid's points a mask holds, a count over the size: exact in float64 where a

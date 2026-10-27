@@ -112,6 +112,30 @@ from chc.uncertainty import (
 if TYPE_CHECKING:
     from chc.dynamics_id import CausalDynamicsFit, Integrator
 
+__all__ = [
+    "Barrier",
+    "BarrierConstraint",
+    "CausalPlan",
+    "CertificateStatus",
+    "ChannelSensitivity",
+    "CostBiasDirection",
+    "DecisionWeight",
+    "DiagnosticStatus",
+    "InnerSolve",
+    "ModulusSource",
+    "PlanRegretBound",
+    "PlannedCostBias",
+    "PriceStatus",
+    "RegretStatus",
+    "RoomModel",
+    "RowPrice",
+    "SafetyCertificate",
+    "ShadowPrices",
+    "causal_plan",
+    "certify_safety",
+    "plan_regret_bound",
+]
+
 CertificateStatus = Literal["not_evaluated", "no_tolerance", "uncertified", "partial", "certified"]
 """How far a plan's error tube trusts it: ``not_evaluated`` where no error model gave it a tube,
 ``no_tolerance`` where the tube was read against an infinite tolerance, which holds every finite

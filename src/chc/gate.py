@@ -175,6 +175,24 @@ from chc.frames import _real_numbers
 from chc.plan import DecisionWeight
 from chc.uncertainty import _as_written, _conformal_rank
 
+__all__ = [
+    "BlockBatch",
+    "ChannelMove",
+    "DecisionLog",
+    "DeploymentGate",
+    "DriftAlarm",
+    "GateConfig",
+    "GateMode",
+    "MissRateAlarm",
+    "MovePrice",
+    "OnlineRadius",
+    "Verdict",
+    "ZoneBatch",
+    "ZonePlan",
+    "channel_drift_evalues",
+    "channel_move",
+]
+
 _log = logging.getLogger(__name__)
 
 Verdict = Literal["deploy", "shadow", "experiment", "hold", "rollback"]

@@ -26,6 +26,16 @@ from chc.causal import _ols_with_intercept
 from chc.frames import _real_entries, _real_numbers
 from chc.toeplitz import levinson_durbin, sample_autocorrelation, solve_toeplitz
 
+__all__ = [
+    "DelayEstimate",
+    "delay_estimate",
+    "innovations",
+    "irf_control_sequence",
+    "local_projection_irf",
+    "peak_lag",
+    "structured_irf",
+]
+
 _log = logging.getLogger(__name__)
 
 _PERSISTENCE_ALPHA = 1e-3

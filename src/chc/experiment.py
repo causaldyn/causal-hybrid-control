@@ -83,6 +83,19 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy import optimize, special
 
+__all__ = [
+    "ChannelPrior",
+    "DesignVerdict",
+    "DitherDesign",
+    "DitherMethod",
+    "ExperimentDesign",
+    "PinnedZone",
+    "ZoneDecision",
+    "ZoneExperiment",
+    "design_experiment",
+    "dither_covariance",
+]
+
 _log = logging.getLogger(__name__)
 
 DesignVerdict = Literal["deploy", "experiment", "abstain"]

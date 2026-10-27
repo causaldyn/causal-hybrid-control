@@ -9,6 +9,14 @@ import equinox as eqx
 import jax.numpy as jnp
 from jax import Array
 
+__all__ = [
+    "DampedOscillator",
+    "DrivenDynamics",
+    "Dynamics",
+    "HybridDynamics",
+    "LinearDynamics",
+]
+
 
 class Dynamics(Protocol):
     """A vector field f(t, x, u) -> dx/dt."""

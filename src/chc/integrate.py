@@ -7,6 +7,11 @@ from jax import Array, lax
 
 from chc.dynamics import Dynamics, _EulerStep, _SetAtStep
 
+__all__ = [
+    "rk4_step",
+    "rollout",
+]
+
 
 def rk4_step(dyn: Dynamics, t: float | Array, x: Array, u: Array, dt: float) -> Array:
     """One classical Runge-Kutta 4 step with the control held constant over the step. A field

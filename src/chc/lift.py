@@ -68,6 +68,15 @@ from chc.barrier import barrier_gamma_star
 from chc.frames import _real_numbers
 from chc.response import Channel
 
+__all__ = [
+    "GeoArm",
+    "LiftFit",
+    "LiftTest",
+    "ObservationalCheck",
+    "check_observational",
+    "fit_lift",
+]
+
 _Array = NDArray[np.float64]
 
 _log = logging.getLogger(__name__)

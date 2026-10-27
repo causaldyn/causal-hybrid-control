@@ -52,6 +52,14 @@ from chc.discovery import discover_lagged_parents
 from chc.frames import _real_numbers
 from chc.irf import local_projection_irf, structured_irf
 
+__all__ = [
+    "CausalPathway",
+    "PathwayCertificate",
+    "PathwayEdge",
+    "causal_pathway",
+    "causal_pathway_certificate",
+]
+
 _SIGN_TOL = 1e-8
 
 

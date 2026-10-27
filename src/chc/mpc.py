@@ -31,6 +31,12 @@ from chc.integrate import rk4_step
 from chc.plan import _TOLERANCE_DEFAULT, BarrierConstraint, CausalPlan, InnerSolve, _plan
 from chc.support import PenaltyModel, SupportModel
 
+__all__ = [
+    "PeriodBudget",
+    "RecedingHorizon",
+    "mpc_control",
+]
+
 _log = logging.getLogger(__name__)
 
 

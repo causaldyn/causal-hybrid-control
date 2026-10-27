@@ -97,6 +97,25 @@ from chc.cost import QuadraticCost
 from chc.frames import _real_numbers
 from chc.independence import GcmTest
 
+__all__ = [
+    "EVALUATION_SCHEMA_VERSION",
+    "AffinePolicy",
+    "AffineSchedule",
+    "BootstrapReading",
+    "EvaluationCertificate",
+    "EvaluationMethod",
+    "InfeasibleEvaluation",
+    "InitialLaw",
+    "LinearGaussianPlant",
+    "LoggerCheck",
+    "LoggerComparison",
+    "PlanEvaluation",
+    "UnitBootstrap",
+    "certify_evaluation",
+    "evaluate_plan",
+    "fit_logger",
+]
+
 _log = logging.getLogger(__name__)
 
 EvaluationMethod = Literal["dr", "mis", "fqe", "pdis"]

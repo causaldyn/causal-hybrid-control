@@ -33,6 +33,16 @@ from scipy.optimize import linprog
 from chc.frames import _real_numbers
 from chc.games import project_simplex
 
+__all__ = [
+    "MarketplaceMatching",
+    "ShadowPriceEffect",
+    "SinkhornResult",
+    "marketplace_report",
+    "shadow_price_effect",
+    "shadow_price_interval",
+    "sinkhorn",
+]
+
 _log = logging.getLogger(__name__)
 
 

@@ -24,6 +24,19 @@ from scipy.linalg import toeplitz as _dense_toeplitz
 
 from chc.frames import _real_numbers
 
+__all__ = [
+    "circulant_matvec",
+    "circulant_operator_norm",
+    "circulant_symbol",
+    "gohberg_semencul_apply",
+    "gohberg_semencul_covariance",
+    "gohberg_semencul_generators",
+    "levinson_durbin",
+    "sample_autocorrelation",
+    "solve_toeplitz",
+    "toeplitz_matvec",
+]
+
 
 def toeplitz_matvec(first_col: Array, first_row: Array, x: Array) -> Array:
     """Toeplitz matrix-vector product ``T x`` in ``O(L log L)`` via circulant embedding + FFT.

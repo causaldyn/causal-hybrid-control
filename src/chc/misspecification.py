@@ -47,6 +47,12 @@ from chc.plan import (
 from chc.residual import ControlAffineResidual
 from chc.uncertainty import _chi_square_mixture_survival
 
+__all__ = [
+    "MisspecificationCost",
+    "misspecification_cost",
+    "planned_cost_bias",
+]
+
 
 @dataclass(frozen=True)
 class MisspecificationCost:

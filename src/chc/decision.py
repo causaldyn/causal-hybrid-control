@@ -137,6 +137,36 @@ from chc.uncertainty import (
     _studentised,
 )
 
+__all__ = [
+    "POLICY_SCHEMA_VERSION",
+    "SCHEMA_VERSION",
+    "Constraint",
+    "DecisionCertificate",
+    "DecisionError",
+    "DitherCheck",
+    "DitherStatus",
+    "Driver",
+    "Estimability",
+    "GammaStarStatus",
+    "IdentificationStatus",
+    "InterventionSchedule",
+    "Lever",
+    "LeverRelation",
+    "LeverSelection",
+    "NotIdentifiedError",
+    "PrescribedPolicy",
+    "Prescription",
+    "RunProvenance",
+    "SelectionStep",
+    "StartState",
+    "Target",
+    "TimeZero",
+    "TubeActions",
+    "TubeMode",
+    "TubeRate",
+    "prescribe",
+]
+
 SCHEMA_VERSION = 2
 """``to_json``'s schema version. Bumped when a field changes meaning, not when one is added: 2
 writes a number that is not finite as null (ADR 0055)."""

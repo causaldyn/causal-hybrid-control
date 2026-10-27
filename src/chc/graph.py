@@ -31,6 +31,15 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
+__all__ = [
+    "AdjustmentSet",
+    "AdjustmentStatus",
+    "CausalGraph",
+    "CyclicGraphError",
+    "EdgeProvenance",
+    "EdgeSource",
+]
+
 AdjustmentStatus = Literal["identified", "not_identified"]
 """Whether *some* set of observed covariates identifies the effect by adjustment."""
 

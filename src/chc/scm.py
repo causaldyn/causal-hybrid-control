@@ -43,6 +43,16 @@ from scipy.optimize import nnls
 from chc import _units
 from chc.frames import _real_numbers
 
+__all__ = [
+    "BlankPeriodInference",
+    "SyntheticControlInference",
+    "SyntheticControlResult",
+    "augmented_synthetic_control",
+    "blank_period_inference",
+    "synthetic_control",
+    "synthetic_control_inference",
+]
+
 Outcomes = NDArray[np.float64]
 Vector = NDArray[np.float64]
 

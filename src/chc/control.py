@@ -42,6 +42,25 @@ from chc.dynamics import DampedOscillator, Dynamics, HybridDynamics
 from chc.integrate import rk4_step, rollout
 from chc.residual import MLPResidual, ZeroResidual
 
+__all__ = [
+    "Blocks",
+    "Bound",
+    "Duals",
+    "LinearConstraint",
+    "NLPSolverCertificate",
+    "SolverComparison",
+    "SolverResult",
+    "SolverStatus",
+    "box_stationarity",
+    "broadcast_box",
+    "check_box",
+    "lbfgs_box_control",
+    "nlp_solver_certificate",
+    "project_box",
+    "projected_gradient_control",
+    "projected_gradient_solve",
+]
+
 _MAX_BACKTRACK = 40
 _SUFFICIENT_DECREASE = 1.0 / 3.0  # of the fall a step's gradient predicts; see _backtrack
 _MAX_SWEEPS = 4_096  # Dykstra sweeps per projection, a multiple of the polishing period

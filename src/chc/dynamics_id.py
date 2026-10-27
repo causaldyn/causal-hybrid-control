@@ -81,6 +81,30 @@ from chc.frames import _at, _real_entries, _real_numbers, _unmasked
 from chc.integrate import rk4_step
 from chc.residual import ControlAffineResidual, control_affine_features
 
+__all__ = [
+    "CausalDynamicsFit",
+    "ChannelRegion",
+    "ClosedLoopAttribution",
+    "ClosedLoopAttributionCertificate",
+    "ConfoundedControlAffineSystem",
+    "Integrator",
+    "InterferenceCheck",
+    "LagCheck",
+    "OmittedConfounderBound",
+    "PersistenceCheck",
+    "RegionForm",
+    "channel_region",
+    "closed_loop_attribution_certificate",
+    "closed_loop_gain_attribution",
+    "fit_causal_residual",
+    "interference_check",
+    "lag_check",
+    "nuisance_shift",
+    "omitted_confounder_bound",
+    "persistence_check",
+    "solve_channel_moment",
+]
+
 Integrator = Literal["euler", "rk4"]
 """Which one-step map the fit is asked to be consistent with. See :func:`fit_causal_residual`."""
 

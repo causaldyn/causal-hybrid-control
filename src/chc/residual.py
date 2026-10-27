@@ -26,6 +26,30 @@ from chc.toeplitz import (
     circulant_symbol,
 )
 
+__all__ = [
+    "ContractiveResidual",
+    "ControlAffineResidual",
+    "ConvexEnergyCertificate",
+    "DampingInjectionCertificate",
+    "GraphResidual",
+    "KANResidual",
+    "LipschitzCertificate",
+    "LipschitzResidual",
+    "MLPResidual",
+    "PortHamiltonianCertificate",
+    "PortHamiltonianEnergy",
+    "PortHamiltonianResidual",
+    "RBFKANLayer",
+    "SpectralResidual",
+    "ZeroResidual",
+    "control_affine_features",
+    "convex_energy_certificate",
+    "damping_injection_certificate",
+    "fit_spectral_residual",
+    "lipschitz_certificate",
+    "port_hamiltonian_certificate",
+]
+
 
 class ZeroResidual(eqx.Module):
     """A residual that contributes nothing — recovers the pure known dynamics."""

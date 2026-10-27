@@ -18,6 +18,14 @@ from chc.cost import QuadraticCost
 from chc.dynamics import Dynamics, _EulerStep, _SetAtStep
 from chc.integrate import rk4_step, rollout
 
+__all__ = [
+    "control_gradient_adjoint",
+    "control_gradient_diffrax",
+    "costate_norms",
+    "perturbation_cost_weights",
+    "total_cost_diffrax",
+]
+
 
 @eqx.filter_jit
 def control_gradient_adjoint(

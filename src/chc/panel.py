@@ -51,6 +51,13 @@ from numpy.typing import NDArray
 
 from chc.frames import _NOT_READ, ColumnData, _not_numbers, as_columns
 
+__all__ = [
+    "Panel",
+    "PanelError",
+    "Provenance",
+    "installed_version",
+]
+
 # The types an object column holds: none changes in place, and the text of each names its value,
 # which is what the hash reads. A subclass counts, so a pandas Timestamp is a datetime; `int`
 # covers `bool`, `date` covers `datetime`, and NumPy's scalars of text and numbers subclass `str`,

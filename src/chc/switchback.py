@@ -73,6 +73,28 @@ from scipy import optimize, signal, stats
 
 from chc.frames import _real_numbers
 
+__all__ = [
+    "CHANNEL",
+    "STEADY_STATE",
+    "Alternative",
+    "BlockDesign",
+    "EstimandReport",
+    "Horizon",
+    "MarkovDesign",
+    "PersistencePrior",
+    "RandomisationTest",
+    "SwitchbackAnalysis",
+    "SwitchbackArm",
+    "SwitchbackPlan",
+    "SwitchbackReading",
+    "TargetMDE",
+    "design_switchback",
+    "randomisation_interval",
+    "randomisation_test",
+    "read_switchback",
+    "restate_mde",
+]
+
 _log = logging.getLogger(__name__)
 
 SwitchbackAnalysis = Literal["state_aware", "iv", "local_projection", "block_dim"]

@@ -60,6 +60,31 @@ from scipy.special import lambertw
 
 from chc.cost import QuadraticCost
 
+__all__ = [
+    "STABILISING_RATIO_FLOOR",
+    "DelayBall",
+    "DelayBallCertificate",
+    "DelayMarginCertificate",
+    "DelayedDynamics",
+    "DelayedField",
+    "RobustDelayDesign",
+    "augment_state",
+    "delay_ball",
+    "delay_ball_certificate",
+    "delay_design_loss",
+    "delay_margin",
+    "delay_margin_certificate",
+    "delayed_of",
+    "exact_delayed_rollout",
+    "lift_cost",
+    "max_stages",
+    "optimal_delay_gain",
+    "robust_delay_design",
+    "stages_for_spread",
+    "state_of",
+    "state_trajectory",
+]
+
 # Largest CFL number for RK4 on first-order upwind: the biggest c with |R(c(e^{-i xi} - 1))| <= 1
 # for every xi, R the RK4 stability polynomial. Computed by bisection over the symbol, not quoted.
 # The binding wavenumber is xi = pi, where the symbol sits at -2c, so this is exactly half the RK4

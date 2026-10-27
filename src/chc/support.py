@@ -44,6 +44,13 @@ from chc.frames import _real_numbers
 from chc.integrate import rollout
 from chc.uncertainty import ConfoundingRobustPenalty
 
+__all__ = [
+    "PenaltyModel",
+    "SupportModel",
+    "pessimistic_control",
+    "pessimistic_solve",
+]
+
 
 class PenaltyModel(Protocol):
     """Anything that scores a trajectory penalty ``penalty_trajectory(xs, us) -> scalar``.

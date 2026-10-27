@@ -28,6 +28,12 @@ from numpy.typing import ArrayLike, NDArray
 from chc import _units
 from chc.frames import _real_numbers
 
+__all__ = [
+    "GcmTest",
+    "gcm_test",
+    "partial_corr_test",
+]
+
 _EPS = 1e-12
 # A residual whose variance is below this share of its column's has nothing left to test: ``z``
 # determines the column, as the current state determines the last one in a discretised ODE.

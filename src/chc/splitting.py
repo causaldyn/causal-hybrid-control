@@ -16,6 +16,13 @@ from jax import Array
 from chc.dynamics import Dynamics
 from chc.integrate import rk4_step
 
+__all__ = [
+    "exact_linear_flow",
+    "lie_trotter_step",
+    "residual_flow",
+    "strang_marchuk_step",
+]
+
 Flow = Callable[[Array, float], Array]
 
 

@@ -31,6 +31,12 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.typing import NDArray
 
+__all__ = [
+    "ColumnData",
+    "ColumnFrame",
+    "as_columns",
+]
+
 # The values a reader of numbers takes from an object column. ``int`` covers ``bool``; NumPy's
 # integers cover ``timedelta64``, a duration, which ``_not_numbers`` refuses by name.
 _REAL: tuple[type, ...] = (int, float, Decimal, Fraction, np.bool_, np.integer, np.floating)
