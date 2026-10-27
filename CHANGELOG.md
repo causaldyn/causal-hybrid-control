@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). From 1.0.0 the stable tier follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
-experimental may change in any release (`docs/api/index.md`).
+experimental may change in any minor release (`docs/api/index.md`).
 
 ## [Unreleased]
 
@@ -48,8 +48,8 @@ semantic versioning. No default and no number moves. To prepare, run your suite 
 - **The stability promise.** From 1.0 the stable tier follows semantic versioning: a change that
   breaks it waits for the next major and gets a deprecation cycle first. The evolving tier may gain
   keyword arguments and change a default in a minor, with a changelog entry arguing why;
-  `chc.research` and the names marked experimental may change or be withdrawn in any release
-  (`docs/api/index.md`). The classifier is `Development Status :: 5 - Production/Stable`.
+  `chc.research` and the names marked experimental may change or be withdrawn in any minor
+  release (`docs/api/index.md`). The classifier is `Development Status :: 5 - Production/Stable`.
 
 ## [0.24.1] — 2026-10-28
 

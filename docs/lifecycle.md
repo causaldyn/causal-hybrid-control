@@ -11,7 +11,7 @@ A decision taken from logs goes through six stages:
 
 This page files the library by stage. For each stage it lists what is built, where it is
 documented, and what is not built yet. Every name below is importable from `chc`. Entries marked
-*experimental* may change or be withdrawn in any release; see the
+*experimental* may change or be withdrawn in any minor release; see the
 [stability tiers](api/index.md).
 
 ## 1. Identify: what the logs can say about the levers

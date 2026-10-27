@@ -64,7 +64,7 @@ pre-registered study it is the plant of, for the discount model `dlm`, the lift 
 budget's split `allocation` on an external media-mix generator, for the gate `misspecification`
 on the zone plant, for the response curves `response` in the plans they warm-start, and for
 the geo world `geo_world` in the geo models scored on it. They may change or be withdrawn in
-any release. Pin an exact version if you depend on one.
+any minor release. Pin an exact version if you depend on one.
 
 87 entries in modules of other tiers are experimental on the same terms, for the same
 reason. An entry is a name, `Class.member` for a field or a method, `function(argument=)` for an
@@ -108,7 +108,7 @@ argument, or a value or key in quotes:
 The modules of [`chc.research`](research/index.md): each carries one research result — a solver, a
 certificate, a benchmark or a case study's plant — rather than a stage of a decision taken from
 logs, and the research halves of `regret`, `games` and `residual` sit beside them. They are outside
-the surface 0.20.0 freezes: any of them may change or be withdrawn in any release, and `import chc`
+the surface 0.20.0 freezes: any of them may change or be withdrawn in any minor release, and `import chc`
 imports none of them. The paths they had before 0.19.0 were deleted in 0.20.0: import each name
 from its path in `chc.research`.
 
