@@ -76,8 +76,13 @@ def callaway_santanna(
     Universal base period ``g - 1``:
     ``ATT(g,t) = E[Y_t - Y_{g-1} | G=g] - E[Y_t - Y_{g-1} | control]``. ``event_study`` aggregates
     by relative time ``e = t - g``; ``overall`` is the size-weighted mean of post-treatment effects.
+
+    A group is ``never_treated`` or a period of the panel, ``0..T-1``; any other label is refused,
+    naming its row, here and in :func:`twoway_fixed_effects_att`, :func:`de_chaisemartin` and
+    :func:`callaway_santanna_inference`. A unit first treated after the panel is never treated
+    within it, and is labelled ``never_treated``.
     """
-    outcomes, group = _panel(outcomes, group)
+    outcomes, group = _panel(outcomes, group, never_treated)
     n_periods = int(outcomes.shape[1])
     treated_groups = tuple(sorted({int(g) for g in group.tolist() if g != never_treated}))
     sizes = {g: int(np.sum(group == g)) for g in treated_groups}
@@ -118,11 +123,23 @@ def callaway_santanna(
     return GroupTimeATT(att, event_study, overall, treated_groups, n_periods)
 
 
-def _panel(outcomes: Outcomes, group: Groups) -> tuple[Outcomes, Groups]:
+def _panel(outcomes: Outcomes, group: Groups, never_treated: int) -> tuple[Outcomes, Groups]:
     outcomes = np.asarray(_real_numbers(outcomes, "outcomes"), dtype=np.float64)
     group = _groups(group)
     if outcomes.ndim != 2 or group.shape != (outcomes.shape[0],):
         msg = "outcomes must be (N, T) and group (N,) with matching N"
+        raise ValueError(msg)
+    n_periods = outcomes.shape[1]
+    # -2 marked the last two periods treated in TWFE and dropped the unit from CS's controls, and
+    # a period past the panel crashed CS where TWFE and DID_M read it as never treated
+    outside = np.flatnonzero((group != never_treated) & ((group < 0) | (group >= n_periods)))
+    if outside.size:
+        row = int(outside[0])
+        msg = (
+            f"group is {int(group[row])} at row {row}, outside the panel's 0..{n_periods - 1} "
+            f"and not never_treated, {never_treated}: a unit first treated after the panel is "
+            "never treated within it"
+        )
         raise ValueError(msg)
     if not np.isfinite(outcomes).all():
         # a cell's mean would carry a nan, where diff-diff drops the unit-period and reads the rest
@@ -237,9 +254,8 @@ def callaway_santanna_inference(
     Needs the ``did`` extra (``pip install 'causal-hybrid-control[did]'``).
 
     Raises:
-        ValueError: on :func:`callaway_santanna`'s refusals; a first-treated period outside the
-            panel, where a unit first treated after it is never treated within it; a panel with
-            no cell after treatment; ``alpha`` outside ``(0, 1)``; fewer than two draws.
+        ValueError: on :func:`callaway_santanna`'s refusals; a panel with no cell after
+            treatment; ``alpha`` outside ``(0, 1)``; fewer than two draws.
         RuntimeError: when diff-diff's estimates do not reproduce these, which would put the
             intervals around another estimate.
     """
@@ -249,14 +265,8 @@ def callaway_santanna_inference(
     if draws < 2:
         msg = f"draws must be at least 2, got {draws}"
         raise ValueError(msg)
-    outcomes, group = _panel(outcomes, group)
+    outcomes, group = _panel(outcomes, group, never_treated)
     n_periods = int(outcomes.shape[1])
-    outside = sorted(
-        {int(g) for g in group.tolist() if g != never_treated and not 0 <= g < n_periods}
-    )
-    if outside:
-        msg = f"group holds first-treated periods outside the panel's 0..{n_periods - 1}: {outside}"
-        raise ValueError(msg)
     estimate = callaway_santanna(outcomes, group, control=control, never_treated=never_treated)
     if math.isnan(estimate.overall):
         msg = "no cohort has a cell after its treatment with a clean control: nothing to infer"
@@ -374,7 +384,7 @@ def twoway_fixed_effects_att(
     ``D[i,t] = 1{t >= group[i]}``. Under staggered timing with dynamic effects this is a
     negative-weighted average of the ``ATT(g,t)`` (Goodman-Bacon), not the average effect.
     """
-    outcomes, group = _panel(outcomes, group)
+    outcomes, group = _panel(outcomes, group, never_treated)
     treated = np.zeros_like(outcomes)
     for i, g in enumerate(group.tolist()):
         if g != never_treated:
@@ -400,7 +410,7 @@ def de_chaisemartin(outcomes: Outcomes, group: Groups, *, never_treated: int = -
     the effect at the moment of switching (relative time ``e = 0``), not the size-weighted average
     over post periods -- a growing effect yields the first-period impact, not the overall ATT.
     """
-    outcomes, group = _panel(outcomes, group)
+    outcomes, group = _panel(outcomes, group, never_treated)
     n_periods = int(outcomes.shape[1])
     numerator = denominator = 0.0
     for t in range(1, n_periods):
