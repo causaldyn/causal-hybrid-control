@@ -1,0 +1,124 @@
+/* The per-period intervals and the residual check of chc.scm.blank_period_inference under
+   serial = "ar1".
+
+   The treated unit's gaps follow u_t = mu + n_t, n_t = rho n_(t-1) + e_t, e i.i.d. with variance
+   sigma^2; after treatment u_k = tau_k + mu + n_k. The innovations e~_t = u_t - rho u_(t-1) =
+   (1 - rho) mu + e_t carry the gaps' level. u_0 is the last blank gap; the T blank periods give T
+   innovations, the first against the last fitting period's gap.
+
+   STEP 1  u_k - rho^k u_0 - tau_k = sum_(j=1..k) rho^(k-j) e~_j, for k = 1 .. 5
+   STEP 2  a_k = sum_(j<k) rho^j and v_k = sum_(j<k) rho^(2j), the code's cumulative sums, have
+           the closed forms (1 - rho^k)/(1 - rho) and (1 - rho^(2k))/(1 - rho^2); the k-step
+           error's mean is m a_k for m = (1 - rho) mu, which is mu (1 - rho^k)
+   STEP 3  with m^ the mean of the T blank innovations, independent of the post ones,
+           W_k - m^ a_k has mean 0 and variance sigma^2 (v_k + a_k^2 / T); so with s^2 their
+           sample variance, independent of m^ under normal innovations, the ratio
+           (W_k - m^ a_k)/(s sqrt(v_k + a_k^2/T)) is Student's t with T - 1 degrees of freedom
+   STEP 4  scipy.special.stdtrit, which the code calls, against the t quantile's closed forms at
+           2 and 4 degrees of freedom (Shaw, J. Comput. Finance 9(4), 2006), to 1e-14, and against
+           Maxima's quantile_student_t, a numerical root, to 1e-7 at 9
+   STEP 5  the interval at a sample path, in exact arithmetic and the t quantile, against the value
+           tests/test_scm_blank_inference.py pins for chc.scm._ar1_intervals
+   STEP 6  the check: an i.i.d. series of n terms of variance sigma^2, less its mean, has
+           E[sum_t e_t e_(t+h)] = -sigma^2 (n - h)/n for h >= 1 and E[sum_t e_t^2] = sigma^2 (n - 1),
+           expanded at n = 6 for h = 1, 2
+   STEP 7  a chi-square with 2 degrees of freedom has the tail exp(-q/2)
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/scm_ar1_intervals.mac */
+
+display2d : false$
+fpprintprec : 10$
+load("distrib")$
+pass(ok) := if ok then "(PASS)" else "(FAIL)"$
+
+/* STEP 1 */
+n0 : u0 - mu$
+nk[k] := if k = 0 then n0 else rho*nk[k - 1] + e[k]$
+etil(j) := (1 - rho)*mu + e[j]$
+s1 : makelist(ratsimp((tau + mu + nk[k]) - rho^k*u0 - tau - sum(rho^(k - j)*etil(j), j, 1, k)),
+              k, 1, 5)$
+print("STEP 1  u_k - rho^k u_0 - tau_k less the weighted innovations, k = 1..5:", s1,
+      pass(s1 = [0, 0, 0, 0, 0]))$
+
+/* STEP 2 */
+a(k) := sum(rho^j, j, 0, k - 1)$
+v(k) := sum(rho^(2*j), j, 0, k - 1)$
+s2a : makelist(ratsimp(a(k) - (1 - rho^k)/(1 - rho)), k, 1, 5)$
+s2b : makelist(ratsimp(v(k) - (1 - rho^(2*k))/(1 - rho^2)), k, 1, 5)$
+s2c : makelist(ratsimp((1 - rho)*mu*a(k) - mu*(1 - rho^k)), k, 1, 5)$
+print("STEP 2  a_k, v_k less their closed forms, m a_k less mu (1 - rho^k):", s2a, s2b, s2c,
+      pass(s2a = [0, 0, 0, 0, 0] and s2b = [0, 0, 0, 0, 0] and s2c = [0, 0, 0, 0, 0]))$
+
+/* STEP 3: T = 3 blank innovations b[i], k = 3 post ones e[j], all i.i.d. with mean m and
+   variance sigma^2; E[x y] = m^2 + sigma^2 [x = y] over the symbols */
+expect2(expr) := block([p : expand(expr), syms : append(makelist(b[i], i, 1, 3),
+                                                        makelist(e[j], j, 1, 3))],
+  p : expand(subst(map(lambda([x], x = m + z[x]), syms), p)),
+  /* z centred, independent, each of variance sigma^2 */
+  p : expand(p),
+  for x in syms do (
+    p : ratsubst(sigma^2, z[x]^2, p),
+    p : subst(z[x] = 0, p)),
+  p)$
+W3 : sum(rho^(3 - j)*e[j], j, 1, 3)$
+mhat : sum(b[i], i, 1, 3)/3$
+num : W3 - mhat*a(3)$
+mean3 : ratsimp(expect2(num) )$
+var3 : ratsimp(expect2(num^2) - mean3^2)$
+s3 : ratsimp(var3 - sigma^2*(v(3) + a(3)^2/3))$
+print("STEP 3  E[W_3 - m^ a_3] =", mean3, "; its variance less sigma^2 (v_3 + a_3^2/3):", s3,
+      pass(mean3 = 0 and s3 = 0))$
+
+/* STEP 4: the values scipy.special.stdtrit(df, p) returns */
+scipy_t : [[4, 0.9, 1.533206274058944], [4, 0.95, 2.1318467863266495],
+           [4, 0.975, 2.7764451051977934], [9, 0.95, 1.833112932656237],
+           [2, 0.9, 1.8856180831641272]]$
+t2(p) := (2*p - 1)/sqrt(2*p*(1 - p))$
+t4(p) := block([al : 4*p*(1 - p)],
+  signum(p - 1/2)*2*sqrt(cos(acos(sqrt(al))/3)/sqrt(al) - 1))$
+closed(df, p) := if df = 2 then t2(p) else if df = 4 then t4(p) else false$
+gap4 : lmax(map(lambda([r], if r[1] = 9 then 0
+                              else abs(bfloat(closed(r[1], rationalize(r[2]))) - r[3])), scipy_t))$
+gap4b : abs(quantile_student_t(0.95, 9) - 1.833112932656237)$
+print("STEP 4  largest gap between scipy's quantiles and the closed forms:", gap4,
+      "; at 9 degrees of freedom, against quantile_student_t:", gap4b,
+      pass(gap4 < 1e-14 and gap4b < 1e-7))$
+
+/* STEP 5: last fitting gap 3/10, blank gaps -1/2, 11/10, 2/5, post gaps 9/10, -1/5; rho = 3/5,
+   alpha = 1/5 */
+path : [3/10, -1/2, 11/10, 2/5, 9/10, -1/5]$
+r5 : 3/5$
+inn : makelist(path[i + 1] - r5*path[i], i, 1, 3)$
+mbar : sum(inn[i], i, 1, 3)/3$
+sd5 : sqrt(sum((inn[i] - mbar)^2, i, 1, 3)/2)$
+q5 : t2(9/10)$
+ends : makelist(block([c, rad],
+    c : path[4 + k] - r5^k*path[4] - mbar*subst(rho = r5, a(k)),
+    rad : q5*sd5*sqrt(subst(rho = r5, v(k) + a(k)^2/3)),
+    float([c - rad, c + rad])), k, 1, 2)$
+pinned : [[-1.8881260380920215, 2.9014593714253545], [-3.674807897148537, 2.4961412304818706]]$
+gap5 : lmax(map(lambda([x, y], abs(x - y)), flatten(ends), flatten(pinned)))$
+print("STEP 5  the intervals:", ends, "; largest gap to the pinned values:", gap5,
+      pass(gap5 < 1e-12))$
+
+/* STEP 6 */
+nn : 6$
+x6 : makelist(f[t], t, 1, nn)$
+xbar : sum(f[t], t, 1, nn)/nn$
+dm : makelist(f[t] - xbar, t, 1, nn)$
+iid(expr) := block([p : expand(expr)],
+  for t : 1 thru nn do p : ratsubst(sigma^2, f[t]^2, p),
+  for t : 1 thru nn do p : subst(f[t] = 0, p),
+  p)$
+lagsum(h) := sum(dm[t]*dm[t + h], t, 1, nn - h)$
+s6 : [ratsimp(iid(lagsum(1)) + sigma^2*(nn - 1)/nn), ratsimp(iid(lagsum(2)) + sigma^2*(nn - 2)/nn),
+      ratsimp(iid(sum(dm[t]^2, t, 1, nn)) - sigma^2*(nn - 1))]$
+print("STEP 6  lag 1, lag 2 and the squares less their null means at n = 6:", s6,
+      pass(s6 = [0, 0, 0]))$
+
+/* STEP 7 */
+assume(qq > 0)$
+s7 : ratsimp(integrate(exp(-x/2)/2, x, qq, inf) - exp(-qq/2))$
+gap7 : lmax(map(lambda([qv], abs(1 - cdf_chi2(qv, 2) - exp(-qv/2))), [0.5, 2.0, 5.99, 9.21]))$
+print("STEP 7  the tail less exp(-q/2):", s7, "; against cdf_chi2 at sample points:", gap7,
+      pass(s7 = 0 and gap7 < 1e-14))$

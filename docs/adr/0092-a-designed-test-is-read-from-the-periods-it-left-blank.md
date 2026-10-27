@@ -138,6 +138,9 @@ ran from scratch scripts beside the bench, on the same panel generator.
   5.0%. A design that looked at `B` still breaks it: 7.2%.
 - **Persistence breaks the intervals too.** At 0.8 the 80% intervals covered 70.7%. `"ar1"` does
   not change them.
+  *2026-10-27, ADR 0146:* under `"ar1"` they are the `k`-step forecast's t prediction intervals
+  from the blank periods' innovations, and covered 79.6% at 0.8; the field `ar_check_p_value`
+  checks the AR(1) model on the donors' gaps.
 - **The blank periods leave the fit.** The weights see 15 periods, not 20. The p-value moves in
   steps of `1/|Π|`: 1/252 with 5 blank and 5 post periods, 1/6 with 1 blank period, so then no test
   at 5% rejects.
@@ -147,8 +150,10 @@ ran from scratch scripts beside the bench, on the same panel generator.
 - **A check of the AR(1) model.** Gaps that follow an AR(2), or factors and errors with
   different coefficients, are filtered only in part. `chc.dynamics_id.persistence_check`
   (ADR 0064) reads persistence in a fitted channel, not in a synthetic control's gaps.
+  *2026-10-27, ADR 0146:* built, as a portmanteau on the donors' filtered gaps.
 - **Intervals for persistent gaps.** One period's effect is not one innovation's, so the
   split-conformal intervals have no filtered form here.
+  *2026-10-27, ADR 0146:* built under `"ar1"`, as the `k`-step forecast's prediction intervals.
 - **A random sample of the arrangements** (above).
 - **Blank periods other than the last ones before treatment** (above).
 - **Abadie and Zhao's designs**, which choose treated and control units together as weighted

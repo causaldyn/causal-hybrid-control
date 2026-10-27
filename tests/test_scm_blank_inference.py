@@ -3,14 +3,16 @@ arrangements its theorem averages over, and the size of a designed test by Monte
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import math
 from fractions import Fraction
 
 import numpy as np
 import pytest
+from scipy import stats
 
-from chc.scm import blank_period_inference, synthetic_control
+from chc.scm import _ar1_intervals, blank_period_inference, synthetic_control
 
 
 def _panel(seed: int, units: int = 12, periods: int = 25, effect: float = 0.0) -> np.ndarray:
@@ -256,16 +258,18 @@ def test_ar1_a_tie_that_rounding_splits_counts_as_a_tie() -> None:
     assert found.p_value == 1.0
 
 
-def test_ar1_changes_the_p_value_only() -> None:
+def test_ar1_changes_the_p_value_and_the_intervals_only() -> None:
     outcomes = _ar_panel(8, 0.5)
     default = blank_period_inference(outcomes, 3, 20, 5, alpha=0.2)
     assert default.ar_coefficient is None
+    assert default.ar_check_p_value is None
     named = blank_period_inference(outcomes, 3, 20, 5, alpha=0.2, serial="exchangeable")
     assert named.p_value == default.p_value
     assert named.ar_coefficient is None
+    np.testing.assert_array_equal(named.intervals, default.intervals)
     ar1 = blank_period_inference(outcomes, 3, 20, 5, alpha=0.2, serial="ar1")
+    assert not np.array_equal(ar1.intervals, default.intervals)
     for found in (named, ar1):
-        np.testing.assert_array_equal(found.intervals, default.intervals)
         np.testing.assert_array_equal(found.blank_gaps, default.blank_gaps)
         np.testing.assert_array_equal(found.estimate.att, default.estimate.att)
         np.testing.assert_array_equal(found.estimate.weights, default.estimate.weights)
@@ -313,3 +317,149 @@ def test_ar1_refuses_what_it_cannot_read() -> None:
     long = _ar_panel(10, 0.5, units=4, periods=36)
     with pytest.raises(ValueError, match="1186680 arrangements"):
         blank_period_inference(long, 0, 31, 28, serial="ar1")
+
+
+def _digest(values: list) -> str:
+    """Rounded to ten digits, so that a last bit a BLAS or a CPU moves does not move it."""
+    text = repr([f"{v:.10g}" if isinstance(v, float) else v for v in values])
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_the_exchangeable_reading_and_the_ar1_test_are_what_they_were() -> None:
+    """Six panels with AR(0.5) errors and effects 0 to 2.5, at ``alpha`` 0.05 and 0.2: the
+    exchangeable reading's every output, and the ``"ar1"`` reading's p-value, coefficient and
+    blank gaps, digested as the previous release produced them."""
+    exchangeable: list = []
+    ar1: list = []
+    for seed in range(6):
+        rng = np.random.default_rng(seed)
+        units, periods = 12, 25
+        errors = np.empty((units, periods))
+        errors[:, 0] = rng.normal(size=units)
+        for t in range(1, periods):
+            errors[:, t] = 0.5 * errors[:, t - 1] + rng.normal(size=units)
+        outcomes = (
+            rng.normal(size=(units, 1))
+            + rng.uniform(0, 1, (units, 3)) @ rng.normal(size=(periods, 3)).T
+            + errors
+        )
+        outcomes[0, -5:] += 0.5 * seed
+        for alpha in (0.05, 0.2):
+            found = blank_period_inference(outcomes, 0, 20, 5, alpha=alpha)
+            exchangeable += [found.p_value, found.arrangements, found.estimate.overall]
+            exchangeable += found.intervals.ravel().tolist() + found.blank_gaps.tolist()
+            serial = blank_period_inference(outcomes, 0, 20, 5, alpha=alpha, serial="ar1")
+            ar1 += [serial.p_value, serial.ar_coefficient, serial.arrangements]
+            ar1 += serial.blank_gaps.tolist()
+    assert _digest(exchangeable) == (
+        "63c57cacb67276ad8a5dcf2c94a52c5fbf945e98dc810027c0f7b7816d0bfb77"
+    )
+    assert _digest(ar1) == "84a324364ebc9cef97bb7002edd3a5954847b7edc9c1a7c9b524340d0ba9340a"
+
+
+def test_ar1_intervals_are_the_t_prediction_intervals_maxima_computes() -> None:
+    """The last fitting gap 0.3, blank gaps -0.5, 1.1 and 0.4, post gaps 0.9 and -0.2, at
+    coefficient 0.6 and ``alpha = 0.2``: the endpoints ``validation/scm_ar1_intervals.mac``
+    computes from the closed form of the t quantile at 2 degrees of freedom."""
+    path = np.array([0.3, -0.5, 1.1, 0.4, 0.9, -0.2])
+    found = _ar1_intervals(path[1:4] - 0.6 * path[:3], 0.4, path[4:], 0.6, 0.2)
+    expected = [[-1.8881260380920215, 2.9014593714253545], [-3.674807897148537, 2.4961412304818706]]
+    np.testing.assert_allclose(found, expected, rtol=0, atol=1e-12)
+    one = _ar1_intervals(np.array([0.5]), 0.4, path[4:], 0.6, 0.2)
+    assert np.isinf(one).all()
+
+
+def test_ar1_intervals_read_the_gaps_innovations_written_out() -> None:
+    """Through the public reading: the gaps' innovations over the blank periods, the first against
+    the last fitting period's gap, and each post period's k-step forecast from the last blank
+    gap, ``rho^k u_0`` plus the innovations' mean times ``1 + rho + .. + rho^(k-1)``."""
+    outcomes = _ar_panel(8, 0.5)
+    found = blank_period_inference(outcomes, 3, 20, 5, alpha=0.1, serial="ar1")
+    rho = found.ar_coefficient
+    assert rho is not None
+    gaps = outcomes[3] - np.delete(outcomes, 3, axis=0).T @ found.estimate.weights
+    innovations = gaps[15:20] - rho * gaps[14:19]
+    mean, spread = innovations.mean(), innovations.std(ddof=1)
+    quantile = stats.t.ppf(0.95, 4)
+    for k in range(1, 6):
+        level = sum(rho**j for j in range(k))
+        variance = sum(rho ** (2 * j) for j in range(k)) + level**2 / 5
+        centre = gaps[19 + k] - rho**k * gaps[19] - mean * level
+        radius = quantile * spread * math.sqrt(variance)
+        np.testing.assert_allclose(
+            found.intervals[k - 1], [centre - radius, centre + radius], rtol=1e-12, atol=1e-12
+        )
+
+
+@pytest.mark.parametrize("rho", [0.0, 0.5, 0.8])
+def test_ar1_intervals_cover_at_their_level_where_the_errors_persist(rho: float) -> None:
+    """1000 designed panels a coefficient, factors and errors AR(1), 19 donors, 15 fitting, 5 blank
+    and 5 post periods, a constant effect of 1. The ``"ar1"`` intervals cover each post period's
+    effect within three binomial standard errors of 1000 panels of ``1 - alpha``, at 0.1, where
+    5 blank periods leave the exchangeable reading's intervals unbounded, and at 0.2. Each panel's
+    share of its 5 periods has a variance at most ``p (1 - p)``, so the bound is conservative.
+    The AR(1) check holds its size, within three standard errors of 5%."""
+    panels = 1000
+    covers = {0.1: 0.0, 0.2: 0.0}
+    checks = 0
+    for seed in range(panels):
+        outcomes = _ar_panel(3000 + seed, rho)
+        fits = [synthetic_control(outcomes, unit, 15).pre_rmspe for unit in range(20)]
+        treated = int(np.argmin(fits))
+        outcomes[treated, 20:] += 1.0
+        for alpha in covers:
+            found = blank_period_inference(outcomes, treated, 20, 5, alpha=alpha, serial="ar1")
+            lo, hi = found.intervals.T
+            covers[alpha] += float(np.mean((lo <= 1.0) & (hi >= 1.0)))
+        assert found.ar_check_p_value is not None
+        checks += found.ar_check_p_value <= 0.05
+    for alpha, total in covers.items():
+        level = 1.0 - alpha
+        assert abs(total / panels - level) <= 3 * math.sqrt(level * alpha / panels)
+    assert checks / panels <= 0.05 + 3 * math.sqrt(0.05 * 0.95 / panels)
+
+
+def _ar2_panel(seed: int, phi: tuple[float, float], units: int = 20, periods: int = 25):
+    """``_ar_panel``'s, factors AR(1) with coefficient ``phi[0]`` and errors AR(2) with
+    ``phi``, both from 50 periods of burn-in."""
+    rng = np.random.default_rng(seed)
+    factors = np.zeros((periods + 50, 3))
+    errors = np.zeros((units, periods + 50))
+    for t in range(2, periods + 50):
+        factors[t] = phi[0] * factors[t - 1] + rng.normal(size=3)
+        errors[:, t] = phi[0] * errors[:, t - 1] + phi[1] * errors[:, t - 2]
+        errors[:, t] += rng.normal(size=units)
+    loadings = rng.uniform(0.0, 1.0, (units, 3))
+    return rng.normal(size=(units, 1)) + loadings @ factors[50:].T + errors[:, 50:]
+
+
+def test_ar1_check_reads_the_donors_innovations_written_out_and_sees_an_ar2() -> None:
+    """The check, written out on one panel: each donor's gaps from the others fitted on the first
+    8 periods, filtered by the coefficient, less their own mean; per period, the products at lags
+    1 and 2 summed over the donors; each lag's total less ``-(n - h) / n`` times the squares'
+    total over ``n - 1``, over the spread of its per-period sums. And on 100 panels whose errors
+    are AR(2) with coefficients 0.5 and 0.3, it rejects at 5% on more than 40% of 300 panels,
+    where under an AR(1) it rejects on at most 5% plus three standard errors."""
+    outcomes = _ar_panel(11, 0.5)
+    found = blank_period_inference(outcomes, 0, 20, 5, serial="ar1")
+    rho = found.ar_coefficient
+    assert rho is not None
+    donors = outcomes[1:]
+    gaps = np.array([synthetic_control(donors, j, 8).att for j in range(donors.shape[0])])
+    e = gaps[:, 1:] - rho * gaps[:, :-1]
+    e -= e.mean(axis=1, keepdims=True)
+    n = e.shape[1]
+    q = 0.0
+    for h in (1, 2):
+        sums = [float(np.sum(e[:, t] * e[:, t - h])) for t in range(h, n)]
+        null = -(n - h) / n * float(np.sum(e**2)) / (n - 1)
+        q += (sum(sums) - null) ** 2 / (len(sums) * float(np.var(sums, ddof=1)))
+    assert found.ar_check_p_value == pytest.approx(stats.chi2.sf(q, 2), rel=1e-9, abs=0.0)
+    rejects = 0
+    for seed in range(300):
+        panel = _ar2_panel(4000 + seed, (0.5, 0.3))
+        fits = [synthetic_control(panel, unit, 15).pre_rmspe for unit in range(20)]
+        found = blank_period_inference(panel, int(np.argmin(fits)), 20, 5, serial="ar1")
+        assert found.ar_check_p_value is not None
+        rejects += found.ar_check_p_value <= 0.05
+    assert rejects / 300 > 0.4

@@ -26,9 +26,10 @@ interval covers the effect, excludes 0, leaves out the estimate, is empty or is 
 median width.
 
 The blank section reports the test's rejections at 5% and 10%, the same for its serial="ar1"
-reading with the mean and spread of the AR(1) coefficient that reading estimates, and at alpha =
-0.05, 0.10 and 0.20 how often each period's interval covers its effect, how many are unbounded, and
-their median width.
+reading with the mean and spread of the AR(1) coefficient that reading estimates and how often its
+check of the AR(1) model rejects at 5% and 10%, and at alpha = 0.05, 0.10 and 0.20, for each
+reading, how often each period's interval covers its effect, how many are unbounded, and their
+median width.
 
 Run: uv run python scripts/bench_scm_inference.py {size,power,designed,blank} [--replicates N]
      [--workers W]
@@ -153,17 +154,24 @@ def _blank_replicate(job) -> dict:
         fits = [synthetic_control(outcomes, unit, n_seen).pre_rmspe for unit in range(donors + 1)]
         treated = int(np.argmin(fits))
     outcomes[treated, N_PRE:] += effect
-    ar1 = blank_period_inference(outcomes, treated, N_PRE, n_blank, serial="ar1")
-    row: dict = {"p_ar1": ar1.p_value, "ar_coefficient": ar1.ar_coefficient}
+    row: dict = {}
     for alpha in BLANK_ALPHAS:
-        found = blank_period_inference(outcomes, treated, N_PRE, n_blank, alpha=alpha)
-        row["p"] = found.p_value
-        lo, hi = found.intervals.T
-        row[alpha] = {
-            "covers": int(np.sum((lo <= effect) & (effect <= hi))),
-            "unbounded": int(np.sum(np.isinf(hi))),
-            "widths": [float(w) for w in hi - lo if math.isfinite(w)],
-        }
+        for serial in ("exchangeable", "ar1"):
+            found = blank_period_inference(
+                outcomes, treated, N_PRE, n_blank, alpha=alpha, serial=serial
+            )
+            if serial == "ar1":
+                row["p_ar1"] = found.p_value
+                row["ar_coefficient"] = found.ar_coefficient
+                row["ar_check"] = found.ar_check_p_value
+            else:
+                row["p"] = found.p_value
+            lo, hi = found.intervals.T
+            row[(serial, alpha)] = {
+                "covers": int(np.sum((lo <= effect) & (effect <= hi))),
+                "unbounded": int(np.sum(np.isinf(hi))),
+                "widths": [float(w) for w in hi - lo if math.isfinite(w)],
+            }
     return row
 
 
@@ -188,13 +196,17 @@ def _blank_summary(case, rows: list[dict]) -> dict:
         "mean": round(float(np.mean(coefficients)), 4),
         "sd": round(float(np.std(coefficients)), 4),
     }
-    for alpha in BLANK_ALPHAS:
-        widths = [w for r in rows for w in r[alpha]["widths"]]
-        out[f"interval_{alpha:.2f}"] = {
-            "covers": _rate(sum(r[alpha]["covers"] for r in rows), n * N_POST),
-            "unbounded": sum(r[alpha]["unbounded"] for r in rows),
-            "median_width": round(float(np.median(widths)), 4) if widths else None,
-        }
+    for level in (0.05, 0.10):
+        out[f"ar1_check_rejects_{level:.2f}"] = _rate(sum(r["ar_check"] <= level for r in rows), n)
+    for serial, prefix in (("exchangeable", ""), ("ar1", "ar1_")):
+        for alpha in BLANK_ALPHAS:
+            cells = [r[(serial, alpha)] for r in rows]
+            widths = [w for cell in cells for w in cell["widths"]]
+            out[f"{prefix}interval_{alpha:.2f}"] = {
+                "covers": _rate(sum(cell["covers"] for cell in cells), n * N_POST),
+                "unbounded": sum(cell["unbounded"] for cell in cells),
+                "median_width": round(float(np.median(widths)), 4) if widths else None,
+            }
     return out
 
 
