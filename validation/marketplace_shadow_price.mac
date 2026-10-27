@@ -14,6 +14,12 @@
            level -3/2, in 40 digits: the floors from Lambert's W, the structure (zone 3 past its
            demand, zone 4 below, zone 2 between its floor and its demand), and dV/dB from central
            differences of V and B in the level against the closed form
+   STEP 5  the stalled level: three zones at a (1, 4/5, 1/5), the free level mu_f where the floors
+           fill the drivers; lowering it by delta through zone p alone costs
+           phi_p(g_p(mu_f - delta) + D) - (mu_f - delta), D = 1 - sum g(mu_f - delta), and that is
+           at most delta * sum_j q(g_j(mu_f)) / q(g_p(mu_f - delta)) (phi concave, g convex), at
+           delta 1e-3, 1e-6 and 1e-9 and each p; and with T empty the closed form of STEP 2 is at
+           most m*beta*q_p, so a budget B below that cost buys under m*beta*delta/B a unit
 
    Run: timeout 300 maxima --very-quiet -Q -b validation/marketplace_shadow_price.mac */
 
@@ -69,3 +75,30 @@ closed4 : m0*b0*qn(share2(mu0))*qn(floor_at(mu0, 3))
           / (2*qn(share2(mu0)) + qn(floor_at(mu0, 3)) + qn(floor_at(mu0, 4)))$
 print("STEP 4  dV/dB from central differences and in closed form:", float(fd), float(closed4),
       verdict(abs(fd - closed4) < 1b-20))$
+
+/* STEP 5 */
+a5 : [1b0, 0.8b0, 0.2b0]$
+floor5(lev, j) := bfloat(lambert_w(b0*c0*exp(b0*(lev + a5[j]))))/(b0*c0)$
+phi5(x, j) := log(x)/b0 + c0*x - a5[j]$
+filled5(lev) := floor5(lev, 1) + floor5(lev, 2) + floor5(lev, 3)$
+lo5 : -10b0$ hi5 : 10b0$
+for k : 1 thru 200 do block([mid : (lo5 + hi5)/2],
+  if filled5(mid) >= 1 then hi5 : mid else lo5 : mid)$
+muf : hi5$
+print("STEP 5  the free level and its floors' sum less 1:", float(muf), float(filled5(muf) - 1),
+      verdict(abs(filled5(muf) - 1) < 1b-30))$
+qsum : qn(floor5(muf, 1)) + qn(floor5(muf, 2)) + qn(floor5(muf, 3))$
+checks5 : []$
+for dl in [1b-3, 1b-6, 1b-9] do
+  for p : 1 thru 3 do block([lev : muf - dl, dd, cost, bound],
+    dd : 1 - filled5(lev),
+    cost : phi5(floor5(lev, p) + dd, p) - lev,
+    bound : dl*qsum/qn(floor5(lev, p)),
+    checks5 : endcons(is(dd > 0 and cost > 0 and cost <= bound), checks5),
+    print("STEP 5  delta", float(dl), "zone", p, "cost", float(cost), "bound", float(bound)))$
+print("STEP 5  every cost positive and within its bound:", verdict(every(lambda([e], e), checks5)))$
+/* with T empty: m*beta*qp*QO/(qp + QR) <= m*beta*qp, since QO <= QR */
+gap5 : ratsimp(m*beta*qp - m*beta*qp*QO/(qp + QR) - m*beta*qp*(qp + QR - QO)/(qp + QR))$
+print("STEP 5  m*beta*q_p less the closed form, as m*beta*q_p*(q_p + Q_R - Q_O)/(q_p + Q_R):",
+      gap5, verdict(equal(gap5, 0)))$
+

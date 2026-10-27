@@ -82,7 +82,7 @@ with the fields it keeps, `nuisance_shift`, the `unmoved`, `moment_residual`, `i
 `gcm_test` and `GcmTest` in `chc.independence`, `LoggerCheck` in `chc.evaluation`, the
 `logger_check` field of `Prescription` and `PlanEvaluation`, the `interference` field of
 `Prescription`, `shadow_price_effect` and
-`shadow_price_interval` in `chc.matching`, `dither_check`, `DitherCheck`, `dither_size`, `DitherSize`
+`shadow_price_interval` in `chc.matching`, `dither_check`, `GradientDitherCheck`, `dither_size`, `DitherSize`
 and the `per_driver` payment of `SharedStateMarket` in `chc.marketplace`, `channel_drift_evalues`,
 `DriftAlarm`, `MissRateAlarm`, `OnlineRadius`, `channel_move`, `ChannelMove`, `MovePrice`,
 `BlockBatch` and the `alpha_futility`, `block_length` and `burn_in` fields of `GateConfig` in

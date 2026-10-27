@@ -2,7 +2,22 @@
 
 **Status:** accepted, 2026-10-27. Builds on ADR 0134 (the exact oracle) and ADR 0137 (what the
 logs identify). Moves no default: the published logs, the lump-sum world and its oracle are bit
-for bit those of 0.22.0. Removes `oracle_allocation(steps=)`, as ADR 0134 announced.
+for bit those of 0.22.0. Removes `oracle_allocation(steps=)`, as ADR 0134 announced. Amended 2026-10-27:
+`dither_check` refers its HC3 Wald to a wild bootstrap by default (`reference="wild"`,
+`draws=1999`, `seed=0`: Rademacher signs on the residual's deviations from its mean, the null's
+fit; the p-value `(1 + count)/(1 + draws)`, of Monte Carlo error 0.0049 at 0.05), keeps F as
+`reference="f"`, and refuses fewer than 4 blocks a tested direction (44 for 12 zones). Referred
+to F the true fit was rejected at 5% on 10.0% to 14.5% of 400 logs from 25 to 100 blocks on
+markets 3 and 7; the bootstrap rejected 2.8% to 6.8% from 44 to 400 blocks, and 7.5% at 25 on
+market 3, the floor's reason. `minimum_detectable` reads the bootstrap's critical value, and errs
+large: at its median norm in the hardest direction the test found the error on 98.0% of logs
+where 80% was asked. It stays experimental. `DitherCheck` is renamed `GradientDitherCheck`, apart
+from `chc.decision.DitherCheck` (ADR 0147). The simulator's equilibrium damps by
+`chc.games.congestion_damping` from `beta*congestion = 6` and raises on a solve that ends
+unconverged; below 6 the published logs keep their bits. The exact oracle's bisection no longer
+scales its resolution with the budget, which a budget of 1e16 had broken: at the published
+budget its allocation moves by at most 3.5e-14, its value by 3.2e-14, on 19 of markets 0-29 in
+float64, so the oracle is no longer bit for bit 0.22.0's.
 
 ## Context
 

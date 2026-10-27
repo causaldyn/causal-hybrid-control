@@ -153,6 +153,14 @@ FORMAL_LINKS = {
             "test_games.py::test_the_exact_allocation_carries_its_certificate",
         ),
     },
+    "chc.games.CongestionAllocation": {
+        "cites": ("marketplace_shadow_price.mac",),
+        "tests": (
+            "test_games.py::test_the_exact_allocation_s_shadow_price_is_its_value_s_slope_in_the_budget",
+            "test_games.py::test_a_budget_that_cannot_lower_the_level_a_step_has_a_shadow_price_of_zero",
+        ),
+        "via": "exact_congestion_allocation",
+    },
     "chc.games._budget_shadow_price": {
         "cites": ("marketplace_shadow_price.mac",),
         "tests": (

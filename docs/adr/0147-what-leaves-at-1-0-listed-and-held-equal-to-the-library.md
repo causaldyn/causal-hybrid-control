@@ -1,7 +1,10 @@
 # ADR 0147 — What leaves at 1.0, listed, and held equal to the library
 
 **Status:** accepted, 2026-10-27. Collects the removals that ADRs 0016, 0117, 0128 and 0130 date
-to 1.0, and states the release's procedure. Changes no behaviour in 0.24.0.
+to 1.0, and states the release's procedure. Changes no behaviour in 0.24.0. Amended 2026-10-27:
+the list gains the kind `class`, a class renamed and served under its old name by its module's
+`__getattr__` with the standard warning; its first entry is `chc.marketplace.DitherCheck`, renamed
+`GradientDitherCheck` apart from `chc.decision.DitherCheck`, a different test (ADR 0140).
 
 ## Context
 

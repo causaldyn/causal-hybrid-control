@@ -61,6 +61,40 @@ def test_report_renders_the_kantorovich_story() -> None:
     assert "surge" in text  # the dual output
 
 
+def test_the_report_states_the_plan_s_miss_rather_than_calling_it_served_in_full() -> None:
+    """At its 2000 iterations this city's plan is 2.2e-3 of the mass from its marginals, and the
+    report printed it as 100% served; with the iterations to converge it is served in full."""
+    city = MarketplaceMatching.synthetic_city(seed=3)
+    line = marketplace_report(city).splitlines()[0]
+    assert "100% served" not in line
+    assert f"{city.optimal().marginal_residual:.1e} of the mass from its marginals" in line
+    converged = MarketplaceMatching(city.supply, city.demand, city.cost, iters=16000)
+    assert "100% served" in marketplace_report(converged).splitlines()[0]
+
+
+def test_sinkhorn_refuses_marginals_of_unequal_totals() -> None:
+    """No plan meets both; the loop returned one that missed the supply by the difference, with
+    only the residual's warning."""
+    with pytest.raises(ValueError, match="equal positive totals"):
+        sinkhorn(COST, SUPPLY, DEMAND.at[0].add(1.0))
+    with pytest.raises(ValueError, match="equal positive totals"):
+        sinkhorn(COST, jnp.zeros(3), jnp.zeros(3))
+
+
+def test_a_zone_of_no_mass_leaves_the_dual_and_its_gap_finite() -> None:
+    """Its potential is -inf, which its mass of 0 used to weigh to nan in the dual."""
+    cost = jnp.array([[0.0, 1.0, 2.0], [1.0, 0.0, 1.0], [2.0, 1.0, 0.0]])
+    supply, demand = jnp.array([1.0, 0.0, 1.0]), jnp.array([0.5, 1.0, 0.5])
+    res = sinkhorn(cost, supply, demand, eps=0.05)
+    assert math.isfinite(res.duality_gap)
+    assert res.marginal_residual < 1e-12
+    finite = jnp.isfinite(res.potentials_f)
+    dual = float(
+        jnp.dot(res.potentials_f[finite], supply[finite]) + jnp.dot(res.potentials_g, demand)
+    )
+    assert res.duality_gap == pytest.approx(abs(res.transport_cost - dual), rel=1e-12, abs=0.0)
+
+
 def _sinkhorn_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     return [r for r in caplog.records if getattr(r, "chc_event", None) == "sinkhorn"]
 

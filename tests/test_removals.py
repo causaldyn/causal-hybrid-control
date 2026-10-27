@@ -125,7 +125,7 @@ def _owner(path: str) -> tuple[str, str]:
 def _renamed(entry: Removal) -> str:
     """The start of a renamed name's warning: its old name after its module, and its new one."""
     old_owner = _owner(entry.old)[0]
-    module = old_owner if entry.kind == "function" else _owner(old_owner)[0]
+    module = old_owner if entry.kind in ("function", "class") else _owner(old_owner)[0]
     return (
         rf"^{re.escape(entry.old.removeprefix(module + '.'))} is renamed "
         rf"{re.escape(_owner(entry.new)[1])} and leaves in 1\.0: \S"
@@ -137,6 +137,7 @@ def test_the_list_holds_each_kind_and_no_entry_twice() -> None:
     assert {entry.kind for entry in REMOVALS} == {
         "top-level name",
         "function",
+        "class",
         "attribute",
         "re-export",
         "record key",
@@ -180,6 +181,20 @@ def test_each_renamed_function_still_calls_its_new_name_with_a_warning_naming_it
     ]
     with pytest.warns(DeprecationWarning, match=_renamed(entry)):
         assert old(**dict.fromkeys(required)) is returned
+
+
+@pytest.mark.parametrize("entry", _of("class"), ids=lambda entry: entry.old)
+def test_each_renamed_class_is_still_served_by_its_module_with_a_warning_naming_it(
+    entry: Removal,
+) -> None:
+    """The module's ``__getattr__`` serves the old name as the new class itself, and only it."""
+    module, old = _owner(entry.old)
+    assert entry.site == f"{module}.__getattr__"
+    assert _owner(entry.new)[0] == module
+    served = importlib.import_module(module)
+    assert old not in vars(served)
+    with pytest.warns(DeprecationWarning, match=_renamed(entry)):
+        assert getattr(served, old) is _resolve(entry.new)
 
 
 @pytest.mark.parametrize("entry", _of("attribute"), ids=lambda entry: entry.old)

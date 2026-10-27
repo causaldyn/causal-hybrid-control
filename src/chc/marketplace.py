@@ -47,6 +47,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -59,6 +60,7 @@ from scipy.optimize import brentq, least_squares, lsq_linear, minimize
 from chc import _units
 from chc.frames import _real_entries
 from chc.games import (
+    congestion_damping,
     exact_congestion_allocation,
     fixed_point,
     per_driver_congestion_allocation,
@@ -73,6 +75,15 @@ paid, or a rate per driver, ``sum(u * x(u))`` the money paid."""
 _DITHER_STREAM = zlib.crc32(b"dither") | 1 << 31
 """The tag folded into a logged block's key for its dither's signs: at least ``2**31``, past the
 block's own children, so the published draws of the block do not move."""
+
+_SOLVE_TOL = 1e-6
+"""The relative residual :func:`chc.games.softmax_congestion_equilibrium` solves to by default."""
+
+_ROUNDING_ULPS = 64
+"""Units of rounding below which the market reads an equilibrium solve as converged, whatever its
+flag says: in float32 the residual of a converged solve reaches 16.6 of them, 2.0e-6, above the
+tolerance of 1e-6, on 88 of the 24,000 blocks of the logs of markets 0-29 (400 blocks each, both
+payments); in float64 the tolerance binds."""
 
 _BISECTION_STEPS = 64
 """Bisection steps for the per-driver logging policy's total: past float64's resolution."""
@@ -129,11 +140,30 @@ class SharedStateMarket:
         return demand, attract
 
     def _equilibrium(self, attract: Array, u: Array) -> Array:
-        """Solved driver distribution. ``beta*congestion = 5 < 6`` here, so the map is certified
-        contracting (:func:`chc.research.games.congestion_contraction_certificate`) and the solve
-        converges.
+        """Solved driver distribution. Below ``beta*congestion = 6`` the solve damps by 1/2, which
+        certifies the map contracting (:func:`chc.games.congestion_contraction_modulus`), and the
+        published logs keep their bits; from 6 it damps by :func:`chc.games.congestion_damping`'s
+        ``4/(4 + beta*congestion)``, which contracts for every game. At 12 zones, ``beta*congestion
+        = 20`` and the oracle's incentive, damping by 1/2 had 2-cycled at a residual of 0.26 and
+        read 11.43 rides where the equilibrium completes 12.
+
+        Raises:
+            RuntimeError: where the solve's relative residual ends above its tolerance of 1e-6,
+                or above ``_ROUNDING_ULPS`` units of rounding where that is more, inside a trace
+                too (``equinox.error_if``): the drivers it would return are not an equilibrium.
         """
-        return softmax_congestion_equilibrium(attract, u, self.congestion, self.mass, self.beta).x
+        kappa = self.beta * self.congestion
+        damping = 0.5 if kappa < 6.0 else congestion_damping(self.beta, self.congestion)
+        solved = softmax_congestion_equilibrium(
+            attract, u, self.congestion, self.mass, self.beta, damping=damping
+        )
+        floor = max(_SOLVE_TOL, _ROUNDING_ULPS * float(jnp.finfo(solved.x.dtype).eps))
+        return eqx.error_if(
+            solved.x,
+            solved.residual > floor,
+            f"the market's equilibrium solve did not converge at damping {damping:.3g}"
+            f" (beta*congestion = {kappa:.3g}): its drivers are not an equilibrium",
+        )
 
     def completions(self, u: Array) -> Array:
         """Total realised rides = sum_i min(demand_i, drivers_i) at the equilibrium."""
@@ -427,9 +457,10 @@ def calibrate_budget_scale(
 
 
 @dataclass(frozen=True)
-class DitherCheck:
+class GradientDitherCheck:
     """A Wald test of the fit's gradient in the incentive, read off a zero-sum dither
-    (:func:`dither_check`). *Experimental.*"""
+    (:func:`dither_check`). *Experimental.* Named ``DitherCheck`` before 0.24.0, a name
+    :class:`chc.decision.DitherCheck`, a different test, also holds."""
 
     # (n_zones,) the gradient of a block's completions in the incentive, the logs' less the fit's,
     # in the zero-sum directions: completions per unit of incentive, summing to zero
@@ -467,9 +498,10 @@ def _undithered(u: NDArray[np.float64], shift: NDArray[np.float64]) -> tuple[Any
     return base, base * (shift - pulled)
 
 
-def _noncentrality(df: int, level: float, power: float) -> float:
-    """The noncentrality at which a chi-square test on ``df`` degrees at ``level`` has ``power``."""
-    critical = stats.chi2.isf(level, df)
+def _noncentrality(df: int, level: float, power: float, *, critical: float | None = None) -> float:
+    """The noncentrality at which a chi-square statistic on ``df`` degrees exceeds ``critical``
+    with probability ``power``: where ``critical`` is None, the chi-square's own at ``level``."""
+    critical = stats.chi2.isf(level, df) if critical is None else critical
 
     def short(shift: float) -> float:
         return float(stats.ncx2.sf(critical, df, shift)) - power
@@ -509,6 +541,37 @@ def _dither_logs(
     return tuple(columns)
 
 
+DitherReference = Literal["wild", "f"]
+"""What :func:`dither_check` refers its Wald statistic to: ``"wild"``, a wild bootstrap of it, or
+``"f"``, the F distribution."""
+
+_BLOCKS_PER_DIRECTION = 4
+"""The fewest blocks :func:`dither_check` reads per tested direction, ``n_zones - 1`` of them: at
+2.1 a direction (25 blocks, 12 zones) the wild bootstrap rejected the true fit on 7.5% of logs at
+5% and 2.5% at 1% on market 3, 400 logs; from 4 it held its level within the Monte Carlo error."""
+
+_WILD_CHUNK = 256
+"""Bootstrap draws :func:`dither_check` reads at once: each holds ``n_blocks * n_zones`` numbers
+at a time."""
+
+
+def _hc3_walds(
+    design: NDArray[np.float64],
+    projection: NDArray[np.float64],
+    leverage: NDArray[np.float64],
+    residuals: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """The slopes, their HC3 covariance and the Wald statistic of each row of ``residuals``
+    regressed on ``design``, whose first column is the intercept: ``projection`` is
+    ``(X'X)^-1 X'``, ``leverage`` the diagonal of ``X (X'X)^-1 X'``."""
+    coefficients = residuals @ projection.T
+    left = (residuals - coefficients @ design.T) / (1.0 - leverage)
+    slopes, slopes_map = coefficients[:, 1:], projection[1:]
+    covariance = (slopes_map[None, :, :] * left[:, None, :] ** 2) @ slopes_map.T
+    wald = np.einsum("bq,bq->b", slopes, np.linalg.solve(covariance, slopes[:, :, None])[:, :, 0])
+    return slopes, covariance, wald
+
+
 def _fitted_completions(equilibrium: FittedEquilibrium) -> Callable[[Array, Array], Array]:
     dtype = equilibrium.attract.dtype
     attract = equilibrium.attract
@@ -527,7 +590,10 @@ def dither_check(
     *,
     level: float = 0.05,
     power: float = 0.8,
-) -> DitherCheck:
+    reference: DitherReference = "wild",
+    draws: int = 1999,
+    seed: int = 0,
+) -> GradientDitherCheck:
     """Whether the fit's gradient in the incentive is the logs', read off the dither
     :meth:`SharedStateMarket.generate_logs` logs (Wager and Xu 2021's local perturbations).
     *Experimental.*
@@ -540,37 +606,92 @@ def dither_check(
     ``e`` in the zero-sum directions, which is what a plan on a fixed budget reads. The fit's
     prediction as an offset makes the test model-assisted: the completions' variation with the
     demand and the scale leaves the residual, which the design-based reading, on the completions
-    alone, keeps. The Wald statistic, with the HC3 sandwich, is referred to F on ``n_zones - 1``
-    and ``n_blocks - n_zones`` degrees: on markets 3 and 7 with the true fit, a dither of 0.3 and
-    400 blocks, it rejected 15 and 16 of 200 logs at 5% and 2 and 4 at 1%, against 21 and 25 with
-    HC0 and 10 and 14 with the homoskedastic covariance. ``minimum_detectable`` is
-    ``sqrt(lambda * l_max)``, ``lambda`` the chi-square noncentrality at which the test has
-    ``power`` at ``level`` (the F's limit in the blocks), ``l_max`` the largest eigenvalue of the
-    error's covariance: the least norm of an error it finds in every direction. It and
+    alone, keeps.
+
+    The Wald statistic, with the HC3 sandwich, is referred by default (``reference="wild"``) to a
+    wild bootstrap of itself (Wu 1986; Davidson and Flachaire 2008): ``draws`` copies of the
+    residual under the null's fit, its mean plus Rademacher signs times its deviations from it,
+    each regressed and tested as the logs are. The p-value is ``(1 + count) / (1 + draws)``,
+    ``count`` the copies at or above the logs' statistic; its Monte Carlo error at ``p`` is
+    ``sqrt(p * (1 - p) / draws)``, 0.0049 at 0.05 and 0.0022 at 0.01 with the default 1999 draws,
+    and ``seed`` seeds the signs. ``reference="f"`` refers it to F on ``n_zones - 1`` and
+    ``n_blocks - n_zones`` degrees, the reference before 0.24.0, which treats the sandwich as
+    known: with 12 regressors its own noise is not small at a few blocks a direction (Long and
+    Ervin 2000). With the true fit, a dither of 0.3 and 400 logs a cell (Monte Carlo standard error
+    about 1.1% at 5% and 0.5% at 1%), the share of logs rejected at 5% and at 1%, 12 zones:
+
+    | market | blocks | wild, 5% | wild, 1% | F, 5% | F, 1% |
+    |---|---|---|---|---|---|
+    | 3 | 25 | 0.075 | 0.025 | 0.145 | 0.068 |
+    | 3 | 44 | 0.045 | 0.003 | 0.107 | 0.052 |
+    | 3 | 50 | 0.055 | 0.013 | 0.125 | 0.052 |
+    | 3 | 100 | 0.045 | 0.010 | 0.100 | 0.037 |
+    | 3 | 400 | 0.043 | 0.003 | 0.055 | 0.018 |
+    | 7 | 25 | 0.037 | 0.003 | 0.138 | 0.060 |
+    | 7 | 44 | 0.048 | 0.007 | 0.113 | 0.048 |
+    | 7 | 50 | 0.052 | 0.013 | 0.113 | 0.055 |
+    | 7 | 100 | 0.068 | 0.015 | 0.105 | 0.040 |
+    | 7 | 400 | 0.028 | 0.005 | 0.050 | 0.010 |
+
+    On 5 zones and 16 blocks (market 3) the wild bootstrap rejected 0.035 and 0.013. Below 4
+    blocks a tested direction, 44 for 12 zones, the check refuses: at 25 the bootstrap still
+    rejected 7.5% at 5% on market 3. The power, at 5%: a gradient error of norm 1.28 on market 3
+    and 50 blocks, in the direction of the error covariance's largest eigenvalue, the hardest to
+    find, was found on 50.0% of 400 logs by the wild bootstrap and on 79.0% referred to F, whose
+    share is in part its excess size; of norm 2.55, on 98.0% and 99.8%; the error
+    ``0.4 * linspace(-1.5, 1.5, 12)``, of norm 1.30, on 100 blocks on every log of markets 3 and 7
+    by both.
+
+    ``minimum_detectable`` is ``sqrt(lambda * l_max)``, ``lambda`` the noncentrality at which a
+    chi-square on ``n_zones - 1`` degrees exceeds the reference's critical value with ``power``,
+    ``l_max`` the largest eigenvalue of the error's covariance: the least norm of an error the test
+    finds in every direction, read as if the sandwich were known. Under the wild bootstrap the
+    critical value is its draws' ``1 - level`` quantile, above the chi-square's at few blocks, so
+    the norm grows with it; under ``"f"`` it is the chi-square's, the F's limit in the blocks. On
+    market 3 at 50 blocks an error of the median norm read under the null, 2.55, planted in the
+    direction of the largest eigenvalue, was found at 5% on 98.0% of 400 logs where ``power`` asked
+    80%: the norm errs large, not small. It and
     :attr:`FittedEquilibrium.lack_of_fit` read different things: the F test the residuals' level,
     the dither the gradient a plan follows. ``validation/marketplace_dither.mac`` checks the first-
     order move, its zero mean and its second moment.
 
     Args:
         logs: ``u``, ``demand``, ``y`` and ``dither`` of shape ``(n_blocks, n_zones)``, as
-            ``generate_logs(..., dither=h)`` records them, ``n_blocks`` above ``n_zones``.
+            ``generate_logs(..., dither=h)`` records them, ``n_blocks`` at least
+            ``4 * (n_zones - 1)``.
         equilibrium: the fit to test, :func:`fit_equilibrium`'s, of the logs' zones.
         level: the test's size, in (0, 1).
         power: the power ``minimum_detectable`` is read at, in (level, 1).
+        reference: what the Wald statistic is referred to: ``"wild"``, the default, a wild
+            bootstrap; ``"f"``, the F distribution.
+        draws: the wild bootstrap's draws, at least 1.
+        seed: the seed of the wild bootstrap's signs.
 
     Raises:
         ValueError: on columns that are not finite matrices of one shape, negative rates, logs
-            with no dither, an equilibrium of other zones, too few blocks, or a level or a power
-            outside its range.
+            with no dither, an equilibrium of other zones, fewer than 4 blocks a tested direction,
+            a level or a power outside its range, a reference that is neither, or no draws.
     """
     if not (0.0 < level < power < 1.0):
         raise ValueError(f"level {level!r} and power {power!r}: 0 < level < power < 1")
+    if reference not in ("wild", "f"):
+        raise ValueError(f"reference is {reference!r}; it is 'wild' or 'f'")
+    if reference == "wild" and not (isinstance(draws, int) and draws >= 1):
+        raise ValueError(f"draws is {draws!r}; the wild bootstrap reads at least one draw")
     if "dither" not in logs:
         raise ValueError("the logs carry no dither: log one with generate_logs(..., dither=h)")
     u, demand, y, shift = _dither_logs(logs, equilibrium, dithered=True)
     if not np.any(shift):
         raise ValueError("the logs carry no dither: log one with generate_logs(..., dither=h)")
     n_blocks, n_zones = u.shape
+    if n_blocks < _BLOCKS_PER_DIRECTION * (n_zones - 1):
+        raise ValueError(
+            f"{n_blocks} blocks for {n_zones} zones: the test reads {n_zones - 1} directions, and"
+            f" below {_BLOCKS_PER_DIRECTION} blocks a direction"
+            f" ({_BLOCKS_PER_DIRECTION * (n_zones - 1)} here) its HC3 sandwich is too noisy for"
+            " its size to hold: at 25 blocks for 12 zones it rejected a true fit on 7.5% of logs"
+            " at 5%"
+        )
     _, move = _undithered(u, shift)
     completed = _fitted_completions(equilibrium)
     predicted = np.asarray(
@@ -578,23 +699,37 @@ def dither_check(
     )
     residual = y.sum(axis=1) - predicted
     design = np.column_stack([np.ones(n_blocks), move[:, :-1]])
-    coefficients, *_ = np.linalg.lstsq(design, residual, rcond=None)
-    left = residual - design @ coefficients
-    bread = np.linalg.inv(design.T @ design)
-    leverage = np.einsum("ij,jk,ik->i", design, bread, design)
-    scores = design * (left / (1.0 - leverage))[:, None]
-    covariance = (bread @ scores.T @ scores @ bread)[1:, 1:]
-    slopes = coefficients[1:]
-    wald = float(slopes @ np.linalg.solve(covariance, slopes))
+    projection = np.linalg.solve(design.T @ design, design.T)
+    leverage = np.einsum("ik,ki->i", design, projection)
+    found, covariances, walds = _hc3_walds(design, projection, leverage, residual[None, :])
+    slopes, covariance, wald = found[0], covariances[0], float(walds[0])
     # the slopes read e_i - e_n; padded with that zone's 0 and centred they read the zero-sum e
     centring = np.eye(n_zones)[:, :-1] - 1.0 / n_zones
     error_covariance = centring @ covariance @ centring.T
-    lam = _noncentrality(n_zones - 1, level, power)
-    return DitherCheck(
+    tested = n_zones - 1
+    if reference == "f":
+        p_value = float(stats.f.sf(wald / tested, tested, n_blocks - n_zones))
+        critical = float(stats.chi2.isf(level, tested))
+    else:
+        # restricted residuals: under the null the residual is its mean plus noise, and the mean
+        # lies in the intercept's column, so the draws need only the noise
+        restricted = residual - residual.mean()
+        rng = np.random.default_rng(seed)
+        boot = np.empty(draws)
+        for start in range(0, draws, _WILD_CHUNK):
+            count = min(_WILD_CHUNK, draws - start)
+            signs = rng.choice(np.array([-1.0, 1.0]), size=(count, n_blocks))
+            boot[start : start + count] = _hc3_walds(
+                design, projection, leverage, signs * restricted
+            )[2]
+        p_value = (1.0 + float(np.count_nonzero(boot >= wald))) / (draws + 1.0)
+        critical = float(np.quantile(boot, 1.0 - level))
+    lam = _noncentrality(tested, level, power, critical=critical)
+    return GradientDitherCheck(
         error=centring @ slopes,
         covariance=error_covariance,
         wald=wald,
-        p_value=float(stats.f.sf(wald / (n_zones - 1), n_zones - 1, n_blocks - n_zones)),
+        p_value=p_value,
         minimum_detectable=math.sqrt(lam * float(np.linalg.eigvalsh(error_covariance)[-1])),
     )
 
@@ -664,8 +799,12 @@ def dither_size(
     base = _undithered(u, columns[3])[0] if dithered else u
     n_blocks, n_zones = u.shape
     planned = n_blocks if blocks is None else int(blocks)
-    if planned <= n_zones:
-        raise ValueError(f"blocks is {blocks}; the test reads from more blocks than zones")
+    if planned < _BLOCKS_PER_DIRECTION * (n_zones - 1):
+        raise ValueError(
+            f"the study's {planned} blocks for {n_zones} zones: dither_check reads at least"
+            f" {_BLOCKS_PER_DIRECTION} blocks a direction, {_BLOCKS_PER_DIRECTION * (n_zones - 1)}"
+            " here"
+        )
     one = _fitted_completions(equilibrium)
     completed = jax.jit(jax.vmap(one))
     dtype = equilibrium.attract.dtype
@@ -733,13 +872,24 @@ def _lump_sum(market: SharedStateMarket, planner: str) -> None:
         )
 
 
+def _radius(radius: float) -> None:
+    """A pessimism radius is a count of standard errors: nan made the plans nan or the even split,
+    and a negative one turned the shrink into a bonus."""
+    if not (math.isfinite(radius) and radius >= 0.0):
+        raise ValueError(
+            f"radius is {radius!r}; it is a finite non-negative count of standard errors"
+        )
+
+
 def sutva_allocation(market: SharedStateMarket, response: ExposureResponse, radius: float) -> Array:
     """Baseline allocation: fund zones by their pessimistic local uplift (the SUTVA assumption).
 
     Raises:
-        ValueError: on a market that pays per driver, whose budget is not a sum of rates.
+        ValueError: on a market that pays per driver, whose budget is not a sum of rates; on a
+            radius that is not a finite non-negative number.
     """
     _lump_sum(market, "sutva_allocation")
+    _radius(radius)
     pess = jnp.maximum(response.marginal - radius * response.se, 0.0)  # W-DRO shrink of a reward
     total = jnp.sum(pess)
     # Shares of the budget, so the uplift's units cancel. A floor of 1e-9 added to the total was
@@ -1248,7 +1398,7 @@ def pessimistic_equilibrium_allocation(
     *,
     radius: float = 1.0,
     steps: int = 600,
-    equilibrium: FittedEquilibrium | None = None,
+    equilibrium: FittedEquilibrium,
     objective: PlanObjective = "tilted",
 ) -> Array:
     """CHC allocation: plan the budget *through* the congestion equilibrium (``chc.games``) so the
@@ -1262,10 +1412,10 @@ def pessimistic_equilibrium_allocation(
     there buys. Such a zone draws almost no drivers in any logged block; on 50 blocks of market 2
     the plan had spent 3.1 of the budget of 6 on one and won 0.15 of the exact oracle's lift.
 
-    ``equilibrium`` is the one planned through, and is required: :func:`fit_equilibrium`'s,
-    estimated from the logs. ``market`` gives only the budget and the zones; its own base demand,
-    attractiveness and solver are the simulator's truth, which no log supplies, and the planner does
-    not read them. ``response`` enters only through the tilt.
+    ``equilibrium`` is the one planned through, and is required, a keyword with no default:
+    :func:`fit_equilibrium`'s, estimated from the logs. ``market`` gives only the budget and the
+    zones; its own base demand, attractiveness and solver are the simulator's truth, which no log
+    supplies, and the planner does not read them. ``response`` enters only through the tilt.
 
     ``objective`` chooses what the plan maximises. ``"tilted"``, the default, is the fit's
     completions plus the response's tilt, ascended ``steps`` times from the even split.
@@ -1291,15 +1441,17 @@ def pessimistic_equilibrium_allocation(
 
     Raises:
         ValueError: on a market that pays per driver, whose budget is not a sum of rates; on a
+            radius that is not a finite non-negative number; on a
             response or an equilibrium whose zones are not ``market``'s, an
             equilibrium whose drivers do not tell an incentive from none
             (:attr:`FittedEquilibrium.incentive_z`): every plan through it reads the same, or one
             that identifies no zone's attractiveness; under ``"expected"``, an equilibrium with no
             covariance or a singular one; an ``objective`` that is neither.
-        TypeError: when ``equilibrium`` is not given, or ``response`` is None under
-            ``"tilted"``.
+        TypeError: when ``equilibrium`` is not given (Python's own), or ``response`` is None
+            under ``"tilted"``.
     """
     _lump_sum(market, "pessimistic_equilibrium_allocation")
+    _radius(radius)
     if objective not in ("tilted", "expected"):
         raise ValueError(f"objective is {objective!r}; it is 'tilted' or 'expected'")
     if response is None and objective == "tilted":
@@ -1311,12 +1463,6 @@ def pessimistic_equilibrium_allocation(
                     f"response.{name} has shape {jnp.shape(part)}; the market has"
                     f" {market.n_zones} zones"
                 )
-    if equilibrium is None:
-        raise TypeError(
-            "pessimistic_equilibrium_allocation plans through an equilibrium estimated from the"
-            " logs: pass equilibrium=fit_equilibrium(logs). The market's own equilibrium is the"
-            " simulator's truth, which no log supplies"
-        )
     if equilibrium.demand.shape != (market.n_zones,):
         raise ValueError(
             f"the equilibrium has {equilibrium.demand.shape[0]} zones and the market"
@@ -1472,3 +1618,17 @@ def interference_bias(
     predicted = float(jnp.dot(response.marginal, allocation))
     realised = market.value(allocation) - market.value(jnp.zeros(market.n_zones))
     return predicted - realised
+
+
+def __getattr__(name: str) -> object:
+    """``DitherCheck``, the name :class:`GradientDitherCheck` had before 0.24.0, served with a
+    ``DeprecationWarning`` until 1.0."""
+    if name == "DitherCheck":
+        warnings.warn(
+            "DitherCheck is renamed GradientDitherCheck and leaves in 1.0:"
+            " chc.decision.DitherCheck is another test of the same name",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return GradientDitherCheck
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
