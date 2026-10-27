@@ -65,7 +65,7 @@ on the zone plant, for the response curves `response` in the plans they warm-sta
 the geo world `geo_world` in the geo models scored on it. They may change or be withdrawn in
 any release. Pin an exact version if you depend on one.
 
-Sixty-two entries in modules of other tiers are experimental on the same terms, for the same
+Seventy-one entries in modules of other tiers are experimental on the same terms, for the same
 reason:
 the `weights` argument of `fit_causal_residual` and `solve_channel_moment`, its `influence` argument
 with the fields it keeps, `nuisance_shift`, the `unmoved`, `moment_residual`, `instrument_relevance` and
@@ -75,14 +75,15 @@ with the fields it keeps, `nuisance_shift`, the `unmoved`, `moment_residual`, `i
 `ChannelRegion` and `RegionForm` in `chc.dynamics_id`, `horizon_errors`, `HorizonConformal`, `mixing_penalty` and
 `gaussian_mixing` in `chc.uncertainty`, the
 `noise_persistence`, `noise_persistence_p`, `tube_per_log_spread` and `tube_actions` fields of
-`DecisionCertificate`, the `tube_actions` argument of `prescribe` and `TubeActions` in
-`chc.decision`,
+`DecisionCertificate`, the `tube_actions` and `dither` arguments of `prescribe`, `TubeActions`,
+`DitherCheck`, `DitherStatus` and the `dither_check` field of `Prescription` in `chc.decision`,
 `callaway_santanna_inference` and `EventStudyInference` in `chc.did`, `synthetic_control_inference`,
 `SyntheticControlInference`, `blank_period_inference` and `BlankPeriodInference` in `chc.scm`,
 `gcm_test` and `GcmTest` in `chc.independence`, `LoggerCheck` in `chc.evaluation`, the
 `logger_check` field of `Prescription` and `PlanEvaluation`, the `interference` field of
 `Prescription`, `shadow_price_effect` and
-`shadow_price_interval` in `chc.matching`, `channel_drift_evalues`,
+`shadow_price_interval` in `chc.matching`, `dither_check`, `DitherCheck`, `dither_size`, `DitherSize`
+and the `per_driver` payment of `SharedStateMarket` in `chc.marketplace`, `channel_drift_evalues`,
 `DriftAlarm`, `MissRateAlarm`, `OnlineRadius`, `channel_move`, `ChannelMove`, `MovePrice`,
 `BlockBatch` and the `alpha_futility`, `block_length` and `burn_in` fields of `GateConfig` in
 `chc.gate`, the `instrument_relevance` diagnostic of `IV2SLS` in `chc.estimators`,

@@ -429,7 +429,7 @@ def calibrate_budget_scale(
 @dataclass(frozen=True)
 class DitherCheck:
     """A Wald test of the fit's gradient in the incentive, read off a zero-sum dither
-    (:func:`dither_check`)."""
+    (:func:`dither_check`). *Experimental.*"""
 
     # (n_zones,) the gradient of a block's completions in the incentive, the logs' less the fit's,
     # in the zero-sum directions: completions per unit of incentive, summing to zero
@@ -444,7 +444,7 @@ class DitherCheck:
 
 @dataclass(frozen=True)
 class DitherSize:
-    """The dither a study logs, sized from a pilot fit (:func:`dither_size`)."""
+    """The dither a study logs, sized from a pilot fit (:func:`dither_size`). *Experimental.*"""
 
     size: float  # the logits' shift to log: generate_logs(..., dither=size)
     blocks: int  # the blocks at which ``size`` finds the error: the planned ones where affordable
@@ -530,6 +530,7 @@ def dither_check(
 ) -> DitherCheck:
     """Whether the fit's gradient in the incentive is the logs', read off the dither
     :meth:`SharedStateMarket.generate_logs` logs (Wager and Xu 2021's local perturbations).
+    *Experimental.*
 
     The dither moves each block's rates by ``du``, to first order ``u0 * (shift - pi . shift)``
     (:func:`_undithered`), zero-sum and of mean zero given the block's demand and scale. The
@@ -613,7 +614,7 @@ def dither_size(
     """The smallest dither at which :func:`dither_check` finds a gradient error of norm ``error``
     with ``power`` at ``level`` on ``blocks`` blocks, from a pilot's logs and fit; or, where that
     dither costs more than ``max_cost`` of the logged completions, the blocks the study needs at
-    the dither that costs that much.
+    the dither that costs that much. *Experimental.*
 
     The rule: a study pre-registers the error it must find, the gradient error that would cost
     its tolerance of the plan's lift. A plan on a concave objective of curvature ``H`` along the
