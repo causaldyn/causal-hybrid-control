@@ -94,7 +94,9 @@ def _prescribe(max_levers: int | None, levers: list[Lever] | None = None, **kwar
 def _without_selection(result: Prescription) -> str:
     payload = result.to_json()
     del payload["selection"]
-    del payload["run"]["max_levers"]  # the cap, the one setting the two runs were given apart
+    # the cap, the one setting the two runs were given apart, as the run read it and as asked
+    del payload["run"]["max_levers"]
+    del payload["inputs"]["max_levers"]
     return json.dumps(payload, sort_keys=True)
 
 

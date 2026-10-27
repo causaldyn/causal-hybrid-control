@@ -25,13 +25,56 @@ nodes, and the algorithms are linear in the edge count.
 
 from __future__ import annotations
 
+import math
 from collections import deque
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 AdjustmentStatus = Literal["identified", "not_identified"]
 """Whether *some* set of observed covariates identifies the effect by adjustment."""
+
+EdgeSource = Literal["asserted", "discovered", "mechanism"]
+"""Where an edge came from: ``asserted``, a caller's claim; ``discovered``, kept by a test on data;
+``mechanism``, a known mechanism, such as an accounting identity or a physical law."""
+
+
+@dataclass(frozen=True)
+class EdgeProvenance:
+    """Where one edge of a :class:`CausalGraph` came from, which a decision record carries.
+
+    A ``discovered`` edge names the test that kept it and that test's p-value; the other two carry
+    neither.
+
+    Raises:
+        ValueError: on a source that is none of :data:`EdgeSource`, a ``discovered`` edge without a
+            test's name or a p-value in ``[0, 1]``, or another edge with either.
+    """
+
+    source: EdgeSource
+    test: str | None = None
+    p_value: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.source not in ("asserted", "discovered", "mechanism"):
+            raise ValueError(
+                f"an edge's source is 'asserted', 'discovered' or 'mechanism', not {self.source!r}"
+            )
+        if self.source != "discovered":
+            if self.test is not None or self.p_value is not None:
+                raise ValueError(
+                    f"an edge that is {self.source}, not discovered, names no test and no p-value"
+                )
+            return
+        if not isinstance(self.test, str) or not self.test:
+            raise ValueError(f"a discovered edge names the test that kept it, not {self.test!r}")
+        p_value = self.p_value
+        if (
+            isinstance(p_value, bool)
+            or not isinstance(p_value, int | float)
+            or not (math.isfinite(p_value) and 0.0 <= p_value <= 1.0)
+        ):
+            raise ValueError(f"a discovered edge's p-value lies in [0, 1], not {p_value!r}")
 
 
 class CyclicGraphError(ValueError):
@@ -77,10 +120,20 @@ class CausalGraph:
     latent: frozenset[str]
     # the slices t - lags ... t a graph from :meth:`unrolled` spans; None for one over plain names
     lags: int | None = None
+    # ((parent, child), provenance) for each edge whose source is recorded; an edge not listed is
+    # asserted (:meth:`edge_provenance`). Not part of the graph's equality or hash: two graphs
+    # with one set of edges answer every path question alike, wherever their edges came from.
+    provenance: tuple[tuple[tuple[str, str], EdgeProvenance], ...] = field(
+        default=(), compare=False
+    )
 
     @classmethod
     def from_edges(
-        cls, edges: Iterable[tuple[str, str]], *, latent: Iterable[str] = ()
+        cls,
+        edges: Iterable[tuple[str, str]],
+        *,
+        latent: Iterable[str] = (),
+        provenance: Mapping[tuple[str, str], EdgeProvenance] | None = None,
     ) -> CausalGraph:
         """Build from ``(parent, child)`` pairs, rejecting cycles and unknown latent names.
 
@@ -88,9 +141,15 @@ class CausalGraph:
         declared; that is the right trade for a graph whose only use is path reasoning, where a node
         with no edges changes no answer.
 
+        ``provenance`` records where some edges came from (:class:`EdgeProvenance`); every edge it
+        does not name is asserted. It moves no answer of the graph's; a decision record carries it
+        (:meth:`chc.decision.Prescription.to_json`).
+
         Raises:
             CyclicGraphError: if the edges contain a directed cycle, naming one of its nodes.
-            ValueError: if a latent name is not a node, or an edge is a self-loop.
+            ValueError: if a latent name is not a node, an edge is a self-loop, or ``provenance``
+                names a pair that is not an edge or holds a value that is not an
+                :class:`EdgeProvenance`.
         """
         pairs = tuple((str(parent), str(child)) for parent, child in edges)
         for parent, child in pairs:
@@ -108,7 +167,9 @@ class CausalGraph:
                 f"latent nodes {unknown} do not appear in any edge; a latent variable that causes "
                 "nothing and is caused by nothing cannot confound anything"
             )
-        graph = cls(nodes=nodes, edges=tuple(dict.fromkeys(pairs)), latent=latent_set)
+        kept = tuple(dict.fromkeys(pairs))
+        recorded = _edge_provenance(kept, provenance)
+        graph = cls(nodes=nodes, edges=kept, latent=latent_set, provenance=recorded)
         graph._require_acyclic()
         return graph
 
@@ -198,6 +259,16 @@ class CausalGraph:
             ],
         )
         return replace(graph, lags=lags)
+
+    def edge_provenance(self, parent: str, child: str) -> EdgeProvenance:
+        """Where the edge ``parent -> child`` came from; ``asserted`` where nothing is recorded.
+
+        Raises:
+            KeyError: if ``parent -> child`` is not an edge of the graph.
+        """
+        if (parent, child) not in self.edges:
+            raise KeyError(f"{parent!r} -> {child!r} is not an edge of the graph")
+        return dict(self.provenance).get((parent, child), EdgeProvenance("asserted"))
 
     # ---- structure ------------------------------------------------------------------------
 
@@ -510,6 +581,25 @@ class CausalGraph:
             if measured.is_valid_adjustment_set(candidate, treatment=exposure, outcome=response):
                 blamed.add(node)
         return frozenset(blamed)
+
+
+def _edge_provenance(
+    edges: tuple[tuple[str, str], ...],
+    provenance: Mapping[tuple[str, str], EdgeProvenance] | None,
+) -> tuple[tuple[tuple[str, str], EdgeProvenance], ...]:
+    """``provenance`` over ``edges``, in the edges' order, each pair checked to be one of them."""
+    if not provenance:
+        return ()
+    given = {(str(parent), str(child)): source for (parent, child), source in provenance.items()}
+    unknown = sorted(set(given) - set(edges))
+    if unknown:
+        raise ValueError(f"provenance names {unknown}, which are not edges of the graph")
+    for pair, source in given.items():
+        if not isinstance(source, EdgeProvenance):
+            raise ValueError(
+                f"the provenance of {pair[0]!r} -> {pair[1]!r} is an EdgeProvenance, not {source!r}"
+            )
+    return tuple((pair, given[pair]) for pair in edges if pair in given)
 
 
 def _as_tuple(names: str | Sequence[str]) -> tuple[str, ...]:

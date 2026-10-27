@@ -64,7 +64,15 @@ def test_dither_moves_nothing_the_plan_reads(pair) -> None:
     np.testing.assert_array_equal(
         np.asarray(plain.schedule.magnitudes), np.asarray(checked.schedule.magnitudes)
     )
-    assert plain.to_json() == checked.to_json()
+    # the record carries the check and the draw it was asked for, and every other key as before
+    plain_record, checked_record = plain.to_json(), checked.to_json()
+    assert plain_record["dither_check"] is None
+    assert checked_record["dither_check"]["dither"] == ["draw"]
+    assert (plain_record["inputs"]["dither"], checked_record["inputs"]["dither"]) == (None, "draw")
+    for record in (plain_record, checked_record):
+        del record["dither_check"]
+        del record["inputs"]["dither"]
+    assert plain_record == checked_record
     for part in ("drift", "channel"):
         np.testing.assert_array_equal(
             np.asarray(getattr(plain.model_fit.residual, part)),

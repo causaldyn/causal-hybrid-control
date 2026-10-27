@@ -84,8 +84,8 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, replace
-from typing import Literal, TypeVar, get_args
+from dataclasses import dataclass, field, replace
+from typing import Any, Literal, TypeVar, get_args
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -104,6 +104,11 @@ BootstrapReading = Literal["complete", "conditional", "inconclusive"]
 _Array = NDArray[np.float64]
 
 _Z95 = 1.959963984540054
+_LEVEL = 0.95  # the intervals' nominal coverage, _Z95's
+
+EVALUATION_SCHEMA_VERSION = 1
+""":meth:`PlanEvaluation.to_json`'s schema version, its own beside the decision record's. Bumped
+when a field changes meaning, not when one is added."""
 _BATCHES = 40  # contiguous batches for a stationary interval under the logs' Markov dependence
 _GRID = 200  # geometric grid over (0, tau_max) for the smoothing
 _BIAS_SHARE = 0.05  # the share of a half-width past which the normalisation's bias is warned of
@@ -371,6 +376,76 @@ class PlanEvaluation:
     bootstrap: UnitBootstrap | None = None
     # "pdis": the first-order bias of its weights' normalisation under the model; None otherwise
     normalisation_bias: float | None = None
+    # How the evaluation was asked for: the entry point and its keywords, as plain JSON values,
+    # which :meth:`to_json` writes; None on an evaluation neither entry point built.
+    _settings: dict[str, Any] | None = field(default=None, repr=False, compare=False)
+
+    def to_json(self) -> dict[str, Any]:
+        """The evaluation as plain JSON-safe values, beside a decision record. *Experimental.*
+
+        No number is infinite or nan: one that is not finite is None, as in
+        :meth:`chc.decision.Prescription.to_json`. ``level`` is the intervals' nominal coverage.
+        ``settings`` holds how it was asked for: ``entry``, :func:`evaluate_plan` or
+        :meth:`chc.decision.Prescription.evaluate`, and their keywords, ``smoothing`` None where
+        the certificate chose it, ``logger`` None where it was fitted to the logs and otherwise
+        the policy given. ``logger_check`` is the logger check's verdict, a nan partial
+        correlation or an infinite detectable one None. There is no reader: a record is for
+        audit, and the evaluation is made again from the panel and the plan.
+        """
+        certificate = self.certificate
+        versus, bootstrap = self.versus_logger, self.bootstrap
+        return _json_safe(
+            {
+                "schema_version": EVALUATION_SCHEMA_VERSION,
+                "method": certificate.method,
+                "level": _LEVEL,
+                "value": self.value,
+                "interval": list(self.interval),
+                "model_correction": self.model_correction,
+                "model_share": self.model_share,
+                "effective_samples": self.effective_samples,
+                "degrees_of_freedom": self.degrees_of_freedom,
+                "normalisation_bias": self.normalisation_bias,
+                "certificate": {
+                    "method": certificate.method,
+                    "certified": certificate.certified,
+                    "reason": certificate.reason,
+                    "samples": certificate.samples,
+                    "log_second_moment": certificate.log_second_moment,
+                    "effective_samples": certificate.effective_samples,
+                    "ci_reliable": certificate.ci_reliable,
+                    "smoothing": certificate.smoothing,
+                    "one_step_margin": certificate.one_step_margin,
+                    "smoothing_limit": certificate.smoothing_limit,
+                    "state_margin": certificate.state_margin,
+                    "action_margin": certificate.action_margin,
+                    "certified_horizon": certificate.certified_horizon,
+                    "escape_horizon": certificate.escape_horizon,
+                },
+                "versus_logger": None
+                if versus is None
+                else {
+                    "logger_value": versus.logger_value,
+                    "difference": versus.difference,
+                    "interval": list(versus.interval),
+                },
+                "bootstrap": None
+                if bootstrap is None
+                else {
+                    "units": bootstrap.units,
+                    "resamples": bootstrap.resamples,
+                    "refused": bootstrap.refused,
+                    "accepted": bootstrap.accepted,
+                    "accepted_share": bootstrap.accepted_share,
+                    "max_refused": bootstrap.max_refused,
+                    "reading": bootstrap.reading,
+                },
+                "logger_check": None
+                if self.logger_check is None
+                else _logger_check_json(self.logger_check),
+                "settings": self._settings,
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -467,6 +542,45 @@ class LoggerCheck:
     given: tuple[str, ...]  # what the levers and ``columns`` were regressed on
     columns: tuple[str, ...]  # the arrays' columns; a column one period back is ``name[t-1]``
     test: GcmTest
+
+
+def _logger_check_json(check: LoggerCheck) -> dict[str, Any]:
+    """A logger check's verdict as plain values, its nan and infinite numbers left to the caller's
+    JSON reading."""
+    test = check.test
+    return {
+        "levers": list(check.levers),
+        "given": list(check.given),
+        "columns": list(check.columns),
+        "statistic": float(test.statistic),
+        "p_value": float(test.p_value),
+        "partial_correlation": np.asarray(test.partial_correlation, dtype=np.float64).tolist(),
+        "detectable": np.asarray(test.detectable, dtype=np.float64).tolist(),
+        "clusters": int(test.clusters),
+    }
+
+
+def _json_safe(value: Any) -> Any:
+    """``value`` with every number read as a plain one and every one that is not finite as None."""
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _policy_json(policy: AffinePolicy | None) -> dict[str, Any] | None:
+    if policy is None:
+        return None
+    return {
+        "gain": policy.gain.tolist(),
+        "offset": policy.offset.tolist(),
+        "covariance": policy.covariance.tolist(),
+    }
 
 
 class InfeasibleEvaluation(ValueError):
@@ -1711,7 +1825,7 @@ def evaluate_plan(
             them for ``"pdis"``, for ``"mis"`` and ``"dr"`` no more transitions than ``n + m + 1``,
             and every error :func:`certify_evaluation` raises.
     """
-    return _warn_of_bias(
+    evaluation = _warn_of_bias(
         _evaluate_plan(
             logs,
             plan,
@@ -1723,6 +1837,17 @@ def evaluate_plan(
             model_error=model_error,
             min_effective=min_effective,
         )
+    )
+    return replace(
+        evaluation,
+        _settings={
+            "entry": "evaluate_plan",
+            "method": method,
+            "smoothing": smoothing,
+            "model_error": model_error,
+            "min_effective": min_effective,
+            "logger": _policy_json(logger),
+        },
     )
 
 

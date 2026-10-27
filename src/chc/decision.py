@@ -28,9 +28,13 @@ computed from a channel nothing in the log pins down.
 
 from __future__ import annotations
 
+import copy
 import datetime
+import functools
+import hashlib
 import logging
 import math
+import re
 import time
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -86,13 +90,16 @@ from chc.evaluation import (
     PlanEvaluation,
     _evaluate_across_time,
     _evaluate_by_unit,
+    _logger_check_json,
+    _policy_json,
 )
 from chc.frames import _not_numbers, _real_numbers
-from chc.graph import AdjustmentSet, CausalGraph
+from chc.graph import AdjustmentSet, CausalGraph, EdgeProvenance
 from chc.independence import gcm_test
 from chc.integrate import rk4_step, rollout
 from chc.lqr import linearize_continuous, linearize_discrete
 from chc.misspecification import MisspecificationCost, _contrast
+from chc.misspecification import planned_cost_bias as _fit_cost_bias
 from chc.mpc import PeriodBudget, _period_rows
 from chc.panel import Panel, PanelError, Provenance, _grid_steps, _ordinals, _x64_enabled
 from chc.plan import (
@@ -101,6 +108,7 @@ from chc.plan import (
     CertificateStatus,
     ChannelSensitivity,
     DiagnosticStatus,
+    PlannedCostBias,
     PlanRegretBound,
     RegretStatus,
     RowPrice,
@@ -761,6 +769,14 @@ class DecisionCertificate:
     # its error, read at the log's actions, does not price that, so ``certified_horizon`` ends
     # there.
     lever_range_step: int | None = None
+    # The planned cost, its bias against what the plan pays the plant in expectation over the
+    # fit's error, with its sign, and the cost corrected for it, to second order
+    # (:func:`chc.misspecification.planned_cost_bias`, ADR 0088), where :func:`prescribe` was
+    # asked for it (``planned_cost_bias=True``) and the fit's covariance gives it. Otherwise None,
+    # and ``planned_cost_bias_reason`` says why: not asked, no plan, or the refusal's own words.
+    # *Experimental.*
+    planned_cost_bias: PlannedCostBias | None = None
+    planned_cost_bias_reason: str | None = None
 
     @property
     def identification_radius(self) -> float | None:
@@ -1070,6 +1086,9 @@ class Prescription:
     # The plan's actions with each lever that follows its logged rule read off that rule along the
     # predicted path; None where no lever does, and the schedule is the plan's actions.
     _magnitudes: Array | None = field(default=None, repr=False, compare=False)
+    # What :func:`prescribe` was asked, as plain JSON values: the record's ``inputs``, which
+    # :meth:`from_json` passes to it again. None on a prescription :func:`prescribe` did not build.
+    _inputs: dict[str, Any] | None = field(default=None, repr=False, compare=False)
 
     @property
     def lever_names(self) -> tuple[str, ...]:
@@ -1368,7 +1387,22 @@ class Prescription:
                 seed=seed,
                 max_refused=max_refused,
             )
-        return replace(evaluation, logger_check=logger_check)
+        return replace(
+            evaluation,
+            logger_check=logger_check,
+            _settings={
+                "entry": "Prescription.evaluate",
+                "method": "pdis",
+                "smoothing": smoothing,
+                "model_error": model_error,
+                "min_effective": min_effective,
+                "logger": _policy_json(logger),
+                "time_zero": time_zero,
+                "n_resamples": n_resamples,
+                "seed": seed,
+                "max_refused": max_refused,
+            },
+        )
 
     def reach(self) -> dict[str, float | None]:
         """Per lever, how far it can move the target's rate across its own box, where the plan
@@ -1534,6 +1568,7 @@ class Prescription:
             *self._first_order_lines(),
             f"- regret bound on the fitted model: {_show(certificate.regret_bound)}"
             + ("" if certificate.regret_status is None else f", {certificate.regret_status}"),
+            *self._cost_bias_lines(),
             "",
             f"**Trustworthy prefix: {certificate.trustworthy_steps} steps.**",
             "",
@@ -1547,7 +1582,8 @@ class Prescription:
         return "\n".join(lines)
 
     def to_json(self) -> dict[str, Any]:
-        """The schedule, both certificate axes and the provenance, as plain JSON-safe values.
+        """The schedule, both certificate axes and the provenance, as plain JSON-safe values, and
+        what the decision was made from, which :meth:`from_json` replays.
 
         No number is infinite or nan: one that is not finite is None (ADR 0055). Where None has
         more than one reading, a status beside it says which: ``regret_status`` ``refused`` for an
@@ -1557,6 +1593,23 @@ class Prescription:
         ``constraint_violation`` (:data:`chc.plan.DiagnosticStatus`). The certificate's
         ``identification_radius`` repeats ``channel_error``, the name it had before 0.20.0, until
         1.0.
+
+        Since 0.24.0 the record also holds, under keys of their own, so that no key's meaning
+        moves and ``schema_version`` stays 2 (ADR 0145):
+
+        * the certificate's ``planned_cost_bias``, the planned cost, its bias's three terms, the
+          bias, its ``direction`` and the corrected cost, or None, and
+          ``planned_cost_bias_reason``, why it is None;
+        * ``logger_check``, the logger check's verdict (:class:`~chc.evaluation.LoggerCheck`): its
+          statistic, p-value, each pair's partial correlation and the one it could detect, a nan
+          correlation or an infinite detectable one None; None where it was not run;
+        * ``dither_check``, the dither check's (:class:`DitherCheck`), None where none was asked;
+        * ``inputs``, every argument of :func:`prescribe` that moves the result, the panel's
+          ``data_sha256`` as handed in, and the graph with each edge's provenance
+          (:class:`~chc.graph.EdgeProvenance`); a known model is recorded by a digest of its
+          arrays and structure alone. In ``inputs`` an infinite number is the text ``"inf"`` or
+          ``"-inf"``, so that it stays apart from None, which there means not given. None on a
+          prescription :func:`prescribe` did not build.
         """
         certificate = self.certificate
         record = {
@@ -1635,6 +1688,8 @@ class Prescription:
                     for relation in certificate.relations
                 ],
                 "rule_levers": list(certificate.rule_levers),
+                "planned_cost_bias": _bias_json(certificate.planned_cost_bias),
+                "planned_cost_bias_reason": certificate.planned_cost_bias_reason,
             },
             "selection": None
             if self.selection is None
@@ -1665,8 +1720,101 @@ class Prescription:
             ],
             "provenance": self.provenance.to_json(),
             "run": None if self.run is None else self.run.to_json(),
+            "logger_check": None
+            if self.logger_check is None
+            else _logger_check_json(self.logger_check),
+            "dither_check": None
+            if self.dither_check is None
+            else _dither_check_json(self.dither_check),
+            "inputs": None if self._inputs is None else copy.deepcopy(self._inputs),
         }
         return _strict(record)
+
+    @classmethod
+    def from_json(
+        cls, record: Mapping[str, Any], panel: Panel, *, model: Dynamics | None = None
+    ) -> Prescription:
+        """The decision ``record`` holds, made again: :func:`prescribe` on ``panel`` with the
+        record's ``inputs``, checked to give the record back. *Experimental.*
+
+        ``panel`` is the panel the decision was made from: its ``data_sha256`` must be the one the
+        record names. ``model`` is the known model the decision was made with, where it was made
+        with one: the record holds its digest alone, and refuses a model of another. The replay
+        reproduces the record, every number to the bit, on the versions and the precision that
+        wrote it (ADR 0145).
+
+        The rule: a record replays on the release of the library that wrote it, under the same
+        ``jax_enable_x64``, with ``schema_version`` 2 and ``inputs``, which records of 0.23.0 and
+        before do not hold. Its other versions (``run.versions``: jax, jaxlib, numpy, scipy) and
+        its device are not asked first; where one differs and moves a number, the check below
+        names it.
+
+        Raises:
+            DecisionError: naming the field, on a record of another ``schema_version``, without
+                ``inputs`` or a field the replay needs, written by another release of the library
+                (``run.versions``) or under another precision (``run.x64``), on a panel of other
+                data (``inputs.panel_sha256``), without the known model the record names, or with
+                one of another digest or where the record names none (``inputs.known``); and where
+                the replay does not give the record back, naming the first field that differs and
+                the versions that differ from the record's.
+        """
+        if not isinstance(record, Mapping):
+            raise DecisionError(f"a decision record is a mapping, not {type(record).__name__}")
+        if record.get("schema_version") != SCHEMA_VERSION:
+            raise DecisionError(
+                f"schema_version: this release replays {SCHEMA_VERSION}, not "
+                f"{record.get('schema_version')!r}"
+            )
+        inputs = record.get("inputs")
+        if not isinstance(inputs, Mapping):
+            raise DecisionError(
+                "inputs: the record holds no inputs to replay; records written before 0.24.0 do not"
+            )
+        run = record.get("run")
+        run = run if isinstance(run, Mapping) else {}
+        versions = run.get("versions")
+        if not isinstance(versions, Mapping) or "causal-hybrid-control" not in versions:
+            raise DecisionError("run.versions: the record does not name the release that wrote it")
+        installed = dict(_versions())
+        written = versions["causal-hybrid-control"]
+        if written != installed["causal-hybrid-control"]:
+            raise DecisionError(
+                f"run.versions: the record was written by causal-hybrid-control {written}, and a "
+                f"replay runs on the release that wrote it, not on "
+                f"{installed['causal-hybrid-control']}"
+            )
+        if run.get("x64") is not bool(_x64_enabled()):
+            raise DecisionError(
+                f"run.x64: the record was made with jax_enable_x64 {run.get('x64')!r}, and this "
+                f"process runs with {_x64_enabled()}"
+            )
+        arguments = _replay_arguments(inputs, panel, model)
+        replayed = prescribe(panel, **arguments)
+        difference = _first_difference(replayed.to_json(), dict(record))
+        if difference is not None:
+            moved = sorted(
+                name
+                for name, version in installed.items()
+                if name in versions and versions[name] != version
+            )
+            raise DecisionError(
+                f"{difference}: the replay does not give the record back"
+                + (f"; these versions differ from the record's: {moved}" if moved else "")
+            )
+        return replayed
+
+    def _cost_bias_lines(self) -> list[str]:
+        certificate = self.certificate
+        bias = certificate.planned_cost_bias
+        if bias is not None:
+            return [
+                f"- planned cost's bias, to second order: {bias.bias:+.4g}, {bias.direction} "
+                f"(planned {bias.planned_cost:.6g}, corrected {bias.corrected_cost:.6g})"
+            ]
+        reason = certificate.planned_cost_bias_reason
+        if reason is None or reason == _BIAS_NOT_ASKED:
+            return []
+        return [f"- planned cost's bias: not read, {reason}"]
 
     def _lever_range_lines(self) -> list[str]:
         step = self.certificate.lever_range_step
@@ -1978,6 +2126,7 @@ def prescribe(
     nuisance_knots: int | Literal["auto"] | None = "auto",
     tube_actions: TubeActions = "box",
     dither: str | Sequence[str] | None = None,
+    planned_cost_bias: bool = False,
 ) -> Prescription:
     """Fit the causal control channel from ``panel`` and plan a certified schedule on it.
 
@@ -2202,11 +2351,23 @@ def prescribe(
             the plan, its fit and its certificate are those without it, bit for bit. A draw
             that does not move every direction of the channel the log moves, given the states,
             identifies no channel, and is refused. ``None``, the default, fits nothing more.
+        planned_cost_bias: read the planned cost's bias, with its sign, and the corrected cost
+            into the certificate (:attr:`DecisionCertificate.planned_cost_bias`, ADR 0088): the
+            channel is fitted a second time, keeping its influence, whose covariance over every
+            parameter the fit holds is the bias's ``S``
+            (:func:`chc.misspecification.planned_cost_bias`). Where that refuses --- a plan held
+            under the constraints' barrier, one that meets a bound of its box or a row, one made
+            against drivers, a fit whose channel is not identified --- the field is None and
+            ``planned_cost_bias_reason`` holds the refusal. It moves nothing else: the plan, its
+            fit and every other field are those without it, bit for bit. Off by default, since the
+            second fit keeps ``N n p`` floats of influence. *Experimental.*
 
     Returns:
         A :class:`Prescription`. Read :attr:`DecisionCertificate.identification` before
         :attr:`Prescription.schedule`, which raises when the effect is not identified.
-        :attr:`Prescription.run` records what the run used (:class:`RunProvenance`).
+        :attr:`Prescription.run` records what the run used (:class:`RunProvenance`), and
+        :meth:`Prescription.to_json` what the call was asked, which
+        :meth:`Prescription.from_json` replays.
 
     Raises:
         DecisionError: the decision is mis-specified --- no lever, a lever named twice or also
@@ -2281,6 +2442,7 @@ def prescribe(
         raise DecisionError("hold_constraints was set, but no constraint was given to hold")
     if not 0.0 < dt < math.inf:
         raise DecisionError(f"dt={dt} is not a step, which is finite and positive")
+    integrator_asked = integrator
     if integrator is None:
         integrator = "euler"
     if integrator not in ("rk4", "euler"):
@@ -2398,6 +2560,33 @@ def prescribe(
             raise KeyError(
                 f"column {name!r} is not in the panel; columns are {sorted(panel.names)}"
             )
+    inputs = _inputs_record(
+        panel,
+        levers=levers,
+        target=target,
+        horizon=horizon,
+        adjustment=adjustment,
+        constraints=constraints,
+        hold_constraints=hold_constraints,
+        budgets=budgets,
+        max_levers=max_levers,
+        known=known,
+        dt=dt,
+        gamma=gamma,
+        radius=radius,
+        tolerance=tolerance,
+        x0=given,
+        folds=folds,
+        seed=seed,
+        integrator=integrator_asked,
+        drivers=drivers,
+        neighbours=neighbours,
+        clusters=clusters,
+        nuisance_knots=nuisance_knots,
+        tube_actions=tube_actions,
+        dither=dither,
+        planned_cost_bias=planned_cost_bias,
+    )
     if clusters is not None:
         numbers = (*states, *lever_names, *driver_names, *draws)
         panel = _cluster_panel(panel, clusters, numbers, _named(neighbours))
@@ -2612,6 +2801,9 @@ def prescribe(
                 estimability=estimability,
                 identification_rank=rank,
                 unmoved_directions=per_state,
+                planned_cost_bias_reason=_BIAS_NOT_ASKED
+                if not planned_cost_bias
+                else "no plan was made: the effect is not identified",
             ),
             model_fit=fit,
             provenance=panel.provenance,
@@ -2624,6 +2816,7 @@ def prescribe(
             _columns=columns,
             _start=start,
             _alone=alone,
+            _inputs=inputs,
         )
 
     if not fit.identified:
@@ -2996,13 +3189,16 @@ def prescribe(
     else:
         safety = None
     gap = regret(plan)
+    # refitted with its influence, not fitted so once: keeping the influence compiles another
+    # program, whose rounding moved the channel's error by an ulp on jax 0.4.30
+    refit = functools.cache(
+        lambda: fit_causal_residual(base, data, dt, **fit_options, influence=True)
+    )
     dither_check = (
         _check_dither_contrast(
             plan,
             fit,
-            # refitted with its influence, not fitted so once: keeping the influence compiles
-            # another program, whose rounding moved the channel's error by an ulp on jax 0.4.30
-            lambda: fit_causal_residual(base, data, dt, **fit_options, influence=True),
+            refit,
             panel,
             draws,
             base=base,
@@ -3020,6 +3216,9 @@ def prescribe(
         )
         if draws
         else None
+    )
+    cost_bias, cost_bias_reason = (
+        _cost_bias(plan, refit()) if planned_cost_bias else (None, _BIAS_NOT_ASKED)
     )
     directions, response = _absorbed(
         fit,
@@ -3142,6 +3341,8 @@ def prescribe(
         violation_tolerance=plan.violation_tolerance,
         radius_model=None if safety is None else safety.radius_model,
         lever_range_step=lever_range_step,
+        planned_cost_bias=cost_bias,
+        planned_cost_bias_reason=cost_bias_reason,
     )
     _log.info(
         "decision certified",
@@ -3179,6 +3380,7 @@ def prescribe(
         _budget_rows=tuple(rows.matrix.shape[0] for rows in spend_rows),
         _magnitudes=_ruled_schedule(model, plan),
         dither_check=dither_check,
+        _inputs=inputs,
     )
 
 
@@ -3985,6 +4187,10 @@ _RIDGE = 1e-6
 _PLAN_STEPS = 10_000
 # The distributions whose versions a run records: the library and those that compute its numbers.
 _VERSIONED = ("causal-hybrid-control", "jax", "jaxlib", "numpy", "scipy")
+_BIAS_NOT_ASKED = (
+    "not asked: prescribe reads it with planned_cost_bias=True, fitting the channel again with "
+    "its influence"
+)
 
 
 def _versions() -> tuple[tuple[str, str], ...]:
@@ -5312,6 +5518,418 @@ def _json_label(label: Any) -> Any:
     if isinstance(label, datetime.date | datetime.time):
         return label.isoformat()
     return str(label)
+
+
+# ---- the decision record ---------------------------------------------------------------------
+
+
+def _cost_bias(
+    plan: CausalPlan, fit: CausalDynamicsFit
+) -> tuple[PlannedCostBias | None, str | None]:
+    """The planned cost's bias over ``fit``'s covariance, or None and the refusal's words."""
+    try:
+        return _fit_cost_bias(plan, fit), None
+    except ValueError as refusal:  # the function's refusals are its documented answer here
+        return None, str(refusal)
+
+
+def _bias_json(bias: PlannedCostBias | None) -> dict[str, Any] | None:
+    if bias is None:
+        return None
+    return {
+        "planned_cost": bias.planned_cost,
+        "optimism": bias.optimism,
+        "curvature": bias.curvature,
+        "first_order": bias.first_order,
+        "bias": bias.bias,
+        "direction": bias.direction,
+        "corrected_cost": bias.corrected_cost,
+        "unseen": bias.unseen,
+        "free": bias.free,
+        "residual": bias.residual,
+    }
+
+
+def _dither_check_json(check: DitherCheck) -> dict[str, Any]:
+    contrast = check.contrast
+    return {
+        "dither": list(check.dither),
+        "status": check.status,
+        "share": float(check.share),
+        "relevance": [float(value) for value in check.relevance],
+        "contrast": None
+        if contrast is None
+        else {
+            "cost": contrast.cost,
+            "cost_error": contrast.cost_error,
+            "noise": contrast.noise,
+            "p_value": contrast.p_value,
+            "unseen": contrast.unseen,
+        },
+    }
+
+
+def _setting(value: Any) -> Any:
+    """A number as the record's ``inputs`` holds it: an integer as one, a finite float as one, an
+    infinite one as ``"inf"`` or ``"-inf"``, which None, not given, is not."""
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return value
+    number = float(value)
+    if math.isinf(number):
+        return "inf" if number > 0 else "-inf"
+    return number
+
+
+def _read_setting(value: Any) -> Any:
+    """:func:`_setting`'s inverse."""
+    if value == "inf":
+        return math.inf
+    if value == "-inf":
+        return -math.inf
+    return value
+
+
+def _floats(values: ArrayLike) -> Any:
+    return np.asarray(values, dtype=np.float64).tolist()
+
+
+def _model_digest(model: Dynamics) -> str:
+    """A sha256 over a model's structure and its arrays' dtypes, shapes and bytes.
+
+    A model is any pytree of arrays and code, which JSON does not carry; the digest names it. An
+    address in its structure's text, a function's or an object's, is dropped, and a leaf that is not
+    a number is read by its type and its text, its addresses dropped too, so that one model reads
+    one digest in every process."""
+    leaves, structure = jax.tree_util.tree_flatten(model)
+    digest = hashlib.sha256(_ADDRESS.sub("", str(structure)).encode())
+    for leaf in leaves:
+        if isinstance(leaf, jax.Array | np.ndarray | np.generic | int | float | complex):
+            array = np.ascontiguousarray(np.asarray(leaf))
+            digest.update(f"{array.dtype}{array.shape}".encode())
+            digest.update(array.tobytes())
+        else:
+            digest.update(type(leaf).__qualname__.encode())
+            digest.update(_ADDRESS.sub("", repr(leaf)).encode())
+    return digest.hexdigest()
+
+
+_ADDRESS = re.compile(r" at 0x[0-9a-fA-F]+")
+
+
+def _inputs_record(
+    panel: Panel,
+    *,
+    levers: Sequence[Lever],
+    target: Target,
+    horizon: int,
+    adjustment: CausalGraph | Sequence[str],
+    constraints: Sequence[Constraint],
+    hold_constraints: bool,
+    budgets: Sequence[PeriodBudget],
+    max_levers: int | None,
+    known: Dynamics | None,
+    dt: float,
+    gamma: float,
+    radius: str,
+    tolerance: float | None,
+    x0: NDArray[np.float64] | None,
+    folds: int,
+    seed: int,
+    integrator: Integrator | None,
+    drivers: Sequence[Driver],
+    neighbours: Mapping[Any, Iterable[Any]] | str | None,
+    clusters: str | None,
+    nuisance_knots: int | Literal["auto"] | None,
+    tube_actions: str,
+    dither: str | Sequence[str] | None,
+    planned_cost_bias: bool,
+) -> dict[str, Any]:
+    """Every argument of :func:`prescribe` that moves its result, as plain JSON values."""
+    if isinstance(adjustment, CausalGraph):
+        graph = adjustment
+        written: dict[str, Any] = {
+            "kind": "graph",
+            "nodes": list(graph.nodes),
+            "edges": [
+                {
+                    "parent": parent,
+                    "child": child,
+                    "source": source.source,
+                    "test": source.test,
+                    "p_value": _setting(source.p_value),
+                }
+                for parent, child in graph.edges
+                for source in (graph.edge_provenance(parent, child),)
+            ],
+            "latent": sorted(graph.latent),
+            "lags": graph.lags,
+        }
+    else:
+        written = {"kind": "asserted", "covariates": list(adjustment)}
+    value = np.asarray(target.value, dtype=np.float64)
+    return {
+        "panel_sha256": panel.provenance.data_sha256,
+        "levers": [
+            {
+                "name": lever.name,
+                "lo": _setting(lever.lo),
+                "hi": _setting(lever.hi),
+                "unit_cost": _setting(lever.unit_cost),
+                "cap_per_step": _setting(lever.cap_per_step),
+            }
+            for lever in levers
+        ],
+        "target": {
+            "name": target.name,
+            "value": float(value) if value.ndim == 0 else value.tolist(),
+            "weight": _setting(target.weight),
+        },
+        "horizon": int(horizon),
+        "adjustment": written,
+        "constraints": [
+            {"state": c.state, "lo": _setting(c.lo), "hi": _setting(c.hi)} for c in constraints
+        ],
+        "hold_constraints": bool(hold_constraints),
+        "budgets": [
+            {
+                "weights": _floats(budget.weights),
+                "amount": _setting(budget.amount),
+                "period": int(budget.period),
+                "start": _setting(budget.start),
+            }
+            for budget in budgets
+        ],
+        "max_levers": None if max_levers is None else int(max_levers),
+        "known": None if known is None else _model_digest(known),
+        "dt": _setting(dt),
+        "gamma": _setting(gamma),
+        "radius": radius,
+        "tolerance": _setting(tolerance),
+        "x0": None if x0 is None else _floats(x0),
+        "folds": int(folds),
+        "seed": int(seed),
+        "integrator": integrator,
+        "drivers": [
+            {"name": driver.name, "forecast": _floats(driver.forecast)} for driver in drivers
+        ],
+        "neighbours": None
+        if neighbours is None
+        else {"column": neighbours}
+        if isinstance(neighbours, str)
+        else {
+            "units": [
+                [_json_label(unit), [_json_label(other) for other in others]]
+                for unit, others in neighbours.items()
+            ]
+        },
+        "clusters": clusters,
+        "nuisance_knots": nuisance_knots,
+        "tube_actions": tube_actions,
+        "dither": dither if dither is None or isinstance(dither, str) else list(dither),
+        "planned_cost_bias": bool(planned_cost_bias),
+    }
+
+
+_INPUT_KEYS = (
+    "panel_sha256",
+    "levers",
+    "target",
+    "horizon",
+    "adjustment",
+    "constraints",
+    "hold_constraints",
+    "budgets",
+    "max_levers",
+    "known",
+    "dt",
+    "gamma",
+    "radius",
+    "tolerance",
+    "x0",
+    "folds",
+    "seed",
+    "integrator",
+    "drivers",
+    "neighbours",
+    "clusters",
+    "nuisance_knots",
+    "tube_actions",
+    "dither",
+    "planned_cost_bias",
+)
+
+
+def _replay_arguments(
+    inputs: Mapping[str, Any], panel: Panel, model: Dynamics | None
+) -> dict[str, Any]:
+    """:func:`prescribe`'s keywords from a record's ``inputs``, checked against ``panel`` and the
+    known ``model``."""
+    missing = [key for key in _INPUT_KEYS if key not in inputs]
+    if missing:
+        raise DecisionError(
+            f"inputs.{missing[0]}: the record does not hold it, and a replay needs it"
+        )
+    if inputs["panel_sha256"] != panel.provenance.data_sha256:
+        raise DecisionError(
+            f"inputs.panel_sha256: the record was made from data {inputs['panel_sha256']!r}, and "
+            f"this panel holds {panel.provenance.data_sha256!r}"
+        )
+    known = inputs["known"]
+    if known is None and model is not None:
+        raise DecisionError(
+            "inputs.known: the record was made with no known model, and one was given"
+        )
+    if known is not None:
+        if model is None:
+            raise DecisionError(
+                "inputs.known: the record was made with a known model, which it holds by its "
+                "digest alone: pass it again as model="
+            )
+        if _model_digest(model) != known:
+            raise DecisionError(
+                f"inputs.known: the model given reads digest {_model_digest(model)!r}, and the "
+                f"record's was {known!r}"
+            )
+    try:
+        adjustment = _read_adjustment(inputs["adjustment"])
+        target = inputs["target"]
+        neighbours = inputs["neighbours"]
+        arguments: dict[str, Any] = {
+            "levers": [
+                Lever(
+                    lever["name"],
+                    lo=_read_setting(lever["lo"]),
+                    hi=_read_setting(lever["hi"]),
+                    unit_cost=_read_setting(lever["unit_cost"]),
+                    cap_per_step=_read_setting(lever["cap_per_step"]),
+                )
+                for lever in inputs["levers"]
+            ],
+            "target": Target(
+                target["name"],
+                value=target["value"]
+                if np.ndim(target["value"]) == 0
+                else np.asarray(target["value"], dtype=np.float64),
+                weight=_read_setting(target["weight"]),
+            ),
+            "horizon": inputs["horizon"],
+            "adjustment": adjustment,
+            "constraints": [
+                Constraint(c["state"], lo=_read_setting(c["lo"]), hi=_read_setting(c["hi"]))
+                for c in inputs["constraints"]
+            ],
+            "hold_constraints": inputs["hold_constraints"],
+            "budgets": [
+                PeriodBudget(
+                    np.asarray(budget["weights"], dtype=np.float64),
+                    amount=_read_setting(budget["amount"]),
+                    period=budget["period"],
+                    start=_read_setting(budget["start"]),
+                )
+                for budget in inputs["budgets"]
+            ],
+            "max_levers": inputs["max_levers"],
+            "known": model,
+            "dt": _read_setting(inputs["dt"]),
+            "gamma": _read_setting(inputs["gamma"]),
+            "radius": inputs["radius"],
+            "tolerance": _read_setting(inputs["tolerance"]),
+            "x0": None if inputs["x0"] is None else np.asarray(inputs["x0"], dtype=np.float64),
+            "folds": inputs["folds"],
+            "seed": inputs["seed"],
+            "integrator": inputs["integrator"],
+            "drivers": [
+                Driver(driver["name"], np.asarray(driver["forecast"], dtype=np.float64))
+                for driver in inputs["drivers"]
+            ],
+            "neighbours": None
+            if neighbours is None
+            else neighbours["column"]
+            if "column" in neighbours
+            else _read_neighbours(neighbours["units"], panel, inputs["clusters"]),
+            "clusters": inputs["clusters"],
+            "nuisance_knots": inputs["nuisance_knots"],
+            "tube_actions": inputs["tube_actions"],
+            "dither": inputs["dither"],
+            "planned_cost_bias": inputs["planned_cost_bias"],
+        }
+    except (KeyError, TypeError) as error:  # a record's own shape, read at its boundary
+        raise DecisionError(
+            f"inputs: the record's inputs do not read as prescribe's: {error!r}"
+        ) from error
+    return arguments
+
+
+def _read_adjustment(written: Mapping[str, Any]) -> CausalGraph | list[str]:
+    if written["kind"] == "asserted":
+        return list(written["covariates"])
+    if written["kind"] != "graph":
+        raise DecisionError(
+            f"inputs.adjustment.kind: a graph or an asserted set, not {written['kind']!r}"
+        )
+    edges = written["edges"]
+    graph = CausalGraph(
+        nodes=tuple(written["nodes"]),
+        edges=tuple((edge["parent"], edge["child"]) for edge in edges),
+        latent=frozenset(written["latent"]),
+        lags=written["lags"],
+        provenance=tuple(
+            (
+                (edge["parent"], edge["child"]),
+                EdgeProvenance(edge["source"], edge["test"], _read_setting(edge["p_value"])),
+            )
+            for edge in edges
+            if edge["source"] != "asserted"
+        ),
+    )
+    graph._require_acyclic()
+    return graph
+
+
+def _read_neighbours(
+    written: Sequence[Sequence[Any]], panel: Panel, clusters: str | None
+) -> dict[Any, list[Any]]:
+    """Each recorded label back to the panel's own: its units', or under ``clusters`` its
+    clusters'; a label that is neither stays as written, for :func:`prescribe` to refuse."""
+    labels = np.unique(panel.columns[clusters]).tolist() if clusters is not None else panel.units
+    label_of = {_json_label(label): label for label in labels}
+
+    def read(label: Any) -> Any:
+        return label_of.get(label, label)
+
+    return {read(unit): [read(other) for other in others] for unit, others in written}
+
+
+def _first_difference(ours: Any, theirs: Any, path: str = "") -> str | None:
+    """The first field, as a dotted path, at which two JSON values differ; None where none does."""
+    if isinstance(ours, Mapping) and isinstance(theirs, Mapping):
+        for key in (*ours, *(key for key in theirs if key not in ours)):
+            where = f"{path}.{key}" if path else str(key)
+            if key not in ours or key not in theirs:
+                return where
+            found = _first_difference(ours[key], theirs[key], where)
+            if found is not None:
+                return found
+        return None
+    if isinstance(ours, list) and isinstance(theirs, list):
+        if len(ours) != len(theirs):
+            return path
+        for index, (mine, other) in enumerate(zip(ours, theirs, strict=True)):
+            found = _first_difference(mine, other, f"{path}[{index}]")
+            if found is not None:
+                return found
+        return None
+    same = type(ours) is type(theirs) or (
+        isinstance(ours, int | float)
+        and isinstance(theirs, int | float)
+        and not isinstance(ours, bool)
+        and not isinstance(theirs, bool)
+    )
+    return None if same and ours == theirs else path or "the record"
 
 
 def _show_start(start: StartState) -> str:
