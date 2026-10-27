@@ -1,7 +1,14 @@
 # ADR 0146 — A deployed zone in blocks may keep a randomised baseline, and a designed test's intervals read its innovations
 
 **Status:** accepted, 2026-10-27. Amends ADR 0090 (the gate reads plants with memory in blocks)
-and ADR 0092 (a designed test is read from the periods it left blank).
+and ADR 0092 (a designed test is read from the periods it left blank). Amended 2026-10-27: the
+`serial="ar1"` intervals hold their level at the true AR(1) coefficient; with it estimated, few
+donors or a long post period lower it. On factor panels AR(1) at 0.95, 10 post periods, at
+`alpha = 0.1`, they covered 0.854-0.858 at the last periods on 2 donors and 0.864-0.870 on 4, where
+the true coefficient gives 0.904-0.912 and 0.886-0.898. A donor jackknife or bootstrap of the
+coefficient, added to the forecast's variance, brought 4 donors to 0.888-0.905 and moved 19 by at
+most 0.4 points, but cannot move 2, whose gaps are one series and its negative; the intervals stay
+as built, and the docstring states the table.
 
 ## Context
 
