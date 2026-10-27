@@ -2,7 +2,11 @@
 
 **Status:** accepted, 2026-10-26. Builds on ADR 0114 (the plan goes through a fitted equilibrium),
 ADR 0123 (the fit is tested before it is planned through) and ADR 0134 (the exact oracle, the
-polished fit, the held zones). Moves no default.
+polished fit, the held zones). Moves no default. Amended 2026-10-27: both planners refuse a
+`radius` that is not a finite non-negative number (nan had sent the equilibrium planner back to
+the even split and made the SUTVA plan nan; a negative one turned the shrink into a bonus), and
+`pessimistic_equilibrium_allocation`'s `equilibrium` is a keyword with no default, as it was
+already required.
 
 ## Context
 
