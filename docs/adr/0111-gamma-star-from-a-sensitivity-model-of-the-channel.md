@@ -6,6 +6,10 @@ Amends ADR 0101: with a sensitivity, each step's `Γ*` reads the radius at that 
 Amended by ADR 0125: `prescribe` reads the fit's absolute radius by default, where the fit gives one.
 Amended by ADR 0132, 2026-10-25: the share is `(1 - 1/Γ)²`, sharp, so `κ(Γ) = (Γ-1)/√(2Γ-1)`, finite
 at every finite level; no level from `(3 + √5)/2` on is refused.
+Re-measured 2026-10-27 on 0.22.0, on the 200 logs of the Consequences at `Γ_0 = 1.5`: the truth
+stays inside the radius on all of them, and every held plan certifies 30 of 30 steps with none
+leaving the set on the truth. The least true `h` along the held path has median 0.423, was 0.505,
+and 0.468 with a channel linear in the state, was 0.536: less room, the same claim.
 
 ## Context
 
