@@ -1,6 +1,8 @@
 # ADR 0088 — The planned cost carries its bias, with its sign
 
 **Status:** accepted, 2026-10-12. Experimental.
+Amended by ADR 0145, 2026-10-27: `prescribe(planned_cost_bias=True)` reads the bias into the
+certificate's `planned_cost_bias`, opt-in, refitting the channel with its influence.
 
 ## Context
 

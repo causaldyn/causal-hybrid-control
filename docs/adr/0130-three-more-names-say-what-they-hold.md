@@ -2,6 +2,8 @@
 
 **Status:** accepted, 2026-10-24. Extends ADR 0128's renames, and dates the end of the decision
 record's `identification_radius` key.
+Amended by ADR 0145, 2026-10-27: the record gains keys, `SCHEMA_VERSION` stays 2, and
+`Prescription.from_json` reads a stored decision record and replays it.
 
 ## Context
 
