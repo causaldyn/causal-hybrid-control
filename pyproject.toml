@@ -1,6 +1,6 @@
 [project]
 name = "causal-hybrid-control"
-version = "0.24.1"
+version = "1.0.0"
 description = "Physics-structured dynamics with a learned causal residual, controlled by constrained optimal control / MPC."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,7 +16,7 @@ keywords = [
     "jax",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.11",

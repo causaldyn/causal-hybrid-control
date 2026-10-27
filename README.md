@@ -171,7 +171,7 @@ proves and what it assumes ([theory](https://causaldyn.github.io/causal-hybrid-c
 
 ## Status
 
-Early, single-author research code, before 1.0. The identification has been checked on real data:
+Early, single-author research code. The identification has been checked on real data:
 on the Dehejia–Wahba subsample of LaLonde's job-training data with CPS controls, adjustment and
 double machine learning land inside the randomised experiment's 95 % interval (notebook 7). That
 rests on the subsample, as Smith and Todd (2005) found for matching. On LaLonde's original sample,
@@ -184,7 +184,7 @@ demand. The two pre-registered `prescribe` runs on the same emulator, from a con
 returned verdicts that do not stand
 ([case study](https://causaldyn.github.io/causal-hybrid-control/case-studies/boptest/)).
 
-What each module promises before 1.0 (stable, evolving or experimental) and the roadmap are in the
+What each module promises (stable, evolving or experimental) and the roadmap are in the
 [API reference](https://causaldyn.github.io/causal-hybrid-control/api/). The
 [changelog](https://github.com/causaldyn/causal-hybrid-control/blob/main/CHANGELOG.md) is written to
 be read before upgrading, scope corrections and retractions included. Every release artifact carries
@@ -216,7 +216,7 @@ release is archived on Zenodo.
   author  = {Gradina, Ilia},
   title   = {causal-hybrid-control: physics-structured dynamics with a learned causal residual},
   year    = {2026},
-  version = {0.24.1},
+  version = {1.0.0},
   doi     = {10.5281/zenodo.21737789},
   license = {Apache-2.0},
   url     = {https://github.com/causaldyn/causal-hybrid-control}

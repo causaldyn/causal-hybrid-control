@@ -1,11 +1,55 @@
 # Changelog
 
 All notable changes to this project are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to adhere to
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the API stabilises (pre-1.0 it may
-still change).
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). From 1.0.0 the stable tier follows
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
+experimental may change in any release (`docs/api/index.md`).
 
 ## [Unreleased]
+
+## [1.0.0] — 2026-10-28
+
+The surface freezes: what 0.24.1 warned about leaves, and from here the stable tier follows
+semantic versioning. No default and no number moves. To prepare, run your suite on 0.24.1 with
+`-W error::DeprecationWarning`: every name under Removed warns there, naming its replacement
+(ADR 0147).
+
+### Removed
+
+- **The 421 names the top level served since 0.8.0 with a `DeprecationWarning`.** `chc.<name>` is
+  now an `AttributeError` and `from chc import <name>` an `ImportError`. Each imports from its
+  module, which 0.24.1's warning names, as does `chc._MOVED` in 0.24.1's source; 166 of them are in
+  `chc.research`. For example, `from chc import rollout` becomes
+  `from chc.integrate import rollout`.
+  The top level keeps its `__all__`, the lifecycle's names, and keeps importing every module a name
+  came from, so `import chc` then `chc.<module>.<name>` still works (ADR 0016).
+- **The eight renamed names**, deprecated in 0.20.0 and 0.21.0:
+  `DecisionCertificate.identification_radius` → `channel_error`,
+  `ConfoundingRobustLQRegretCurve.regret_bounds` → `second_order_regrets`,
+  `highprob_regret_certificate` → `local_highprob_regret_certificate`,
+  `NonlinearDwrCurve.denominator_against_result_55` → `denominator_against_closed_form`,
+  `confounding_robust_lq_regret` → `confounding_robust_lq_second_order_regret`,
+  `confounding_robust_lq_regret_matrix` → `confounding_robust_lq_second_order_regret_matrix`,
+  `MultivariateActionFloor.floor` → `local_floor` and `MultivariateVanTreesCurve.floor` →
+  `local_floor`. The old names are `AttributeError`s (ADRs 0128, 0130).
+- **The two re-exports** `chc.research.sensitivity.confounding_robust_lq_regret` and
+  `confounding_robust_lq_regret_matrix`: import the `second_order` names from the same module.
+- **`chc.marketplace.DitherCheck`**, renamed `GradientDitherCheck` in 0.24.1 apart from
+  `chc.decision.DitherCheck`, another test (ADR 0140).
+
+### Changed
+
+- **The decision record is `schema_version` 3.** `Prescription.to_json` no longer writes the
+  certificate's `identification_radius`, which repeated `channel_error` since 0.20.0; every other
+  key keeps its value. A reader of version 2 reads `channel_error`, which both versions write; a
+  reader that checks the version refuses a version-3 record rather than find the key missing.
+  `Prescription.from_json` replays version 3 only, so a record 0.24.1 wrote is refused, naming
+  `schema_version`; a digest over the whole record moves (ADR 0130).
+- **The stability promise.** From 1.0 the stable tier follows semantic versioning: a change that
+  breaks it waits for the next major and gets a deprecation cycle first. The evolving tier may gain
+  keyword arguments and change a default in a minor, with a changelog entry arguing why;
+  `chc.research` and the names marked experimental may change or be withdrawn in any release
+  (`docs/api/index.md`). The classifier is `Development Status :: 5 - Production/Stable`.
 
 ## [0.24.1] — 2026-10-28
 
@@ -7967,6 +8011,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[1.0.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.0.0
 [0.24.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.24.1
 [0.23.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.23.0
 [0.22.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.22.0

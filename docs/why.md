@@ -101,9 +101,9 @@ The same table, read the other way.
 - **Nothing in your log identifies the effect** — no adjustment set and no instrument. Then there is
   no schedule to be had: `prescribe` returns none, on purpose, and what remains is to price the
   radius ([the sensitivity level Γ](concepts/gamma.md)).
-- **You need a frozen API today.** This is early, single-author research code before 1.0. The
-  [stability tiers](api/index.md) say what each module promises; an experimental module may change
-  or be withdrawn in any release.
+- **You need every module frozen.** This is early, single-author research code. From 1.0 the
+  stable tier follows semantic versioning; the [stability tiers](api/index.md) say what each module
+  promises, and an experimental module may change or be withdrawn in any release.
 
 ## Honest positioning
 

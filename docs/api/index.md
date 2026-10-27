@@ -11,13 +11,14 @@ from its module.
 The pages are grouped by stability tier — by what a break would cost you — and each page states its
 tier at the top.
 
-## What "0.x" promises
+## What 1.x promises
 
-Pre-1.0, so SemVer's major-version protection does not apply yet. What *does* apply, and what you
-can plan against:
+From 1.0 the stable tier follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html): a
+change that breaks it waits for the next major and gets a deprecation cycle first. The other tiers
+promise what the table below says. What applies to every release, and what you can plan against:
 
-- **A minor release may change behaviour, and the changelog says which.** The
-  [changelog](https://github.com/causaldyn/causal-hybrid-control/blob/main/CHANGELOG.md) is written
+- **A minor release may change behaviour outside the stable tier, and the changelog says
+  which.** The [changelog](https://github.com/causaldyn/causal-hybrid-control/blob/main/CHANGELOG.md) is written
   to be read before upgrading — it carries scope corrections and retractions alongside the
   additions, because a number that quietly changed meaning is worse than one that broke loudly.
   0.5.0 moved the marketing-mix headline figures by fixing the integrator the fit used; that is the
@@ -28,7 +29,7 @@ can plan against:
   deliberate changes of a default wait for a minor. 0.5.1 fixed a wrong `__version__` and nothing
   else.
 - **Renames get one minor of alias.** Removals get one minor of `DeprecationWarning` first, naming
-  the replacement in the message.
+  the replacement in the message. In the stable tier the old name stays until the next major.
 
 ## The tiers
 
@@ -36,14 +37,14 @@ Four tiers, by what a break costs you:
 
 | tier | modules | promise |
 |---|---|---|
-| **stable** | `dynamics` `integrate` `cost` `control` `plan` `barrier` `residual` `lqr` `mpc` `train` `adjoint` `decision` `panel` `graph` `dynamics_id` | the plant/control spine and the façade over it. Breaking changes wait for 1.0 and get a deprecation cycle |
+| **stable** | `dynamics` `integrate` `cost` `control` `plan` `barrier` `residual` `lqr` `mpc` `train` `adjoint` `decision` `panel` `graph` `dynamics_id` | the plant/control spine and the façade over it. Breaking changes wait for the next major and get a deprecation cycle |
 | **evolving** | the estimator, certificate and domain layers — `causal` `uncertainty` `regret` `irf` `did` `scm` `matching` `marketplace` and their neighbours | may gain keyword arguments in a minor; defaults may change with a changelog entry arguing why |
 | **experimental** | modules that exist to carry one research result — `games` `discovery` — and modules built ahead of the release that verifies them — `experiment` `switchback` on a plant CHC did not write, `zones` in the pre-registered study it is the plant of, `dlm`, `lift` and `allocation` on an external media-mix generator, `misspecification` on the zone plant, `response` in the plans it warm-starts, `geo_world` in the geo models scored on it | may change or be withdrawn in any release. Pin an exact version if you depend on one |
 | **research** | [`chc.research`](research/index.md): the modules that each carry one research result — `benchmark` `causal_bench` `deep_galerkin` `epidemic` `flagship` `galerkin` `koopman` `lalonde` `meanfield` `mintime` `mmm` `sensitivity` `spine` `surrogate` `symbolic` `transport` — and the research halves of `regret`, `games` and `residual` | outside the surface 0.20.0 freezes: may change or be withdrawn in any release, and `import chc` imports none of it. Pin an exact version if you depend on one |
 
 ## Stable
 
-The plant/control spine and the façade over it. Breaking changes wait for 1.0 and get a
+The plant/control spine and the façade over it. Breaking changes wait for the next major and get a
 deprecation cycle.
 
 ## Evolving
@@ -120,7 +121,6 @@ terms, and stay at their paths for now: the rollout, risk, ensemble and confound
 
 ## Roadmap
 
-0.20.0 deleted the paths the research modules left in 0.19.0. Next, the marketplace study, and
-the adaptation modules leave the experimental tier. Then 1.0.0:
-the stable tier stops moving, and the top level holds only the lifecycle's names. The 421 names that
-warn since 0.8.0 leave it then.
+0.20.0 deleted the paths the research modules left in 0.19.0. In 1.0.0 the stable tier stopped
+moving, and the top level holds only the lifecycle's names: the 421 names that warned since 0.8.0
+left it. Next, the marketplace study, and the adaptation modules leave the experimental tier.
