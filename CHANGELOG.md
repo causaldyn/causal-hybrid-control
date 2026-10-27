@@ -48,6 +48,10 @@ still change).
 
 ### Changed
 
+- Every public module of `chc` and `chc.research` declares `__all__`: its own classes,
+  functions, constants and choice aliases. A star import no longer hands out a module's imports
+  (`CausalGraph`, `Literal` or `np` from `chc.decision`); attribute access is unchanged, and a test
+  holds each `__all__` to what its API page renders.
 - `chc.marketplace.dither_check` refers its HC3 Wald statistic to a wild bootstrap by default
   (`reference="wild"`, `draws=1999`, `seed=0`; `reference="f"` keeps the F reference) and refuses
   fewer than 4 blocks per tested direction; `minimum_detectable` reads the reference's critical
