@@ -40,7 +40,15 @@ from chc import (
 )
 from chc.adjoint import control_gradient_adjoint
 from chc.cost import total_cost
-from chc.decision import Prescription, _cost, _field_errors, _field_scale, _noise_read, _slopes
+from chc.decision import (
+    Prescription,
+    _cost,
+    _field_errors,
+    _field_scale,
+    _noise_read,
+    _slopes,
+    _Stages,
+)
 from chc.dynamics import DrivenDynamics, Dynamics, LinearDynamics
 from chc.plan import _barrier_terms
 from chc.uncertainty import _linear_tube, _noise_tube
@@ -417,9 +425,10 @@ def test_the_forecast_pays_on_the_true_plant(panel: Panel) -> None:
 
 
 def test_the_tube_reads_the_drift_s_error_at_the_forecast_it_plans_against(panel: Panel) -> None:
-    """The drift's features hold the drivers, so its error at a planned step is read at the state
-    the step starts from and at the forecast as the fit reads a transition's, the mean of its two
-    ends; read at the forecast's start instead, the tube is another."""
+    """The drift's features hold the drivers, so its error over a planned step is read where each
+    of RK4's stages reads the field (ADR 0141): at the stage's state and at the forecast at the
+    stage's time, the step's start, its middle twice and its end; read at the forecast's start at
+    every stage instead, the tube is another."""
     forecast = _forecast()
     driven = _prescribe(panel, drivers=[Driver("outdoor", forecast)], tolerance=10.0)
     plan, fit, certificate = driven.plan, driven.model_fit, driven.certificate
@@ -436,7 +445,10 @@ def test_the_tube_reads_the_drift_s_error_at_the_forecast_it_plans_against(panel
     reads = 0.5 * (forecast[:-1] + forecast[1:])
     states = np.asarray(plan.trajectory, dtype=np.float64)[:-1]
     box = (np.array([-3.0]), np.array([3.0]))
-    errors = _field_errors(fit, reach, states, reads[:, None], box)
+    stages = np.stack([forecast[:-1], reads, reads, forecast[1:]], axis=1)[:, :, None]
+    errors = _field_errors(
+        fit, reach, states, reads[:, None], box, _Stages(problem.model, DT, stages)
+    )
     slopes = _slopes(problem.model, problem.x0)(np.asarray(plan.actions, dtype=np.float64))
     units, times = np.asarray(columns["unit"]), np.asarray(columns["time"])
     read = _noise_read(fit, DT, np.stack([units[~last], times[~last], units[~last]], 1))
@@ -455,7 +467,12 @@ def test_the_tube_reads_the_drift_s_error_at_the_forecast_it_plans_against(panel
         return np.hypot(noise, scale * _linear_tube(slopes, errors, DT))
 
     np.testing.assert_allclose(plan.uncertainty_tube, tube(errors), rtol=1e-10, atol=0.0)
-    elsewhere = tube(_field_errors(fit, reach, states, forecast[:-1, None], box))
+    at_start = np.repeat(forecast[:-1, None, None], 4, axis=1)
+    elsewhere = tube(
+        _field_errors(
+            fit, reach, states, forecast[:-1, None], box, _Stages(problem.model, DT, at_start)
+        )
+    )
     assert np.max(np.abs(elsewhere - tube(errors))[1:] / tube(errors)[1:]) > 1e-6
 
 

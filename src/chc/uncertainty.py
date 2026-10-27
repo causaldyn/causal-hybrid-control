@@ -1353,7 +1353,7 @@ def linear_rollout_bound(state_matrix: ArrayLike, model_error: list[float], dt: 
 
 def _linear_tube(
     state_matrix: ArrayLike,
-    model_error: Sequence[float],
+    model_error: Sequence[float] | NDArray[np.float64],
     dt: float,
     *,
     integrator: Integrator = "rk4",
@@ -1363,7 +1363,16 @@ def _linear_tube(
     ``k``, as a field affine in the state is under the plan's action at that step. Step ``j``'s
     error then reaches step ``k`` through ``R(dt A_{k-1}) ... R(dt A_{j+1}) c_i(dt A_j)``, and the
     tube sums those gains' norms. A sequence of one matrix repeated gives the one matrix's tube
-    to the bit. Under ``integrator="euler"`` the rollouts are Euler's (:func:`_step_parts`)."""
+    to the bit. Under ``integrator="euler"`` the rollouts are Euler's (:func:`_step_parts`).
+
+    ``model_error`` may also be ``(H, S)``, one error for each of a step's ``S`` stages, where each
+    stage reads the field at its own state (:func:`chc.decision._field_errors`): step ``j``'s stage
+    ``i`` then reaches step ``k`` through ``R(dt A_{k-1}) ... R(dt A_{j+1}) c_i(dt A_j)`` alone,
+    and the tube sums each stage's gains' norms times its own error. One step's error is ``dt sum_i
+    c_i(dt A) delta_i``, exactly, on a field affine in the state (``validation/rk4_stage_term.mac``
+    (1)), so this bounds its norm by Minkowski's inequality, as the gains' norms bound the steps'
+    sum. Every stage's error equal to the step's reads the one error's tube, to
+    rounding."""
     a_matrix = np.asarray(state_matrix, dtype=float)
     steps = a_matrix[None] if a_matrix.ndim == 2 else a_matrix
     if steps.ndim != 3 or steps.shape[1] != steps.shape[2]:
@@ -1374,10 +1383,12 @@ def _linear_tube(
         )
     if not np.all(np.isfinite(steps)):
         raise ValueError("state_matrix holds a value that is not finite")
-    _check_budget(model_error, dt)
+    _check_budget([float(error) for error in np.ravel(model_error)], dt)
     eye = np.eye(steps.shape[1])
     parts = [_step_parts(dt * step, eye, integrator) for step in steps]
     errors = np.asarray(model_error, dtype=float)
+    if errors.ndim == 2:
+        return _staged_tube(parts, errors, eye, dt)
     # gains[j][lag]: the norm of what step j's error adds to step j + 1 + lag
     if a_matrix.ndim == 2:
         gains = [_gains([parts[0][0]] * errors.size, parts[0][1], eye, dt, errors.size)]
@@ -1396,6 +1407,36 @@ def _linear_tube(
             for k in range(1, errors.size + 1)
         ]
     )
+
+
+def _staged_tube(
+    parts: Sequence[tuple[NDArray[np.float64], tuple[NDArray[np.float64], ...]]],
+    errors: NDArray[np.float64],
+    eye: NDArray[np.float64],
+    dt: float,
+) -> NDArray[np.float64]:
+    """:func:`_linear_tube`'s tube of ``(H, S)`` stage errors, ``parts`` each step's matrix and
+    stage weights (:func:`_step_parts`), one for every step or one a step."""
+    count, stages = errors.shape
+    if stages != len(parts[0][1]):
+        raise ValueError(
+            f"{stages} errors a step for a step of {len(parts[0][1])} stages: one a stage is needed"
+        )
+    tube = np.zeros(count + 1)
+    for j in range(count):
+        part = parts[0] if len(parts) == 1 else parts[j]
+        growths = (
+            [parts[0][0]] * count if len(parts) == 1 else [growth for growth, _ in parts[j + 1 :]]
+        )
+        power = eye
+        for lag in range(count - j):
+            tube[j + 1 + lag] += dt * sum(
+                np.linalg.norm(power @ weight, 2) * error
+                for weight, error in zip(part[1], errors[j], strict=True)
+            )
+            if lag < count - j - 1:
+                power = growths[lag] @ power
+    return tube
 
 
 def _rk4_parts(

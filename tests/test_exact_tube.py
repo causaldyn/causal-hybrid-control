@@ -29,6 +29,7 @@ from chc.decision import (
     _field_scale,
     _model_error,
     _slopes,
+    _Stages,
     _state_noise,
 )
 from chc.dynamics import HybridDynamics, LinearDynamics
@@ -329,10 +330,17 @@ def test_prescribe_carries_its_tube_by_the_slope_at_each_planned_action() -> Non
     persistence = np.asarray(certificate.tube_autoregression)  # the VAR(1) (ADR 0105)
     # one state: the noise's radius and the field's error at its studentised quantile
     scale = _field_scale(fit) * math.sqrt(chi2.ppf(0.95, 1))
-    # read at the state each step starts from, the log's root mean square of it the fit's
+    # read where each of RK4's stages reads the field over each step (ADR 0141); the log's root
+    # mean square of it at the rows the fit's
     errors = _field_errors(
-        fit, distance, np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0)), box
+        fit,
+        distance,
+        np.asarray(plan.trajectory)[:-1],
+        np.zeros((horizon, 0)),
+        box,
+        _Stages(model, dt, np.zeros((horizon, 4, 0))),
     )
+    assert errors.shape == (horizon, 4)
     rows = log["x"][:-1, None]
     at_rows = _field_errors(fit, distance, rows, np.zeros((rows.shape[0], 0)), box)
     assert math.sqrt(np.mean(at_rows**2)) == pytest.approx(error, rel=1e-10, abs=0.0)

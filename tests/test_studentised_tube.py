@@ -34,6 +34,7 @@ from chc.decision import (
     _model_error,
     _model_errors,
     _slopes,
+    _Stages,
 )
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.dynamics_id import CausalDynamicsFit, _cosine_count, fit_causal_residual
@@ -211,8 +212,14 @@ def test_one_state_s_tube_is_the_noise_s_radius_and_t_times_the_field_s_in_quadr
     assert _cosine_count(60) == 6
     nu = 6.0
     box = (np.array([-2.0]), np.array([2.0]))
+    # read where each of RK4's stages reads the field (ADR 0141)
     errors = _field_errors(
-        fit, reach, np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0)), box
+        fit,
+        reach,
+        np.asarray(plan.trajectory)[:-1],
+        np.zeros((horizon, 0)),
+        box,
+        _Stages(problem.model, dt, np.zeros((horizon, 4, 0))),
     )
     field = _linear_tube(slopes, errors, dt)
     noise = _noise_tube(slopes, np.array([[certificate.tube_noise**2]]), carried, dt, horizon)
@@ -259,8 +266,14 @@ def test_two_states_place_the_field_s_error_along_the_noise_s_widest_direction()
     kappa = t.ppf(0.975, float(_cosine_count(120))) / norm.ppf(0.975)
     assert _field_scale(fit) == pytest.approx(kappa, rel=1e-12, abs=0.0)
     box = (np.array([-2.0]), np.array([2.0]))
+    # read where each of RK4's stages reads the field (ADR 0141)
     errors = _field_errors(
-        fit, reach, np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0)), box
+        fit,
+        reach,
+        np.asarray(plan.trajectory)[:-1],
+        np.zeros((horizon, 0)),
+        box,
+        _Stages(problem.model, dt, np.zeros((horizon, 4, 0))),
     )
     field = _linear_tube(slopes, errors, dt)
     error = dt * np.asarray(fit.defect, dtype=np.float64)
@@ -405,9 +418,9 @@ def test_the_tube_reads_the_same_in_any_units_of_the_state() -> None:
 
 def test_rk4_steps_the_same_field_through_its_own_matrices() -> None:
     """The tube carries both parts through RK4's step matrices of the slope at each action. The
-    field's error is read at each planned state off the
-    covariances the fit reads at the log's rows: there, its root mean square over the rows is the
-    field's error the fit reports, the channel's at its reach and the drift's beside it."""
+    field's error is read where each of RK4's stages reads the field over each planned step, off
+    the covariances the fit reads at the log's rows: there, its root mean square over the rows is
+    the field's error the fit reports, the channel's at its reach and the drift's beside it."""
     log = _one_state_log(5, 61)
     decided = prescribe(
         Panel.from_frame(log, unit="unit", time="time", seed=0),
@@ -439,7 +452,9 @@ def test_rk4_steps_the_same_field_through_its_own_matrices() -> None:
         _field_error(fit, reach, box), rel=1e-10, abs=0.0
     )
     planned = np.asarray(plan.trajectory)[:-1]
-    errors = _field_errors(fit, reach, planned, np.zeros((6, 0)), box)
+    errors = _field_errors(
+        fit, reach, planned, np.zeros((6, 0)), box, _Stages(model, 0.5, np.zeros((6, 4, 0)))
+    )
     assert np.all(errors[-2:] > _field_error(fit, reach, box))
     field = _linear_tube(slopes, errors, 0.5)
     noise = _noise_tube(slopes, np.array([[certificate.tube_noise**2]]), carried, 0.5, 6)

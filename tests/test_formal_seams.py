@@ -55,10 +55,13 @@ FORMAL_LINKS = {
         ),
     },
     "chc.decision._field_errors": {
-        "cites": ("rk4_inherited.mac", "tube_projected_action.mac"),
+        "cites": ("rk4_inherited.mac", "tube_projected_action.mac", "rk4_stage_term.mac"),
         "tests": (
             "test_field_terms_tube.py::test_the_field_s_error_is_the_delta_method_through_the_one_step_map",
             "test_field_terms_tube.py::test_two_levers_read_the_box_s_vertex_farthest_from_the_projected_action",
+            "test_rk4_stage_tube.py::test_the_stages_read_is_never_narrower_than_the_plan_s_form_under_rk4",
+            "test_rk4_stage_tube.py::"
+            "test_a_stage_s_error_is_largest_at_a_vertex_where_the_channel_does_not_read_the_state",
         ),
     },
     "chc.dynamics_id._field_terms": {

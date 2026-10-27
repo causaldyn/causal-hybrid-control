@@ -54,6 +54,7 @@ from chc.decision import (
     _rate,
     _show_start,
     _slopes,
+    _Stages,
     _transitions,
     prescribe,
 )
@@ -858,7 +859,8 @@ def test_with_one_lever_the_tube_s_rate_error_is_the_channel_s_error_at_its_dist
     fix it carried the largest action from zero, 3, which the drift's absorbing the channel at the
     log's mean action does not read (ADR 0091). The tube is carried by the field's slope at each
     planned action (ADR 0096), and reads the field's error over the box itself, the channel's at
-    each end's distance from the log's projected action with the drift's own (ADR 0133)."""
+    each end's distance from the log's projected action with the drift's own (ADR 0133), at each
+    of RK4's stages (ADR 0141)."""
     horizon, dt = 4, 1.0
     panel = _growing_panel()
     columns = panel.columns
@@ -900,9 +902,15 @@ def test_with_one_lever_the_tube_s_rate_error_is_the_channel_s_error_at_its_dist
     assert _field_error(fit, np.array([distance]), box) == pytest.approx(
         math.sqrt(float(np.mean(at_rows**2))), rel=1e-12, abs=0.0
     )
-    # read at the state each step starts from (ADR 0104), the largest over the box (ADR 0133)
+    # read at the state each step starts from (ADR 0104), the largest over the box (ADR 0133),
+    # where each of RK4's stages reads the field (ADR 0141)
     errors = _field_errors(
-        fit, np.array([distance]), np.asarray(plan.trajectory)[:-1], np.zeros((horizon, 0)), box
+        fit,
+        np.array([distance]),
+        np.asarray(plan.trajectory)[:-1],
+        np.zeros((horizon, 0)),
+        box,
+        _Stages(problem.model, dt, np.zeros((horizon, 4, 0))),
     )
     field = _linear_tube(slopes, errors, dt)
     # the noise with its read's own error, the units' spread and the mean's (ADR 0105)

@@ -1708,16 +1708,29 @@ def _error_tube(
     is that of the noise's covariance with ``(field_scale f_k)^2`` added to its largest
     eigenvalue, on one state ``sqrt(r_k^2 + (field_scale z f_k)^2)``, ``z`` the normal's two-sided
     quantile. ``read`` carries the noise's own error where it was read off a log
-    (:func:`chc.uncertainty._read_covariances`)."""
+    (:func:`chc.uncertainty._read_covariances`).
+
+    ``model_error`` may also be ``(H, S)``, an error for each of a step's ``S`` stages, each read
+    where its stage reads the field (:func:`chc.decision._field_errors`). The state matrices carry
+    each stage's by its own weight (:func:`chc.uncertainty._linear_tube`); a norm bound holds where
+    the field is off by at most its budget wherever the step reads it, so it reads the stages'
+    largest."""
     reads = np.asarray(model_error, dtype=np.float64)
-    errors = [float(reads)] * horizon if reads.ndim == 0 else [float(error) for error in reads]
-    if not (max(errors, default=0.0) > 0.0 or covariance.any()):
-        return None
-    tube = (
-        _tube([float(carried)] * horizon, errors, dt, integrator)
-        if carried.ndim == 0
-        else _linear_tube(carried, errors, dt, integrator=integrator)
-    )
+    if reads.ndim == 2 and carried.ndim == 0:
+        reads = np.max(reads, axis=1)
+    if reads.ndim == 2:
+        if not (float(np.max(reads, initial=0.0)) > 0.0 or covariance.any()):
+            return None
+        tube = _linear_tube(carried, reads, dt, integrator=integrator)
+    else:
+        errors = [float(reads)] * horizon if reads.ndim == 0 else [float(error) for error in reads]
+        if not (max(errors, default=0.0) > 0.0 or covariance.any()):
+            return None
+        tube = (
+            _tube([float(carried)] * horizon, errors, dt, integrator)
+            if carried.ndim == 0
+            else _linear_tube(carried, errors, dt, integrator=integrator)
+        )
     if field_scale is not None:
         return _noise_tube(
             carried,

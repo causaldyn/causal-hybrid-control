@@ -2670,6 +2670,18 @@ def prescribe(
     driver_reads = (
         forecasts[:-1] if integrator == "euler" else 0.5 * (forecasts[:-1] + forecasts[1:])
     )
+    # RK4 reads the field at four stages a step, each at its own state and drivers, and the tube
+    # reads the field's error where each reads the field (ADR 0141); the Euler map's one stage is
+    # the step's start
+    stages = (
+        None
+        if _integrator(model) == "euler"
+        else _Stages(
+            model,
+            dt,
+            np.stack([forecasts[:-1], driver_reads, driver_reads, forecasts[1:]], axis=1),
+        )
+    )
     # the field's error is a standard error whose spread the log estimates: the tube reads it at
     # its studentised quantile, beside the noise and independent of it
     field_scale = None if tolerance is None else _field_scale(fit)
@@ -2798,6 +2810,7 @@ def prescribe(
                 np.asarray(solved.trajectory, dtype=np.float64)[:-1],
                 driver_reads,
                 box,
+                stages,
             )
             if model_error > 0.0
             else model_error,
@@ -2948,6 +2961,7 @@ def prescribe(
                     box,
                     dt,
                     integrator,
+                    stages,
                 )
             ),
             _read_covariances(
@@ -4341,15 +4355,20 @@ def _box_field(
     box: tuple[NDArray[np.float64], NDArray[np.float64]],
     dt: float,
     integrator: Integrator,
+    stages: _Stages | None,
 ) -> NDArray[np.float64]:
     """``(H + 1,)``: what the tube carries of the field's error over the levers' box, each step's
-    read at its worst vertex (:func:`_field_errors`) and carried by its gains' norms
-    (:func:`chc.uncertainty._linear_tube`), as :func:`prescribe`'s solve carries it."""
+    read at its worst vertex, at each of RK4's stages given ``stages`` (:func:`_field_errors`),
+    and carried by its gains' norms (:func:`chc.uncertainty._linear_tube`), as
+    :func:`prescribe`'s solve carries it."""
     errors = _field_errors(
-        fit, reach, np.asarray(plan.trajectory, dtype=np.float64)[:-1], drivers, box
+        fit, reach, np.asarray(plan.trajectory, dtype=np.float64)[:-1], drivers, box, stages
     )
     return _linear_tube(
-        state_matrices, [float(error) for error in errors], dt, integrator=integrator
+        state_matrices,
+        errors if errors.ndim == 2 else [float(error) for error in errors],
+        dt,
+        integrator=integrator,
     )
 
 
@@ -4384,10 +4403,13 @@ def _plan_field(
     worst vertex, and :func:`chc.uncertainty._linear_tube` adds their gains' norms. Under the
     Euler map that is never less than this at the plan's actions, by Minkowski's inequality, and
     equal on one state where the steps' errors are one (``validation/plan_action_tube.mac``).
-    Under RK4 the stages read the error at states the field has moved, a term of order ``dt^2``
-    the box's form does not carry, so this may be the wider: on 400 logs of an exact flow, the
-    box's form at the plan's actions was 0.88 of this at the first step (median), and its misses
-    had a root mean square of 1.19 standard deviations, this one's 1.04."""
+    Under RK4 the stages read the error at states the field has moved, a term of order ``dt^2``;
+    the box's form reads each stage's error at its own state and carries it by its own weight
+    (ADR 0141), and is never less than this either, by the same inequality
+    (``validation/rk4_stage_term.mac`` (5)). Up to 0.22.0 it read the step's start alone and could
+    be the narrower: on 400 logs of an exact flow, 0.88 of this at the first step (median), its
+    misses' root mean square 1.19 standard deviations, this one's 1.04; read at the stages, 1.02
+    to 1.04 of this (median; never below 1.001 at any step of three plans) and 1.00 to 1.03."""
     terms = fit._field_terms
     assert terms is not None
     euler = isinstance(model, _EulerStep)
@@ -4483,17 +4505,49 @@ def _field_error(
     return math.hypot(channel, math.sqrt(fit.residual.channel.shape[0]) * fit.drift_error)
 
 
+@dataclass(frozen=True)
+class _Stages:
+    """Where RK4 reads the field over each of a plan's steps (:func:`_field_errors`): ``model``,
+    the field the plan is rolled out by, its step ``dt``, and ``drivers``, ``(H, 4, d)``, the
+    drivers each stage reads, at the step's start, its middle twice and its end."""
+
+    model: Dynamics
+    dt: float
+    drivers: NDArray[np.float64]
+
+
 def _field_errors(
     fit: CausalDynamicsFit,
     reach: NDArray[np.float64],
     states: NDArray[np.float64],
     drivers: NDArray[np.float64],
     box: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
+    stages: _Stages | None = None,
 ) -> NDArray[np.float64]:
     """The fitted field's error at each of the plan's ``(H, n)`` states, a standard error: at the
     state each step starts from, ``drivers`` ``(H, d)`` as the drift reads them over that step,
     the largest over the actions of ``box``, ``(lo, hi)``, or where no box is given of each lever
     ``j`` within ``reach[j]`` of its mean logged action.
+
+    Given ``stages``, the plan is rolled out by RK4, and the error is read where each of its four
+    stages reads the field, ``(H, 4)``, each at its own state and drivers, under each vertex at the
+    stage's state that vertex moves it to, and :func:`chc.uncertainty._linear_tube` carries each
+    by its own weight (ADR 0141). One RK4 step of a field affine in the state moves with the
+    field's error ``H(x, u) theta`` by ``dt sum_i c_i(z) H(x_i, u) theta``, ``x_i`` its stages'
+    states, exactly; read at the step's start alone, as up to 0.22.0, it drops
+    ``dt^2 S'(z) e1 f(x, u)`` on one state, the field's move over the step times the error's slope
+    in the state ``e1``: of the order of ``dt^2``, not of the terms the ``rk4`` fit's error
+    inherits, which every stage reads (``validation/rk4_stage_term.mac``). Each stage read on its
+    own bounds the step's error by Minkowski's inequality, within 2 % of it at that file's point,
+    where the start's read is 0.86 to 1.48 of it. On 400 logs of an exact flow (``x' = -x/2 + u``,
+    ``dt = 0.2``) the first step's misses had a root mean square of up to 1.19 of the start's read
+    at a plan's first action, ``+-1.96`` of it holding 0.89 of the logs; read at the stages, 1.00
+    to 1.03, holding 0.93 to 0.94, and over a held plan's 15 steps 0.96 to 1.05, holding 0.93 to
+    0.955, where the start's read held 0.915 to 0.943.
+    Where the channel does not read the state, a stage's state moves affinely with the action and
+    its variance is a convex quadratic in it, largest at a vertex; under a channel that does, the
+    third stage's variance is of degree 6 in the action (``rk4_stage_term.mac`` (6)), and the
+    vertices are read. The Euler map has one stage, the step's start, and reads as before.
 
     The drift regression reads its target at the fitted channel, so a channel error ``e`` moves the
     field at an action ``u`` by ``e' (g(x, u) - Gamma' phi(x))``: the channel's error times the
@@ -4538,7 +4592,11 @@ def _field_errors(
         return _model_errors(fit, reach, states)
     drivers = np.asarray(drivers, dtype=np.float64)
     if fit._field_terms is not None:
-        variances = _field_variances(fit, reach, states, drivers, box)
+        variances = (
+            _field_variances(fit, reach, states, drivers, box)
+            if stages is None
+            else _stage_variances(fit, reach, states, stages, box)
+        )
         return np.sqrt(np.maximum(variances, 0.0))
     channel = _model_errors(fit, reach, states)
     count = fit.residual.channel.shape[0]
@@ -4566,16 +4624,49 @@ def _field_variances(
     ``fit._field_terms``. With ``L_s(u) = e_s (x) g(x, u) - P_s' phi`` the field's move with the
     channel's error at state ``s``, ``g(x, u) = u (x) psi(x)`` linear in ``u``, the sum is
     ``u' A u + 2 b' u + c`` for each covariance, convex, and read at every vertex."""
+    rows = np.atleast_2d(np.asarray(states, dtype=np.float64))
+    curvature, linear, constant = _field_quadratic(fit, rows, drivers)
+    corners = _box_corners(fit, reach, box)
+    largest = np.full(rows.shape[0], -np.inf)
+    for start in range(0, corners.shape[0], _CORNERS_AT_ONCE):
+        block = corners[start : start + _CORNERS_AT_ONCE]
+        values = (
+            np.einsum("vi,rkij,vj->rkv", block, curvature, block)
+            + 2.0 * np.einsum("vi,rki->rkv", block, linear)
+            + constant[:, :, None]
+        )
+        largest = np.maximum(largest, np.max(values, axis=(0, 2)))
+    return largest
+
+
+def _box_corners(
+    fit: CausalDynamicsFit,
+    reach: NDArray[np.float64],
+    box: tuple[NDArray[np.float64], NDArray[np.float64]] | None,
+) -> NDArray[np.float64]:
+    """``(V, m)``: the vertices of ``box``, ``(lo, hi)``, or where no box is given of each lever
+    ``j`` within ``reach[j]`` of its mean logged action; a lever whose ends meet once."""
     terms = fit._field_terms
     assert terms is not None
-    rows = np.atleast_2d(np.asarray(states, dtype=np.float64))
     if box is None:
         lo, hi = terms.mean_action - reach, terms.mean_action + reach
     else:
         lo, hi = (np.asarray(end, dtype=np.float64).reshape(-1) for end in box)
+    ends = [np.unique([low, high]) for low, high in zip(lo, hi, strict=True)]
+    return np.stack(np.meshgrid(*ends, indexing="ij"), axis=-1).reshape(-1, lo.size)
+
+
+def _field_quadratic(
+    fit: CausalDynamicsFit, rows: NDArray[np.float64], drivers: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """The field's error variance summed over the states at each of ``rows`` ``(K, n)`` as a
+    quadratic in the action, one a channel's covariance: ``(r, K, m, m)``, ``(r, K, m)`` and
+    ``(r, K)``, ``A``, ``b`` and ``c`` of ``u' A u + 2 b' u + c`` (:func:`_field_variances`)."""
+    terms = fit._field_terms
+    assert terms is not None
     own = np.concatenate([_features(rows, fit.residual.degree), drivers], axis=1)
     basis = _features(rows, fit.residual.channel_degree)
-    points, count, levers = rows.shape[0], terms.push.shape[1], lo.size
+    points, count, levers = rows.shape[0], terms.push.shape[1], terms.mean_action.size
     entries = terms.channel.shape[1] // count
     reads = terms.channel.shape[0]
     channel = terms.channel.reshape(reads, count, entries, count, entries)
@@ -4595,18 +4686,62 @@ def _field_variances(
         + count * np.mean(np.einsum("kc,rgcd,kd->rkg", own, terms.drift, own), axis=2)
         + np.sum(terms.push, axis=1)[:, None]
     )
-    ends = [np.unique([low, high]) for low, high in zip(lo, hi, strict=True)]
-    corners = np.stack(np.meshgrid(*ends, indexing="ij"), axis=-1).reshape(-1, levers)
-    largest = np.full(points, -np.inf)
-    for start in range(0, corners.shape[0], _CORNERS_AT_ONCE):
-        block = corners[start : start + _CORNERS_AT_ONCE]
-        values = (
-            np.einsum("vi,rkij,vj->rkv", block, curvature, block)
-            + 2.0 * np.einsum("vi,rki->rkv", block, linear)
-            + constant[:, :, None]
-        )
-        largest = np.maximum(largest, np.max(values, axis=(0, 2)))
+    return curvature, linear, constant
+
+
+def _stage_variances(
+    fit: CausalDynamicsFit,
+    reach: NDArray[np.float64],
+    states: NDArray[np.float64],
+    stages: _Stages,
+    box: tuple[NDArray[np.float64], NDArray[np.float64]] | None,
+) -> NDArray[np.float64]:
+    """``(H, 4)``: :func:`_field_variances` read where each of RK4's four stages reads the field
+    over the step from each of ``states``: at the stage's own state, which moves with the action,
+    the largest over the box's vertices and the channel's covariances, each stage on its own."""
+    rows = np.atleast_2d(np.asarray(states, dtype=np.float64))
+    corners = _box_corners(fit, reach, box)
+    moved = _stage_states(stages.model, rows, corners, stages.dt)  # (H, V, 4, n)
+    points, size = rows.shape[0], max(1, _CORNERS_AT_ONCE // rows.shape[0])
+    largest = np.full((points, moved.shape[2]), -np.inf)
+    for start in range(0, corners.shape[0], size):
+        block = corners[start : start + size]
+        actions = np.tile(block, (points, 1))
+        for stage in range(moved.shape[2]):
+            curvature, linear, constant = _field_quadratic(
+                fit,
+                moved[:, start : start + size, stage].reshape(points * block.shape[0], -1),
+                np.repeat(stages.drivers[:, stage], block.shape[0], axis=0),
+            )
+            values = (
+                np.einsum("ki,rkij,kj->rk", actions, curvature, actions)
+                + 2.0 * np.einsum("ki,rki->rk", actions, linear)
+                + constant
+            ).reshape(-1, points, block.shape[0])
+            largest[:, stage] = np.maximum(largest[:, stage], np.max(values, axis=(0, 2)))
     return largest
+
+
+def _stage_states(
+    model: Dynamics, states: NDArray[np.float64], corners: NDArray[np.float64], dt: float
+) -> NDArray[np.float64]:
+    """``(H, V, 4, n)``: the states RK4's four stages read ``model``'s field at over the step from
+    each of ``states``, step ``k`` at ``t = k dt``, under each of ``corners`` held, as
+    :func:`chc.integrate.rk4_step` reads them: the step's start, its two midpoints and its end."""
+    rows = jnp.asarray(states)
+
+    def stages(t: Array, x: Array, u: Array) -> Array:
+        field, held = model.at_step(x, u) if isinstance(model, _SetAtStep) else (model, u)
+        k1 = field(t, x, held)
+        second = x + 0.5 * dt * k1
+        k2 = field(t + 0.5 * dt, second, held)
+        third = x + 0.5 * dt * k2
+        k3 = field(t + 0.5 * dt, third, held)
+        return jnp.stack([x, second, third, x + dt * k3])
+
+    over = jax.vmap(jax.vmap(stages, in_axes=(None, None, 0)), in_axes=(0, 0, None))
+    times = dt * jnp.arange(rows.shape[0], dtype=rows.dtype)
+    return np.asarray(over(times, rows, jnp.asarray(corners, dtype=rows.dtype)), dtype=np.float64)
 
 
 def _model_errors(

@@ -44,6 +44,7 @@ from chc.decision import (
     _noise_read,
     _rate,
     _slopes,
+    _Stages,
     prescribe,
 )
 from chc.dynamics import LinearDynamics
@@ -51,7 +52,14 @@ from chc.graph import CausalGraph
 from chc.integrate import rollout
 from chc.mpc import PeriodBudget
 from chc.panel import Panel
-from chc.plan import _row_prices, _Ruled, causal_plan, certify_safety, plan_regret_bound
+from chc.plan import (
+    _integrator,
+    _row_prices,
+    _Ruled,
+    causal_plan,
+    certify_safety,
+    plan_regret_bound,
+)
 from chc.response import (
     Channel,
     DelayedAdstock,
@@ -401,13 +409,14 @@ def _logged_mean(
 def _tube_at(
     result: Prescription, reach: np.ndarray, actions: np.ndarray | None = None
 ) -> np.ndarray:
-    """The tube the plan's noise and persistence and its carriage carry: under ``exact`` the
-    field's slope at each of ``actions``, the plan's own where omitted, under ``bound`` the plan's
-    own rate. The field's error is read at each state a step starts from, the largest over the
-    problem's box of the levers, its root mean square over the log's rows the error the plan is
-    solved with (ADR 0133); ``reach``, each lever's largest distance from its logged mean the box
-    allows, is what a fit that keeps no field terms prices each lever's error at. The noise
-    carries its read's own error over the log's hundred units of fourteen transitions (ADR 0105)."""
+    """The tube the plan's noise and persistence and its carriage carry: under ``exact`` the field's
+    slope at each of ``actions``, the plan's own where omitted, under ``bound`` the plan's own rate.
+    The field's error is read at each state a step starts from, under RK4 at each of its stages (ADR
+    0141), the largest over the problem's box of the levers, its root mean square over the log's
+    rows the error the plan is solved with (ADR 0133); ``reach``, each lever's largest distance from
+    its logged mean the box allows, is what a fit that keeps no field terms prices each lever's
+    error at. The noise carries its read's own error over the log's hundred units of fourteen
+    transitions (ADR 0105)."""
     plan = result.plan
     assert plan is not None
     problem = plan._problem
@@ -424,7 +433,14 @@ def _tube_at(
     states = np.asarray(rollout(problem.model, problem.x0, jnp.asarray(along), DT))
     if actions is None:
         np.testing.assert_allclose(states, plan.trajectory, rtol=1e-12, atol=1e-12)
-    error = _field_errors(result.model_fit, reach, states[:-1], np.zeros((HORIZON, 0)), box)
+    # under RK4 where each of its stages reads the field (ADR 0141); a norm bound reads their
+    # largest
+    stages = (
+        None
+        if _integrator(problem.model) == "euler"
+        else _Stages(problem.model, DT, np.zeros((HORIZON, 4, 0)))
+    )
+    error = _field_errors(result.model_fit, reach, states[:-1], np.zeros((HORIZON, 0)), box, stages)
     noise, carried = result.certificate.tube_noise, result.certificate.tube_autoregression
     assert noise is not None
     assert carried is not None
@@ -442,12 +458,15 @@ def _tube_at(
         )
         return np.hypot(
             _noise_tube(np.asarray(rate), covariance, persistence, DT, HORIZON, read=read),
-            scale * _tube([rate] * HORIZON, list(error), DT, "rk4"),
+            scale
+            * _tube(
+                [rate] * HORIZON, list(error.max(axis=1) if error.ndim == 2 else error), DT, "rk4"
+            ),
         )
     slopes = _slopes(problem.model, problem.x0)(along)
     return np.hypot(
         _noise_tube(slopes, covariance, persistence, DT, HORIZON, read=read),
-        scale * _linear_tube(slopes, list(error), DT),
+        scale * _linear_tube(slopes, error if error.ndim == 2 else list(error), DT),
     )
 
 
