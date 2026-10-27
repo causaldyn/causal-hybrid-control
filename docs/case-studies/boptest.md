@@ -272,15 +272,17 @@ the steps it trusts. Its certificate trusts 2 or 3 steps on nine logs in ten, 4 
 than the log's own plant allows on 0 to 2% of the logs in a cell. The held forecast's own error is
 not in the tube, and over these few steps the weather moves little.
 
-That no longer holds. Measured the same way on 0.21.0 and 0.22.0, the tube one step ahead reads 0.12
-to 0.21 K on average by cell and holds the plant at the first step on 90% to 98% of draws on 0.21.0
-and 91% to 98% on 0.22.0, and on 94.8% and 95.1% of the steps it trusts. The certificate trusts 2.2
-to 5.1 steps on average by cell, 8 at most, where the plant's error allows 2 to 5, and more than the
-log's own plant allows on 0 to 67 of 100 logs in a cell on 0.21.0 and 0 to 61 on 0.22.0, the most
-where the noise is AR(0.99). The same AR(0.99) cell run alone, on another 100 logs, gives the drift
-by version: the tube held the plant at the first step on 99.7% of draws on 0.17.0, 98.6% on 0.18.0,
-95.5% on 0.19.0, 95.2% on 0.20.0 and 0.21.0, and 96.0% on 0.22.0, and the certificate trusted more
-than the plant allows, 4 steps there on every version, on 1, 1, 9, 11, 11 and 7 logs.
+On 0.22.0, measured the same way, the tube one step ahead reads 0.12 to 0.21 K on average by cell.
+It holds the plant at the first step on 95.5% to 97.5% of draws where the noise is white or AR(0.5),
+and in the floor-heating cells. Where the zone's noise is AR(0.9) or AR(0.99), it holds 94.4% and
+91.3%. That noise persists and is not logged, so the fit reads part of it as the zone's drift. On
+the AR(0.99) cell the noise the tube reads is 0.056 K a step, where the plant's is 0.09 K.
+`prescribe` warns on every such log that the tube's 0.95 is not assured (ADR 0105). The shortfall
+dates from 0.19.0, when the field's error joined the noise's radius in quadrature (ADR 0104): on the
+same logs the first step held 0.950 before and 0.909 after. The certificate trusts more steps than
+the plant's pooled error allows on 0 to 61 of 100 logs in a cell, 35 even in the white-noise cell,
+where the tube holds 0.957. A tube calibrated on average spreads by log, so that count is not the
+tube's level.
 
 Scope: the same six replicates, the same shared log days, and the same zero lever price as above.
 Neither verdict stands, so this page makes no claim about what adjustment costs or saves on this

@@ -2107,7 +2107,10 @@ def prescribe(
             correlation within units (ADR 0080, :attr:`DecisionCertificate.tube_noise`). The
             radius holds the two together at each step with probability 0.95 where the noise is
             Gaussian and AR(1) and the field's error is its standard error times Student's ``t``
-            at the degrees of freedom its spread is read with (ADR 0104). Up to 0.16.0
+            at the degrees of freedom its spread is read with (ADR 0104). A disturbance that
+            persists and is not logged is read in part as the drift, so the noise read off the log
+            is smaller than the plant's; a ``tube`` warning then says the 0.95 is not assured, and
+            the tube does not widen (ADR 0105). Up to 0.16.0
             the tube carried the channel's error alone: on 600 one-unit logs shaped like the
             BOPTEST case's it read 0.051 K one step ahead, where the plant's error one step ahead
             reached 0.16 to 0.22 K at 95 %; it held the plant at the first step on 40 % of draws
