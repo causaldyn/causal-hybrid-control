@@ -108,6 +108,7 @@ block, given everything before the block.
   probability ``q`` instead, and logs it: the deployed zone is an experiment whose candidate share
   is ``1 - q``, and the rollback e-process reads the experiment's harm increments, after the
   burn-in and weighted by the inverse of the logged probability, centred with ``centred``
+  against a level read from the deployed blocks alone, which starts again at the DEPLOY
   (``validation/gate_block_rollback.mac``). A ROLLBACK then claims, design-based, that the
   baseline beat the candidate by more than ``delta_harm`` over the blocks read since the DEPLOY.
   The share costs ``q`` times the candidate's sustained gain, on a plant whose reward is affine
@@ -116,9 +117,11 @@ block, given everything before the block.
   20 000 periods at ``q`` 0.1, 0.2 and 0.3, plain or centred; after it turned 0.157 worse, 40
   blocks after the DEPLOY, the centred rollback fired on 31%, 96.5% and 99.75% of 400 paths within
   360 blocks, after a median of 320, 215 and 155, and plain on 9%, 46% and 62%; without the share,
-  on none. On a plant of order 1 whose candidate repays a cost of 0.2 one period on, exactly as good
-  sustained, in blocks of 2, the rollback fired on at most 0.25% of 400 paths with one period
-  burned, and on 30% to 100% with none: the burn-in must cover the carryover here too.
+  on none. Each zone was deployed through the gate, by twenty blocks the candidate won outright: a
+  level that went on reading those blocks' arm means fired on 14.75%, 52.5% and 86.75%. On a plant
+  of order 1 whose candidate repays a cost of 0.2 one period on, exactly as good sustained, in
+  blocks of 2, the rollback fired on at most 0.25% of 400 paths with one period burned, and on 30%
+  to 100% with none: the burn-in must cover the carryover here too.
 
 **Centred increments** (*experimental*). Under the experiment's mixture the difference of the two
 weights, ``D = w_new - w_base``, lies in ``[-1 / (1 - rho), 1 / rho]`` and has mean 0 given the
@@ -264,8 +267,9 @@ class GateConfig:
     ``rollback_baseline_share`` (*experimental*), unset by default, keeps a randomised baseline in
     a deployed zone of a gate in blocks, so that its rollback reads evidence: each deployed block
     runs the baseline with this probability, and the rollback e-process reads the blocks' contrast
-    after the burn-in, as the experiment does (see :mod:`chc.gate`). Unset, a deployed zone runs
-    the candidate in every block, and only a drift alarm rolls it back.
+    after the burn-in, as the experiment does, with ``centred`` against a level the deployed
+    blocks alone set (see :mod:`chc.gate`). Unset, a deployed zone runs the candidate in every
+    block, and only a drift alarm rolls it back.
 
     Raises:
         ValueError: on a margin outside ``[0, 1)``, a level or ``rho`` outside ``(0, 1)``, a
@@ -1458,11 +1462,13 @@ class _Level:
     with ``m_new`` and ``m_base`` the rewards of the zone's earlier decisions in the experiment,
     each averaged under its own policy's weight. In blocks those are the two arms' read means.
     While one weight has summed to nothing the level is the other's mean, and before any decision
-    it is 1/2.
+    it is 1/2. A zone's level starts again at a drift alarm and at its DEPLOY, from which the
+    deployed blocks of a ``rollback_baseline_share`` read their own.
 
     A decision's level reads only the decisions before it, in its batch and in earlier ones, so it
     is predictable: the mixture draws the decision's action after it, and the difference of the
-    two weights has mean 0 given it."""
+    two weights has mean 0 given it. A start again keeps that, since whether and when it comes is
+    read from the decisions before."""
 
     def __init__(self) -> None:
         # [weighted reward, weight] by [candidate, baseline], summed in the decisions' order
@@ -1663,7 +1669,7 @@ class _Zone:
     futile: bool = False  # the futility e-value crossed in this epoch; a crossing is a rejection
     decisions: int = 0
     carryover: _Carryover | _BlockCarryover | None = None
-    level: _Level = field(default_factory=_Level)  # read only when the experiment is centred
+    level: _Level = field(default_factory=_Level)  # read only by centred increments
 
 
 class DeploymentGate:
@@ -1974,6 +1980,9 @@ class DeploymentGate:
             return "hold"
         if selected:
             zone.mode = "deployed"
+            # The deployed blocks' level reads only them: the experiment's arm means need not be
+            # the deployed regime's, and a stale level adds its error's square to the variance.
+            zone.level = _Level()
             return "deploy"
         if zone.harm.log_value >= threshold:
             zone.mode = "retired"

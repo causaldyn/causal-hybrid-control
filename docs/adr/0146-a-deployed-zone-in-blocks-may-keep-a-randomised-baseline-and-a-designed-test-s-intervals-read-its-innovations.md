@@ -1,7 +1,21 @@
 # ADR 0146 — A deployed zone in blocks may keep a randomised baseline, and a designed test's intervals read its innovations
 
 **Status:** accepted, 2026-10-27. Amends ADR 0090 (the gate reads plants with memory in blocks)
-and ADR 0092 (a designed test is read from the periods it left blank). Amended 2026-10-27: the
+and ADR 0092 (a designed test is read from the periods it left blank). Amended 2026-10-27, before
+any release: the centred rollback's level `c` starts again at the DEPLOY, from the deployed blocks
+alone, where it had continued from the experiment's. The DEPLOY comes at a read the blocks before
+it decide, and each later level reads only the deployed blocks before its own, so it is still
+fixed before the block's draw and `E[x] = V_new - V_base` holds as in STEP 3 of
+`validation/gate_block_rollback.mac`; which level is read moves only the second moment, by
+`(c - c*)^2 / (q (1 - q))` (its STEP 8). The rollback numbers below were measured on zones put
+into `deployed` with an empty level. Deployed through the gate instead, by twenty experiment
+blocks the candidate won outright and then the same stream, the continued level took the lab
+turn's centred rollback to 14.75%, 52.5% and 86.75% (medians 260, 230 and 195 blocks), the turn
+on the plant of order 1 to 68.25%, 98.5% and 100% (medians 1310, 875 and 680), and the worse
+candidate's medians to 1040, 470 and 320; with the level started again, the gate's own path
+gives back every rollback number below to the bit. Wrong rollbacks stay within `alpha_harm`: 0 of
+1000 paths in each of the six lab cells.
+Amended 2026-10-27: the
 `serial="ar1"` intervals hold their level at the true AR(1) coefficient; with it estimated, few
 donors or a long post period lower it. On factor panels AR(1) at 0.95, 10 post periods, at
 `alpha = 0.1`, they covered 0.854-0.858 at the last periods on 2 donors and 0.864-0.870 on 4, where

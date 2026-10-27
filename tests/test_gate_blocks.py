@@ -701,6 +701,64 @@ def test_in_blocks_a_deployed_candidate_that_is_worse_is_rolled_back_only_with_a
             assert (rolled >= 0).mean() >= least
 
 
+def _turning(after: int) -> Period:
+    """The lab's plant whose candidate acts ``N(0.4, 1)`` for its first ``after`` periods and
+    ``N(1, 1)`` from then on, 0.157 worse than the baseline in the long run."""
+    periods = [0]
+
+    def period(rng: np.random.Generator, x: np.ndarray, candidate: np.ndarray) -> tuple:
+        action = 0.4 if periods[0] < after else 1.0
+        periods[0] += 1
+        u = np.where(candidate, action, 0.0) + rng.normal(size=x.shape)
+        mean = 0.3 * np.exp(-((u - 1.0) ** 2) / 2.0) + 0.7 * np.exp(-(x**2) / 2.0)
+        reward = (rng.random(x.shape) < mean).astype(float)
+        return reward, 0.9 * x + 0.1 * u + 0.2 * rng.normal(size=x.shape)
+
+    return period
+
+
+def test_the_centred_rollback_reads_only_the_blocks_since_the_deploy() -> None:
+    """Two zones deployed by experiments whose arms read apart, then fed the same deployed blocks,
+    hold the same rollback evidence at every read: the level the deployed blocks are read against
+    starts again at the DEPLOY, rather than carrying the experiment's arm means into a regime they
+    need not describe (``validation/gate_block_rollback.mac``, STEP 8)."""
+    config = _config(0, 1, rollback_baseline_share=0.2, centred=True)
+    ran = np.arange(20) % 2 == 0
+    gates = []
+    for high, low in ((1.0, 0.0), (1.0, 0.25)):
+        gate = DeploymentGate({"z": PLAN}, config)
+        win = BlockBatch(np.where(ran, high, low)[:, None], ran, np.full(20, 0.5))
+        assert gate.update({"z": win}) == {"z": "deploy"}
+        gates.append(gate)
+    rng = np.random.default_rng(20261034)
+    for _ in range(10):
+        candidate = rng.random(10) >= 0.2
+        batch = BlockBatch(rng.random((10, 1)), candidate, np.where(candidate, 0.8, 0.2))
+        assert gates[0].update({"z": batch}) == gates[1].update({"z": batch})
+        logs = [gate._zones["z"].rollback.log_value for gate in gates]
+        assert logs[0] == logs[1]
+
+
+def test_in_blocks_a_candidate_that_turns_worse_after_a_deploy_is_rolled_back() -> None:
+    """The lab's candidate, deployed through the gate by twenty blocks it wins outright, turns
+    0.157 worse 40 blocks later; blocks of 50 with 40 burned, read every 5, the baseline's blocks
+    at probability 0.2, centred. The rollback fires after the turn on at least 0.937 of 400 paths
+    within the 360 blocks left: three binomial standard errors below the 0.965 measured on this
+    stream, the median 215 blocks from the turn. Before the turn it fires on none."""
+    config = _config(40, 50, rollback_baseline_share=0.2, centred=True)
+    rolled = _deployed(
+        _turning(40 * 50),
+        config,
+        paths=400,
+        blocks=400,
+        per_read=5,
+        seed=20261028,
+        start=lambda rng, n: rng.normal(0.4, 0.51, n),
+    )
+    assert not ((rolled >= 0) & (rolled <= 40)).any()
+    assert (rolled >= 0).mean() >= 0.965 - 3.0 * math.sqrt(0.965 * 0.035 / 400)
+
+
 def test_in_blocks_a_deployed_zone_with_a_baseline_share_logs_both_policies_blocks() -> None:
     """Deployed with ``rollback_baseline_share = 0.25``, a zone logs the baseline's blocks at
     0.25 and the candidate's at 0.75, and refuses blocks logged as before, at 1; the experiment

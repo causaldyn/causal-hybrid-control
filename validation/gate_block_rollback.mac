@@ -32,6 +32,16 @@
    STEP 7  blocks to a rollback e-value of 20/0.9 x 12 bets, by the growth of the best fixed bet
            capped at 0.9 (an approximation), from a deploy at which the candidate is already
            worse, beside the shipped gate's Monte Carlo medians
+   STEP 8  the level starts again at the DEPLOY. STEP 3 needs c fixed before the block's draw,
+           not any particular c. The DEPLOY comes at a read decided by the blocks before it, a
+           stopping time; after it each block's level is a function of the deployed blocks
+           before it alone (1/2 before the first, one arm's mean while the other is unseen), so
+           it is fixed before the block's draw, and E[x] = Delta holds block by block. Which
+           level is read moves only the second moment: E[x^2](c) - E[x^2](c*) =
+           (c - c*)^2 / (q (1 - q)). The experiment's arm means are read under the experiment's
+           regime, and carried into the deployed blocks they put that square into every
+           increment until the deployed blocks outweigh them; read from the deployed blocks
+           alone, c tends to c*
 
    Run: timeout 300 maxima --very-quiet -Q -b validation/gate_block_rollback.mac */
 
@@ -121,3 +131,16 @@ for row in [[0.1, 0.5, 0.1, 790], [0.2, 0.5, 0.1, 410], [0.3, 0.5, 0.1, 330]] do
     print("STEP 7  q", qv, "a candidate", d, "worse at mu", m, "sd 0.2: blocks centred at c*",
           round(need/centred), "; plain", round(need/plain), "; the gate's median, centred:",
           row[4]))$
+
+/* STEP 8 */
+s8a : ratsimp(EX2(c) - EX2(cstar) - (c - cstar)^2/(q*(1 - q)))$
+/* the first two deployed blocks after a restart: c = 1/2, then block 1's read mean R1, whichever
+   arm it drew; each is fixed before its block's draw, so STEP 3's identity holds at each */
+s8b : [ratsimp(EX(1/2) - Delta), ratsimp(EX(R1) - Delta)]$
+/* at q = 1/5, a level 0.2 off c* against the noise's part at s^2 = 1/40 (a read mean of ten
+   Bernoulli periods near 1/2) */
+s8c : float(subst([q = 1/5, s2 = 1/40], [(1/5)^2/(q*(1 - q)), s2/(q*(1 - q))]))$
+print("STEP 8  E[x^2](c) - E[x^2](c*) - (c - c*)^2/(q (1 - q)) =", s8a,
+      "; E[x] - Delta at c = 1/2 and at c = R1:", s8b,
+      "; at q = 1/5 a level 0.2 off adds", s8c[1], "to the noise's", s8c[2],
+      pass(s8a = 0 and s8b = [0, 0] and abs(s8c[1] - 0.25) < 1e-12 and abs(s8c[2] - 0.15625) < 1e-12))$

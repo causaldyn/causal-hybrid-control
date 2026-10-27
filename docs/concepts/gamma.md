@@ -171,8 +171,9 @@ A Gaussian lever whose confounder explains a share `R²` of its variance reads a
 as `2 + √2`.
 `prescribe` reads its fit's own by default, where the fit is an Euler fit by adjustment, and the
 relative margin otherwise ([ADR 0125](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0125-prescribe-reads-the-fit-s-absolute-radius-by-default.md)). Once the radius swallows the control channel the
-robust-optimal action is exactly zero: with the sign of the channel unidentified, acting cannot
-improve the guarantee.
+robust-optimal action is the one the channel's error is read from (the log's mean action in
+`prescribe`, whose barrier is centred there): with the sign of the channel unidentified, moving
+away from it cannot improve the guarantee.
 
 ## See it
 

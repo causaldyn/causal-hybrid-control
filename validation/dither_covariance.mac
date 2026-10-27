@@ -29,6 +29,13 @@
              binds, and the optimum is a rank-one V = v v'. Newton on f(v v') in 40 digits finds
              it; the gradient G = C - M^-1 Q M^-1 there is >= 0 with G v = 0, the KKT conditions of
              the convex problem, so it is the global optimum: f = 2.9176361092651...
+     STEP 8  the best white dither v I under a prior, chc.experiment._white_dither: f(v I) has
+             slope tr C - sum_k q_k / (l_k + v)^2 over the prior's eigenvalues l_k, q_k the
+             weight's diagonal in their basis. Below v = sqrt(q_0 / tr C) - l_0, l_0 the least,
+             the first term alone exceeds tr C, so the root lies at or above that bound, where no
+             l_k + v is zero. On C = Q = I, P0 = diag(1, 0) the root of 2 - 1/(1 + v)^2 - 1/v^2
+             is 0.77123, above the bound sqrt(1/2), with value 3.40367; on one lever, C = 1,
+             Q = 4, P0 = 1, the root is the bound, 1.
 
    Run: timeout 300 maxima --very-quiet -Q -b validation/dither_covariance.mac */
 
@@ -157,3 +164,27 @@ print("STEP 7d eigenvalues of G = C - M^-1 Q M^-1:", ev7g, "; G v =", gv7,
 print("        G >= 0 and G V = 0 with V >= 0: the KKT conditions of a convex problem, so V is optimal")$
 print("STEP 7e the value against the numeric route's 2.9176361092651:",
       verdict(abs(fv7 - 2.9176361092651b0) < 1b-12))$
+
+/* ===== STEP 8: the white dither's bracket ===== */
+print("=== STEP 8: the best white dither under a prior starts at its lower bound ===")$
+assume(trc > 0, q0 > 0, t0 > 0)$
+/* t0 = l_0 + v in (0, sqrt(q0/trc)): q0/t0^2 - trc = (q0 - trc t0^2)/t0^2 > 0 */
+first8 : ratsimp(q0/t0^2 - trc - (q0 - trc*t0^2)/t0^2)$
+print("STEP 8a q_0/t^2 - tr C - (q_0 - tr C t^2)/t^2 =", first8,
+      "; at t = sqrt(q_0 / tr C) it is", ratsimp(subst(t0 = sqrt(q0/trc), q0/t0^2 - trc)),
+      verdict(first8 = 0 and ratsimp(subst(t0 = sqrt(q0/trc), q0/t0^2 - trc)) = 0))$
+slope8(v) := 2 - 1/(1 + v)^2 - 1/v^2$
+low8 : sqrt(1/2)$
+root8 : bfloat(find_root(slope8(v), v, low8, 2))$
+fw8(v) := 2*v + 1/(1 + v) + 1/v$
+print("STEP 8b C = Q = I, P0 = diag(1, 0): slope at the bound sqrt(1/2) =", bfloat(slope8(low8)),
+      "; root", root8, "; value", bfloat(fw8(root8)),
+      verdict(is(slope8(low8) < 0) and root8 > bfloat(low8)
+              and abs(root8 - 0.7712298784187063b0) < 1b-14
+              and abs(bfloat(fw8(root8)) - 3.403669475041612b0) < 1b-13))$
+slope8c(v) := 1 - 4/(1 + v)^2$
+low8c : sqrt(4/1) - 1$
+print("STEP 8c C = 1, Q = 4, P0 = 1: the bound", low8c, "; slope there", slope8c(low8c),
+      "; f(v) = v + 4/(1 + v) is least at", rhs(sublist(solve(diff(v + 4/(1 + v), v) = 0, v),
+      lambda([s], is(rhs(s) > 0)))[1]),
+      verdict(slope8c(low8c) = 0 and low8c = 1))$
