@@ -4,7 +4,9 @@
 to 1.0, and states the release's procedure. Changes no behaviour in 0.24.0. Amended 2026-10-27:
 the list gains the kind `class`, a class renamed and served under its old name by its module's
 `__getattr__` with the standard warning; its first entry is `chc.marketplace.DitherCheck`, renamed
-`GradientDitherCheck` apart from `chc.decision.DitherCheck`, a different test (ADR 0140).
+`GradientDitherCheck` apart from `chc.decision.DitherCheck`, a different test (ADR 0140). At
+1.0 it leaves with the renamed names, so the procedure's step 7 lists nine, and step 2 also
+deletes `chc.marketplace.__getattr__`.
 
 ## Context
 
