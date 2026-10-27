@@ -145,8 +145,12 @@ def fixed_point(
 ) -> EquilibriumSolution:
     """Solve ``x = f(params, x)`` to a tolerance, differentiable in ``params`` (implicit, not tape).
 
-    ``tol`` is on the RELATIVE residual (see :func:`_relative_residual`); the default sits an order
-    of magnitude above the float32 rounding floor, so a converged solve is never reported as failed.
+    ``tol`` is on the RELATIVE residual (see :func:`_relative_residual`). In float64 the default
+    sits far above the rounding floor; in float32 it does not: on the logs of
+    ``SharedStateMarket(seed=0..29)``, 400 blocks each and both payments, the logit congestion
+    solve's residual ended above 1e-6 on 88 of 24,000 blocks, at most 2.0e-6, 16.6 units of
+    rounding, and ``converged`` read False there. A caller that acts on the flag in float32 reads
+    the residual against that floor too, as :class:`chc.marketplace.SharedStateMarket` does.
     Reverse-mode only: ``custom_vjp`` defines no JVP, so ``jax.jacfwd`` through the solve will fail.
     The gradient is the exact one at the fixed point, independent of how many iterations the forward
     solve took -- which is what makes the tolerance-based ``lax.while_loop`` usable at all, since
@@ -253,6 +257,10 @@ def stackelberg_allocation(
 
     ``start``, where given, replaces the even split: the ascent starts at its projection onto the
     budget simplex.
+
+    Raises:
+        ValueError: on a ``start`` of another shape, or an objective that is not finite at the
+            start: no step compares above it, and the start came back unmoved.
     """
     if start is not None and jnp.shape(start) != (n,):
         raise ValueError(f"start has shape {jnp.shape(start)}; the allocation has {n} entries")
@@ -262,6 +270,11 @@ def stackelberg_allocation(
     optimizer = optax.adam(lr)
     state = optimizer.init(u)
     best_u, best_val = u, float(value_fn(u))
+    if not math.isfinite(best_val):
+        raise ValueError(
+            f"the objective at the start is {best_val}: the ascent keeps the best value it reads,"
+            " and no step beats a value that is not finite"
+        )
     for _ in range(steps):
         updates, state = optimizer.update(grad_fn(u), state)
         u = project_simplex(jnp.asarray(optax.apply_updates(u, updates)), budget)
@@ -299,7 +312,12 @@ class CongestionAllocation:
     ``shadow_price`` is what one more unit of budget completes there, the budget's Lagrange
     multiplier: on ``SharedStateMarket(seed=0..7)`` at budgets from 0.5 to 60 it equals central
     differences of ``value`` in the budget to 1e-8, and it is 0 where more budget completes
-    nothing.
+    nothing. It is 0 too where a positive budget cannot lower the level below the free one by the
+    bisection's last step: lowering the level by ``delta`` costs at most ``delta * sum(q) / q_p``
+    through any zone ``p`` with room (``phi`` concave, the floors convex in the level), so a budget
+    short of it buys at most ``mass*beta*delta/budget`` rides a unit
+    (``validation/marketplace_shadow_price.mac``). Zone values (100, 0, -50) at a budget of 3 read
+    nan there before 0.24.0.
     """
 
     allocation: NDArray[np.float64]  # (n,) the incentive per zone: non-negative, summing to budget
@@ -313,7 +331,10 @@ class CongestionAllocation:
     cost_below: float  # the least cost of a vertex at ``level_below``: above the budget, or inf
     vertices: int  # the vertices whose cost the solve evaluated, over every level it read
     # the rides one more unit of budget completes, dV*/dB: 0 where more budget completes nothing,
-    # nan at a vertex with no partial zone where drivers are wasted (:func:`_budget_shadow_price`)
+    # or where a positive budget cannot lower the level by the bisection's last step, ``level -
+    # level_below``: there one more unit completes below ``mass*beta*(level - level_below)/budget``
+    # rides, to first order; nan at a vertex with no partial zone where drivers are wasted, as at a
+    # budget of zero (:func:`_budget_shadow_price`)
     shadow_price: float = math.nan
 
 
@@ -569,9 +590,10 @@ def exact_congestion_allocation(
     is the price of the certificate: a level reads ``k * 2**(k - 1)`` vertices over the ``k``
     zones whose floor lies below their demand, at most 24,576 on the 12 zones of
     ``SharedStateMarket``, and a solve at most ``2*j + 51`` levels, where the search below the free
-    level doubles its reach ``j`` times: 49 on each of the markets ``SharedStateMarket(seed=0..29)``
-    at either precision, 0.3 to 1.2 million vertices in all. Past 20 zones it refuses. Exact where
-    the objective is completed rides and the budget a lump sum paid into the drivers' value;
+    level doubles its reach ``j`` times: 50 or 51 on each of the markets
+    ``SharedStateMarket(seed=0..29)`` at either precision, 0.30 to 1.25 million vertices in all.
+    Past 20 zones it refuses. Exact where the objective is completed rides and the budget a lump
+    sum paid into the drivers' value;
     ``validation/exact_congestion_allocation.mac`` checks the inversion, the floor, the bound and
     a vertex's cost at a rational point. In float64 throughout, so the optimum does not move with
     the caller's precision; an equilibrium solved to a tolerance reproduces ``value`` to that
@@ -599,7 +621,9 @@ def exact_congestion_allocation(
             f" exact allocation enumerates at most {_EXACT_ZONES} zones"
         )
     demand_share = wanted / mass
-    scale = 1.0 / beta + congestion + float(np.max(np.abs(worth))) + budget
+    # The levels' own size sets their resolution. A budget term here coarsened it with the budget:
+    # at a budget of 1e16 the free level went unresolved and the optimum fell from 3.5 to 3.46.
+    scale = 1.0 / beta + congestion + float(np.max(np.abs(worth)))
 
     def resolved(low: float, high: float) -> bool:
         return _resolved(low, high, scale)
@@ -628,7 +652,8 @@ def exact_congestion_allocation(
             high, at = middle, found
         else:
             low, below = middle, found
-    if at is None:  # no level below the free one is within the budget: no incentive moves a driver
+    stalled = at is None
+    if stalled:  # no level below the free one is within the budget: no incentive moves a driver
         floor = np.exp(_floor_log_shares(free, worth, beta, congestion))
         at = (0.0, floor / math.fsum(floor), np.zeros(n), (), 0)
     spent, shares, incentive, full, _ = at
@@ -646,7 +671,11 @@ def exact_congestion_allocation(
         level_below=low,
         cost_below=below[0],
         vertices=vertices,
-        shadow_price=_budget_shadow_price(
+        # a budget that cannot lower the level by the bisection's last step completes, per more
+        # unit, below mass*beta*(level - level_below)/budget rides, to first order
+        shadow_price=0.0
+        if stalled and budget > 0.0
+        else _budget_shadow_price(
             shares, wanted, full, middle_zone, below[0], beta, congestion, mass
         ),
     )
@@ -908,7 +937,9 @@ def per_driver_congestion_allocation(
         value, demand, beta, congestion, mass, budget
     )
     demand_share = wanted / mass
-    scale = 1.0 / beta + congestion + float(np.max(np.abs(worth))) + budget / mass
+    # As in exact_congestion_allocation, no budget term: with one, the margin's fill went
+    # unresolved at a money of 1e10 and the rides passed the drivers, the dual gap negative.
+    scale = 1.0 / beta + congestion + float(np.max(np.abs(worth)))
     free = _free_level(worth, beta, congestion, scale)
     money = budget / mass
 

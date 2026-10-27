@@ -152,6 +152,16 @@ def test_stackelberg_allocation_finds_a_local_maximum_not_the_global_one() -> No
     assert float(objective(jnp.array([0.0, 1.0, 0.0]))) == pytest.approx(3.184, abs=2e-3)
 
 
+@pytest.mark.parametrize("start_value", [math.nan, math.inf, -math.inf])
+def test_stackelberg_allocation_refuses_an_objective_that_is_not_finite_at_its_start(
+    start_value: float,
+) -> None:
+    """The ascent keeps the best value it reads; a nan at the start compared above nothing, so the
+    even split came back unmoved and unannounced."""
+    with pytest.raises(ValueError, match="objective at the start"):
+        stackelberg_allocation(lambda u: jnp.sum(u) * start_value, 3, 1.0, steps=5)
+
+
 def test_stackelberg_allocation_starts_where_it_is_told() -> None:
     """The ascent from the even split ends at the first zone's vertex, worth 2.973; started at the
     second zone's vertex it keeps its 3.184. A start off the simplex is projected onto it."""
@@ -493,6 +503,45 @@ def test_the_per_driver_allocation_s_dual_bound_meets_it_and_its_price_is_its_sl
         assert found.shadow_price == pytest.approx((up - down) / (2.0 * h), rel=0.0, abs=1e-7)
     if found.shadow_price > 0.0:
         assert found.spent == pytest.approx(budget, rel=1e-12, abs=0.0)
+
+
+def test_a_budget_far_past_the_game_buys_no_fewer_rides_in_either_payment() -> None:
+    """More budget never completes fewer rides: the rest, spread evenly, moves no driver. The
+    bisections resolved the level to a scale that grew with the budget: on a game whose free
+    equilibrium completes every demand the exact optimum fell from 3.5 to 3.46 at 1e16, and paid
+    per driver a market's rides passed its 12 drivers from 1e10, by 0.116 at 1e15, the dual's gap
+    negative."""
+    toy = ([0.1, 0.5, -0.2], [1.0, 2.0, 0.5], 2.5, 2.0, 5.0)
+    for budget in (1.0, 1e12, 1e16, 1e20):
+        assert exact_congestion_allocation(*toy, budget).value == pytest.approx(3.5, abs=1e-12)
+        assert per_driver_congestion_allocation(*toy, budget).value == pytest.approx(3.5, abs=1e-12)
+    market = SharedStateMarket(seed=1)
+    demand, value = (np.asarray(column, np.float64) for column in market._base())
+    rest = (market.beta, market.congestion, market.mass)
+    for budget in (1e2, 1e10, 1e15, 1e18):
+        found = per_driver_congestion_allocation(value, demand, *rest, budget)
+        assert found.value <= market.mass * (1.0 + 1e-14)
+        assert found.gap >= -1e-12
+        assert exact_congestion_allocation(value, demand, *rest, budget).value == pytest.approx(
+            market.mass, abs=1e-12
+        )
+
+
+def test_a_budget_that_cannot_lower_the_level_a_step_has_a_shadow_price_of_zero() -> None:
+    """Zone values (100, 0, -50): the first zone holds nearly every driver, and lowering the level
+    by the bisection's last step through either other zone costs more than a budget of 3. There
+    the rides' slope in the budget is below ``mass*beta*(level - level_below)/budget``, and the
+    price read nan, the mark of a vertex with no derivative."""
+    game = ([100.0, 0.0, -50.0], [1.0, 2.0, 0.5], 2.5, 2.0, 5.0)
+    found = exact_congestion_allocation(*game, 3.0)
+    assert found.spent == 0.0
+    assert found.shadow_price == 0.0
+    bound = 5.0 * 2.5 * (found.level - found.level_below) / 3.0
+    assert 0.0 < bound < 1e-12
+    for step in (0.5, 1.0):
+        moved = exact_congestion_allocation(*game, 3.0 + step).value
+        assert abs(moved - exact_congestion_allocation(*game, 3.0 - step).value) <= 2 * step * bound
+    assert math.isnan(exact_congestion_allocation(*game, 0.0).shadow_price)
 
 
 def test_with_no_money_the_per_driver_allocation_is_the_free_equilibrium() -> None:
