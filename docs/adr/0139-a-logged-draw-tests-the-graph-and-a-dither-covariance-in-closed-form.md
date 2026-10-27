@@ -1,6 +1,15 @@
 # ADR 0139 — A logged draw tests the graph, and a dither covariance in closed form
 
-**Status:** accepted, 2026-10-26. Both additions are experimental and opt-in.
+**Status:** accepted, 2026-10-26. Both additions are experimental and opt-in. Amended 2026-10-27
+by ADR 0145: `Prescription.to_json()` carries the dither check, under `dither_check`, so the last
+line of the Consequences no longer holds. Amended 2026-10-27: the table's `c = 0.15` and
+`c = 0.27` rows were read on 60 and 40 logs, which gave 0.32 and 0.68; on 400 logs of the same
+stream they reject at 5 % on 0.39 and 0.875, with binomial standard errors 0.024 and 0.017, and the
+rows now hold those. The stream: log `r`, for `r` from 0 to 399, is
+`numpy.random.default_rng(r)`, which draws the 100 units' first states and then, each of the 6
+periods, the confounder, the logged draw and the plant's noise together as
+`standard_normal((3, 100))`, with `d = 1`, the empty graph and float64; the first 60 and 40 of its
+logs give the old rows back.
 
 ## Context
 
@@ -79,8 +88,8 @@ weight. It has no answer for a dither that moves several levers together.
   | Correct graph, `c = 0` | 80 | 0.05 | 0.05 |
   | Correct graph, `c = 0` | 40 | 0.025 | 0.05 |
   | Adjusted graph | 80 | 0 | 0.05 |
-  | `c = 0.15` | 60 | 0.32 | 0.64 to 0.66 |
-  | `c = 0.27` | 40 | 0.68 | 0.975 to 0.99 |
+  | `c = 0.15` | 400 | 0.39 | 0.64 to 0.66 |
+  | `c = 0.27` | 400 | 0.875 | 0.975 to 0.99 |
   | `c = 0.5` | 20 | 1.0 | 1.000 |
   | `c = 0.8` | 10 | 1.0 | 1.000 |
   | `c = 1.2` | 10 | 0.9 | 1.000 |
