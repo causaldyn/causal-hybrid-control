@@ -11,6 +11,7 @@ from chc.games import (
     congestion_contraction_modulus,
     congestion_damping,
     exact_congestion_allocation,
+    per_driver_congestion_allocation,
     project_simplex,
     softmax_congestion_equilibrium,
     stackelberg_allocation,
@@ -425,3 +426,117 @@ def test_inputs_outside_the_exact_allocation_s_contract_are_refused(change, mess
     } | change
     with pytest.raises(ValueError, match=message):
         exact_congestion_allocation(**given)
+
+
+def test_no_per_driver_incentive_on_a_grid_completes_more_than_the_per_driver_allocation() -> None:
+    """Three zones, each driver paid ``u_i``, the money ``sum(u * x(u))`` at most the budget: on a
+    grid of step 1/40 up to 2 a driver, one zone paid nothing (the cheapest incentive reaching any
+    shares pays its least zone nothing), solved by the fixed point the market uses, no incentive
+    within the budget completes more rides than the allocation returned, and the fixed point at
+    that allocation completes what it says, at its shares, for its money."""
+    rng = np.random.default_rng(5)
+    demand = rng.uniform(0.4, 2.0, 3)
+    value = 1.5 * demand + 0.3 * rng.standard_normal(3)
+    beta, congestion, mass, budget = 2.5, 2.0, 3.0, 0.6
+    found = per_driver_congestion_allocation(value, demand, beta, congestion, mass, budget)
+    steps = np.arange(81) / 40.0
+    pair = np.stack(np.meshgrid(steps, steps, indexing="ij"), axis=-1).reshape(-1, 2)
+    grid = np.concatenate([np.insert(pair, zone, 0.0, axis=1) for zone in range(3)])
+
+    def settle(u):
+        return softmax_congestion_equilibrium(
+            jnp.asarray(value), u, congestion, mass, beta, tol=1e-13, max_iter=5000
+        )
+
+    solved = jax.jit(jax.vmap(settle))(jnp.asarray(grid))
+    assert bool(jnp.all(solved.converged))
+    drivers = np.asarray(solved.x)
+    spend = np.sum(grid * drivers, axis=1)
+    rides = np.sum(np.minimum(demand, drivers), axis=1)
+    within = spend <= budget
+    assert within.sum() > 100
+    at = settle(jnp.asarray(found.allocation))
+    assert bool(at.converged)
+    x = np.asarray(at.x)
+    # the solves stop at a residual of 1e-13 of the drivers: 1e-9 is ten thousand times their error
+    assert np.max(np.abs(x - mass * found.shares)) <= 1e-9
+    assert float(np.sum(np.minimum(demand, x))) == pytest.approx(found.value, abs=1e-9)
+    assert float(np.dot(found.allocation, x)) == pytest.approx(found.spent, abs=1e-9)
+    assert found.spent <= budget * (1.0 + 1e-12)
+    assert np.min(found.allocation) == 0.0
+    assert float(np.max(rides[within])) <= found.value + 1e-9
+    assert found.gap <= 1e-12
+
+
+@pytest.mark.parametrize("budget", [0.0, 0.5, 2.0, 6.0, 20.0])
+@pytest.mark.parametrize("seed", [0, 1, 3, 4])
+def test_the_per_driver_allocation_s_dual_bound_meets_it_and_its_price_is_its_slope(
+    seed: int, budget: float
+) -> None:
+    """The dual's value at the multipliers read off the optimum bounds every allocation within the
+    budget, and meets the rides returned to rounding; the budget's multiplier is the rides' slope
+    in the budget, by central differences (0 where the budget is slack), and the money paid is the
+    budget where it binds."""
+    market = SharedStateMarket(seed=seed)
+    demand, value = (np.asarray(column, np.float64) for column in market._base())
+    rest = (market.beta, market.congestion, market.mass)
+    found = per_driver_congestion_allocation(value, demand, *rest, budget)
+    assert abs(found.gap) <= 1e-12 * found.value
+    assert found.bound == pytest.approx(found.value, rel=1e-12, abs=0.0)
+    assert np.all(found.allocation >= 0.0)
+    assert found.spent <= budget * (1.0 + 1e-12)
+    if budget > 0.0:
+        h = 1e-4 * budget
+        up = per_driver_congestion_allocation(value, demand, *rest, budget + h).value
+        down = per_driver_congestion_allocation(value, demand, *rest, budget - h).value
+        # the difference's error: the value's curvature times h^2 / 6, and its rounding 1e-15 / h
+        assert found.shadow_price == pytest.approx((up - down) / (2.0 * h), rel=0.0, abs=1e-7)
+    if found.shadow_price > 0.0:
+        assert found.spent == pytest.approx(budget, rel=1e-12, abs=0.0)
+
+
+def test_with_no_money_the_per_driver_allocation_is_the_free_equilibrium() -> None:
+    market = SharedStateMarket(seed=4)
+    demand, value = (np.asarray(column, np.float64) for column in market._base())
+    rest = (market.beta, market.congestion, market.mass)
+    found = per_driver_congestion_allocation(value, demand, *rest, 0.0)
+    assert np.all(found.allocation == 0.0)
+    assert found.value == pytest.approx(
+        exact_congestion_allocation(value, demand, *rest, 0.0).value, rel=1e-14, abs=0.0
+    )
+
+
+def test_paid_per_driver_the_budget_buys_fewer_rides_than_as_a_lump_sum() -> None:
+    """A lump sum ``B`` paid to the zones moves the drivers as rates ``u`` with ``sum(u) = B``; paid
+    per driver the same rates cost ``sum(u * x)``, so on these markets, where the zones paid
+    hold more than one driver each, the same money buys less."""
+    for seed in range(4):
+        market = SharedStateMarket(seed=seed)
+        demand, value = (np.asarray(column, np.float64) for column in market._base())
+        rest = (market.beta, market.congestion, market.mass, 2.0)
+        lump = exact_congestion_allocation(value, demand, *rest).value
+        assert per_driver_congestion_allocation(value, demand, *rest).value < lump
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"demand": np.ones(4)}, "both are one vector over the zones"),
+        ({"demand": np.array([1.0, -0.5, 1.0])}, "a zone's demand is non-negative"),
+        ({"value": np.array([1.0, np.nan, 1.0])}, "value is not finite"),
+        ({"beta": 0.0}, "beta is 0.0; it is one finite number, positive"),
+        ({"budget": -1.0}, "budget is -1.0"),
+    ],
+    ids=["shapes", "demand", "nan", "beta", "budget"],
+)
+def test_inputs_outside_the_per_driver_allocation_s_contract_are_refused(change, message) -> None:
+    given = {
+        "value": np.ones(3),
+        "demand": np.ones(3),
+        "beta": 2.5,
+        "congestion": 2.0,
+        "mass": 3.0,
+        "budget": 1.0,
+    } | change
+    with pytest.raises(ValueError, match=message):
+        per_driver_congestion_allocation(**given)

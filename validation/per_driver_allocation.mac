@@ -1,0 +1,113 @@
+/* The per-driver allocation of chc.games.per_driver_congestion_allocation (tests/test_games.py).
+   m drivers settle at the shares s = softmax(beta*(a + u - c*s)); each driver in zone i is paid
+   u_i >= 0, so the money paid is m*sum(u_i*s_i); zone i completes min(d_i, m*s_i). A zone's level
+   at share s is phi_i(s) = log(s)/beta + c*s - a_i, and by Berry's (1994) inversion the cheapest
+   u reaching s pays u_i = phi_i(s_i) - min_j phi_j(s_j).
+   STEP 1  convexity: d2/ds2 [s*phi(s)] = (2*beta*c*s + 1)/(beta*s) > 0, phi'' = -1/(beta*s^2) < 0
+   STEP 2  the money that reaches s, three zones, zone 3 the least level: m*sum s_i*u_i equals
+           m*(sum s_i*phi_i(s_i) - min_j phi_j(s_j)) on sum(s) = 1
+   STEP 3  a zone's cost m*s*(phi(s) - t) has the margin m*(psi(s) - t), psi = log(s)/beta + 2*c*s
+           - a + 1/beta, rising; psi(s) = theta is the floor's equation at twice the congestion,
+           s = W(2*beta*c*exp(beta*(theta - 1/beta + a)))/(2*beta*c), at a sample point in 40 digits
+   STEP 4  the Lagrangian dual: with lambda >= 0, mu >= 0, sum(mu) = lambda*m, the dual's zone term
+           h(s) = min(d, m*s) - lambda*m*s*phi(s) + mu*phi(s) - nu*s is concave on either side of
+           its kink, h'' = -lambda*m*(2*beta*c*s + 1)/(beta*s) - mu/(beta*s^2) <= 0; the
+           Lagrangian at a feasible (s, t) is at least the rides, so the dual bounds them
+   STEP 5  a three-zone optimum in 40 digits: beta 5/2, c 2, m 3, a (1, 4/5, 8/5), d (13/10, 1/2, 1),
+           budget 1/2. Zone 1 is paid and below its demand, zones 2 and 3 sit at their floor past
+           theirs. The level t solves m*s_1*(phi_1(s_1) - t) = 1/2 with s_1 = 1 - g_2(t) - g_3(t).
+           The KKT multipliers: nu = m - lambda*m*psi_1, mu_j*phi_j' = lambda*m*psi_j + nu at the
+           floors, sum(mu) = lambda*m. They are non-negative, so the point is optimal, the dual at
+           them equals the rides, and lambda equals the rides' slope in the budget by central
+           differences; the rides 2.632530245891 and lambda 0.446347316856 that the float64 code
+           returns
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/per_driver_allocation.mac */
+
+linel : 110$
+display2d : false$
+ratprint : false$
+verdict(e) := if is(e) then "(ok)" else "(FAIL)"$
+assume(beta > 0, c >= 0, s > 0, m > 0)$
+
+/* STEP 1 */
+phi(x) := log(x)/beta + c*x - a$
+gap1 : ratsimp(diff(x*phi(x), x, 2) - (2*beta*c*x + 1)/(beta*x))$
+gap2 : ratsimp(diff(phi(x), x, 2) + 1/(beta*x^2))$
+print("STEP 1  (s*phi)'' less (2*beta*c*s + 1)/(beta*s):", gap1, verdict(equal(gap1, 0)))$
+print("STEP 1  phi'' less -1/(beta*s^2):", gap2, verdict(equal(gap2, 0)))$
+
+/* STEP 2 */
+ph(x, k) := log(x)/beta + c*x - concat(a, k)$
+pay : m*(s1*(ph(s1, 1) - ph(s3, 3)) + s2*(ph(s2, 2) - ph(s3, 3)))$
+closed : m*(s1*ph(s1, 1) + s2*ph(s2, 2) + s3*ph(s3, 3) - ph(s3, 3))$
+gap3 : ratsimp(subst(s3 = 1 - s1 - s2, pay - closed))$
+print("STEP 2  money paid less m*(sum s*phi - min phi) on sum(s) = 1:", gap3, verdict(equal(gap3, 0)))$
+
+/* STEP 3 */
+margin : diff(x*(phi(x) - t), x)$
+gap4 : ratsimp(margin - (log(x)/beta + 2*c*x - a + 1/beta - t))$
+print("STEP 3  the cost's margin less psi - t:", gap4, verdict(equal(gap4, 0)))$
+gap5 : ratsimp(diff(log(x)/beta + 2*c*x - a + 1/beta, x) - (1/(beta*x) + 2*c))$
+print("STEP 3  psi' = 1/(beta*s) + 2*c > 0:", gap5, verdict(equal(gap5, 0)))$
+fpprec : 40$
+block([b0 : 5/2, c0 : 2, a0 : 4/5, th : -1/3, sh, back],
+  sh : bfloat(lambert_w(bfloat(2*b0*c0*exp(b0*(th - 1/b0 + a0)))))/(2*b0*c0),
+  back : log(sh)/b0 + 2*c0*sh - a0 + 1/b0,
+  print("STEP 3  psi at Lambert's W at twice the congestion, less theta, 40 digits:", float(back - th),
+        verdict(abs(back - th) < 1b-35)))$
+
+/* STEP 4 */
+hh(x, w) := w*m*x - lam*m*x*phi(x) + mu*phi(x) - nu*x$  /* w = 1 below the kink, the slope m*w */
+curv : ratsimp(diff(hh(x, w), x, 2))$
+gap6 : ratsimp(curv + lam*m*(2*beta*c*x + 1)/(beta*x) + mu/(beta*x^2))$
+print("STEP 4  h'' less -lambda*m*(2*beta*c*s + 1)/(beta*s) - mu/(beta*s^2):", gap6,
+      verdict(equal(gap6, 0)))$
+/* L(s, t) = sum r_i + lambda*(B - m*(sum s*phi - t)) + sum mu_i*(phi_i - t) + nu*(1 - sum s):
+   each multiplier term is >= 0 at a feasible point, and the t terms cancel where sum(mu) = lambda*m */
+lagr : r1 + r2 + lam*(Bg - m*(s1*ph(s1, 1) + s2*ph(s2, 2) - t)) + mu1*(ph(s1, 1) - t)
+       + mu2*(ph(s2, 2) - t) + nu*(1 - s1 - s2)$
+gap7 : ratsimp(coeff(expand(lagr), t))$
+print("STEP 4  the Lagrangian's slope in t, lambda*m - sum(mu):", gap7,
+      verdict(equal(gap7, lam*m - mu1 - mu2)))$
+
+/* STEP 5 */
+fpprec : 40$
+b0 : 5/2$ c0 : 2$ m0 : 3$ a0 : [1, 4/5, 8/5]$ d0 : [13/10, 1/2, 1]$
+fl(t, j) := bfloat(lambert_w(bfloat(b0*c0*exp(b0*(t + a0[j])))))/(b0*c0)$
+phn(x, j) := log(x)/b0 + c0*x - a0[j]$
+psin(x, j) := phn(x, j) + 1/b0 + c0*x$
+slopen(x) := 1/(b0*x) + c0$
+share1(t) := 1 - fl(t, 2) - fl(t, 3)$
+spend(t) := m0*share1(t)*(phn(share1(t), 1) - t)$
+level_at(B) := bf_find_root(spend(t) - B, t, -2b0, -0.9b0)$
+rides_at(B) := block([t : level_at(B)], min(d0[1], m0*share1(t)) + d0[2] + d0[3])$
+tt : level_at(1/2)$
+s1n : share1(tt)$ s2n : fl(tt, 2)$ s3n : fl(tt, 3)$
+structure : [m0*s1n < d0[1], m0*s2n > d0[2], m0*s3n > d0[3], phn(s1n, 1) > tt]$
+print("STEP 5  zone 1 paid below demand, zones 2 and 3 at their floor past demand:", structure,
+      verdict(every(lambda([e], is(e)), structure)))$
+inv2 : 1/slopen(s2n)$ inv3 : 1/slopen(s3n)$
+lamn : (inv2 + inv3)/(1 + psin(s1n, 1)*(inv2 + inv3) - (psin(s2n, 2)*inv2 + psin(s3n, 3)*inv3))$
+nun : m0 - lamn*m0*psin(s1n, 1)$
+mu2 : (lamn*m0*psin(s2n, 2) + nun)*inv2$ mu3 : (lamn*m0*psin(s3n, 3) + nun)*inv3$
+feasible : [lamn > 0, mu2 > 0, mu3 > 0, abs(mu2 + mu3 - lamn*m0) < 1b-35]$
+print("STEP 5  lambda, mu_2, mu_3:", float(lamn), float(mu2), float(mu3), "non-negative, sum(mu) = lambda*m:",
+      verdict(every(lambda([e], is(e)), feasible)))$
+/* each zone's term is stationary at the optimum's share (zone 1 below its kink, w = 1; zones 2
+   and 3 past theirs, w = 0) and concave (STEP 4), so it is the term's supremum */
+hn(x, j, w, muj) := min(d0[j], m0*x) - lamn*m0*x*phn(x, j) + muj*phn(x, j) - nun*x$
+dh(x, j, w, muj) := w*m0 - lamn*m0*psin(x, j) + muj*slopen(x) - nun$
+stationary : [abs(dh(s1n, 1, 1, 0)) < 1b-30, abs(dh(s2n, 2, 0, mu2)) < 1b-30,
+              abs(dh(s3n, 3, 0, mu3)) < 1b-30]$
+print("STEP 5  each zone's dual term is stationary at the optimum's share:",
+      verdict(every(lambda([e], is(e)), stationary)))$
+dual : lamn/2 + nun + hn(s1n, 1, 1, 0) + hn(s2n, 2, 0, mu2) + hn(s3n, 3, 0, mu3)$
+rides : rides_at(1/2)$
+print("STEP 5  the dual less the rides:", float(dual - rides), verdict(abs(dual - rides) < 1b-30))$
+hb : 1b-10$
+fd : (rides_at(1/2 + hb) - rides_at(1/2 - hb))/(2*hb)$
+print("STEP 5  lambda against central differences of the rides in the budget:", float(lamn), float(fd),
+      verdict(abs(fd - lamn) < 1b-15))$
+print("STEP 5  rides and lambda against the float64 code's:", float(rides), float(lamn),
+      verdict(abs(rides - 2.632530245891b0) < 1b-11 and abs(lamn - 0.446347316856b0) < 1b-11))$

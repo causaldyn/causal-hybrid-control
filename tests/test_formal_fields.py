@@ -160,6 +160,13 @@ FORMAL_LINKS = {
         ),
         "via": "exact_congestion_allocation",
     },
+    "chc.games.per_driver_congestion_allocation": {
+        "cites": ("per_driver_allocation.mac",),
+        "tests": (
+            "test_games.py::test_no_per_driver_incentive_on_a_grid_completes_more_than_the_per_driver_allocation",
+            "test_games.py::test_the_per_driver_allocation_s_dual_bound_meets_it_and_its_price_is_its_slope",
+        ),
+    },
     "chc.marketplace._driver_jacobians": {
         "cites": ("marketplace_expected_completions.mac",),
         "tests": ("test_marketplace.py::test_the_driver_jacobians_are_the_solve_s_in_closed_form",),

@@ -473,6 +473,60 @@ def _parameter(name: str, number: float, *, positive: bool) -> float:
     return float(read)
 
 
+def _read_game(
+    value: ArrayLike,
+    demand: ArrayLike,
+    beta: float,
+    congestion: float,
+    mass: float,
+    budget: float,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], float, float, float, float]:
+    """A congestion game's zones and parameters read in float64, refused outside their ranges."""
+    read = {
+        name: np.asarray(_real_numbers(column, name), dtype=np.float64)
+        for name, column in (("value", value), ("demand", demand))
+    }
+    worth, wanted = read["value"], read["demand"]
+    if worth.ndim != 1 or not worth.size or wanted.shape != worth.shape:
+        raise ValueError(
+            f"value has shape {worth.shape} and demand {wanted.shape}: both are one vector over the"
+            " zones"
+        )
+    for name, column in read.items():
+        if not np.all(np.isfinite(column)):
+            raise ValueError(f"{name} is not finite")
+    if np.any(wanted < 0.0):
+        raise ValueError(f"demand reaches {float(np.min(wanted))}; a zone's demand is non-negative")
+    return (
+        worth,
+        wanted,
+        _parameter("beta", beta, positive=True),
+        _parameter("congestion", congestion, positive=False),
+        _parameter("mass", mass, positive=True),
+        _parameter("budget", budget, positive=False),
+    )
+
+
+def _resolved(low: float, high: float, scale: float) -> bool:
+    return high - low <= 4.0 * _EPS * max(abs(low), abs(high), scale)
+
+
+def _free_level(worth: NDArray[np.float64], beta: float, congestion: float, scale: float) -> float:
+    """The level of the equilibrium with no incentive, where the floor shares sum to 1. At the low
+    end they sum to at most ``sum(exp(beta*(level + value))) = 1``, at the high end the most valued
+    zone's alone is 1."""
+    low = (
+        -(float(np.max(beta * worth)) + math.log(math.fsum(np.exp(beta * (worth - worth.max())))))
+        / beta
+    )
+    high = congestion - float(np.max(worth))
+    while not _resolved(low, high, scale):
+        middle = 0.5 * (low + high)
+        floor = np.exp(_floor_log_shares(middle, worth, beta, congestion))
+        low, high = (low, middle) if math.fsum(floor) >= 1.0 else (middle, high)
+    return high
+
+
 def exact_congestion_allocation(
     value: ArrayLike,
     demand: ArrayLike,
@@ -535,25 +589,9 @@ def exact_congestion_allocation(
         ValueError: on a ``value`` or ``demand`` that is not a finite vector of numbers of one
             length, a negative demand, parameters outside their ranges, or more than 20 zones.
     """
-    read = {
-        name: np.asarray(_real_numbers(column, name), dtype=np.float64)
-        for name, column in (("value", value), ("demand", demand))
-    }
-    worth, wanted = read["value"], read["demand"]
-    if worth.ndim != 1 or not worth.size or wanted.shape != worth.shape:
-        raise ValueError(
-            f"value has shape {worth.shape} and demand {wanted.shape}: both are one vector over the"
-            " zones"
-        )
-    for name, column in read.items():
-        if not np.all(np.isfinite(column)):
-            raise ValueError(f"{name} is not finite")
-    if np.any(wanted < 0.0):
-        raise ValueError(f"demand reaches {float(np.min(wanted))}; a zone's demand is non-negative")
-    beta = _parameter("beta", beta, positive=True)
-    congestion = _parameter("congestion", congestion, positive=False)
-    mass = _parameter("mass", mass, positive=True)
-    budget = _parameter("budget", budget, positive=False)
+    worth, wanted, beta, congestion, mass, budget = _read_game(
+        value, demand, beta, congestion, mass, budget
+    )
     n = worth.size
     if n > _EXACT_ZONES:
         raise ValueError(
@@ -564,20 +602,9 @@ def exact_congestion_allocation(
     scale = 1.0 / beta + congestion + float(np.max(np.abs(worth))) + budget
 
     def resolved(low: float, high: float) -> bool:
-        return high - low <= 4.0 * _EPS * max(abs(low), abs(high), scale)
+        return _resolved(low, high, scale)
 
-    # the free level, with no incentive: the floor shares sum to 1. At the low end they sum to at
-    # most sum(exp(beta*(level + value))) = 1, at the high end the most valued zone's alone is 1
-    low = (
-        -(float(np.max(beta * worth)) + math.log(math.fsum(np.exp(beta * (worth - worth.max())))))
-        / beta
-    )
-    high = congestion - float(np.max(worth))
-    while not resolved(low, high):
-        middle = 0.5 * (low + high)
-        floor = np.exp(_floor_log_shares(middle, worth, beta, congestion))
-        low, high = (low, middle) if math.fsum(floor) >= 1.0 else (middle, high)
-    free = high
+    free = _free_level(worth, beta, congestion, scale)
 
     vertices = 0
 
@@ -622,4 +649,328 @@ def exact_congestion_allocation(
         shadow_price=_budget_shadow_price(
             shares, wanted, full, middle_zone, below[0], beta, congestion, mass
         ),
+    )
+
+
+@dataclass(frozen=True)
+class PerDriverAllocation:
+    """The optimum :func:`per_driver_congestion_allocation` returns, and the bound certifying it.
+
+    Each driver in zone ``i`` is paid ``allocation[i]``, so the money paid is
+    ``mass * sum(shares * allocation)``, ``spent``, at most the budget to the solver's tolerance.
+    The allocation completes ``value`` rides; no allocation whose money paid is within the budget
+    completes more than ``bound``, the Lagrangian dual's value at the multipliers read off the
+    optimum, so ``gap`` bounds the rides the allocation leaves undone. ``shadow_price`` is the
+    budget's multiplier, what one more unit of money completes there.
+    """
+
+    allocation: NDArray[np.float64]  # (n,) the incentive per driver in each zone, the least zero
+    value: float  # the rides completed at the allocation's equilibrium
+    level: float  # log(s)/beta + congestion*s - value of the zones paid nothing
+    shares: NDArray[np.float64]  # (n,) the drivers' shares at the allocation's equilibrium
+    spent: float  # the money paid, mass * sum(shares * allocation)
+    bound: float  # the dual's value: no allocation within the budget completes more
+    gap: float  # bound - value, to rounding at least zero
+    shadow_price: float  # the budget's multiplier: the rides one more unit of money completes
+
+
+_ACTIVE = 1e-7
+"""The relative distance within which :func:`per_driver_congestion_allocation` reads a zone as at
+its floor or at its demand when it reads the multipliers off the optimum. A misread costs only
+bound: the dual's value at any multipliers bounds the optimum."""
+
+_LOG_SHARE_FLOOR = -700.0
+"""The least log share the dual's per-zone supremum searches, short of the float64 underflow."""
+
+
+def _per_driver_dual(
+    price: float,
+    floor_prices: NDArray[np.float64],
+    shift: float,
+    worth: NDArray[np.float64],
+    wanted: NDArray[np.float64],
+    beta: float,
+    congestion: float,
+    mass: float,
+    budget: float,
+) -> float:
+    """The Lagrangian dual of the per-driver program at ``(lambda, mu, nu)`` = ``(price,
+    floor_prices, shift)``, ``mu >= 0`` with ``sum(mu) = lambda * mass``:
+    ``lambda*B + nu + sum_i sup_{0 < s <= 1} h_i(s)``,
+    ``h_i(s) = min(d_i, m*s) - lambda*m*s*phi_i(s) + mu_i*phi_i(s) - nu*s``. Each ``h_i`` is
+    concave, so its supremum is where its left derivative changes sign, found by bisection on the
+    log share."""
+
+    def phi(share: NDArray[np.float64]) -> NDArray[np.float64]:
+        return np.log(share) / beta + congestion * share - worth
+
+    def rising(log_share: NDArray[np.float64]) -> NDArray[np.bool_]:
+        share = np.exp(log_share)
+        slope = 1.0 / (beta * share) + congestion
+        left = mass * (mass * share < wanted) - price * mass * (phi(share) + share * slope)
+        left = left + np.where(floor_prices > 0.0, floor_prices * slope, 0.0) - shift
+        return left > 0.0
+
+    low = np.full(worth.size, _LOG_SHARE_FLOOR)
+    high = np.zeros(worth.size)
+    whole = rising(high)
+    for _ in range(128):
+        middle = 0.5 * (low + high)
+        up = rising(middle)
+        low, high = np.where(up, middle, low), np.where(up, high, middle)
+    share = np.where(whole, 1.0, np.exp(high))
+    level = phi(share)
+    best = (
+        np.minimum(wanted, mass * share)
+        - price * mass * share * level
+        + np.where(floor_prices > 0.0, floor_prices * level, 0.0)
+        - shift * share
+    )
+    return price * budget + shift + math.fsum(best)
+
+
+def _per_driver_multipliers(
+    log_shares: NDArray[np.float64],
+    levels: NDArray[np.float64],
+    allocation: NDArray[np.float64],
+    wanted: NDArray[np.float64],
+    beta: float,
+    congestion: float,
+    mass: float,
+    slack: bool,
+) -> tuple[float, NDArray[np.float64], float]:
+    """The multipliers ``(lambda, mu, nu)`` of the per-driver program, read off its optimum.
+
+    The KKT conditions: for every zone ``m*w_i - lambda*m*psi_i + mu_i*phi_i' - nu = 0``, with
+    ``psi_i = phi_i + s_i*phi_i'`` the slope of ``s*phi(s)``, ``w_i`` the rides' supergradient (1
+    below demand, 0 past it, anywhere in [0, 1] at it), ``mu_i = 0`` off the floor, and
+    ``sum(mu) = lambda*m``. Each zone off both its floor and its demand gives one equation in
+    ``(lambda, nu)``, and the floor zones' ``mu_i``, solved from theirs, give one more through
+    their sum. Where those leave a line, as with no budget, the point on it nearest the least
+    squares solution that keeps ``lambda``, every ``mu_i`` and every ``w_i`` at a zone's demand in
+    range is taken. Where the budget is ``slack``, ``lambda`` is 0 (complementary slackness) and
+    ``nu`` the least squares solution of the rest. ``1/phi_i' = beta*s_i/(1 + beta*congestion*s_i)``
+    is read from the log share, so a share below the smallest float reads 0, not a division by
+    zero."""
+    shares = np.exp(log_shares)
+    level = float(np.min(levels))
+    inverse_slope = beta * shares / (1.0 + beta * congestion * shares)
+    tilt = levels + 1.0 / beta + congestion * shares
+    floor = allocation <= _ACTIVE * max(1.0, abs(level))
+    kink = np.abs(mass * shares - wanted) <= _ACTIVE * np.maximum(1.0, wanted)
+    below = (mass * shares < wanted).astype(np.float64)
+    loose = ~floor & ~kink
+    held = floor & ~kink
+    by_zone = np.stack([mass * tilt, np.ones(shares.size)], axis=1)
+    rows = np.concatenate(
+        [by_zone[loose], (by_zone[held] * inverse_slope[held, None]).sum(axis=0, keepdims=True)]
+    )
+    rows[-1, 0] -= mass
+    targets = np.concatenate(
+        [mass * below[loose], [float(np.sum(mass * below[held] * inverse_slope[held]))]]
+    )
+    solution, _, rank, _ = np.linalg.lstsq(rows, targets, rcond=None)
+    if slack:
+        shift, *_ = np.linalg.lstsq(rows[:, 1:], targets, rcond=None)
+        solution = np.array([0.0, float(shift[0])])
+    elif rank < 2:
+        # every point solution + z*null solves the equations; the inequalities a.x >= b bound z
+        null = np.linalg.svd(rows)[2][-1]
+        rules = [(np.array([1.0, 0.0]), 0.0)]
+        rules += [(by_zone[i], mass * below[i]) for i in np.flatnonzero(held)]
+        at_demand = np.flatnonzero(kink & ~floor)
+        rules += [(by_zone[i], 0.0) for i in at_demand]
+        rules += [(-by_zone[i], -mass) for i in at_demand]
+        low, high = -math.inf, math.inf
+        for a, b in rules:
+            rate, room = float(a @ null), float(a @ solution) - b
+            if rate > 0.0:
+                low = max(low, -room / rate)
+            elif rate < 0.0:
+                high = min(high, -room / rate)
+        if low <= high:
+            solution = solution + min(max(0.0, low), high) * null
+    price, shift = (float(part) for part in solution)
+    floor_prices = np.where(held, (shift + price * mass * tilt - mass * below) * inverse_slope, 0.0)
+    floor_prices = np.maximum(floor_prices, 0.0)
+    return math.fsum(floor_prices) / mass, floor_prices, shift
+
+
+def _water_fill(
+    level: float,
+    worth: NDArray[np.float64],
+    demand_share: NDArray[np.float64],
+    beta: float,
+    congestion: float,
+    scale: float,
+) -> tuple[float, NDArray[np.float64], NDArray[np.bool_]]:
+    """The least money that holds every zone at or above its floor share at ``level`` and fills the
+    deficit with no zone past its demand, the log shares that do it, and the zones it lifts off
+    their floor, the zones it pays; inf where the zones below their demand cannot hold the deficit.
+    Where the floors leave no deficit, the level is the free one, and the shares are the floors
+    normalised, paid nothing.
+
+    A zone at share ``s`` costs ``mass*s*(phi(s) - level)``, convex and rising from its floor, at
+    the margin ``mass*(psi(s) - level)``, ``psi(s) = log(s)/beta + 2*congestion*s - value + 1/beta``
+    (the slope of ``s*phi(s)``). The least cost fills to one margin ``theta``: each zone with room
+    takes ``psi^-1(theta)``, held between its floor and its demand. ``psi = theta`` is the floor's
+    equation at twice the congestion, so ``psi^-1`` is :func:`_floor_log_shares`', and ``theta`` is
+    found by bisection on the filled sum. The returned cost is in units of ``1/mass``."""
+    floor = _floor_log_shares(level, worth, beta, congestion)
+    shares = np.exp(floor)
+    deficit = 1.0 - math.fsum(shares)
+    unpaid = np.zeros(worth.size, dtype=bool)
+    if deficit <= 0.0:
+        return 0.0, floor - math.log(math.fsum(shares)), unpaid
+    with np.errstate(divide="ignore"):
+        cap = np.log(demand_share)
+    room = cap > floor
+    if not room.any() or math.fsum(np.exp(cap[room]) - shares[room]) < deficit:
+        return math.inf, floor, unpaid
+    value = worth[room]
+
+    def filled(margin: float) -> NDArray[np.float64]:
+        lifted = _floor_log_shares(margin - 1.0 / beta, value, beta, 2.0 * congestion)
+        return np.clip(lifted, floor[room], cap[room])
+
+    def margin_of(log_share: NDArray[np.float64]) -> NDArray[np.float64]:
+        share = np.exp(log_share)
+        return log_share / beta + 2.0 * congestion * share - value + 1.0 / beta
+
+    low, high = float(np.min(margin_of(floor[room]))), float(np.max(margin_of(cap[room])))
+    while not _resolved(low, high, scale):
+        middle = 0.5 * (low + high)
+        gained = math.fsum(np.exp(filled(middle)) - shares[room])
+        low, high = (middle, high) if gained < deficit else (low, middle)
+    log_shares = floor.copy()
+    log_shares[room] = filled(high)
+    paid = log_shares > floor
+    share = np.exp(log_shares[paid])
+    worth_paid = worth[paid]
+    cost = math.fsum(share * (log_shares[paid] / beta + congestion * share - worth_paid - level))
+    return cost, log_shares, paid
+
+
+def per_driver_congestion_allocation(
+    value: ArrayLike,
+    demand: ArrayLike,
+    beta: float,
+    congestion: float,
+    mass: float,
+    budget: float,
+) -> PerDriverAllocation:
+    """The incentive per driver that completes the most rides through a logit congestion
+    equilibrium when the money paid, not the sum of the incentives, is the budget, with the dual
+    bound that certifies it.
+
+    The game is :func:`exact_congestion_allocation`'s: ``mass`` drivers settle at the shares
+    ``s = softmax(beta * (value + u - congestion * s))`` and zone ``i`` completes
+    ``min(demand_i, mass * s_i)``. Here each driver in zone ``i`` is paid ``u_i >= 0``, so the money
+    paid is ``sum_i u_i * mass * s_i`` (Ong, Freund and Crapis 2021, Lyft's repositioning
+    incentives). By Berry's (1994) inversion the cheapest ``u`` reaching ``s`` pays
+    ``phi_i(s_i) - min_j phi_j(s_j)``, ``phi_i(s) = log(s)/beta + congestion*s - value_i``, so the
+    money that reaches ``s`` is ``mass * (sum_i s_i*phi_i(s_i) - min_j phi_j(s_j))``. ``s*phi(s)``
+    is convex, its second derivative ``(2*beta*congestion*s + 1)/(beta*s)``, and ``phi`` is
+    concave, so ``-min phi`` is convex: the shares the budget reaches are a convex set, and the
+    rides, concave in the shares, are maximised by a convex program. Paid as a lump sum,
+    ``sum(u) = budget``, the reachable shares are not convex, and
+    :func:`exact_congestion_allocation` enumerates vertices instead.
+
+    The program is solved through its KKT conditions. The zones paid nothing share one level ``t``
+    at their floor shares, as in :func:`exact_congestion_allocation`; the paid zones below their
+    demand share one margin ``psi_i(s_i) = phi_i(s_i) + s_i*phi_i'(s_i)``, the slope of their
+    cost, since a zone's cost ``mass*s*(phi(s) - t)`` is convex: the deficit the floors leave is
+    filled to one margin, the least money that fills it, with no zone past its demand. That least
+    money falls as ``t`` rises, and the rides a level allows,
+    ``mass - sum_i (mass*g_i(t) - demand_i)+``, fall too, so bisection finds the least level the
+    budget reaches, as for the lump sum. Where the drivers outnumber the demand, the search stops
+    at the level that fills every zone to its demand. The multipliers are read off the optimum
+    and the Lagrangian dual is evaluated there, zone by zone, each zone's term a one-dimensional
+    concave supremum: ``bound`` is at least the rides of any allocation within the budget (weak
+    duality), whatever the multipliers, and ``gap`` is the certificate. On the markets
+    ``SharedStateMarket(seed=0..5)`` at budgets from 0 to 20 it reads below 1e-12.
+    ``validation/per_driver_allocation.mac`` checks the convexity, the cost of the shares, the
+    margin's inverse, the dual's per-zone supremum and the KKT reading. In float64 throughout.
+
+    Args:
+        value: ``(n,)`` each zone's value to a driver before crowding and incentive, finite.
+        demand: ``(n,)`` the rides each zone can complete, finite and non-negative.
+        beta: the drivers' sensitivity to value, positive.
+        congestion: the crowding penalty, non-negative.
+        mass: the drivers, positive.
+        budget: the money to pay, non-negative.
+
+    Raises:
+        ValueError: on a ``value`` or ``demand`` that is not a finite vector of numbers of one
+            length, a negative demand, or parameters outside their ranges.
+    """
+    worth, wanted, beta, congestion, mass, budget = _read_game(
+        value, demand, beta, congestion, mass, budget
+    )
+    demand_share = wanted / mass
+    scale = 1.0 / beta + congestion + float(np.max(np.abs(worth))) + budget / mass
+    free = _free_level(worth, beta, congestion, scale)
+    money = budget / mass
+
+    def cost(level: float) -> tuple[float, NDArray[np.float64], NDArray[np.bool_]]:
+        return _water_fill(level, worth, demand_share, beta, congestion, scale)
+
+    # below the level at which the zones' floors and demands together hold every driver, the
+    # deficit no longer fits under the demands; there every zone is filled to its demand
+    def held(level: float) -> float:
+        floor = np.exp(_floor_log_shares(level, worth, beta, congestion))
+        return math.fsum(np.maximum(floor, demand_share))
+
+    reach = 1.0 / beta + congestion
+    low = free - reach
+    while held(low) > 1.0 and not cost(low)[0] > money:
+        reach *= 2.0
+        low = free - reach
+    high = free
+    if held(low) <= 1.0:  # the drivers outnumber the demand: the least level that fills it
+        top = free
+        while not _resolved(low, top, scale):
+            middle = 0.5 * (low + top)
+            low, top = (middle, top) if held(middle) <= 1.0 else (low, middle)
+        low = top
+        if cost(low)[0] <= money:
+            high = low
+    while not _resolved(low, high, scale):
+        middle = 0.5 * (low + high)
+        low, high = (low, middle) if cost(middle)[0] <= money else (middle, high)
+    # the rides stay at the mass up to the first level at which a floor reaches its demand: the
+    # cheapest of those optima pays no more than that level costs
+    if np.all(wanted > 0.0):
+        flat = min(
+            float(np.min(np.log(demand_share) / beta + congestion * demand_share - worth)), free
+        )
+        high = max(high, flat)
+    _, log_shares, paid = cost(high)
+    shares = np.exp(log_shares)
+    levels = log_shares / beta + congestion * shares - worth
+    allocation = np.where(paid, np.maximum(levels - high, 0.0), 0.0)
+    completed = math.fsum(np.minimum(wanted, mass * shares))
+    spent = mass * math.fsum(shares * allocation)
+    price, floor_prices, shift = _per_driver_multipliers(
+        log_shares,
+        levels,
+        allocation,
+        wanted,
+        beta,
+        congestion,
+        mass,
+        spent < budget - _ACTIVE * max(1.0, budget),
+    )
+    bound = _per_driver_dual(
+        price, floor_prices, shift, worth, wanted, beta, congestion, mass, budget
+    )
+    return PerDriverAllocation(
+        allocation=allocation,
+        value=completed,
+        level=high,
+        shares=shares,
+        spent=spent,
+        bound=bound,
+        gap=bound - completed,
+        shadow_price=price,
     )
