@@ -427,9 +427,10 @@ def calibrate_budget_scale(
 
 
 @dataclass(frozen=True)
-class DitherCheck:
+class GradientDitherCheck:
     """A Wald test of the fit's gradient in the incentive, read off a zero-sum dither
-    (:func:`dither_check`). *Experimental.*"""
+    (:func:`dither_check`). *Experimental.* Named ``DitherCheck`` before 0.24.0, a name
+    :class:`chc.decision.DitherCheck`, a different test, also holds."""
 
     # (n_zones,) the gradient of a block's completions in the incentive, the logs' less the fit's,
     # in the zero-sum directions: completions per unit of incentive, summing to zero
@@ -527,7 +528,7 @@ def dither_check(
     *,
     level: float = 0.05,
     power: float = 0.8,
-) -> DitherCheck:
+) -> GradientDitherCheck:
     """Whether the fit's gradient in the incentive is the logs', read off the dither
     :meth:`SharedStateMarket.generate_logs` logs (Wager and Xu 2021's local perturbations).
     *Experimental.*
@@ -590,7 +591,7 @@ def dither_check(
     centring = np.eye(n_zones)[:, :-1] - 1.0 / n_zones
     error_covariance = centring @ covariance @ centring.T
     lam = _noncentrality(n_zones - 1, level, power)
-    return DitherCheck(
+    return GradientDitherCheck(
         error=centring @ slopes,
         covariance=error_covariance,
         wald=wald,
@@ -1472,3 +1473,17 @@ def interference_bias(
     predicted = float(jnp.dot(response.marginal, allocation))
     realised = market.value(allocation) - market.value(jnp.zeros(market.n_zones))
     return predicted - realised
+
+
+def __getattr__(name: str) -> object:
+    """``DitherCheck``, the name :class:`GradientDitherCheck` had before 0.24.0, served with a
+    ``DeprecationWarning`` until 1.0."""
+    if name == "DitherCheck":
+        warnings.warn(
+            "DitherCheck is renamed GradientDitherCheck and leaves in 1.0:"
+            " chc.decision.DitherCheck is another test of the same name",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return GradientDitherCheck
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

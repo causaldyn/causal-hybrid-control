@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-Kind = Literal["top-level name", "function", "attribute", "re-export", "record key"]
+Kind = Literal["top-level name", "function", "class", "attribute", "re-export", "record key"]
 
 
 @dataclass(frozen=True)
@@ -142,5 +142,15 @@ REMOVALS: tuple[Removal, ...] = (
         f"{_REGRET}.MultivariateVanTreesCurve.floor",
         "0.21.0",
         ("0130",),
+    ),
+    # A class renamed apart from chc.decision.DitherCheck, which tests something else; its module
+    # serves the old name.
+    Removal(
+        "chc.marketplace.DitherCheck",
+        "chc.marketplace.GradientDitherCheck",
+        "class",
+        "chc.marketplace.__getattr__",
+        "0.24.0",
+        ("0140", "0147"),
     ),
 )
