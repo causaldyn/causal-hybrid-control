@@ -6,6 +6,7 @@ Its numbers are validation/dither_covariance.mac's.
 from __future__ import annotations
 
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -55,6 +56,24 @@ def test_a_binding_prior_matches_the_forty_digit_solution() -> None:
     eigenvalues = np.linalg.eigvalsh(design.covariance)
     assert eigenvalues[0] == pytest.approx(0.0, abs=1e-5)
     assert eigenvalues[1] > 2.0
+
+
+def test_a_prior_with_a_zero_eigenvalue_gives_the_white_dither_without_a_warning() -> None:
+    # validation/dither_covariance.mac STEP 8b: a prior that holds one lever only; the best white
+    # dither is the root of 2 - 1/(1 + v)^2 - 1/v^2, above the search's lower bound sqrt(1/2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        design = dither_covariance(np.eye(2), np.eye(2), np.diag([1.0, 0.0]))
+    assert design.white == pytest.approx(0.77122987841870627168, rel=1e-13, abs=0.0)
+    assert design.white_value == pytest.approx(3.40366947504161167615, rel=1e-13, abs=0.0)
+
+
+def test_one_lever_s_white_dither_is_the_search_s_lower_bound() -> None:
+    # validation/dither_covariance.mac STEP 8c: on one lever the root is the bound
+    # sqrt(Q / C) - P0 itself, where the derivative is zero up to rounding
+    design = dither_covariance([[1.0]], [[4.0]], [[1.0]])
+    assert design.white == pytest.approx(1.0, rel=1e-15, abs=0.0)
+    assert design.white == pytest.approx(design.diagonal[0], rel=1e-15, abs=0.0)
 
 
 @pytest.mark.parametrize("seed", range(4))

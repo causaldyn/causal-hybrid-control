@@ -1090,7 +1090,13 @@ def _diagonal_dither(c: _Array, q: _Array, p0: _Array) -> _Array:
 
 def _white_dither(c: _Array, q: _Array, p0: _Array) -> float:
     """The best ``v I``, ``v >= 0``: the root of the value's derivative in ``v``, which grows with
-    ``v``; ``sqrt(tr Q / tr C)`` with no prior."""
+    ``v``; ``sqrt(tr Q / tr C)`` with no prior.
+
+    The derivative is ``tr C - sum_k q_k / (l_k + v)^2`` over the prior's eigenvalues ``l_k``,
+    ``q_k`` the weight's diagonal in their basis, all positive. Below ``sqrt(q_0 / tr C) - l_0``,
+    ``l_0`` the least, its first term alone keeps it negative, so the root is at least that, and
+    the search starts there, where no term divides by zero (``validation/dither_covariance.mac``).
+    """
     trace_c = float(np.trace(c))
     if not p0.any():
         return math.sqrt(float(np.trace(q)) / trace_c)
@@ -1100,9 +1106,10 @@ def _white_dither(c: _Array, q: _Array, p0: _Array) -> float:
     def slope(v: float) -> float:
         return trace_c - float(np.sum(q_rotated / (values + v) ** 2))
 
-    if values[0] > 0.0 and slope(0.0) >= 0.0:
-        return 0.0
-    high = math.sqrt(float(np.trace(q)) / trace_c)
+    low = max(0.0, math.sqrt(q_rotated[0] / trace_c) - float(values[0]))
+    if slope(low) >= 0.0:  # 0, or with one lever the bound itself up to rounding
+        return low
+    high = max(math.sqrt(float(np.trace(q)) / trace_c), low)
     while slope(high) < 0.0:
         high *= 2.0
-    return float(optimize.brentq(slope, 0.0 if values[0] > 0.0 else 1e-300, high, xtol=1e-300))
+    return float(optimize.brentq(slope, low, high, xtol=1e-300))
