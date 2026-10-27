@@ -120,7 +120,7 @@ stroud(d) := block([pts : [], wts : [], v],
 /* the standard normal's moment of x^alpha: prod over i of (alpha_i - 1)!! for even alpha_i, 0 if any is odd */
 gmom(al) := product(if oddp(al[i]) then 0 else (if al[i] = 0 then 1 else (al[i] - 1)!!), i, 1, length(al))$
 exponents(d, deg) := block([out : [[]]],
-    for i : 1 thru d do out : apply(append, map(lambda([v], makelist(endcons(k, v), k, 0, deg)), out)),
+    for i : 1 thru d do out : lreduce(append, map(lambda([v], makelist(endcons(k, v), k, 0, deg)), out)),
     sublist(out, lambda([v], apply("+", v) <= deg)))$
 stroud_worst(d) := block([rl : stroud(d), worst : 0],
     for al in exponents(d, 5) do
