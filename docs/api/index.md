@@ -65,32 +65,42 @@ on the zone plant, for the response curves `response` in the plans they warm-sta
 the geo world `geo_world` in the geo models scored on it. They may change or be withdrawn in
 any release. Pin an exact version if you depend on one.
 
-Seventy-two entries in modules of other tiers are experimental on the same terms, for the same
-reason:
-the `weights` argument of `fit_causal_residual` and `solve_channel_moment`, its `influence` argument
-with the fields it keeps, `nuisance_shift`, the `unmoved`, `moment_residual`, `instrument_relevance` and
-`instrument_rank` fields of `CausalDynamicsFit`, `omitted_confounder_bound`,
-`OmittedConfounderBound`, `persistence_check`, `PersistenceCheck`, `interference_check`,
-`InterferenceCheck`, `lag_check`, `LagCheck`, `channel_region`,
-`ChannelRegion` and `RegionForm` in `chc.dynamics_id`, `horizon_errors`, `HorizonConformal`, `mixing_penalty` and
-`gaussian_mixing` in `chc.uncertainty`, the
-`noise_persistence`, `noise_persistence_p`, `tube_per_log_spread` and `tube_actions` fields of
-`DecisionCertificate`, the `tube_actions` and `dither` arguments of `prescribe`, `TubeActions`,
-`DitherCheck`, `DitherStatus` and the `dither_check` field of `Prescription` in `chc.decision`,
-`callaway_santanna_inference` and `EventStudyInference` in `chc.did`, `synthetic_control_inference`,
-`SyntheticControlInference`, `blank_period_inference` and `BlankPeriodInference` in `chc.scm`,
-`gcm_test` and `GcmTest` in `chc.independence`, `LoggerCheck` in `chc.evaluation`, the
-`logger_check` field of `Prescription` and `PlanEvaluation`, the `interference` field of
-`Prescription`, `shadow_price_effect` and
-`shadow_price_interval` in `chc.matching`, `dither_check`, `DitherCheck`, `dither_size`, `DitherSize`
-and the `per_driver` payment of `SharedStateMarket` in `chc.marketplace`, `channel_drift_evalues`,
-`DriftAlarm`, `MissRateAlarm`, `OnlineRadius`, `channel_move`, `ChannelMove`, `MovePrice`,
-`BlockBatch` and the `alpha_futility`, `block_length` and `burn_in` fields of `GateConfig` in
-`chc.gate`, the `instrument_relevance` diagnostic of `IV2SLS` in `chc.estimators`,
-`minimax_regret_move`, `MinimaxRegretMove` and `MoveRule` in `chc.regret`, and
-`CausalPlan.decision_weight`, `DecisionWeight`, `CausalPlan.relaxed_cost`,
-`CausalPlan.planned_cost_bias`, `PlannedCostBias`, `CostBiasDirection` and the `inner`
-argument of `causal_plan` in `chc.plan`, with the `inner` field of `RecedingHorizon` in `chc.mpc`.
+87 entries in modules of other tiers are experimental on the same terms, for the same
+reason. An entry is a name, `Class.member` for a field or a method, `function(argument=)` for an
+argument, or a value or key in quotes:
+
+- `chc.dynamics_id`: `fit_causal_residual(weights=)`, `solve_channel_moment(weights=)`,
+  `fit_causal_residual(influence=)`, `CausalDynamicsFit.influence`, `CausalDynamicsFit.representer`,
+  `nuisance_shift`, `CausalDynamicsFit.unmoved`, `CausalDynamicsFit.moment_residual`,
+  `CausalDynamicsFit.instrument_relevance`, `CausalDynamicsFit.instrument_rank`,
+  `omitted_confounder_bound`, `OmittedConfounderBound`, `persistence_check`, `PersistenceCheck`,
+  `interference_check`, `InterferenceCheck`, `lag_check`, `LagCheck`, `channel_region`,
+  `ChannelRegion`, `RegionForm`;
+- `chc.uncertainty`: `horizon_errors`, `HorizonConformal`, `mixing_penalty`, `gaussian_mixing`;
+- `chc.decision`: `prescribe(tube_actions=)`, `prescribe(dither=)`, `prescribe(neighbours=)`,
+  `prescribe(planned_cost_bias=)`, `DecisionCertificate.noise_persistence`,
+  `DecisionCertificate.noise_persistence_p`, `DecisionCertificate.tube_per_log_spread`,
+  `DecisionCertificate.tube_actions`, `DecisionCertificate.planned_cost_bias`,
+  `DecisionCertificate.planned_cost_bias_reason`, `TubeActions`, `DitherCheck`, `DitherStatus`,
+  `PrescribedPolicy`, `Prescription.logger_check`, `Prescription.interference`,
+  `Prescription.dither_check`, `Prescription.from_json`;
+- `chc.did`: `callaway_santanna_inference`, `EventStudyInference`;
+- `chc.scm`: `synthetic_control_inference`, `SyntheticControlInference`, `blank_period_inference`,
+  `BlankPeriodInference`;
+- `chc.independence`: `gcm_test`, `GcmTest`;
+- `chc.evaluation`: `LoggerCheck`, `PlanEvaluation.logger_check`, `PlanEvaluation.to_json`;
+- `chc.matching`: `shadow_price_effect`, `shadow_price_interval`;
+- `chc.marketplace`: `dither_check`, `GradientDitherCheck`, `dither_size`, `DitherSize`,
+  `SharedStateMarket(payment="per_driver")`;
+- `chc.gate`: `channel_drift_evalues`, `DriftAlarm`, `MissRateAlarm`, `OnlineRadius`,
+  `channel_move`, `ChannelMove`, `MovePrice`, `BlockBatch`, `GateConfig.alpha_futility`,
+  `GateConfig.block_length`, `GateConfig.burn_in`, `GateConfig.check_burn_in`, `GateConfig.centred`,
+  `GateConfig.rollback_baseline_share`;
+- `chc.estimators`: `IV2SLS.estimate["instrument_relevance"]`;
+- `chc.regret`: `minimax_regret_move`, `MinimaxRegretMove`, `MoveRule`;
+- `chc.plan`: `CausalPlan.decision_weight`, `DecisionWeight`, `CausalPlan.relaxed_cost`,
+  `CausalPlan.planned_cost_bias`, `PlannedCostBias`, `CostBiasDirection`, `causal_plan(inner=)`;
+- `chc.mpc`: `RecedingHorizon.inner`.
 
 ## Research
 
