@@ -102,6 +102,23 @@ block, given everything before the block.
   carryover of order 1, a candidate +0.3 better sustained was deployed after a median of 562
   periods in blocks of 2 with 1 burned, 978 in blocks of 5 with 1 burned, and 1288 in blocks of 5
   with 4 burned.
+* **The rollback in blocks** (*experimental*). Deployed, a zone runs the candidate in every block,
+  so its rollback e-process has no baseline block to read, and only a drift alarm rolls it back.
+  With ``GateConfig(rollback_baseline_share=q)`` each deployed block runs the baseline with
+  probability ``q`` instead, and logs it: the deployed zone is an experiment whose candidate share
+  is ``1 - q``, and the rollback e-process reads the experiment's harm increments, after the
+  burn-in and weighted by the inverse of the logged probability, centred with ``centred``
+  (``validation/gate_block_rollback.mac``). A ROLLBACK then claims, design-based, that the
+  baseline beat the candidate by more than ``delta_harm`` over the blocks read since the DEPLOY.
+  The share costs ``q`` times the candidate's sustained gain, on a plant whose reward is affine
+  in its recent actions exactly. On the lab's plant, in blocks of 50 with 40 burned, read every 5
+  blocks, the candidate 0.0096 worse in the long run was rolled back on none of 1000 paths of
+  20 000 periods at ``q`` 0.1, 0.2 and 0.3, plain or centred; after it turned 0.157 worse, 40
+  blocks after the DEPLOY, the centred rollback fired on 31%, 96.5% and 99.75% of 400 paths within
+  360 blocks, after a median of 320, 215 and 155, and plain on 9%, 46% and 62%; without the share,
+  on none. On a plant of order 1 whose candidate repays a cost of 0.2 one period on, exactly as good
+  sustained, in blocks of 2, the rollback fired on at most 0.25% of 400 paths with one period
+  burned, and on 30% to 100% with none: the burn-in must cover the carryover here too.
 
 **Centred increments** (*experimental*). Under the experiment's mixture the difference of the two
 weights, ``D = w_new - w_base``, lies in ``[-1 / (1 - rho), 1 / rho]`` and has mean 0 given the
@@ -240,8 +257,15 @@ class GateConfig:
     ``centred`` (*experimental*), off by default, centres the experiment's increments: each reward
     is read less a level predicted from the zone's earlier decisions in the experiment, so that
     the reward's own level no longer adds to the increment's variance (see :mod:`chc.gate`). The
-    guarantees do not change. Shadow and deployed increments do not change either. The logged
-    e-values are on another scale, and the gate's log records say which, under ``centred``.
+    guarantees do not change. Shadow and deployed increments do not change either, but for the
+    deployed blocks below. The logged e-values are on another scale, and the gate's log records
+    say which, under ``centred``.
+
+    ``rollback_baseline_share`` (*experimental*), unset by default, keeps a randomised baseline in
+    a deployed zone of a gate in blocks, so that its rollback reads evidence: each deployed block
+    runs the baseline with this probability, and the rollback e-process reads the blocks' contrast
+    after the burn-in, as the experiment does (see :mod:`chc.gate`). Unset, a deployed zone runs
+    the candidate in every block, and only a drift alarm rolls it back.
 
     Raises:
         ValueError: on a margin outside ``[0, 1)``, a level or ``rho`` outside ``(0, 1)``, a
@@ -249,7 +273,8 @@ class GateConfig:
             1, an ``alpha_futility`` with ``delta + min_effect`` not below 1, which no reward
             in ``[0, 1]`` can beat, a ``block_length`` below 1, a ``burn_in`` that is negative,
             leaves no period of a block to read, or is set without a ``block_length``, a
-            ``check_burn_in`` set without one, or a negative ``carryover_lags``.
+            ``check_burn_in`` or a ``rollback_baseline_share`` set without one, a
+            ``rollback_baseline_share`` outside ``(0, 1)``, or a negative ``carryover_lags``.
         TypeError: on a ``horizon``, ``block_length``, ``burn_in`` or ``carryover_lags`` that is
             not a whole number: a float, or a bool; or a ``check_burn_in`` or ``centred`` that is
             not a bool.
@@ -269,6 +294,7 @@ class GateConfig:
     carryover_lags: int = 5
     check_burn_in: bool = False
     centred: bool = False
+    rollback_baseline_share: float | None = None
 
     def __post_init__(self) -> None:
         for name in ("horizon", "burn_in", "carryover_lags") + (
@@ -285,8 +311,12 @@ class GateConfig:
             value = getattr(self, name)
             if not 0.0 <= value < 1.0:
                 raise ValueError(f"{name} must lie in [0, 1), got {value}")
-        levels = ("alpha", "alpha_harm", "rho") + (
-            ("alpha_futility",) if self.alpha_futility is not None else ()
+        optional = ("alpha_futility", "rollback_baseline_share")
+        levels = (
+            "alpha",
+            "alpha_harm",
+            "rho",
+            *(n for n in optional if getattr(self, n) is not None),
         )
         for name in levels:
             value = getattr(self, name)
@@ -315,6 +345,11 @@ class GateConfig:
                 raise ValueError(
                     "check_burn_in without a block_length: the check reads blocks; without them"
                     " carryover_lags sets the carryover check"
+                )
+            if self.rollback_baseline_share is not None:
+                raise ValueError(
+                    "rollback_baseline_share without a block_length: a deployed zone not in"
+                    " blocks reads its rollback off the logged baseline propensity"
                 )
         elif self.block_length < 1:
             raise ValueError(f"block_length must be at least 1 period, got {self.block_length}")
@@ -1601,6 +1636,21 @@ class _BlockCarryover:
         return None
 
 
+def _centred(
+    level: _Level, w_new: _Array, w_base: _Array, r: _Array, rho: float
+) -> tuple[_Array, _Array, _Array]:
+    """Each reward read less its predictable level ``c``, under a mixture whose candidate share is
+    ``rho``. There ``w_new - w_base`` lies in ``[-1 / (1 - rho), 1 / rho]`` and has mean 0, so
+    ``x = (w_new - w_base)(r - c)`` has mean ``V_new - V_base`` and, over that box and rewards in
+    ``[0, 1]``, lies in ``[-below, above]``, with ``below = max(c / rho, (1 - c) / (1 - rho))``
+    and ``above = max((1 - c) / rho, c / (1 - rho))``, both at least 1."""
+    c = level.read(w_new, w_base, r, rho)
+    x = (w_new - w_base) * (r - c)
+    below = np.maximum(c / rho, (1.0 - c) / (1.0 - rho))
+    above = np.maximum((1.0 - c) / rho, c / (1.0 - rho))
+    return x, below, above
+
+
 @dataclass
 class _Zone:
     plan: ZonePlan
@@ -1658,7 +1708,9 @@ class DeploymentGate:
     after a futility stop, runs the baseline's blocks, and ``"deployed"`` the candidate's. Shadow
     blocks are no evidence for the candidate, so rule 5 sends a shadow zone back to the experiment
     as soon as it may enter one, and a deployed zone's rollback evidence has no baseline block to
-    read: only a drift alarm rolls it back.
+    read: only a drift alarm rolls it back. With ``rollback_baseline_share = q``, ``"deployed"``
+    runs the baseline's blocks with probability ``q``, logged at ``q``, and the candidate's at
+    ``1 - q``, and the rollback reads them.
 
     Raises:
         ValueError: on no zones.
@@ -1720,7 +1772,12 @@ class DeploymentGate:
             elif zone.carryover is not None:
                 self._check_carryover(z, zone, zone.carryover.add(w_new - w_base, r, zone.mode))
             if zone.mode == "deployed":
-                zone.rollback.add(((w_base - w_new) * r - cfg.delta_harm) / (1 + cfg.delta_harm))
+                share = cfg.rollback_baseline_share
+                if share is None:
+                    harm = ((w_base - w_new) * r - cfg.delta_harm) / (1 + cfg.delta_harm)
+                else:
+                    harm = self._randomised_harm(zone, w_new, w_base, r, share)
+                zone.rollback.add(harm)
                 continue
             if cfg.centred and zone.mode == "experiment":
                 self._add_centred(zone, w_new, w_base, r)
@@ -1771,23 +1828,30 @@ class DeploymentGate:
         return verdicts
 
     def _add_centred(self, zone: _Zone, w_new: _Array, w_base: _Array, r: _Array) -> None:
-        """The experiment's increments, each reward read less its predictable level ``c``. Under
-        the mixture ``w_new - w_base`` lies in ``[-1 / (1 - rho), 1 / rho]`` and has mean 0, so
-        ``x = (w_new - w_base)(r - c)`` has mean ``V_new - V_base`` and, over that box and rewards
-        in ``[0, 1]``, lies in ``[-below, above]``, with
-        ``below = max(c / rho, (1 - c) / (1 - rho))`` and
-        ``above = max((1 - c) / rho, c / (1 - rho))``, both at least 1. Harm and futility bet on
-        ``-x``."""
+        """The experiment's increments, each reward read less its predictable level; harm and
+        futility bet on ``-x``."""
         cfg = self.config
-        c = zone.level.read(w_new, w_base, r, cfg.rho)
-        x = (w_new - w_base) * (r - c)
-        below = np.maximum(c / cfg.rho, (1.0 - c) / (1.0 - cfg.rho))
-        above = np.maximum((1.0 - c) / cfg.rho, c / (1.0 - cfg.rho))
+        x, below, above = _centred(zone.level, w_new, w_base, r, cfg.rho)
         zone.improvement.add((x - cfg.delta) / (below + cfg.delta))
         zone.harm.add((-x - cfg.delta_harm) / (above + cfg.delta_harm))
         if cfg.alpha_futility is not None:
             worth = cfg.delta + cfg.min_effect
             zone.futility.add((worth - x) / (above - worth))
+
+    def _randomised_harm(
+        self, zone: _Zone, w_new: _Array, w_base: _Array, r: _Array, q: float
+    ) -> _Array:
+        """A deployed zone's rollback increments in blocks that run the baseline with probability
+        ``q``: the experiment's harm increments under a mixture whose candidate share is
+        ``1 - q``. The block's weights are ``1 / (1 - q)`` on the candidate's blocks and ``1 / q``
+        on the baseline's, so ``(w_new - w_base)(1 - r)`` has mean ``V_base - V_new`` given the
+        past and is at least ``-1 / q``; centred, ``x`` is at most ``max((1 - c) / (1 - q),
+        c / q)`` (``validation/gate_block_rollback.mac``)."""
+        cfg = self.config
+        if cfg.centred:
+            x, _, above = _centred(zone.level, w_new, w_base, r, 1.0 - q)
+            return (-x - cfg.delta_harm) / (above + cfg.delta_harm)
+        return ((w_new - w_base) * (1.0 - r) - cfg.delta_harm) / (1.0 / q + cfg.delta_harm)
 
     def _check_carryover(
         self, name: str, zone: _Zone, found: tuple[int, float, float] | None
@@ -1872,6 +1936,10 @@ class DeploymentGate:
         zone, rho = self._zones[name], self.config.rho
         if zone.mode == "shadow":
             expected, policy = batch.baseline, "the baseline"
+        elif zone.mode == "deployed" and self.config.rollback_baseline_share is not None:
+            q = self.config.rollback_baseline_share
+            expected = q * batch.baseline + (1.0 - q) * batch.candidate
+            policy = f"the candidate, with the baseline's blocks at probability {q:g}"
         elif zone.mode == "deployed":
             expected, policy = batch.candidate, "the candidate"
         else:

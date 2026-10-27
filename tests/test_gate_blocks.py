@@ -17,6 +17,7 @@ seed see the same draws in every zone until their verdicts part.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from collections.abc import Callable
@@ -577,3 +578,243 @@ def test_the_log_says_which_increments_produced_the_e_values(
         assert record.centred is centred  # type: ignore[attr-defined]
         evidence[centred] = record.log_evidence  # type: ignore[attr-defined]
     assert evidence[True] != evidence[False]
+
+
+def _gauss(gain: float, cost: float) -> Period:
+    """Carryover of order 1 with Gaussian noise: the candidate acts 1 and the baseline 0, and the
+    reward is ``clip(0.5 + gain u_t - cost u_(t-1) + 0.2 eta_t, 0, 1)``."""
+
+    def period(rng: np.random.Generator, last: np.ndarray, candidate: np.ndarray) -> tuple:
+        u = candidate.astype(float)
+        noise = 0.2 * rng.standard_normal(u.shape)
+        return np.clip(0.5 + gain * u - cost * last + noise, 0.0, 1.0), u
+
+    return period
+
+
+def _deployed(
+    period: Period,
+    config: GateConfig,
+    *,
+    paths: int,
+    blocks: int,
+    per_read: int,
+    seed: int,
+    start: Callable[[np.random.Generator, int], np.ndarray],
+) -> np.ndarray:
+    """The blocks after its DEPLOY at which each path's gate rolled its zone back, -1 where it did
+    not. Twenty blocks the candidate wins outright deploy the zone; then each block runs the
+    baseline with probability ``rollback_baseline_share``, or never when it is unset."""
+    assert config.block_length is not None
+    share = config.rollback_baseline_share or 0.0
+    rng = np.random.default_rng(seed)
+    gates = [DeploymentGate({"z": PLAN}, config) for _ in range(paths)]
+    ran = np.arange(20) % 2 == 0
+    length = config.block_length
+    win = BlockBatch(np.repeat(ran[:, None], length, axis=1).astype(float), ran, np.full(20, 0.5))
+    for gate in gates:
+        assert gate.update({"z": win}) == {"z": "deploy"}
+    state = start(rng, paths)
+    rolled = np.full(paths, -1)
+    for read in range(blocks // per_read):
+        candidate = rng.random((paths, per_read)) >= share
+        logged = np.where(candidate, 1.0 - share, share)
+        reward = np.empty((paths, per_read, length))
+        for b in range(per_read):
+            for t in range(length):
+                reward[:, b, t], state = period(rng, state, candidate[:, b])
+        for i, gate in enumerate(gates):
+            if gate.mode("z") != "deployed":
+                continue
+            batch = BlockBatch(reward[i], candidate[i], logged[i])
+            if gate.update({"z": batch}) == {"z": "rollback"}:
+                rolled[i] = (read + 1) * per_read
+    return rolled
+
+
+@pytest.mark.parametrize("centred", [False, True])
+def test_in_blocks_the_lab_candidate_not_worse_by_delta_harm_is_rolled_back_at_most_alpha_harm(
+    centred: bool,
+) -> None:
+    """The lab's candidate, deployed, is 0.0096 worse than the baseline in the long run, inside
+    ``delta_harm = 0.02``: with the baseline's blocks at probability 0.2, in blocks of 50 with 40
+    burned, read every 5 blocks over 20 000 periods, it is rolled back on at most
+    ``alpha_harm`` of 500 paths."""
+    config = _config(40, 50, rollback_baseline_share=0.2, centred=centred)
+    rolled = _deployed(
+        _lab,
+        config,
+        paths=500,
+        blocks=400,
+        per_read=5,
+        seed=20261027,
+        start=lambda rng, n: rng.normal(0.4, 0.51, n),
+    )
+    assert (rolled >= 0).mean() <= config.alpha_harm
+
+
+@pytest.mark.parametrize("centred", [False, True])
+def test_in_blocks_the_rollback_reads_after_the_burn_in(centred: bool) -> None:
+    """Carryover of order 1, a candidate that costs 0.2 now and repays it a period on: exactly as
+    good as the baseline sustained. A baseline block after the candidate's reads the repayment in
+    its first period, so read without a burn-in the baseline looks 0.1 better
+    (``validation/gate_block_rollback.mac``). With the first of 2 periods burned, the rollback
+    fires on at most ``alpha_harm`` of 200 paths plus three standard errors; with none, on more
+    than a quarter of them."""
+    rates = []
+    for burn_in in (1, 0):
+        config = _config(burn_in, 2, rollback_baseline_share=0.2, centred=centred)
+        rolled = _deployed(
+            _gauss(-0.2, -0.2),
+            config,
+            paths=200,
+            blocks=2000,
+            per_read=10,
+            seed=20261028,
+            start=lambda rng, n: np.ones(n),
+        )
+        rates.append(float((rolled >= 0).mean()))
+    assert rates[0] <= _slack(200)
+    assert rates[1] > 0.25
+
+
+def test_in_blocks_a_deployed_candidate_that_is_worse_is_rolled_back_only_with_a_baseline() -> None:
+    """A deployed candidate 0.1 worse sustained, carryover of order 1, blocks of 2 with 1 burned:
+    centred, with the baseline's blocks at probability 0.2, the rollback fires on at least 95% of
+    200 paths within 2000 blocks (a median of 410 blocks in the Monte Carlo of
+    ``validation/gate_block_rollback.mac``, 454 by its planning approximation); without a
+    baseline's block, on none."""
+    for share, least in ((0.2, 0.95), (None, 0.0)):
+        config = _config(1, 2, rollback_baseline_share=share, centred=True)
+        rolled = _deployed(
+            _gauss(0.1, 0.2),
+            config,
+            paths=200,
+            blocks=2000,
+            per_read=10,
+            seed=20261029,
+            start=lambda rng, n: np.ones(n),
+        )
+        if share is None:
+            assert not (rolled >= 0).any()
+        else:
+            assert (rolled >= 0).mean() >= least
+
+
+def test_in_blocks_a_deployed_zone_with_a_baseline_share_logs_both_policies_blocks() -> None:
+    """Deployed with ``rollback_baseline_share = 0.25``, a zone logs the baseline's blocks at
+    0.25 and the candidate's at 0.75, and refuses blocks logged as before, at 1; the experiment
+    before the DEPLOY reads its blocks as it does without the share."""
+    shared = DeploymentGate({"z": PLAN}, _config(0, 1, rollback_baseline_share=0.25))
+    plain = DeploymentGate({"z": PLAN}, _config(0, 1))
+    ran = np.arange(20) % 2 == 0
+    win = BlockBatch(ran[:, None].astype(float), ran, np.full(20, 0.5))
+    assert shared.update({"z": win}) == plain.update({"z": win}) == {"z": "deploy"}
+    assert shared._zones["z"].improvement.log_value == plain._zones["z"].improvement.log_value
+    with pytest.raises(ValueError, match=r"with the baseline's blocks at probability 0\.25"):
+        shared.update({"z": BlockBatch(np.ones((2, 1)), np.ones(2, dtype=bool), np.ones(2))})
+    worse = BlockBatch(
+        np.array([[0.0], [1.0]] * 30), np.array([True, False] * 30), np.array([0.75, 0.25] * 30)
+    )
+    verdicts = [shared.update({"z": worse})["z"] for _ in range(3)]
+    assert "rollback" in verdicts
+    assert verdicts[-1] == "hold"
+    assert shared.mode("z") == "retired"
+
+
+@pytest.mark.parametrize(
+    ("changes", "error", "match"),
+    [
+        ({"rollback_baseline_share": 0.2}, ValueError, "without a block_length"),
+        ({"block_length": 2, "rollback_baseline_share": 0.0}, ValueError, r"must lie in \(0, 1\)"),
+        ({"block_length": 2, "rollback_baseline_share": 1.0}, ValueError, r"must lie in \(0, 1\)"),
+    ],
+)
+def test_a_baseline_share_outside_the_contract_is_refused(
+    changes: dict, error: type, match: str
+) -> None:
+    with pytest.raises(error, match=match):
+        GateConfig(delta=0.0, delta_harm=0.0, min_effect=0.1, horizon=10, **changes)
+
+
+def _digest(values: list) -> str:
+    """Rounded to ten digits, so that a last bit a CPU's log kernel moves does not move it."""
+    text = repr([f"{v:.10g}" if isinstance(v, float) else v for v in values])
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_without_a_baseline_share_every_e_value_and_verdict_is_what_it_was() -> None:
+    """Three gates in blocks (plain; centred with a futility stop; with the carryover check and
+    drift e-values that alarm), each of two zones over 150 reads, one zone turning worse once
+    deployed, and the gate without blocks, plain and centred: every verdict, mode and e-value,
+    digested as the previous release produced them."""
+    plan = ZonePlan(chi2=0.2, tv=0.15)
+    settings = {"delta": 0.0, "delta_harm": 0.02, "min_effect": 0.05, "horizon": 10**6}
+    configs = [
+        GateConfig(**settings, block_length=3, burn_in=1),  # type: ignore[arg-type]
+        GateConfig(**settings, block_length=3, burn_in=1, centred=True, alpha_futility=0.1),  # type: ignore[arg-type]
+        GateConfig(**settings, block_length=2, burn_in=1, check_burn_in=True, drift_arl=50.0),  # type: ignore[arg-type]
+    ]
+    out: list = []
+    for k, config in enumerate(configs):
+        assert config.block_length is not None
+        rng = np.random.default_rng(20261027 + k)
+        gate = DeploymentGate({"a": plan, "b": plan}, config)
+        gains = {"a": 0.25, "b": -0.15}
+        last = {"a": 0.0, "b": 0.0}
+        for _ in range(150):
+            batches = {}
+            for z in ("a", "b"):
+                mode = gate.mode(z)
+                if mode == "retired":
+                    continue
+                coin = rng.random(4) < config.rho
+                ran = coin if mode == "experiment" else np.full(4, mode == "deployed")
+                if mode == "experiment":
+                    logged = np.where(ran, config.rho, 1 - config.rho)
+                else:
+                    logged = np.ones(4)
+                reward = np.empty((4, config.block_length))
+                for b in range(4):
+                    for t in range(config.block_length):
+                        u = float(ran[b])
+                        reward[b, t] = float(rng.random() < 0.5 + gains[z] * u - 0.1 * last[z])
+                        last[z] = u
+                drift = rng.exponential(1.0, (reward.size, 1)) if k == 2 else None
+                batches[z] = BlockBatch(reward, ran, logged, drift)
+            verdicts = gate.update(batches)
+            for z in ("a", "b"):
+                zone = gate._zones[z]
+                out += [verdicts[z], zone.mode, zone.improvement.log_value, zone.harm.log_value]
+                out += [zone.rollback.log_value, zone.futility.log_value]
+            if k == 0 and gate.mode("a") == "deployed":
+                gains["a"] = -0.3
+    for centred in (False, True):
+        rng = np.random.default_rng(7 + centred)
+        config = GateConfig(
+            delta=0.01,
+            delta_harm=0.02,
+            min_effect=0.02,
+            horizon=5000,
+            centred=centred,
+            alpha_futility=0.1,
+        )
+        gate = DeploymentGate({"a": ZonePlan(chi2=0.17, tv=0.16)}, config)
+        for _ in range(120):
+            mode = gate.mode("a")
+            if mode == "retired":
+                break
+            u = rng.normal(size=48)
+            if mode == "experiment":
+                u = np.where(rng.random(48) < 0.5, u + 0.4, u)
+            elif mode == "deployed":
+                u = u + 0.4
+            cand = np.exp(-((u - 0.4) ** 2) / 2) / np.sqrt(2 * np.pi)
+            base = np.exp(-(u**2) / 2) / np.sqrt(2 * np.pi)
+            logged = {"shadow": base, "experiment": 0.5 * base + 0.5 * cand, "deployed": cand}[mode]
+            reward = (rng.random(48) < 0.3 + 0.3 * np.exp(-((u - 1) ** 2) / 2)).astype(float)
+            verdict = gate.update({"a": ZoneBatch(reward, cand, base, logged)})["a"]
+            zone = gate._zones["a"]
+            out += [verdict, zone.mode, zone.improvement.log_value, zone.harm.log_value]
+            out += [zone.rollback.log_value, zone.futility.log_value]
+    assert _digest(out) == "45196edb7e3bf081f6a3702e35a66d5a1e6fbbc4df5ed6962b31176e95690303"

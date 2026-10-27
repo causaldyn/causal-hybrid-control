@@ -1,0 +1,123 @@
+/* The rollback of a deployed zone in chc.gate's blocks with a randomised baseline
+   (GateConfig(block_length, burn_in, rollback_baseline_share = q)).
+
+   Deployed, each block runs the baseline with probability q and the candidate otherwise, and
+   logs that probability. A block is one decision whose action is the policy drawn, so the
+   candidate's weight is 1/(1 - q) on its own blocks and 0 on the baseline's, and the baseline's
+   1/q on its own blocks and 0 on the candidate's. R in [0, 1] is the block's read mean, the
+   periods after the burn-in; V_new and V_base are its means under the two policies given the
+   past, Delta = V_new - V_base.
+
+   STEP 1  D = w_new - w_base is 1/(1 - q) or -1/q, E[D] = 0, and the harm increment
+           D (1 - R) has mean V_base - V_new = -Delta: it is the experiment's harm increment
+           under a mixture whose candidate share is rho = 1 - q
+   STEP 2  D (1 - R) >= -1/q, at a baseline block with R = 0, so the scaled increment
+           (D (1 - R) - delta_h)/(1/q + delta_h) is at least -1, and its mean is at most 0 when
+           V_base - V_new <= delta_h; checked against a grid at sample points
+   STEP 3  centred: x = D (R - c) for a level c fixed before the draw has mean Delta, and
+           x <= B'(c) = max((1 - c)/(1 - q), c/q), the experiment's upper bound at rho = 1 - q,
+           so (-x - delta_h)/(B'(c) + delta_h) >= -1; checked against a grid at sample points
+   STEP 4  second moments, R = mu + Delta ran + eta, E eta = 0, E eta^2 = s^2: the plain
+           increment's is ((1 - mu - Delta)^2 + s^2)/(1 - q) + ((1 - mu)^2 + s^2)/q, the centred
+           one's at c* = mu + q Delta is s^2/(q (1 - q)) + Delta^2
+   STEP 5  the cost: on a plant whose reward is affine in the actions of the last p periods,
+           u_t = 1 for the candidate and 0 for the baseline, the deployed zone's mean reward per
+           period with i.i.d. block draws is V_new - q (V_new - V_base): it gives up q times the
+           sustained gain. On the tests' plant of order 1, 0.5 + g u_t - k u_(t-1), exactly
+   STEP 6  the burn-in: on the order-1 plant 0.5 - 0.2 u_t + 0.2 u_(t-1), whose sustained
+           contrast is 0, in blocks of 2 read without a burn-in, a block's read mean less what
+           the other policy's block would read from the same state is 0.1 for the baseline,
+           whatever ran before: a rollback at delta_h < 0.1 is then wrong. With the first period
+           burned it is 0
+   STEP 7  blocks to a rollback e-value of 20/0.9 x 12 bets, by the growth of the best fixed bet
+           capped at 0.9 (an approximation), from a deploy at which the candidate is already
+           worse, beside the shipped gate's Monte Carlo medians
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/gate_block_rollback.mac */
+
+display2d : false$
+fpprintprec : 8$
+assume(q > 0, q < 1, s2 > 0)$
+pass(ok) := if ok then "(PASS)" else "(FAIL)"$
+
+/* STEP 1 */
+Dn : 1/(1 - q)$
+Db : -1/q$
+ED : ratsimp((1 - q)*Dn + q*Db)$
+EH : ratsimp((1 - q)*Dn*(1 - Vn) + q*Db*(1 - Vb))$
+print("STEP 1  E[D] =", ED, "; E[D (1 - R)] - (V_base - V_new) =", ratsimp(EH - (Vb - Vn)),
+      "; D at rho = 1 - q, 1/rho and -1/(1 - rho):", ratsimp(subst(q = 1 - rho, Dn)),
+      ratsimp(subst(q = 1 - rho, Db)),
+      pass(ED = 0 and ratsimp(EH - (Vb - Vn)) = 0
+           and ratsimp(subst(q = 1 - rho, Dn) - 1/rho) = 0
+           and ratsimp(subst(q = 1 - rho, Db) + 1/(1 - rho)) = 0))$
+
+/* STEP 2 */
+low2 : ratsimp((Db*(1 - 0) - dh)/(1/q + dh))$
+worst2 : 0$
+for qv in [1/20, 1/10, 1/5, 3/10, 1/2, 9/10] do
+  for dv in [1/(1 - qv), -1/qv] do for i : 0 thru 40 do
+    worst2 : min(worst2, dv*(1 - i/40) + 1/qv)$
+print("STEP 2  the scaled increment at its bound:", low2, "; least D (1 - R) + 1/q over a grid:",
+      worst2, "; its mean at V_base - V_new = delta_h:",
+      ratsimp(((Vb - Vn) - dh)/(1/q + dh)), pass(low2 = -1 and worst2 = 0))$
+
+/* STEP 3 */
+Bp(c, q) := max((1 - c)/(1 - q), c/q)$
+EX(c) := (1 - q)*Dn*(mu + Delta - c) + q*Db*(mu - c)$
+s3a : ratsimp(EX(c) - Delta)$
+worst3 : 0$
+for qv in [1/10, 1/5, 1/2, 4/5] do for cv in [0, 1/4, 1/2, 4/5, 1] do
+  for dv in [1/(1 - qv), -1/qv] do for i : 0 thru 40 do
+    worst3 : max(worst3, dv*(i/40 - cv) - Bp(cv, qv))$
+print("STEP 3  E[D (R - c)] - Delta =", s3a, "; largest x - B'(c) over a grid:", worst3,
+      "; B'(c) at q, the experiment's max((1 - c)/rho, c/(1 - rho)) at rho = 1 - q:",
+      ratsimp(subst(q = 1 - rho, Bp(c, q)) - max((1 - c)/rho, c/(1 - rho))),
+      pass(s3a = 0 and worst3 = 0))$
+
+/* STEP 4 */
+plain2 : (1 - q)*Dn^2*((1 - mu - Delta)^2 + s2) + q*Db^2*((1 - mu)^2 + s2)$
+s4a : ratsimp(plain2 - (((1 - mu - Delta)^2 + s2)/(1 - q) + ((1 - mu)^2 + s2)/q))$
+EX2(c) := (1 - q)*Dn^2*((mu + Delta - c)^2 + s2) + q*Db^2*((mu - c)^2 + s2)$
+cstar : rhs(first(solve(diff(EX2(c), c) = 0, c)))$
+s4b : ratsimp(cstar - (mu + q*Delta))$
+s4c : ratsimp(EX2(cstar) - (s2/(q*(1 - q)) + Delta^2))$
+print("STEP 4  plain second moment less its form:", s4a, "; c* - (mu + q Delta):", s4b,
+      "; centred at c* less s^2/(q (1 - q)) + Delta^2:", s4c,
+      pass(s4a = 0 and s4b = 0 and s4c = 0))$
+
+/* STEP 5: blocks of L periods, the draws i.i.d., u_t = 1 on the candidate's; the reward
+   0.5 + g u_t - k u_(t-1) has mean 0.5 + (g - k)(1 - q) per period at any t, and V_new - V_base
+   = g - k */
+perperiod : 1/2 + g*(1 - q) - k*(1 - q)$
+s5 : ratsimp(perperiod - ((1/2 + g - k) - q*(g - k)))$
+print("STEP 5  the deployed zone's mean reward less V_new + q (V_base - V_new):", s5,
+      "; at q = 1/5 and a sustained gain of 1/10, the loss per period:", ratsimp(q*(g - k)),
+      subst([q = 1/5, g = 3/10, k = 1/5], q*(g - k)), pass(s5 = 0))$
+
+/* STEP 6: blocks of 2 from a state whose last action was u0; a block reads periods b..1 */
+r(ut, ulast) := 1/2 - 1/5*ut + 1/5*ulast$
+read(pol, u0, b) := (if b = 0 then (r(pol, u0) + r(pol, pol))/2 else r(pol, pol))$
+s6 : makelist(read(0, u0, 0) - read(1, u0, 0), u0, [0, 1])$
+s6b : makelist(read(0, u0, 1) - read(1, u0, 1), u0, [0, 1])$
+print("STEP 6  baseline less candidate read, no burn-in, after either action:", s6,
+      "; one period burned:", s6b, "; sustained:", r(0, 0) - r(1, 1),
+      pass(s6 = [1/10, 1/10] and s6b = [0, 0] and r(0, 0) - r(1, 1) = 0))$
+
+/* STEP 7 */
+g7(EY, EY2) := if EY/EY2 <= 0.9 then EY^2/(2*EY2) else 0.9*EY - 0.81*EY2/2$
+need : log(20.0/0.9) + log(12.0)$
+/* the Monte Carlo: blocks of 2 with 1 burned, the reward clip(0.5 + 0.1 u_t - 0.2 u_(t-1)
+   + 0.2 eta, 0, 1), read every 10 blocks, 400 paths of 4000 blocks; centred, every path rolled
+   back, after a median of 790, 410 and 330 blocks; plain, 36.8%, 71.5% and 82% of the paths */
+for row in [[0.1, 0.5, 0.1, 790], [0.2, 0.5, 0.1, 410], [0.3, 0.5, 0.1, 330]] do
+  block([qv, m, d, vals, c1, b1, centred, plain],
+    [qv, m, d] : rest(row, -1),
+    vals : [q = qv, mu = m, s2 = 0.04, Delta = -d],
+    c1 : float(subst(vals, cstar)),
+    b1 : float(Bp(c1, qv)) + 0.02,
+    centred : g7((d - 0.02)/b1, float(subst(vals, EX2(c1)))/b1^2),
+    plain : g7((d - 0.02)/(1/qv + 0.02), float(subst(vals, plain2))/(1/qv + 0.02)^2),
+    print("STEP 7  q", qv, "a candidate", d, "worse at mu", m, "sd 0.2: blocks centred at c*",
+          round(need/centred), "; plain", round(need/plain), "; the gate's median, centred:",
+          row[4]))$

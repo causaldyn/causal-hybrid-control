@@ -53,6 +53,9 @@ design, whatever the dependence of the outcomes.
   Rule 5 sends a shadow zone back to EXPERIMENT as soon as it may enter one, without reading the
   zone's `ZonePlan`. A deployed zone runs the candidate's blocks, so its rollback e-process has no
   baseline block to read, and only a drift alarm rolls it back.
+  *2026-10-27, ADR 0146:* with `GateConfig(rollback_baseline_share=q)` a deployed zone runs the
+  baseline's blocks with probability `q`, and its rollback e-process reads their contrast after
+  the burn-in, inverse-probability weighted; unset, as here.
 - **The kinds do not mix.** A gate in blocks refuses a `ZoneBatch`, a gate not in blocks a
   `BlockBatch`, with a `TypeError`, and blocks of another length with a `ValueError`. `drift`, as
   on a `ZoneBatch`, holds one row per period.
