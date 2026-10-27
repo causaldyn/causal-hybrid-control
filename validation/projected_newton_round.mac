@@ -66,17 +66,25 @@ Hs : D . H . D$
 ws : start[1, 1] / d1 - (D . g0)[1, 1] / Hs[1, 1]$
 print("    scaled step's action less the unscaled:", ratsimp(d1 * ws - u1n), "  (=0)")$
 
-/* (5) The SIR round's matrix, Jacobi-scaled over the free actions, read from the exported file:
-   the condition numbers the ADR states, by Jacobi's eigenvalue method in 32 digits. */
+/* (5) The SIR round's matrix, Jacobi-scaled over the free actions: the condition numbers the ADR
+   states, numpy's at the rounds' end, at a hundredth, a tenth and all of the last penalty. With the
+   matrices that projected_newton_round_sir.py exports, Jacobi's eigenvalue method in 32 digits
+   recomputes each, against numpy's of the export and the stated one. */
+sir_stated : [195.00312740173882, 1715.4114969511434, 17101.791579448567]$
+sir_stated_labels : ["sir_rho_hundredth", "sir_rho_tenth", "sir_rho_last"]$
 if file_search("projected_newton_round_sir.dat") # false then block(
   [kappa],
   batchload("projected_newton_round_sir.dat"),
   fpprec : 32,
-  for i thru length(sir_matrices) do block([S, spectrum],
+  for i thru length(sir_matrices) do block([S, spectrum, off],
     S : bfloat(sir_matrices[i]),
     spectrum : sort(first(eigens_by_jacobi(S, bigfloatfield))),
     kappa : last(spectrum) / first(spectrum),
+    off : max(float(abs(kappa / sir_numpy[i] - 1)), float(abs(kappa / sir_stated[i] - 1))),
     print("(5)", sir_labels[i], " size", length(S), " least", float(first(spectrum)),
           " largest", float(last(spectrum)), " condition", float(kappa),
-          " numpy's", sir_numpy[i], " relative difference", float(abs(kappa / sir_numpy[i] - 1)))))
-else print("(5) projected_newton_round_sir.dat not found: run projected_newton_round_sir.py")$
+          " numpy's", sir_numpy[i], " stated", sir_stated[i], " relative difference", off,
+          if off < 1e-11 then "PASS" else "(FAIL)")))
+else for i thru length(sir_stated) do
+  print("(5)", sir_stated_labels[i], " stated condition", sir_stated[i],
+        "  (recompute: run projected_newton_round_sir.py here, then this file)")$
