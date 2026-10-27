@@ -1,7 +1,9 @@
 # ADR 0138 — The tube reports its spread over logs, may read the plan's own actions, and the channel's region may read a grid of priors
 
 **Status:** accepted, 2026-10-26. Adds to ADR 0133 (the tube's field part) and ADR 0099 (the
-channel's region); moves no default.
+channel's region); moves no default. Amended by ADR 0141, 2026-10-27: the box's form reads each
+RK4 stage's error at its own state, so under RK4 too it is never narrower than the plan's form at
+the plan's actions; Decision 3's RK4 caveat and the first-step RK4 numbers below predate it.
 
 ## Context
 

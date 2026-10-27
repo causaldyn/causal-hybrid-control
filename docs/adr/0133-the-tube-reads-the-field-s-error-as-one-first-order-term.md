@@ -2,7 +2,10 @@
 
 **Status:** accepted, 2026-10-25. Amends ADR 0131 (what the Euler field inherits), ADR 0091 (the
 distance the channel's error is priced at) and the drift's side of ADR 0104 (the field's error at
-the plan's states); keeps ADR 0104's degrees of freedom.
+the plan's states); keeps ADR 0104's degrees of freedom. Amended by ADR 0141, 2026-10-27: under
+`rk4` the field's error is read where each of RK4's four stages reads the field, each carried by its
+own weight; read at the step's start alone it dropped a term of the order of `dt^2`. Euler fits
+read as before.
 
 ## Context
 
