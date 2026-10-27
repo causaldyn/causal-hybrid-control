@@ -7,6 +7,11 @@ still change).
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-10-27
+
+The 1.0 surface completed and one review round's fixes; no default moves. The last minor before
+1.0, which removes what ADR 0147 lists.
+
 ### Added
 
 - `Prescription.from_json(record, panel, *, model=None)` (experimental): re-runs `prescribe` from
@@ -7959,6 +7964,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.24.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.24.0
 [0.23.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.23.0
 [0.22.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.22.0
 [0.21.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.21.0
