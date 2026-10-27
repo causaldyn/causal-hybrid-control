@@ -25,14 +25,19 @@ still change).
   `planned_cost_bias_reason` says why it is `None`. Opt-in, as it refits the channel with its
   influence rows (ADR 0088, ADR 0145). On the quickstart: planned cost 2.150022, bias +2.84e-5.
 - `PlanEvaluation.to_json()` with `EVALUATION_SCHEMA_VERSION = 1`: the estimate, interval, level,
-  certificate fields, the logger check and the evaluation's own settings.
+  certificate fields, the logger check and the evaluation's own settings, with the evaluated
+  panel's `panel_sha256` (`Prescription.evaluate`) or the logs' `logs_sha256` (`evaluate_plan`).
+- `inputs.panel_cluster` in the decision record: a replay on a panel that declares another cluster
+  is refused, naming it.
 - `GateConfig(rollback_baseline_share=q)` (experimental, needs `block_length`): a deployed zone of
   a gate in blocks runs the baseline in each block with probability q, and its rollback e-process
   reads their contrast after the burn-in, inverse-probability weighted (plain or `centred`).
   Before, only a drift alarm rolled such a zone back. On the lab plant a candidate that turns
   0.157 worse after its DEPLOY is rolled back on 96.5 % of paths at q = 0.2 (median 215 blocks,
   centred), against 0 %; wrong rollbacks 0 of 1000. Cost: q × the sustained gain a period
-  (ADR 0146).
+  (ADR 0146). Centred, the deployed blocks are read against a level that starts again at the
+  DEPLOY, so the 96.5 % holds through the gate's own deploy (a level carried over from the
+  experiment gave 52.5 %).
 - `BlankPeriodInference.ar_check_p_value`: a portmanteau check of the AR(1) model on the donors'
   filtered gaps under `serial="ar1"`, reported, never a refusal. Size 2.5–4.9 %; power 62 %
   against an AR(2) alternative, weak against factors persisting at different rates.
@@ -41,6 +46,29 @@ still change).
   A test holds the list equal to the library's deprecation warnings, re-exports and record keys
   (ADR 0147). No behaviour changes.
 
+### Changed
+
+- `chc.marketplace.dither_check` refers its HC3 Wald statistic to a wild bootstrap by default
+  (`reference="wild"`, `draws=1999`, `seed=0`; `reference="f"` keeps the F reference) and refuses
+  fewer than 4 blocks per tested direction; `minimum_detectable` reads the reference's critical
+  value and `dither_size` refuses a planned study below the floor. With the true fit at 5 %, the F
+  reference rejected 10.0–14.5 % at 25–100 blocks; the bootstrap rejects 2.8–6.8 % at 44–400 (ADR
+  0140). It stays experimental.
+- `chc.marketplace.DitherCheck` is renamed `GradientDitherCheck`, apart from
+  `chc.decision.DitherCheck`; the old name warns and leaves in 1.0 (ADR 0147).
+- `pessimistic_equilibrium_allocation`'s keyword `equilibrium` has no default (it always refused
+  `None`).
+- `exact_congestion_allocation` and `per_driver_congestion_allocation` bisect the level without the
+  budget in its scale; at the published budget the exact oracle moves by at most 3.5e-14.
+- `Target(weight <= 0)` and `Lever(unit_cost < 0)` are refused, naming the field.
+- The DiD estimators refuse a group that is neither `never_treated` nor a period `0..T-1`, naming
+  its row: a unit first treated after the panel is labelled `never_treated` (TWFE and DID_M read
+  `g >= T` as untreated; Callaway–Sant'Anna raised `IndexError`).
+- `read_switchback(jackknife=True)` reads the steady state as `b_J / (1 - a_J)` with a delta-method
+  standard error, the centre of its Fieller interval, and refuses `a_J >= 1`. The 0.23.0 entry's
+  bias figures were sample means of a ratio with no mean: as medians, at a = 0.9 over 200 periods
+  on one zone, uncorrected −0.96…−1.17, the 0.23.0 jackknife −0.62…−0.87, this one +0.07…+0.43.
+
 ### Fixed
 
 - `blank_period_inference(serial="ar1")`'s intervals are the k-step AR(1) forecast's t prediction
@@ -48,6 +76,55 @@ still change).
   distribution). At AR 0.8 the 80 % intervals covered 70.3 % and now cover 79.6 %; at levels 90 %
   and 95 % they were unbounded with five blank periods and now cover 89.6 % and 94.8 %. The
   default reading is unchanged (ADR 0146).
+- `msm_worst_case_mean`, `confounding_robust_radius` and `negative_control_gamma` read an `(n, 1)`
+  column of outcomes as its vector; the first two read the last rows, not the largest (−0.087
+  where the vector reads 0.529). Other shapes and non-finite outcomes are refused (a nan returned
+  nan).
+- `fit_causal_residual`: a log that moves no direction of the channel gives `identified=False` and
+  `channel_error=None`, where it was identified with an error of 0.0; unmoved levers are logged at
+  WARNING (event `fit_unmoved`), and missing or masked cluster labels are refused.
+- `SharedStateMarket` damps its equilibrium solve by `congestion_damping` from β·c = 6 and raises on
+  a solve that ends unconverged; at β·c = 20 it read 11.43 rides of 12. The published logs keep
+  their bits.
+- `sutva_allocation` and `pessimistic_equilibrium_allocation` refuse a radius that is nan, infinite
+  or negative (a nan returned the even split or nan); `stackelberg_allocation` refuses an objective
+  that is not finite at its start.
+- At absurd budgets the exact optimum no longer falls (3.46 → 3.5 at 1e16) and per-driver rides no
+  longer pass the drivers (12.116 → 12 at 1e15). `CongestionAllocation.shadow_price` is 0, not nan,
+  where a budget cannot lower the level by one bisection step.
+- `sinkhorn` refuses unequal totals and its dual is finite with a zero-mass zone;
+  `marketplace_report` states an unconverged plan's miss instead of "100% served".
+- `prescribe` reads every collection once. Neighbours given as iterators were consumed by the
+  record: the interference check reported "not tested" (p nan where lists give 0.265) and the
+  record did not replay.
+- `DecisionCertificate.tube_per_log_spread` reads the field's error at the plan's actions under
+  either form, the noise the fit absorbed and the radius's own read over logs. Quickstart step 3:
+  0.0005 → 0.0047, observed 0.0061; a two-lever box form's last step 0.125 → 0.0074, observed
+  0.0013 (it errs wide where the mean share passes 0.99). The report states the spread about the
+  mean share.
+- `trustworthy_steps` is 0 when the tube was read against `tolerance=inf` (it was the whole
+  horizon), and the report says why.
+- `Prescription.from_json` raises `DecisionError` naming `inputs.<key>` where a tampered record
+  raised `ValueError`, `CyclicGraphError` or prescribe's message with no path;
+  `PlanEvaluation.to_json` accepts keywords given as 0-d arrays.
+- The tube's field part at the plan's actions no longer recompiles its rollout on every
+  `prescribe` call.
+- `dither_covariance` no longer emits a divide-by-zero `RuntimeWarning` for a prior with a zero
+  eigenvalue (values unchanged).
+- Reachability fractions are exact counts in float64 (0.7515527606 → 0.7515527950 for 121/161).
+- The absolute-radius refusal under rk4 no longer repeats its advice.
+
+### Documentation
+
+- The `serial="ar1"` intervals hold their level at the true AR(1) coefficient; with it estimated,
+  few donors or a long post period lower it (a measured table in the docstring and ADR 0146).
+- `causal_plan(inner="newton")`: Newton's rounds converge where the round is smooth; a plan at rest
+  at the barrier's centre (prescribe's log mean action) can end `max_iterations` under either
+  inner solve.
+- `WassersteinPenalty` describes the local-gradient margin it computes, not the W1 worst case.
+- ADR 0139's dither power reads 400 logs: 0.39 at c = 0.15 and 0.875 at c = 0.27 (was 0.32 and
+  0.68 on 60 and 40); `lag_check` states that it reads across groups and has little power with
+  few; `docs/api/index.md` lists the 87 experimental entries, held by a test.
 
 ## [0.23.0] — 2026-10-27
 
