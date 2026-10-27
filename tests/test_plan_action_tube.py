@@ -24,6 +24,7 @@ from chc.decision import (
     DecisionError,
     _field_errors,
     _per_log_spread,
+    _per_log_spreads,
     _plan_field,
     _slopes,
 )
@@ -246,26 +247,105 @@ def test_the_per_log_spread_by_simulation() -> None:
     assert abs(math.sqrt(variance) - _SPREADS[1.0]) <= 4.0 * error
 
 
-@pytest.mark.parametrize("tube_actions", ["box", "plan"])
-def test_the_certificate_s_spread_reads_the_tube_s_own_parts(tube_actions: str) -> None:
-    """On one state the tube is ``z sqrt(sigma_k^2 + s_k^2)``, ``z sigma_k`` the state's own noise
-    radius: the spread reported at each step is the closed form at ``kappa = s_k / sigma_k``."""
-    decided = _decide("rk4", tube_actions=tube_actions)
-    certificate = decided.certificate
-    assert decided.plan is not None
-    assert certificate.tube_per_log_spread is not None
-    assert certificate.tube_state_noise is not None
-    tube = np.asarray(decided.plan.uncertainty_tube)
-    noise = np.array([radii[0] for radii in certificate.tube_state_noise])
-    assert certificate.tube_per_log_spread[0] == 0.0
-    for step in range(1, tube.size):
-        kappa = math.sqrt((tube[step] / noise[step]) ** 2 - 1.0)
-        assert certificate.tube_per_log_spread[step] == pytest.approx(
-            _per_log_spread(kappa), rel=1e-9, abs=0.0
-        )
-    assert max(certificate.tube_per_log_spread) > 0.0
-    assert decided.to_json()["certificate"]["tube_per_log_spread"] == list(
-        certificate.tube_per_log_spread
+# (kappa, rho, read) and the spread, by quadrature over the offset and the read
+# (``validation/tube_per_log_read.mac``, (3), agreeing to 1e-10)
+_READ_SPREADS = {
+    (0.0, 1.96, 0.05): 0.005878847419593827,
+    (0.5, 2.6, 0.1): 0.018799216824930663,
+    (1.0, 3.0, 0.2): 0.0685919161380619,
+    (0.1, 2.2, 0.08): 0.006005493932562051,
+    (0.5, 2.6, 0.0): 0.017737391390399104,
+    (1.0, 3.0, 0.0): 0.06506887583031318,
+}
+
+
+def test_the_per_log_spread_at_any_radius_and_with_its_read() -> None:
+    """Off the calibrated radius, and with the radius read with its own error: Maxima's double
+    quadrature. A radius read with error spreads the share where the field's error is none."""
+    for (kappa, rho, read), spread in _READ_SPREADS.items():
+        assert _per_log_spread(kappa, rho, read) == pytest.approx(spread, rel=1e-8, abs=0.0)
+    z = 1.959963984540054
+    assert _per_log_spread(1.0, z * math.sqrt(2.0)) == pytest.approx(
+        _per_log_spread(1.0), rel=1e-12, abs=0.0
     )
-    (line,) = [line for line in decided.report().splitlines() if "spreads about 0.95" in line]
-    assert ("plan's own actions" in line) == (tube_actions == "plan")
+    assert _per_log_spread(0.0, z, 0.0) == 0.0
+    assert _per_log_spread(0.0, z, 0.01) > 0.0
+    # a wider radius at the same offset spreads the share less
+    assert _per_log_spread(0.5, 3.0, 0.1) < _per_log_spread(0.5, 2.3, 0.1)
+
+
+def test_the_read_s_spread_by_simulation() -> None:
+    """4000 logs of an offset ``kappa W`` and a radius read as ``rho + read D``: the spread of a
+    log's share is within four of its standard errors of the quadrature's, the standard error from
+    the share's fourth moment."""
+    rng = np.random.default_rng(12)
+    kappa, rho, read = 0.5, 2.6, 0.1
+    shift, radius = kappa * rng.normal(size=4000), rho + read * rng.normal(size=4000)
+    share = norm.cdf(radius - shift) - norm.cdf(-radius - shift)
+    centred = share - np.mean(share)
+    variance = float(np.mean(centred**2))
+    error = math.sqrt((float(np.mean(centred**4)) - variance**2) / share.size) / (
+        2.0 * math.sqrt(variance)
+    )
+    assert abs(math.sqrt(variance) - _READ_SPREADS[kappa, rho, read]) <= 4.0 * error
+
+
+def test_on_one_state_the_spread_is_read_at_the_tube_s_own_radius() -> None:
+    """One state, a random walk of noise ``sigma`` a step, the field's error ``f_k`` at the plan's
+    actions and no read of the radius: the spread is the closed form at ``kappa = f_k / sigma_k``
+    and ``rho = r_k / sigma_k``, ``r_k`` the tube's radius, whatever field part the tube carried.
+    At the radius that holds 0.95 it is the calibrated spread; at a wider one, as the box's bound
+    gives, it is the narrower."""
+    horizon, sigma = 6, 0.1
+    field = np.linspace(0.0, 0.12, horizon + 1)
+    noise = sigma * np.sqrt(np.arange(horizon + 1.0))
+    z = 1.959963984540054
+    calibrated = z * np.sqrt(noise**2 + field**2)
+
+    def spreads(tube: np.ndarray, carried: np.ndarray) -> tuple[float, ...]:
+        return _per_log_spreads(
+            field,
+            carried,
+            tube,
+            np.zeros((horizon, 1, 1)),
+            np.array([[sigma**2]]),
+            np.zeros((1, 1)),
+            1.0,
+            None,
+            math.inf,
+            "euler",
+        )
+
+    exact = spreads(calibrated, field)
+    wider = spreads(1.3 * calibrated, 3.0 * field)
+    assert exact[0] == wider[0] == 0.0
+    for step in range(1, horizon + 1):
+        kappa = field[step] / noise[step]
+        assert exact[step] == pytest.approx(_per_log_spread(kappa), rel=1e-9, abs=1e-15)
+        assert wider[step] == pytest.approx(
+            _per_log_spread(kappa, 1.3 * calibrated[step] / noise[step]), rel=1e-9, abs=1e-15
+        )
+        assert wider[step] < exact[step] or exact[step] == 0.0
+
+
+def test_the_certificate_s_spread_reads_the_field_at_the_plan_s_actions_under_either_form() -> None:
+    """Both forms read the offset a log's paths share at the plan's actions, so their spreads
+    differ by their radii and the radii's reads alone: within a factor of 3 at every step, 0.0019
+    to 0.0059 on this log. Up to 0.24.0 the box's form read its bound as that offset, and
+    reported 6 to 17 times the plan's form's, 0.012 to 0.085. The report states the spread about
+    the mean share, 0.95 or more."""
+    box, plan = _decide("rk4"), _decide("rk4", tube_actions="plan")
+    assert box.plan is not None
+    assert plan.plan is not None
+    wide, narrow = box.certificate.tube_per_log_spread, plan.certificate.tube_per_log_spread
+    assert wide is not None
+    assert narrow is not None
+    assert wide[0] == narrow[0] == 0.0
+    for step in range(1, len(wide)):
+        assert 0.0 < wide[step] <= 3.0 * narrow[step]
+        assert 0.0 < narrow[step] <= 3.0 * wide[step]
+    assert box.to_json()["certificate"]["tube_per_log_spread"] == list(wide)
+    for decided, form in ((box, "over the levers' box"), (plan, "at the plan's own actions")):
+        (line,) = [line for line in decided.report().splitlines() if "spreads over logs" in line]
+        assert form in line
+        assert "about its mean, 0.95 or more" in line

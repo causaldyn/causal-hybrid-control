@@ -2368,11 +2368,16 @@ def test_held_constraints_move_the_schedule_rather_than_fail_its_audit(
     assert getattr(plan, "constraints_held", None) is True
 
 
-def test_a_replanning_loop_compiles_nothing_after_its_first_held_prescription() -> None:
+@pytest.mark.parametrize("tube_actions", ["box", "plan"])
+def test_a_replanning_loop_compiles_nothing_after_its_first_held_prescription(
+    tube_actions: str,
+) -> None:
     """A receding-horizon loop calls ``prescribe`` from every state it reaches, and a held bound
     may move between calls, as a comfort band's edge does. The bound reaches the held solve as an
     array, so the calls after the first compile nothing; closed over, it compiled the barrier's
-    programs afresh at every call, and a week of half-hour calls held gigabytes of them."""
+    programs afresh at every call, and a week of half-hour calls held gigabytes of them. The
+    tube's field part at the plan's actions, which either form now reads, compiled its rollout at
+    every call up to 0.24.0."""
     panel = _panel()
     graph = CausalGraph.from_edges(EDGES)
 
@@ -2388,6 +2393,7 @@ def test_a_replanning_loop_compiles_nothing_after_its_first_held_prescription() 
             dt=DT,
             tolerance=0.5,
             integrator="rk4",
+            tube_actions=tube_actions,  # type: ignore[arg-type]
         )
 
     jax.clear_caches()

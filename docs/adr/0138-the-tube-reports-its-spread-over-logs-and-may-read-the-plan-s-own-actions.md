@@ -4,6 +4,19 @@
 channel's region); moves no default. Amended by ADR 0141, 2026-10-27: the box's form reads each
 RK4 stage's error at its own state, so under RK4 too it is never narrower than the plan's form at
 the plan's actions; Decision 3's RK4 caveat and the first-step RK4 numbers below predate it.
+Amended 2026-10-27, before 0.24.0's release: Decision 1's `kappa` was the tube's own field part,
+under the box's form a bound rather than a standard deviation, and its radius was taken to hold
+0.95 exactly, with no error of its own. `tube_per_log_spread` now reads the offset a log's paths
+share as the field's error at the plan's actions, under either form, and the noise's mean the
+fitted drift absorbed; the radius at the share it holds on average, from the tube's covariance by
+Imhof's inversion (0.95 or more); and the radius's own read over logs, the noise's from its
+jackknife and the field part's on its degrees of freedom, by the law of total variance
+(`validation/tube_per_log_read.mac`). Against the spread observed over 20 logs of 5000 to 20000
+paths, on six cells of two plants (Euler and RK4, both forms), it reads 0.7 to 1.4 of it wherever
+the mean share is below 0.98; it read 0.08 of it at the step the quickstart's report prints.
+Past 0.99, under the box's form, it overstates, as the plug-in of a log's own radius over its own
+noise read moves a share that steep: 0.0074 for 0.0013 and 0.0064 for 0.0003 at the last step,
+where it read 0.125. The report line states the spread about the mean share, 0.95 or more.
 
 ## Context
 

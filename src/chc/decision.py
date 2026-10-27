@@ -49,7 +49,7 @@ import numpy as np
 from jax import Array
 from numpy.typing import ArrayLike, NDArray
 from scipy.special import owens_t
-from scipy.stats import chi2
+from scipy.stats import chi2, norm
 from scipy.stats import t as student_t
 
 from chc import _units
@@ -126,11 +126,15 @@ from chc.plan import (
 from chc.residual import ControlAffineResidual, ZeroResidual, control_affine_features
 from chc.uncertainty import (
     _TUBE_COVERAGE,
+    _chi_square_mixture_survival,
     _linear_tube,
     _noise_covariance,
+    _noise_covariances,
     _noise_tube,
     _NoiseRead,
     _read_covariances,
+    _step_parts,
+    _studentised,
 )
 
 SCHEMA_VERSION = 2
@@ -696,13 +700,14 @@ class DecisionCertificate:
     # variance alone, and where no tube was evaluated.
     tube_state_noise: tuple[tuple[float, ...], ...] | None = None
     # Under ``exact``, the standard deviation over logs of the share of the plant's paths the tube
-    # holds at each step, steps 0 to the horizon. The tube holds 0.95 on average over logs, and
-    # each log's fitted field is off by its own error, which all of its paths share: so one log's
-    # share spreads about 0.95, more as the field's part grows against the noise's
-    # (``_per_log_spread``), on one state exactly, on several along the noise's widest direction.
-    # At a spread of 0.082, where the field's part equals the noise's, 0.136 of logs hold less
-    # than 0.90. A report, not a guarantee per log; it moves no radius. None under ``bound`` and
-    # where no tube was evaluated.
+    # holds at each step, steps 0 to the horizon. The tube holds 0.95 or more on average over
+    # logs, and each log's fitted path is off by its own error, the field's at the plan's actions
+    # and the noise's mean, which all of its paths share, and reads its radius with its own error:
+    # so one log's share spreads about its mean (``_per_log_spreads``), on one state along the
+    # noise's widest direction. Where the field's error equals the noise's and the radius is read
+    # exactly, the spread is 0.082, and 0.136 of logs hold less than 0.90. A report, not a
+    # guarantee per log; it moves no radius. None under ``bound``, on a fit that keeps no field
+    # terms, and where no tube was evaluated.
     # *Experimental.*
     tube_per_log_spread: tuple[float, ...] | None = None
     # Which actions the tube's field part holds for (:data:`TubeActions`), as asked of
@@ -2025,8 +2030,8 @@ class Prescription:
         )
         return [
             f"- the tube's field part is read {actions}one log's share of the plant's paths in the "
-            f"tube at step {step} spreads about 0.95 over logs by {spreads[step]:.3g}: a report, "
-            "not a guarantee per log"
+            f"tube at step {step} spreads over logs by {spreads[step]:.3g} about its mean, 0.95 or "
+            "more: a report, not a guarantee per log"
         ]
 
     def _dither_lines(self) -> list[str]:
@@ -3292,6 +3297,46 @@ def prescribe(
             "first_loaded_step": first_loaded,
         },
     )
+    # the offset a log's paths share is the field's error at the plan's own actions whichever
+    # actions the tube was read for; a fit that keeps no field terms reads none, and no spread
+    per_log_spread = (
+        None
+        if plan.certified_horizon is None
+        or slopes is None
+        or field_scale is None
+        or (model_error > 0.0 and fit._field_terms is None)
+        else _per_log_spreads(
+            *(
+                (np.zeros(horizon + 1), np.zeros(horizon + 1))
+                if model_error == 0.0
+                else _shared_and_carried(
+                    _plan_field(fit, model, plan.trajectory[0], plan.actions, dt),
+                    field_scale,
+                    None
+                    if at_plan
+                    else _box_field(
+                        fit,
+                        reach,
+                        plan,
+                        slopes(np.asarray(plan.actions, dtype=np.float64)),
+                        driver_reads,
+                        box,
+                        dt,
+                        integrator,
+                        stages,
+                    ),
+                )
+            ),
+            np.asarray(plan.uncertainty_tube, dtype=np.float64),
+            slopes(np.asarray(plan.actions, dtype=np.float64)),
+            step_noise,
+            step_carry,
+            dt,
+            step_read,
+            _degrees_of_freedom(int(np.asarray(fit.defect).shape[0]), fit.clusters, fit.periods),
+            integrator,
+        )
+    )
     certificate = DecisionCertificate(
         identification=identification,
         adjustment=resolved,
@@ -3331,37 +3376,7 @@ def prescribe(
             step_read,
             integrator=integrator,
         ),
-        tube_per_log_spread=None
-        if plan.certified_horizon is None or slopes is None or field_scale is None
-        else _per_log_spreads(
-            field_scale
-            * (
-                _plan_field(fit, model, plan.trajectory[0], plan.actions, dt)
-                if at_plan
-                else np.zeros(horizon + 1)
-                if model_error == 0.0
-                else _box_field(
-                    fit,
-                    reach,
-                    plan,
-                    slopes(np.asarray(plan.actions, dtype=np.float64)),
-                    driver_reads,
-                    box,
-                    dt,
-                    integrator,
-                    stages,
-                )
-            ),
-            _read_covariances(
-                slopes(np.asarray(plan.actions, dtype=np.float64)),
-                step_noise,
-                step_carry,
-                dt,
-                horizon,
-                step_read,
-                integrator=integrator,
-            ),
-        ),
+        tube_per_log_spread=per_log_spread,
         tube_actions=None if plan.certified_horizon is None else "plan" if at_plan else "box",
         error_clustered_by=clustered_by,
         error_clusters=groups if clustered_by is not None else None,
@@ -4856,49 +4871,167 @@ def _state_noise(
     )
 
 
-def _per_log_spread(kappa: float) -> float:
-    """The standard deviation over logs of the share of the plant's paths a 0.95 radius holds, on
-    one state whose noise has standard deviation ``sigma`` and whose fitted field is off by an
-    error of standard deviation ``kappa sigma`` across logs, at the radius ``z sqrt(1 + kappa^2)
-    sigma`` that holds the two together, ``z`` the normal's two-sided 0.95 quantile.
+def _per_log_spread(kappa: float, radius: float | None = None, read: float = 0.0) -> float:
+    """The standard deviation over logs of the share of the plant's paths a radius holds, on one
+    state whose noise has standard deviation ``sigma`` and on which each log's fitted path is off
+    by an offset of standard deviation ``kappa sigma`` across logs, which all of that log's paths
+    share: the field's error, and the noise's mean the fitted drift absorbed.
 
-    One log's field is off by ``kappa sigma W``, ``W`` standard normal, and every path of that log
-    shares it, so its share is ``C(W) = Phi(z sqrt(1 + kappa^2) - kappa W) - Phi(-z sqrt(1 +
-    kappa^2) - kappa W)``: 0.95 on average over logs, spread by
+    ``radius`` is the radius over ``sigma``, ``rho``; by default ``z sqrt(1 + kappa^2)``, at which
+    it holds the two together with probability 0.95, ``z`` the normal's two-sided 0.95 quantile.
+    One log's offset is ``kappa sigma W``, ``W`` standard normal, so its share is ``C(W) =
+    Phi(rho - kappa W) - Phi(-rho - kappa W)``, ``2 Phi(h) - 1`` on average over logs, ``h = rho /
+    sqrt(1 + kappa^2)``, spread by
 
-        ``Var C(W) = 4 (2 T(z, 1) - T(z, a) - T(z, 1 / a))``,  ``a = sqrt(1 + 2 kappa^2)``,
+        ``Var C(W) = 4 (2 T(h, 1) - T(h, a) - T(h, 1 / a))``,  ``a = sqrt(1 + 2 kappa^2)``,
 
     ``T`` Owen's (1956): ``E C(W)^2`` is the chance that two paths of one log both lie within the
-    radius, a bivariate normal's at correlation ``kappa^2 / (1 + kappa^2)``, and ``8 T(z, 1) = 1 -
-    0.95^2``. It is 0 at ``kappa = 0``; 0.0324, 0.0822 and 0.1394 at ``kappa`` 0.5, 1 and 2; and
-    ``sqrt(0.95 * 0.05) = 0.218`` as ``kappa`` grows, where a log's paths all lie within the radius
-    or all without (``validation/tube_per_log_content.mac``, ``tube_per_log_content.gp``)."""
-    if kappa == 0.0:
+    radius, a bivariate normal's at correlation ``kappa^2 / (1 + kappa^2)``, and ``2 T(h, 1) =
+    Phi(h) Phi(-h)``. At the default radius ``h = z``: 0 at ``kappa = 0``; 0.0324, 0.0822 and
+    0.1394 at ``kappa`` 0.5, 1 and 2; and ``sqrt(0.95 * 0.05) = 0.218`` as ``kappa`` grows, where a
+    log's paths all lie within the radius or all without (``validation/tube_per_log_content.mac``,
+    ``tube_per_log_content.gp``).
+
+    ``read`` is the standard deviation over logs of ``rho`` itself: each log reads the noise and
+    the field's error the radius is made of, each with its own sampling error. With ``rho`` read
+    as ``rho + read D``, ``D`` standard normal independent of ``W``, the variance is, by the law of
+    total variance, ``E_D Var(C | D) + Var_D E(C | D)``: the closed form's mean over ``D`` and
+    the spread of ``2 Phi(h_D) - 1``, both over ``D`` by Gauss-Hermite quadrature at
+    :data:`_READ_NODES` nodes (``validation/tube_per_log_read.mac``)."""
+    if kappa == 0.0 and read == 0.0:
         return 0.0
     if math.isinf(kappa):
         return math.sqrt(_TUBE_COVERAGE * (1.0 - _TUBE_COVERAGE))
-    level = math.sqrt(float(chi2.ppf(_TUBE_COVERAGE, 1)))
+    z = math.sqrt(float(chi2.ppf(_TUBE_COVERAGE, 1)))
+    rho = z * math.sqrt(1.0 + kappa * kappa) if radius is None else radius
     a = math.sqrt(1.0 + 2.0 * kappa * kappa)
-    variance = 4.0 * (
-        2.0 * float(owens_t(level, 1.0)) - float(owens_t(level, a)) - float(owens_t(level, 1.0 / a))
-    )
+    if read == 0.0:
+        level = rho / math.sqrt(1.0 + kappa * kappa)
+        variance = 4.0 * (
+            2.0 * float(owens_t(level, 1.0))
+            - float(owens_t(level, a))
+            - float(owens_t(level, 1.0 / a))
+        )
+        return math.sqrt(max(variance, 0.0))
+    nodes, weights = np.polynomial.hermite_e.hermegauss(_READ_NODES)
+    weights = weights / math.sqrt(2.0 * math.pi)
+    levels = np.maximum(rho + read * nodes, 0.0) / math.sqrt(1.0 + kappa * kappa)
+    within = 4.0 * (2.0 * owens_t(levels, 1.0) - owens_t(levels, a) - owens_t(levels, 1.0 / a))
+    means = 2.0 * norm.cdf(levels) - 1.0
+    between = means - float(weights @ means)
+    variance = float(weights @ within) + float(weights @ (between * between))
     return math.sqrt(max(variance, 0.0))
 
 
+_READ_NODES = 40  # Gauss-Hermite nodes over a log's read of its radius (_per_log_spread)
+
+
 def _per_log_spreads(
-    field: NDArray[np.float64], covariances: Sequence[NDArray[np.float64]]
+    field: NDArray[np.float64],
+    tube_field: NDArray[np.float64],
+    tube: NDArray[np.float64],
+    slopes: NDArray[np.float64],
+    noise: NDArray[np.float64],
+    persistence: NDArray[np.float64],
+    dt: float,
+    read: _NoiseRead | None,
+    degrees: float,
+    integrator: Integrator,
 ) -> tuple[float, ...]:
-    """:attr:`DecisionCertificate.tube_per_log_spread`: :func:`_per_log_spread` at each step, its
-    ``kappa`` the standard deviation the tube reads the field's part at, ``field`` ``(H + 1,)``,
-    over the root of the largest variance of the noise's part, ``covariances`` its ``P_k``, along
-    whose direction the tube places the field's. 0 at a step with no field part, where each log's
-    share is the noise's alone, 0.95."""
-    spreads = []
-    for scale, covariance in zip(field, covariances, strict=True):
-        noise = math.sqrt(max(float(np.linalg.eigvalsh(np.atleast_2d(covariance))[-1]), 0.0))
-        kappa = 0.0 if not scale > 0.0 else math.inf if noise == 0.0 else float(scale) / noise
-        spreads.append(_per_log_spread(kappa))
+    """:attr:`DecisionCertificate.tube_per_log_spread`: :func:`_per_log_spread` at each step, on
+    one state along the widest direction ``v`` of the noise's part of the gap, ``P_k`` read
+    plug-in (:func:`chc.uncertainty._noise_covariances`), ``sigma^2 = v' P_k v``.
+
+    The offset every path of a log shares is the field's error at the plan's own actions,
+    ``field`` (:func:`_plan_field`, ``(H + 1,)``), whatever actions the tube was read for, placed
+    along ``v`` as the tube places it, and the noise's mean the fitted drift absorbed, of
+    covariance ``O_k = D_k V D_k'`` (``read.level``, :func:`chc.uncertainty._read_covariances`):
+    ``kappa^2 = (field_k^2 + v' O_k v) / sigma^2``. The radius, ``tube`` (``(H + 1,)``), holds a
+    share ``m_k`` of the paths on average over logs, a Gaussian of covariance ``P_k + O_k +
+    field_k^2 v v'`` within it (:func:`chc.uncertainty._chi_square_mixture_survival`): 0.95 where
+    the tube reads the field's error as it is, more where it reads a bound, as the box's form
+    does. On one state that is the radius ``rho = h sqrt(1 + kappa^2)`` over ``sigma``, ``2 Phi(h)
+    - 1 = m_k``, which :func:`_per_log_spread` is read at. The radius's own read over logs is
+    carried at the share of ``rho`` that the radius's parts move it by to first order: ``z^2 /
+    (2 r^2) sqrt(N^2 q + t^4 2 / degrees)``, ``r^2 = (N + v' O_k v + t^2) z^2`` the tube's own
+    radius on one state, ``N = c^2 sigma^2`` the noise part at its studentised factor ``c``
+    (:func:`chc.uncertainty._studentised`), ``q`` the jackknife variance of ``log sigma^2`` over
+    ``read``'s replicates, and ``t`` the field part the tube carried, ``tube_field``, whose
+    variance is read on ``degrees`` degrees of freedom. A step whose share rounds to 1 reads 0;
+    one with no noise reads ``sqrt(m (1 - m))``, each log's paths all in or all out.
+
+    Against the spread observed over 20 logs on six cells of two plants, Euler and RK4, either
+    form, it read 0.7 to 1.4 of it wherever the mean share is below 0.98. Past 0.99, under the
+    box's form, it overstates, the plug-in of one log's radius over its own noise read moving a
+    share that steep: 0.0074 for 0.0013 at the last step of one cell. Up to 0.24.0 ``kappa`` was
+    the tube's field part over ``sigma`` and the radius was taken to hold 0.95 exactly: under the
+    box's form, a bound rather than a standard deviation, it read 0.125 there, and it left out the
+    radius's own read, which spreads the share where the noise dominates: 0.0005 for 0.0061 at
+    the quickstart's third step (ADR 0138)."""
+    horizon = field.shape[0] - 1
+    covariances = _noise_covariances(slopes, noise, persistence, dt, horizon, integrator=integrator)
+    rates = slopes if slopes.ndim == 3 else np.broadcast_to(slopes, (horizon, *slopes.shape))
+    eye = np.eye(noise.shape[0])
+    offset, offsets = np.zeros_like(noise), [np.zeros_like(noise)]
+    for slope in rates[:horizon]:
+        offset = _step_parts(dt * np.asarray(slope), eye, integrator)[0] @ offset + eye
+        offsets.append(offset @ read.level @ offset.T if read is not None else np.zeros_like(noise))
+    replicates = (
+        None
+        if read is None
+        else [
+            _noise_covariances(slopes, np.asarray(cov), carry, dt, horizon, integrator=integrator)
+            for cov, carry in zip(read.covariances, read.carries, strict=True)
+        ]
+    )
+    spreads = [0.0]
+    for step in range(1, horizon + 1):
+        values, vectors = np.linalg.eigh(np.atleast_2d(covariances[step]))
+        widest = vectors[:, -1]
+        variance = max(float(values[-1]), 0.0)
+        shifted = max(float(widest @ offsets[step] @ widest), 0.0)
+        shared = float(field[step]) ** 2 + shifted
+        gap = covariances[step] + offsets[step] + float(field[step]) ** 2 * np.outer(widest, widest)
+        spread = np.clip(np.linalg.eigvalsh(gap), 0.0, None)
+        if not spread[-1] > 0.0:
+            spreads.append(0.0)
+            continue
+        missed = _chi_square_mixture_survival(
+            float(tube[step]) ** 2 / float(spread[-1]), spread / spread[-1]
+        )
+        if variance == 0.0:
+            spreads.append(math.sqrt(max(missed * (1.0 - missed), 0.0)))
+            continue
+        level = float(norm.isf(missed / 2.0))
+        if not math.isfinite(level):
+            spreads.append(0.0)
+            continue
+        logs, scale = 0.0, 1.0
+        if replicates is not None:
+            sizes = np.array([float(widest @ replicate[step] @ widest) for replicate in replicates])
+            scale = float(_studentised(sizes[:, None])[0])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                centred = np.log(sizes) - np.mean(np.log(sizes))
+                logs = (sizes.size - 1) / sizes.size * float(np.sum(centred * centred))
+            logs = logs if math.isfinite(logs) else 0.0
+        own = scale * scale * variance
+        carried = float(tube_field[step]) ** 2
+        moved = math.sqrt(own * own * logs + carried * carried * 2.0 / degrees) / (
+            2.0 * (own + shifted + carried)
+        )
+        kappa = math.sqrt(shared / variance)
+        rho = level * math.sqrt(1.0 + kappa * kappa)
+        spreads.append(_per_log_spread(kappa, rho, rho * moved))
     return tuple(spreads)
+
+
+def _shared_and_carried(
+    field: NDArray[np.float64], scale: float, box: NDArray[np.float64] | None
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """The field's error at the plan's actions, and the field part the tube carried: the same at
+    the tube's studentised ``scale`` under the plan's form, the box's bound ``box`` at it under
+    the box's."""
+    return field, scale * (field if box is None else box)
 
 
 def _box_field(
@@ -4927,16 +5060,56 @@ def _box_field(
     )
 
 
+class _FieldJacobian(eqx.Module):
+    """The field's gradient in the fit's error ``theta`` at ``(t, x, u)`` (:func:`_plan_field`):
+    a module rather than a closure, so that one fit's rollout traces and compiles once whatever
+    call reads it."""
+
+    projection: Array
+    driven: DrivenDynamics | None
+    degree: int = eqx.field(static=True)
+    channel_degree: int = eqx.field(static=True)
+
+    def __call__(self, t: Array, x: Array, u: Array) -> Array:
+        own = control_affine_features(x, self.degree)
+        if self.driven is not None:
+            own = jnp.concatenate([own, self.driven.drivers(t)])
+        lifted = jnp.outer(u, control_affine_features(x, self.channel_degree)).ravel()
+        eye = jnp.eye(self.projection.shape[0])
+        channel = jnp.kron(eye, lifted[None, :]) - jnp.einsum("sca,c->sa", self.projection, own)
+        return jnp.concatenate([channel, jnp.kron(eye, own[None, :]), eye], axis=1)
+
+
 class _MovedField(eqx.Module):
     """``field`` with the fitted coefficients off by ``theta``, to first order: ``field(t, x, u) +
     jacobian(t, x, u) theta`` (:func:`_plan_field`)."""
 
     field: Dynamics
-    jacobian: Callable[[Array, Array, Array], Array] = eqx.field(static=True)
+    jacobian: _FieldJacobian
     theta: Array
 
     def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
         return self.field(t, x, u) + self.jacobian(jnp.asarray(t), x, u) @ self.theta
+
+
+@eqx.filter_jit
+def _path_sensitivity(
+    inner: Dynamics,
+    jacobian: _FieldJacobian,
+    start: Array,
+    actions: Array,
+    dt: float,
+    euler: bool,
+    zero: Array,
+) -> Array:
+    """The plan's path differentiated in the fit's error ``theta`` at zero (:func:`_plan_field`),
+    compiled once per model's structure: up to 0.24.0 each call compiled its rollout afresh."""
+
+    def path(theta: Array) -> Array:
+        moved = _MovedField(inner, jacobian, theta)
+        return rollout(_EulerStep(moved) if euler else moved, start, actions, dt)
+
+    return jax.jacfwd(path)(zero)
 
 
 def _plan_field(
@@ -4970,26 +5143,18 @@ def _plan_field(
     euler = isinstance(model, _EulerStep)
     inner = model.field if isinstance(model, _EulerStep) else model
     driven = inner if isinstance(inner, DrivenDynamics) else None
-    projection = jnp.asarray(terms.projection)
-    count = projection.shape[0]
-    eye = jnp.eye(count)
-    degree, channel_degree = fit.residual.degree, fit.residual.channel_degree
-
-    def jacobian(t: Array, x: Array, u: Array) -> Array:
-        own = control_affine_features(x, degree)
-        if driven is not None:
-            own = jnp.concatenate([own, driven.drivers(t)])
-        lifted = jnp.outer(u, control_affine_features(x, channel_degree)).ravel()
-        channel = jnp.kron(eye, lifted[None, :]) - jnp.einsum("sca,c->sa", projection, own)
-        return jnp.concatenate([channel, jnp.kron(eye, own[None, :]), eye], axis=1)
-
-    def path(theta: Array) -> Array:
-        moved = _MovedField(inner, jacobian, theta)
-        return rollout(_EulerStep(moved) if euler else moved, start, actions, dt)
-
+    jacobian = _FieldJacobian(
+        jnp.asarray(terms.projection),
+        driven,
+        fit.residual.degree,
+        fit.residual.channel_degree,
+    )
     joints = terms.joints()
     zero = jnp.zeros(joints[0].shape[0], dtype=jnp.result_type(start))
-    sensitivity = np.asarray(jax.jacfwd(path)(zero), dtype=np.float64)
+    sensitivity = np.asarray(
+        _path_sensitivity(inner, jacobian, start, jnp.asarray(actions), dt, euler, zero),
+        dtype=np.float64,
+    )
     variances = np.max(
         [np.einsum("kip,pq,kiq->k", sensitivity, joint, sensitivity) for joint in joints], axis=0
     )

@@ -2,7 +2,8 @@
 tied to their derivations.
 
 ``validation/tube_per_log_content.mac`` and ``tube_per_log_content.gp`` derive the spread over logs
-of the share of paths a tube calibrated on average holds; ``validation/plan_action_tube.mac`` the
+of the share of paths a tube calibrated on average holds, and ``tube_per_log_read.mac`` the same at
+any radius and with the radius's own read; ``validation/plan_action_tube.mac`` the
 tube's field part carried through the plan's rollout as one vector;
 ``validation/channel_region_grid.mac`` the grid's members and radius of Simpson, Baumgartner,
 Koehler and Diehl's Theorem 2; and ``validation/rk4_stage_term.mac`` the error each of RK4's
@@ -14,10 +15,12 @@ from __future__ import annotations
 
 FORMAL_LINKS = {
     "chc.decision._per_log_spread": {
-        "cites": ("tube_per_log_content.mac", "tube_per_log_content.gp"),
+        "cites": ("tube_per_log_content.mac", "tube_per_log_content.gp", "tube_per_log_read.mac"),
         "tests": (
             "test_plan_action_tube.py::test_the_per_log_spread_is_its_closed_form",
             "test_plan_action_tube.py::test_the_per_log_spread_by_simulation",
+            "test_plan_action_tube.py::test_the_per_log_spread_at_any_radius_and_with_its_read",
+            "test_plan_action_tube.py::test_the_read_s_spread_by_simulation",
         ),
     },
     "chc.decision._plan_field": {

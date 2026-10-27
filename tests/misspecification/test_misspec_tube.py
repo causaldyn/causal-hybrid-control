@@ -48,6 +48,38 @@ def test_the_tube_holds_its_level_at_every_step_where_its_premises_hold() -> Non
     assert min(trusted) >= 1
 
 
+def test_the_reported_per_log_spread_is_the_spread_over_logs() -> None:
+    """The control case, 16 logs of 8000 runs: the certificate's ``tube_per_log_spread``, the
+    mean over the logs, against the standard deviation over the logs of each log's share, its
+    runs' binomial variance taken out. A standard deviation read from 16 logs has a relative
+    standard error near 0.2, and about 0.25 once the binomial part is taken out: each step's ratio
+    lies within a factor of 3 (over four of those errors on the log scale), and their geometric
+    mean within a factor of 2. Measured: 0.94 to 1.72 a step, 1.2 on average, and 0.66 to 1.57, 1.1,
+    on logs 16 to 31. Up to 0.24.0 the spread left out the radius's own read, and read 0.0001 to
+    0.0011 at the first five steps, where the logs spread by 0.0034 to 0.0052: 0.03 to 0.26."""
+    world, logs, runs = World(), range(16), 8000
+    shares, reported = [], []
+    for seed in logs:
+        result = ask(world, seed)
+        assert result.plan is not None
+        assert result.plan.uncertainty_tube is not None
+        assert result.certificate.tube_per_log_spread is not None
+        tube = np.asarray(result.plan.uncertainty_tube, dtype=float)[1:]
+        planned = np.asarray(result.plan.trajectory, dtype=float)
+        paths = world.deploy(
+            np.asarray(result.plan.actions, dtype=float)[:, 0], planned[0], runs, 1000 + seed
+        )
+        gaps = np.linalg.norm(paths[:, 1:] - planned[None, 1:], axis=2)
+        shares.append(np.mean(gaps <= tube, axis=0))
+        reported.append(result.certificate.tube_per_log_spread[1:])
+    held = np.array(shares)
+    mean = held.mean(axis=0)
+    observed = np.sqrt(np.maximum(held.var(axis=0, ddof=1) - mean * (1.0 - mean) / runs, 0.0))
+    ratio = np.mean(reported, axis=0) / observed
+    assert np.all((ratio >= 1.0 / 3.0) & (ratio <= 3.0)), np.round(ratio, 3)
+    assert 0.5 <= float(np.exp(np.mean(np.log(ratio)))) <= 2.0, np.round(ratio, 3)
+
+
 def test_the_tube_holds_where_the_action_reaches_the_plant_late() -> None:
     """Two periods of dead time: the channel the log reads is near zero (0.02 for 0.8), so the plan
     barely acts. The tube holds the plant on average over the logs, 0.950 at its weakest step over
