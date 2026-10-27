@@ -7,6 +7,108 @@ still change).
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-10-27
+
+Opt-in modes and fixes; no default moves.
+
+### Added
+
+- `pessimistic_equilibrium_allocation(objective="expected")`, opt-in: plans on the fit's expected
+  completions under its own uncertainty, ascending from the even split and from the fitted game's
+  exact optimum. On the benchmark's 30 markets of 400 blocks the share of the exact oracle's lift
+  goes 0.900 → 0.971 (float64) and 0.907 → 0.984 (float32), the least 0.754 → 0.920 (float64);
+  float32 market 18 goes 0.735 → 0.978. The default stays `"tilted"` (ADR 0137).
+- `FittedEquilibrium.covariance` (the block-clustered sandwich of the attractiveness and the three
+  market parameters; nan where unread or singular) and `FittedEquilibrium.demand_covariance`.
+- `calibrate_budget_scale(logs, *, equilibrium=None)` and `BudgetScaleResponse`: the response along
+  the logged split, and a weak model check (ADR 0137).
+- `CongestionAllocation.shadow_price`: the budget's marginal value at the exact optimum.
+- `stackelberg_allocation(..., start=)`.
+- `SharedStateMarket.generate_logs(..., dither=h)` logs a zero-sum logit dither (balanced signs,
+  block totals held); `dither=0.0` leaves the published logs bit for bit (ADR 0140).
+- `chc.marketplace.dither_check` / `DitherCheck` (experimental): an HC3 Wald test of the fit's
+  gradient in the zero-sum directions, F reference, with its minimum detectable error; 15 and 16
+  rejections in 200 logs at a nominal 5% on two in-class markets. `dither_size` / `DitherSize`
+  (experimental): the smallest dither with the stated power from a pilot, or more blocks where it
+  costs more than `max_cost`.
+- `SharedStateMarket(payment="per_driver")` (experimental) and `SharedStateMarket.spend`;
+  `chc.games.per_driver_congestion_allocation` / `PerDriverAllocation`, a convex oracle with its
+  dual bound and duality gap (below 1.3e-13 on markets 0-5).
+- `DecisionCertificate.tube_per_log_spread`: the spread over logs of the share of paths the tube
+  holds, in the JSON and the report; report only, it moves no radius (ADR 0138).
+- `prescribe(tube_actions="plan")` (experimental), `TubeActions` and
+  `DecisionCertificate.tube_actions`: the tube's field part read at the plan's own actions (ADR 0138).
+- `chc.dynamics_id.lag_check` / `LagCheck` (experimental): names a lever read late; on dead time 2
+  it rejects on 6 of 6 logs and names lag 2; its size on 60 control logs is 5 rejections at 5%.
+- `channel_region(form="grid")` and `RegionForm` (experimental): Simpson et al. 2026's Theorem 2
+  over a grid of 65 regularisers; median radius 7.06 → 4.76 at ridge 1e-6, coverage 1.000 for both.
+- `prescribe(..., dither=)` (experimental, opt-in), `DitherCheck`, `DitherStatus` and
+  `Prescription.dither_check`: the plan's channel against the one a logged random draw instruments,
+  a Durbin-Wu-Hausman contrast priced in the plan's regret, with a report line; a rejection is
+  logged as WARNING `chc_event="dither"`. `dither=None` is bit-identical (ADR 0139).
+- `chc.experiment.dither_covariance` and `DitherDesign`: the correlated dither that minimises
+  tr(CV) + tr(Q(P0+V)^-1); the matrix geometric mean in closed form, a numeric route with its
+  duality gap where the prior binds. On the 2x2 example it is 16.0% below the best diagonal design.
+- `read_switchback(..., jackknife=True)`: the half-panel jackknife for the state-aware and
+  local-projection readings, with its own standard error and Fieller's interval for the steady
+  state. On one zone at a = 0.9 over 200 periods the steady state's bias goes -0.68 → -0.12; on 16
+  zones its coverage goes 0.82 → 0.93 (ADR 0143).
+- `chc.regret.ce_regret_law` and `CERegretLaw`: the certainty-equivalent LQ regret's second-order
+  generalised chi-square law, exact quantiles, P(destabilise) with a Clopper-Pearson bound, and a
+  fourth-order validity share.
+- `causal_plan(inner="newton")` and `RecedingHorizon(inner=...)` (experimental): a held barrier's
+  rounds step by projected Newton on the box (Bertsekas 1982), the cost's Gauss-Newton matrix plus
+  the penalty's Hessian, with Gauss-Newton and then the diagonal descent as fallbacks. On the SIR
+  capacity plan (alpha 0.5), `max_iterations` at stationarity 1.7e-5 in 10 000 steps → `converged`
+  at 1.5e-12 in 66. Box only; refuses support models, linear rows and more than 4096 actions. The
+  default `"diagonal"` is unchanged, bit for bit (ADR 0144).
+- `covariates=` (cross-fitted residualising) and `propensity=` (Tan's odds scale for a binary
+  lever) on `msm_worst_case_mean`, `confounding_robust_radius` and `negative_control_gamma`.
+
+### Changed
+
+- `sutva_allocation` and `pessimistic_equilibrium_allocation` refuse a per-driver market.
+- `confounding_robust_inflation`'s docstring says the bound is sharp per covariate value, and that
+  the pooled sample is wider by 1/sqrt(1 - R^2).
+- `regret_scaling`'s docstring says why it reads medians: the CE regret has no mean.
+
+### Removed
+
+- `oracle_allocation(steps=)`, deprecated in 0.22.0: passing it raises TypeError (ADR 0134, 0140).
+
+### Fixed
+
+- Under `integrator="rk4"` the tube's field part reads the field's error where each of RK4's four
+  stages reads the field: at the stage's own state and drivers, under each box vertex, each stage
+  carried by its own weight; a norm-bound tube reads the stages' largest. Before, it read the step's
+  start only and dropped a dt^2 term. On 400 exact-flow logs the first step's misses went from rms
+  1.07-1.19 / cover 0.89-0.92 to 1.00-1.03 / 0.93-0.94. The box form is now never narrower than
+  `tube_actions="plan"` at the plan's actions under either integrator. Euler tubes are unchanged
+  bit for bit (ADR 0141). The heating notebook's error bound at 07:00, read under
+  `"rk4"`, moves 0.59 → 0.53 °C over the whole range and 0.30 → 0.33 °C inside the logged one.
+- The tilt's "never a bonus" comment and ADR 0123 now state that the bonus survives relative to
+  other zones on the budget simplex. No number moves.
+- Docs: the media-mix numbers are re-measured on 0.22.0. The identified allocation gains +6.7%
+  (was +4.2%), and the whole-horizon plan buys 1.5% more than the myopic rule, not 2.9% less;
+  inflation 2.5-4.6x (was 2.5-15.4x).
+- Docs: the pendulum case study's lever range and trusted step are re-measured: the plan leaves
+  the logged range at its sixth step, and the certificate trusts the first step.
+- Docs: the quickstart plant's adjusted channel reads 0.81, asserted 2.08 (was 0.84 / 2.15),
+  under prescribe's Euler default; the causal-dynamics regret is 0.008 (was 0.014);
+  `research.mmm` no longer says prescribe defaults to rk4.
+- Docs: the BOPTEST-shaped tube is re-measured on 0.22.0. Under the rerun call it holds the plant
+  at the first step on 0.944-0.975 of draws by cell, and 0.913 on the AR(0.99) cell, whose
+  unlogged persistent disturbance is read in part as drift (noise read 0.056 K a step against the
+  plant's 0.09 K); the tube's warning fires on every such log. The shortfall dates from 0.19.0's
+  quadrature sum (0.950 → 0.909 on the same logs). ADR 0080 and 0105 carry dated lines.
+- Docs: ADR 0111's held plans re-measured on 0.22.0: least true h median 0.505 → 0.423, and
+  0.536 → 0.468 with a channel linear in the state; the truth stays inside on every log.
+- The weighted van Trees floor no longer hands its integral a breakpoint at the interval's end: a
+  prior mean of 1.9999999999999998 at width 0.05 put the kink at -39.99999999999999 standard
+  deviations, and QUADPACK warned of bad integrand behaviour on a subinterval of no width.
+- Tests: the sharp-share hypothesis test's reference no longer cancels near Gamma = 1 (it failed
+  at Gamma = 1.000443760738591, relative error 1.19e-13 against 1e-13).
+
 ## [0.22.0] — 2026-10-26
 
 ### Changed
@@ -7734,6 +7836,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[0.23.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.23.0
 [0.22.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.22.0
 [0.21.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.21.0
 [0.20.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.20.1
