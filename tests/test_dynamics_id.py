@@ -1357,7 +1357,7 @@ def test_a_policy_the_covariates_determine_is_not_identified(caplog) -> None:
     assert abs(float(fit.residual.channel[0, 0, 0]) - 0.8) > 0.5
     assert fit.unmoved is not None
     assert fit.unmoved.shape[1] == fit.residual.channel.size
-    (record,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "unmoved"]
+    (record,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "fit_unmoved"]
     assert record.levelname == "WARNING"
     assert (record.levers, record.whole, record.identified) == ([0], [0], False)
 
@@ -4108,7 +4108,7 @@ def _unit_panel(lever: str, seed: int = 0, units: int = 50, steps: int = 10):
 
 
 def _unmoved_records(caplog) -> list:
-    return [r for r in caplog.records if getattr(r, "chc_event", None) == "unmoved"]
+    return [r for r in caplog.records if getattr(r, "chc_event", None) == "fit_unmoved"]
 
 
 @pytest.mark.parametrize("integrator", ["euler", "rk4"])

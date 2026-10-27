@@ -1340,7 +1340,7 @@ def _warn_unmoved(fit: CausalDynamicsFit, directions: Array, identified: bool) -
         list(whole),
         "" if identified else ", and identifies no direction of it",
         extra={
-            "chc_event": "unmoved",
+            "chc_event": "fit_unmoved",
             "levers": list(mixed),
             "whole": list(whole),
             "directions": int(directions.shape[1]),
