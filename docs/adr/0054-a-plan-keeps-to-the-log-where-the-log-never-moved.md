@@ -10,7 +10,11 @@ drift's response to a move no transition tells apart, are read in the units the 
 `unmoved` in; until 0.15.1 they were read in raw units, and moved with the units of the state and
 of the levers. Amended a fourth time, 2026-10-08: the spans of what the log kept are orthonormalised
 over the levers each scaled to its norm on the log; until 0.15.1 they were orthonormalised over the
-levers' raw values, and moved with a lever's units.
+levers' raw values, and moved with a lever's units. Amended a fifth time, 2026-10-27: a log that
+moves no direction of the channel, a lever held constant or set equal to its covariate, leaves the
+fit `identified=False` with no `channel_error`; until 0.23.0 it read identified, the channel at zero
+and its error exactly zero, which the tube and the barrier read as a known channel. A fit that
+leaves any direction unmoved logs a WARNING naming the levers by their columns of `u`.
 
 ## Context
 

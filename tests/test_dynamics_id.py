@@ -1335,11 +1335,13 @@ def test_the_unmoved_directions_are_orthogonal_in_the_units_the_fit_read_them(
     np.testing.assert_allclose(unit.T @ unit, np.eye(3), rtol=0.0, atol=1e-12)
 
 
-def test_a_policy_the_covariates_determine_reads_as_a_confident_wrong_channel() -> None:
+def test_a_policy_the_covariates_determine_is_not_identified(caplog) -> None:
     """Why the field exists: with nothing left of the action once the covariates are taken out, the
     moment has no data, and the log's rates set the channel by least squares beside the drift, at
-    2.47 where the truth is 0.8: the confounder's push, read as the action's. Its error says 0.0018.
-    Only ``unmoved`` tells the caller that every direction of the channel is unread."""
+    2.47 where the truth is 0.8: the confounder's push, read as the action's. Its error said 0.0018
+    and the fit read identified, which only ``unmoved`` contradicted; the fit is now not identified,
+    with no error, and logs the lever it never moved."""
+    caplog.set_level("WARNING", logger="chc.dynamics_id")
     fit = fit_causal_residual(
         _known,
         _policy_log(4000, _determined(1.0)),
@@ -1348,11 +1350,16 @@ def test_a_policy_the_covariates_determine_reads_as_a_confident_wrong_channel() 
         nuisance_degree=2,
         channel_degree=0,
     )
-    assert fit.channel_error is not None
-    assert fit.channel_error < 0.01
+    assert fit.identified is False
+    assert fit.channel_error is None
+    assert fit.drift_error is None
+    assert fit.moment_residual is None
     assert abs(float(fit.residual.channel[0, 0, 0]) - 0.8) > 0.5
     assert fit.unmoved is not None
     assert fit.unmoved.shape[1] == fit.residual.channel.size
+    (record,) = [r for r in caplog.records if getattr(r, "chc_event", None) == "unmoved"]
+    assert record.levelname == "WARNING"
+    assert (record.levers, record.whole, record.identified) == ([0], [0], False)
 
 
 RULED = {"adjust_for": ("z",), "nuisance_degree": 2, "channel_degree": 1}
@@ -1415,21 +1422,16 @@ def test_the_drift_takes_up_each_absorbed_move_in_any_units_of_the_state(units: 
     assert float(np.max(left / np.linalg.norm(push, axis=0))) < 1e-12
 
 
-def test_the_representer_carries_what_the_log_reads_where_the_moment_has_no_data() -> None:
+def test_where_the_moment_has_no_data_the_fit_keeps_no_representer() -> None:
     """On the ruled log no direction is moved, so the channel is what the log's rates read along
-    the directions the drift cannot take up, linear in the rates and in nothing the nuisances fit.
-    A row's weight on it, the representer, is then the change one row makes, to rounding."""
+    the directions the drift cannot take up, not an effect: the fit is not identified, and keeps
+    no influence or representer for a bound on an omitted confounder to read, even when asked."""
     log = _policy_log(400, _ruled(1.0))
     fit = fit_causal_residual(_known, log, 0.1, influence=True, **RULED)
-    assert fit.representer is not None
-    for row, state in ((3, 0), (250, 1)):
-        moved = dict(log, x_next=log["x_next"].at[row, state].add(1e-3))
-        change = np.asarray(fit_causal_residual(_known, moved, 0.1, **RULED).residual.channel)
-        change = (change - np.asarray(fit.residual.channel)).ravel() / (1e-3 / 0.1)
-        np.testing.assert_allclose(
-            np.asarray(fit.representer)[row, state] / 400, change, rtol=0.0, atol=1e-8
-        )
-    assert float(np.max(np.abs(np.asarray(fit.representer)))) > 1.0
+    assert fit.identified is False
+    assert fit.influence is None
+    assert fit.representer is None
+    assert fit.moment_residual is None
 
 
 def test_a_channel_the_log_cannot_split_is_split_the_same_in_any_units() -> None:
@@ -2919,8 +2921,9 @@ def test_a_lever_the_log_never_used_leaves_the_rank_to_the_levers_it_did() -> No
 
 def test_an_instrument_identifies_nothing_where_the_log_moves_no_direction() -> None:
     """A lever the state sets, ``-0.3 x0``: the log moves no direction of its channel, so no
-    instrument moves one either. Adjusted, the fit keeps its flag and names every direction
-    unmoved (ADR 0054); through an instrument it is not identified, whatever the instrument."""
+    instrument moves one either. Adjusted, the fit names every direction
+    unmoved (ADR 0054), and is not identified either; through an instrument it is not identified,
+    whatever the instrument."""
     log = _policy_log(4000, _ruled(1.0))
     log["w"] = jax.random.normal(jax.random.key(3), (4000, 1))
     keywords = {"nuisance_degree": 2, "channel_degree": 1}
@@ -2930,7 +2933,9 @@ def test_an_instrument_identifies_nothing_where_the_log_moves_no_direction() -> 
     assert fit.unmoved.shape[1] == fit.residual.channel.size
     assert fit.instrument_rank == 0
     assert np.asarray(fit.instrument_relevance).shape == (0,)
-    assert fit_causal_residual(_known, log, 0.1, **RULED).identified
+    adjusted = fit_causal_residual(_known, log, 0.1, **RULED)
+    assert adjusted.identified is False
+    assert adjusted.channel_error is None
 
 
 def _weakened_log(gain: float, rows: int = 2000) -> tuple[dict[str, jax.Array], float]:
@@ -4078,3 +4083,105 @@ def test_under_rk4_the_polynomial_fit_s_check_reads_the_refit_s_fixed_point(
 def test_nuisance_knots_refuses_what_is_not_a_count_of_at_least_three(knots: object) -> None:
     with pytest.raises(ValueError, match="nuisance_knots"):
         _fit_outside(_outside_the_polynomial(200, 0), nuisance_knots=knots)
+
+
+def _unit_panel(lever: str, seed: int = 0, units: int = 50, steps: int = 10):
+    """One state over ``units`` units, confounded by ``z``, and one lever: drawn, held at 1, or
+    equal to ``z``, with a second lever drawn beside it."""
+    rng = np.random.default_rng(seed)
+    x = np.zeros((units, steps + 1))
+    z = rng.normal(size=(units, steps))
+    drawn = 0.5 * z + rng.normal(size=(units, steps))
+    held = {"constant": np.ones((units, steps)), "confounder": z, "drawn": drawn}[lever]
+    other = rng.normal(size=(units, steps))
+    for t in range(steps):
+        x[:, t + 1] = (
+            0.7 * x[:, t] + 0.8 * held[:, t] - 0.4 * other[:, t] + 0.5 * z[:, t]
+        ) + 0.3 * rng.normal(size=units)
+    column = lambda a: jnp.asarray(a.reshape(-1, 1))  # noqa: E731
+    return {
+        "x": column(x[:, :-1]),
+        "x_next": column(x[:, 1:]),
+        "u": jnp.concatenate([column(held), column(other)], axis=1),
+        "z": column(z),
+    }
+
+
+def _unmoved_records(caplog) -> list:
+    return [r for r in caplog.records if getattr(r, "chc_event", None) == "unmoved"]
+
+
+@pytest.mark.parametrize("integrator", ["euler", "rk4"])
+@pytest.mark.parametrize("lever", ["constant", "confounder"])
+@pytest.mark.parametrize("seed", [0, 1])
+def test_a_log_that_moves_no_lever_is_not_identified_and_says_which(
+    caplog, integrator, lever, seed
+) -> None:
+    """A lever held constant, or equal to the covariate it is adjusted for, left every direction of
+    the channel unmoved and read identified, its channel 0 and its error 0.0 (0.011 to 0.026 equal
+    to the covariate), with nothing logged."""
+    caplog.set_level("WARNING", logger="chc.dynamics_id")
+    data = _unit_panel(lever, seed)
+    data["u"] = data["u"][:, :1]
+    fit = fit_causal_residual(_known, data, 1.0, adjust_for=("z",), integrator=integrator)
+    assert fit.unmoved is not None
+    assert fit.unmoved.shape[1] == fit.residual.channel.size
+    assert fit.identified is False
+    assert fit.channel_error is None
+    assert fit.drift_error is None
+    (record,) = _unmoved_records(caplog)
+    assert record.levelname == "WARNING"
+    assert (record.levers, record.whole, record.identified) == ([0], [0], False)
+    assert "columns [0] of u" in record.getMessage()
+
+
+def test_a_lever_the_log_never_moves_beside_one_it_does_is_named_and_the_fit_identified(
+    caplog,
+) -> None:
+    caplog.set_level("WARNING", logger="chc.dynamics_id")
+    data = _unit_panel("constant")
+    data["u"] = data["u"][:, ::-1]  # the held lever second
+    fit = fit_causal_residual(_known, data, 1.0, adjust_for=("z",))
+    assert fit.identified
+    assert fit.channel_error is not None
+    (record,) = _unmoved_records(caplog)
+    assert (record.levers, record.whole, record.identified) == ([1], [1], True)
+    caplog.clear()
+    moved = fit_causal_residual(_known, _unit_panel("drawn"), 1.0, adjust_for=("z",))
+    assert moved.identified
+    assert _unmoved_records(caplog) == []
+
+
+@pytest.mark.parametrize(
+    ("labels", "where"),
+    [
+        (np.where(np.arange(50) < 40, np.arange(50) % 5, np.nan), "row 40"),
+        (np.array([*(["a", "b"] * 24), None, "a"], dtype=object), "row 48"),
+        (
+            np.where(
+                np.arange(50) == 7,
+                np.datetime64("NaT", "ns"),
+                np.datetime64("2026-01-01", "ns") + (np.arange(50) % 5).astype("timedelta64[D]"),
+            ),
+            "row 7",
+        ),
+        (
+            np.column_stack([np.arange(50) % 5, np.where(np.arange(50) == 3, np.nan, 1.0)]),
+            r"index \(3, 1\)",
+        ),
+    ],
+    ids=["nan", "none", "nat", "two-way"],
+)
+def test_a_missing_cluster_label_is_refused_rather_than_pooled_into_one_cluster(
+    labels, where
+) -> None:
+    """``np.unique`` pools every nan into one label: ten transitions of no known cluster were read
+    as one cluster of their own, without a word."""
+    with pytest.raises(ValueError, match=f"clusters hold a missing label at {where}"):
+        fit_causal_residual(_known, _clustered_log(50), 0.1, **CLUSTERED, clusters=labels)
+
+
+def test_a_masked_cluster_label_is_refused() -> None:
+    labels = np.ma.masked_array(np.arange(50) % 5, mask=np.arange(50) == 9)
+    with pytest.raises(ValueError, match="clusters is masked at row 9"):
+        fit_causal_residual(_known, _clustered_log(50), 0.1, **CLUSTERED, clusters=labels)
