@@ -2002,9 +2002,15 @@ def confounding_robust_inflation(cvar_upper: float, cvar_lower: float, gamma: fl
     ID), nonnegative, monotone in ``Gamma``. Dorn-Guo (2023); Oprescu et al., B-Learner (2023); Tan
     (2006).
 
-    For a continuous lever the same closed form is the sharp bound on the mean outcome at one dose
-    level under the continuous MSM (Jesson et al. 2022; Frauen, Melnychuk and Feuerriegel 2023,
-    Thm 1). It bounds a level, not a slope: a contrast of two levels is bounded by the upper bound
+    For a continuous lever the same closed form is the sharp bound per covariate value ``x`` on the
+    mean outcome at one dose level under the continuous MSM (Jesson et al. 2022; Frauen, Melnychuk
+    and Feuerriegel 2023, Thm 1), read on the tails of ``Y | x``. Read on a pooled sample it
+    relaxes ``E[w | x] = 1`` to ``E[w] = 1``: still valid, and wider by ``sd(Y) / sd(Y | X)``,
+    ``1 / sqrt(1 - R^2)`` in a Gaussian location model, 1.41 at ``R^2 = 0.5`` and 4.47 at 0.95
+    (``validation/msm_level_bound.mac``); :func:`msm_worst_case_mean`'s ``covariates`` reads the
+    residual's tails instead.
+
+    It bounds a level, not a slope: a contrast of two levels is bounded by the upper bound
     at one less the lower bound at the other (Frauen et al., Lemma 3). A channel radius spent as
     ``radius * ||u||`` (:class:`ConfoundingRobustPenalty`) is a structural sensitivity model of its
     own, not the MSM's bound.
@@ -2015,13 +2021,128 @@ def confounding_robust_inflation(cvar_upper: float, cvar_lower: float, gamma: fl
     return (gamma - 1.0) / (gamma + 1.0) * (cvar_upper - cvar_lower)
 
 
-def msm_worst_case_mean(outcomes: NDArray[np.float64], gamma: float) -> float:
+_CROSS_FIT_FOLDS = 5
+
+
+def _cross_fitted(outcomes: NDArray[np.float64], covariates: ArrayLike) -> NDArray[np.float64]:
+    """Each outcome's least-squares prediction from ``(1, covariates)``, fitted on the
+    :data:`_CROSS_FIT_FOLDS` interleaved folds it is not in: a prediction fitted on its own row
+    would read the residual's tails narrower than they are."""
+    x = np.asarray(_real_numbers(covariates, "covariates"), dtype=np.float64)
+    if x.ndim == 1:
+        x = x[:, None]
+    n = outcomes.size
+    if x.ndim != 2 or x.shape[0] != n:
+        raise ValueError(f"covariates must have one row per outcome, {n}; got shape {x.shape}")
+    if not np.isfinite(x).all():
+        raise ValueError("covariates must be finite")
+    design = np.column_stack([np.ones(n), x])
+    if n - math.ceil(n / _CROSS_FIT_FOLDS) <= design.shape[1]:
+        raise ValueError(
+            f"cross-fitting {design.shape[1]} coefficients on {_CROSS_FIT_FOLDS} folds needs more "
+            f"than {design.shape[1]} outcomes outside each fold; got {n} outcomes"
+        )
+    fold = np.arange(n) % _CROSS_FIT_FOLDS
+    fitted = np.empty(n)
+    for k in range(_CROSS_FIT_FOLDS):
+        held = fold == k
+        coefficients = np.linalg.lstsq(design[~held], outcomes[~held], rcond=None)[0]
+        fitted[held] = design[held] @ coefficients
+    return fitted
+
+
+def _odds_weights(gamma: float, propensity: ArrayLike, n: int):
+    """The weight box ``[e + (1 - e) / Gamma, e + (1 - e) Gamma]`` of each unit under Tan's
+    (2006) marginal sensitivity model, which bounds the odds of the arm, ``e`` the propensity of
+    the arm the outcome was observed under."""
+    e = np.asarray(_real_numbers(propensity, "propensity"), dtype=np.float64)
+    if e.ndim > 1 or e.size not in (1, n):
+        raise ValueError(f"propensity is one number or one per outcome, {n}; got shape {e.shape}")
+    if not ((e > 0.0) & (e < 1.0)).all():
+        raise ValueError("propensity must lie in (0, 1)")
+    e = np.broadcast_to(e, (n,))
+    return e + (1.0 - e) / gamma, e + (1.0 - e) * gamma
+
+
+def _box_worst_case(residuals, low, high) -> tuple[float, float]:
+    """``max mean(w r)`` over ``w`` in ``[low, high]`` unit by unit with ``mean(w) = 1``, and the
+    threshold ``q`` the optimum fills to: a fractional knapsack, the units with the largest
+    ``r`` raised to ``high`` in turn until the weights' mean reaches 1. Its dual is
+    ``mean(q + low (r - q) + (high - low) (r - q)_+)`` at that ``q``."""
+    n = residuals.size
+    order = np.argsort(-residuals, kind="stable")
+    room = (high - low)[order]
+    # low <= 1 <= high unit by unit, so the mass to place is in [0, sum(room)]
+    mass = max(n - float(low.sum()), 0.0)
+    before = np.cumsum(room) - room
+    filled = np.clip(mass - before, 0.0, room)
+    weights = low.astype(np.float64)
+    weights[order] += filled
+    last = int(np.searchsorted(before, mass, side="left")) - 1
+    threshold = float(residuals[order][min(max(last, 0), n - 1)])
+    return float(weights @ residuals) / n, threshold
+
+
+def _level_bound(
+    outcomes: NDArray[np.float64],
+    gamma: float,
+    fitted: NDArray[np.float64],
+    propensity: ArrayLike | None,
+) -> tuple[float, NDArray[np.float64]]:
+    """The upper MSM bound on the mean with a prediction ``fitted`` taken out of the tails and the
+    weight box Tan's where a propensity is given, and the per-unit term whose mean it is (at the
+    optimum's threshold, so the threshold's own error moves it at second order only)."""
+    residuals = outcomes - fitted
+    n = outcomes.size
+    if propensity is None:
+        low, high = np.full(n, 1.0 / gamma), np.full(n, gamma)
+    else:
+        low, high = _odds_weights(gamma, propensity, n)
+    value, q = _box_worst_case(residuals, low, high)
+    term = fitted + q + low * (residuals - q) + (high - low) * np.maximum(residuals - q, 0.0)
+    if propensity is None:
+        # the box's closed form, with its fractional tail, as the pooled reading has it
+        value = msm_worst_case_mean(residuals, gamma)
+    return float(np.mean(fitted)) + value, term
+
+
+def msm_worst_case_mean(
+    outcomes: NDArray[np.float64],
+    gamma: float,
+    *,
+    covariates: ArrayLike | None = None,
+    propensity: ArrayLike | None = None,
+) -> float:
     """Sharp MSM worst-case (upper) mean of ``outcomes`` over the ``[1/Gamma, Gamma]`` weight box.
 
     The confounding-robust *pessimistic* value a controller should plan against when the treated
     outcome sample may be confounded up to sensitivity ``Gamma``. Equals ``mean + inflation`` with
     the CVaR tails of :func:`confounding_robust_inflation`; reduces to the sample mean at
     ``Gamma=1``.
+
+    The pooled sample's tails are sharp for a weight with ``E[w] = 1``; the MSM's weight has
+    ``E[w | x] = 1`` for each covariate value, and its sharp bound reads the tails of ``Y | x``
+    (Dorn and Guo, JASA 2023). ``covariates``, one row per outcome, take a prediction ``m(x)`` out
+    of the tails: ``mean(Y) + inflation(Y - m(X))``, which stays valid for any fixed ``m`` since
+    ``E[w m(X)] = E[m(X)]``, and is sharp where the residual's law does not move with ``x``. The
+    prediction is least squares on ``(1, covariates)``, cross-fitted over 5 interleaved folds: one
+    fitted on its own rows reads the residual's tails narrower than they are. With ``R^2`` the
+    covariates' share of the outcome's variance, a Gaussian location model's bound narrows by
+    ``sqrt(1 - R^2)``.
+
+    ``propensity`` reads ``Gamma`` on Tan's (2006) scale for a binary lever, a bound on the odds of
+    the arm, as :func:`benchmark_gamma` measures it: the weight ``e(x) / e(x, U)`` lies in
+    ``[e + (1 - e) / Gamma, e + (1 - e) Gamma]``, ``e`` the probability of the arm the outcomes
+    were observed under, one number or one per outcome. The bound is then the largest mean of
+    ``w (Y - m(X))`` over those boxes unit by unit with ``mean(w) = 1``, a fractional knapsack; at
+    one ``e`` its tail is still ``1 / (Gamma + 1)`` and its inflation ``(1 - e)`` times the box's
+    (``validation/msm_level_bound.mac``). Without it the box ``[1/Gamma, Gamma]`` is that of a
+    continuous dose, and on a binary lever's odds it overstates the inflation by ``1 / (1 - e)``.
+
+    Raises:
+        ValueError: when ``Gamma`` is below 1 or not finite, ``covariates`` do not have one row a
+            outcome or are not finite, there are too few outcomes to cross-fit their
+            coefficients, or ``propensity`` is not one number or one per outcome in ``(0, 1)``.
     """
     # a nan Gamma reached the tail's length as nan, and an infinite one an empty tail
     if not math.isfinite(gamma):
@@ -2030,6 +2151,10 @@ def msm_worst_case_mean(outcomes: NDArray[np.float64], gamma: float) -> float:
     if gamma < 1.0:
         raise ValueError(f"MSM sensitivity Gamma must be >= 1, got {gamma}")
     y = np.asarray(_real_numbers(outcomes, "outcomes"), dtype=np.float64)
+    if covariates is not None or propensity is not None:
+        y = y.ravel()
+        fitted = np.zeros_like(y) if covariates is None else _cross_fitted(y, covariates)
+        return _level_bound(y, gamma, fitted, propensity)[0]
     mu = float(np.mean(y))
     if gamma == 1.0:
         return mu
@@ -2040,7 +2165,12 @@ def msm_worst_case_mean(outcomes: NDArray[np.float64], gamma: float) -> float:
 
 
 def confounding_robust_radius(
-    nominal_radius: float, outcomes: NDArray[np.float64], gamma: float
+    nominal_radius: float,
+    outcomes: NDArray[np.float64],
+    gamma: float,
+    *,
+    covariates: ArrayLike | None = None,
+    propensity: ArrayLike | None = None,
 ) -> float:
     """Inflate a pessimism radius by the MSM confounding gap: ``rho0 + (worst_case - mean)``.
 
@@ -2050,10 +2180,12 @@ def confounding_robust_radius(
     ``robust_radius_ge_nominal`` / ``robust_radius_monotone`` prove both for the closed form at a
     fixed tail gap; here the tail, and so the gap, moves with ``Gamma``, which those lemmas do not
     cover. Feeds :func:`chc.support.pessimistic_control` as a widened uncertainty budget.
+    ``covariates`` and ``propensity`` are :func:`msm_worst_case_mean`'s.
     """
     outcomes = _real_numbers(outcomes, "outcomes")
     mu = float(np.mean(np.asarray(outcomes, dtype=np.float64)))
-    return nominal_radius + (msm_worst_case_mean(outcomes, gamma) - mu)
+    worst = msm_worst_case_mean(outcomes, gamma, covariates=covariates, propensity=propensity)
+    return nominal_radius + (worst - mu)
 
 
 @dataclass(frozen=True)
@@ -2462,6 +2594,8 @@ def negative_control_gamma(
     gamma_max: float = 1e6,
     *,
     level: float | None = None,
+    covariates: ArrayLike | None = None,
+    propensity: ArrayLike | None = None,
 ) -> float:
     """Smallest ``Gamma`` whose MSM interval covers zero on a KNOWN-NULL outcome.
 
@@ -2508,6 +2642,14 @@ def negative_control_gamma(
     negative one by the upper. Reflecting the sample by ``-sign(mean)`` maps both onto the single
     upper-endpoint routine :func:`msm_worst_case_mean` computes, which is why the sharp CVaR tails
     are used in the direction that actually binds rather than the convenient one.
+
+    ``covariates`` and ``propensity`` are :func:`msm_worst_case_mean`'s. Without ``covariates`` the
+    reading falls as they explain more of the control outcome, at the same confounding: a null of
+    mean 0.2 and residual spread 1 reads 1.285, 1.194, 1.119 and 1.058 at ``R^2`` 0, 0.5, 0.8 and
+    0.95 (``validation/msm_level_bound.mac``), a property of the covariates and not of the
+    confounding; with them it reads 1.285 at each. At ``level`` the endpoint's standard error is
+    that of each unit's prediction plus its residual's term, and leaves out the prediction's own
+    error, which enters at first order only where the residual's law moves with the covariates.
     """
     y = np.asarray(_real_numbers(outcomes, "outcomes"), dtype=np.float64).ravel()
     # a nan returned gamma_max, as if it were the confounding measured
@@ -2525,7 +2667,19 @@ def negative_control_gamma(
     if mu == 0.0:
         return 1.0
     reflected = -np.sign(mu) * y  # mean is now -|mu| < 0; the binding endpoint is the upper one
-    if level is None:
+    if covariates is not None or propensity is not None:
+        z = 0.0 if level is None else float(student_t.ppf(0.5 + 0.5 * level, y.size - 1))
+        fitted = np.zeros_like(y) if covariates is None else _cross_fitted(reflected, covariates)
+
+        def endpoint(gamma: float) -> float:
+            value, term = _level_bound(reflected, gamma, fitted, propensity)
+            if level is None:
+                return value
+            return value + z * float(np.std(term, ddof=1) / math.sqrt(y.size))
+
+        if level is not None and endpoint(1.0) >= 0.0:
+            return 1.0
+    elif level is None:
         if float(np.max(reflected)) < 0.0:
             return float("inf")
 

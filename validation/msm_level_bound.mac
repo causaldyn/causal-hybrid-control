@@ -1,0 +1,93 @@
+/* The MSM bound on a mean per covariate cell and on Tan's odds scale
+   (chc.uncertainty.msm_worst_case_mean, confounding_robust_radius and negative_control_gamma,
+   their covariates= and propensity=).
+
+   L1  A binary lever under Tan's (2006) marginal sensitivity model bounds the odds of the arm by
+       Gamma, so the weight e(x)/e(x, U) of an outcome observed under the arm lies in
+       [e + (1 - e)/Gamma, e + (1 - e) Gamma]. The share that takes the upper weight is still
+       1/(Gamma + 1), and the inflation per unit of (CVaR_up - CVaR_lo) is (1 - e)(Gamma - 1)/
+       (Gamma + 1): the box [1/Gamma, Gamma] overstates it by 1/(1 - e).
+   L2  The sharp bound reads the tails of Y | x (Dorn and Guo, JASA 2023). A pooled sample's tails
+       relax E[w | x] = 1 to E[w] = 1: valid, and in a Gaussian location model Y = m(X) + eps
+       wider by sd(Y)/sd(Y | X) = 1/sqrt(1 - R^2). The least Gamma that reconciles a null of mean
+       mu therefore falls with R^2 when read on the pooled sample.
+   L3  On a discrete population with exact rationals: the per-x sharp bound, the pooled bound,
+       the bound with m(x) taken out of the tails (valid for any fixed m, since
+       E[w m(X)] = E[m(X)] when E[w | x] = 1), each as a linear program (simplex), with the box
+       and with Tan's per-cell boxes; the greedy fill the code uses equals the pooled LP.
+   Maxima is the source of truth. */
+display2d : false$
+ratprint : false$
+load("simplex")$
+assume(G > 1, e > 0, e < 1)$
+
+/* ---------- L1 ---------- */
+lo : e + (1 - e)/G$  hi : e + (1 - e)*G$
+share : ratsimp((1 - lo)/(hi - lo))$
+print("L1a the share at the upper weight:", share,
+      if ratsimp(share - 1/(G + 1)) = 0 then "(PASS: 1/(Gamma + 1), the box's tail)" else "(FAIL)")$
+/* E[w Y] - E[Y] with the top share at hi and the rest at lo, in CVaR units: share (hi - 1) per unit of the gap */
+coef_odds : ratsimp(share*(hi - 1))$
+coef_box : ratsimp((1/(G + 1))*(G - 1))$
+print("L1b inflation per unit of (CVaR_up - CVaR_lo): odds", factor(coef_odds), "; box", factor(coef_box))$
+print("L1b odds / box =", factor(ratsimp(coef_odds/coef_box)),
+      if ratsimp(coef_odds/coef_box - (1 - e)) = 0 then "(PASS: 1 - e)" else "(FAIL)")$
+
+/* ---------- L2 ---------- */
+/* N(m, s^2): CVaR_up - CVaR_lo at tau = 1/(G + 1) is s phi(z)/(tau (1 - tau)), z = Phi^-1(1 - tau):
+   linear in s, so a pooled sd s/sqrt(1 - R^2) against the residual's s widens by 1/sqrt(1 - R^2) */
+phi(x) := exp(-x^2/2)/sqrt(2*%pi)$
+Phi(x) := (1 + erf(x/sqrt(2)))/2$
+zt(tau) := find_root(Phi(x) - (1 - tau), x, -12, 12)$
+gapunit(L) := block([tau : 1/(L + 1), z], z : zt(tau), float(phi(z)/(tau*(1 - tau))))$
+infl(L, sd) := float((L - 1)/(L + 1)*sd*gapunit(L))$
+print("L2a inflation at Gamma = 2 on N(0, 1):", infl(2, 1))$
+print("L2a pooled / per-x at R^2 = 0.5, 0.8, 0.95:", makelist(float(1/sqrt(1 - r)), r, [1/2, 8/10, 95/100]))$
+ncg(mu, sd) := find_root(infl(L, sd) - mu, L, 1.0000001, 1e6)$
+for r in [0, 1/2, 8/10, 95/100] do
+  print("L2b least Gamma reconciling a null of mean 0.2, residual sd 1, read pooled at R^2 =", float(r), ":",
+        ncg(0.2, float(1/sqrt(1 - r))))$
+
+/* ---------- L3 ---------- */
+/* X in {0, 1} equally likely; Y | x = m_x - 1 or m_x + 1 equally likely; m = (0, 4); Gamma = 2.
+   Four atoms of mass 1/4: (x, y) = (0, -1), (0, 1), (1, 3), (1, 5). */
+ys : [-1, 1, 3, 5]$  xs : [0, 0, 1, 1]$  ms : [0, 0, 4, 4]$
+Gm : 2$
+lp(vals, lows, highs, cells) := block([ws : makelist(concat(w, i), i, 1, 4), cons, obj, sol],
+    obj : sum(ws[i]*vals[i], i, 1, 4)/4,
+    cons : append(makelist(ws[i] >= lows[i], i, 1, 4), makelist(ws[i] <= highs[i], i, 1, 4)),
+    if cells then cons : append(cons, [ws[1] + ws[2] = 2, ws[3] + ws[4] = 2])
+    else cons : endcons(sum(ws[i], i, 1, 4) = 4, cons),
+    sol : maximize_lp(obj, cons),
+    sol[1])$
+greedy(vals, lows, highs) := block([order, mass, w : copylist(lows), room, take],
+    order : sort(makelist(i, i, 1, 4), lambda([i, j], vals[i] > vals[j])),
+    mass : 4 - apply("+", lows),
+    for i in order do (room : highs[i] - lows[i], take : min(room, max(mass, 0)),
+                       w[i] : w[i] + take, mass : mass - take),
+    sum(w[i]*vals[i], i, 1, 4)/4)$
+box_lo : makelist(1/Gm, i, 1, 4)$  box_hi : makelist(Gm, i, 1, 4)$
+resid : ys - ms$
+meanm : apply("+", ms)/4$
+percell : lp(ys, box_lo, box_hi, true)$
+pooled : lp(ys, box_lo, box_hi, false)$
+residualised : meanm + lp(resid, box_lo, box_hi, false)$
+print("L3a box: per-x sharp", percell, "; pooled", pooled, "; residualised", residualised,
+      "; mean", apply("+", ys)/4)$
+print("L3a", if residualised >= percell and pooled >= residualised and residualised = percell
+             then "(PASS: residualised valid, sharp here, pooled wider)" else "(FAIL)")$
+print("L3a greedy fill = pooled LP:", greedy(ys, box_lo, box_hi), "=", pooled,
+      if greedy(ys, box_lo, box_hi) = pooled and greedy(resid, box_lo, box_hi) + meanm = residualised
+      then "(PASS)" else "(FAIL)")$
+/* Tan's boxes with e = 1/4 in cell 0 and 3/4 in cell 1 */
+es : [1/4, 1/4, 3/4, 3/4]$
+odds_lo : makelist(es[i] + (1 - es[i])/Gm, i, 1, 4)$  odds_hi : makelist(es[i] + (1 - es[i])*Gm, i, 1, 4)$
+percell_o : lp(ys, odds_lo, odds_hi, true)$
+pooled_o : lp(ys, odds_lo, odds_hi, false)$
+resid_o : meanm + lp(resid, odds_lo, odds_hi, false)$
+print("L3b odds: per-x sharp", percell_o, "; pooled", pooled_o, "; residualised", resid_o)$
+print("L3b", if resid_o >= percell_o and pooled_o >= resid_o then "(PASS: valid, the pooled wider)" else "(FAIL)")$
+print("L3b greedy fill = pooled LP:", greedy(ys, odds_lo, odds_hi), "; residualised",
+      greedy(resid, odds_lo, odds_hi) + meanm,
+      if greedy(ys, odds_lo, odds_hi) = pooled_o and greedy(resid, odds_lo, odds_hi) + meanm = resid_o
+      then "(PASS)" else "(FAIL)")$
