@@ -147,6 +147,7 @@ failures, when the tests were first written (names relative to `chc`):
 | `ce_explicit_constants.mac` | `regret.ce_explicit_constant_certificate` | `test_formal_regret_a.py` |
 | `ce_explicit_constants.v` | `regret.ce_explicit_constant_certificate`, `regret.regret_scaling` | `test_formal_regret_a.py, test_formal_regret_c.py` |
 | `ce_gap_cost_difference.mac` | `regret.certainty_equivalence_gap` | `test_formal_regret_b.py` |
+| `ce_regret_law.mac` | `regret.ce_regret_law` | `test_formal_regret_b.py` |
 | `channel_bias_bound.mac` | `plan.ChannelSensitivity`, `plan._sensitivity_gamma_star` | `test_formal_seams.py` |
 | `closed_loop_attribution.v` | `dynamics_id.closed_loop_gain_attribution` | `test_formal_estimation.py` |
 | `cluster_fold_leakage.mac` | `regret.cluster_fold_leakage_certificate` | `test_formal_regret_a.py` |
@@ -207,6 +208,7 @@ failures, when the tests were first written (names relative to `chc`):
 | `general_q_ratio_moment.mac` | `regret._sandwich_plan`, `regret.exact_matrix_ratio_moment` | `test_formal_regret_b.py` |
 | `general_q_ratio_moment.v` | `regret.exact_matrix_ratio_moment` | `test_formal_regret_b.py` |
 | `geo_dlm.mac` | `dlm` | `test_formal_estimation.py` |
+| `half_panel_jackknife.mac` | `switchback.read_switchback` | `test_formal_seams.py` |
 | `highprob_regret.mac` | `regret.local_highprob_regret_certificate` | `test_formal_regret_b.py` |
 | `highprob_regret.v` | `regret.local_highprob_regret_certificate` | `test_formal_regret_b.py` |
 | `hinf_robust_regret.mac` | `regret.hinf_robust_regret_certificate` | `test_formal_regret_b.py` |
@@ -231,6 +233,7 @@ failures, when the tests were first written (names relative to `chc`):
 | `minimax_lq.v` | `regret.minimax_action` | `test_formal_regret_b.py` |
 | `minimax_regret_move.mac` | `regret.minimax_regret_move` | `test_formal_regret_b.py` |
 | `mis_model_error.mac` | `evaluation` | `test_formal_seams.py` |
+| `msm_level_bound.mac` | `uncertainty.confounding_robust_inflation`, `uncertainty.msm_worst_case_mean`, `uncertainty.negative_control_gamma` | `test_formal_control.py` |
 | `multichannel_control.mac` | `regret.multichannel_control_certificate` | `test_formal_regret_c.py` |
 | `multichannel_control.v` | `regret.multichannel_control_certificate`, `regret.multivariate_interference_certificate` | `test_formal_regret_c.py` |
 | `multivariate_van_trees.mac` | `regret.multivariate_action_floor`, `regret.multivariate_van_trees_certificate` | `test_formal_regret_c.py` |

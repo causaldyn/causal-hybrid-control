@@ -1,6 +1,7 @@
 # ADR 0012 — A switchback for a named effect
 
-**Status:** proposed, 2026-09-28.
+**Status:** proposed, 2026-09-28. Amended by ADR 0143, 2026-10-27: `read_switchback`'s
+`jackknife` builds the bias-corrected reading listed under "Not built".
 
 ## Context
 
@@ -155,6 +156,7 @@ module. The working model runs at `a = 0.8`, `b = 2`, `sigma = 1`, over 2000 per
 - **A plug-in for a state of higher order.** The test says when the first-order plug-in is biased;
   the effect is then read by the model-free designs.
 - **A bias-corrected `a_hat`** for short runs near the unit root.
+  Built 2026-10-27 (ADR 0143) as the half-panel jackknife of the plug-in and the local projection.
 - **The switchback average effect under a carryover of order `m`.** That stays with Bojinov,
   Simchi-Levi and Zhao's estimators, as an oracle rather than a reimplementation.
 
