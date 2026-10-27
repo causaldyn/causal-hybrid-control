@@ -63,7 +63,11 @@ def sinkhorn(
 ) -> SinkhornResult:
     """Entropic (log-domain, stable) Kantorovich OT; returns the plan and dual potentials (surge).
 
-    ``cost`` is ``(m, n)`` dispatch cost; ``supply``/``demand`` are the marginals (equal totals).
+    ``cost`` is ``(m, n)`` dispatch cost; ``supply``/``demand`` are the marginals, of equal
+    positive totals to rounding (1e-9 of the total, or the dtype's rounding of the sums where that
+    is more), or the solve refuses them: with unequal totals no plan meets both, and the loop
+    returned one that missed the supply by the difference, with only the residual's warning. A
+    zone of no mass gets the potential -inf, and the dual is read over the zones with mass.
     Recovers the exact transportation LP as ``eps -> 0``; the demand potentials ``g`` are the
     market-clearing surge prices.
 
@@ -86,6 +90,13 @@ def sinkhorn(
             raise ValueError(f"{name} must be finite")
     if bool(jnp.any(a < 0.0)) or bool(jnp.any(b < 0.0)):
         raise ValueError("supply and demand are masses, and cannot be negative")
+    total_a, total_b = float(jnp.sum(a)), float(jnp.sum(b))
+    rounding = 4.0 * (a.size + b.size) * float(jnp.finfo(jnp.result_type(a, b)).eps)
+    if not (total_a > 0.0 and abs(total_a - total_b) <= max(1e-9, rounding) * total_a):
+        raise ValueError(
+            f"supply and demand must have equal positive totals; got {total_a} and {total_b}:"
+            " no plan meets both marginals otherwise"
+        )
     log_a, log_b = jnp.log(a), jnp.log(b)
 
     def step(carry: tuple[Array, Array], _: Array) -> tuple[tuple[Array, Array], None]:
@@ -97,7 +108,8 @@ def sinkhorn(
     (f, g), _ = jax.lax.scan(step, (jnp.zeros_like(a), jnp.zeros_like(b)), None, length=iters)
     plan = jnp.exp((f[:, None] + g[None, :] - cost) / eps)
     transport = float(jnp.sum(plan * cost))
-    dual = float(jnp.dot(f, a) + jnp.dot(g, b))
+    # a zone of no mass has the potential -inf, which its mass of 0 weighs to nothing, not nan
+    dual = float(jnp.sum(jnp.where(a > 0.0, f * a, 0.0)) + jnp.sum(jnp.where(b > 0.0, g * b, 0.0)))
     miss = jnp.sum(jnp.abs(plan.sum(axis=1) - a)) + jnp.sum(jnp.abs(plan.sum(axis=0) - b))
     residual = float(miss / jnp.sum(a))
     if not residual <= tol:
@@ -562,8 +574,16 @@ class MarketplaceMatching:
         return before, float(jnp.sum(jnp.abs(s_new - d)))
 
 
+_REPORT_TOL = 1e-4
+"""The marginal residual up to which :func:`marketplace_report` calls the plan served in full:
+:func:`sinkhorn`'s own default ``tol``."""
+
+
 def marketplace_report(matching: MarketplaceMatching) -> str:
-    """Kantorovich OT dispatch vs two naive failure modes, plus the surge/equilibrium win."""
+    """Kantorovich OT dispatch vs two naive failure modes, plus the surge/equilibrium win. The
+    plan is called served in full only where its marginal residual is within ``1e-4``; otherwise
+    the line states the residual: on ``MarketplaceMatching.synthetic_city(seed=3)`` at its 2000
+    iterations it is 2.2e-3, which the report used to print as 100% served."""
     opt = matching.optimal()
     _, coverage = matching.nearest_local()
     reroute = matching.nearest_reroute_cost()
@@ -571,9 +591,16 @@ def marketplace_report(matching: MarketplaceMatching) -> str:
     total = float(jnp.sum(matching.demand))
     saved = (reroute - opt.transport_cost) / reroute * 100
     stranded = (1.0 - coverage) * total
+    if opt.marginal_residual <= _REPORT_TOL:
+        served = f"100% served at min cost {opt.transport_cost:.2f}"
+    else:
+        served = (
+            f"cost {opt.transport_cost:.2f}, its plan {opt.marginal_residual:.1e} of the mass from"
+            f" its marginals after {matching.iters} iterations: not yet the min-cost plan"
+        )
     return "\n".join(
         [
-            f"Kantorovich OT: 100% served at min cost {opt.transport_cost:.2f} + surge prices.",
+            f"Kantorovich OT: {served} + surge prices.",
             f"naive local-only dispatch strands {stranded:.1f} of {total:.1f} riders "
             f"({(1.0 - coverage) * 100:.0f}%) where demand exceeds local supply.",
             f"naive reroute (100% served): cost {reroute:.2f} -> OT is {saved:.1f}% cheaper.",
