@@ -145,7 +145,11 @@ FORMAL_LINKS = {
         "tests": ("test_the_published_bayes_action_minimises_the_expected_cost",),
     },
     "chc.gate": {
-        "cites": ("gate_block_contrast.mac", "gate_centred_increment.mac"),
+        "cites": (
+            "gate_block_contrast.mac",
+            "gate_block_rollback.mac",
+            "gate_centred_increment.mac",
+        ),
         "tests": (
             "test_block_read_meets_the_geometric_memory_bound_and_attains_it",
             "test_block_read_under_carryover_of_order_one",
@@ -154,6 +158,31 @@ FORMAL_LINKS = {
             "test_the_centred_level_tends_to_the_level_of_least_variance",
             "test_a_pair_of_blocks_bets_at_mean_one_without_carryover",
             "test_a_pair_of_blocks_reads_the_carryover_past_the_burn_in",
+            "test_gate_blocks.py::test_in_blocks_the_rollback_reads_after_the_burn_in",
+            "test_gate_blocks.py::test_in_blocks_a_deployed_candidate_that_is_worse_is_rolled_back_only_with_a_baseline",
+        ),
+    },
+    "chc.gate.DeploymentGate._randomised_harm": {
+        "cites": ("gate_block_rollback.mac",),
+        "via": "DeploymentGate",
+        "tests": (
+            "test_gate_blocks.py::test_in_blocks_the_lab_candidate_not_worse_by_delta_harm_is_rolled_back_at_most_alpha_harm",
+            "test_gate_blocks.py::test_in_blocks_the_rollback_reads_after_the_burn_in",
+            "test_gate_blocks.py::test_in_blocks_a_deployed_candidate_that_is_worse_is_rolled_back_only_with_a_baseline",
+        ),
+    },
+    "chc.scm.blank_period_inference": {
+        "cites": ("scm_ar1_intervals.mac",),
+        "tests": (
+            "test_scm_blank_inference.py::test_ar1_intervals_read_the_gaps_innovations_written_out",
+            "test_scm_blank_inference.py::test_ar1_intervals_cover_at_their_level_where_the_errors_persist",
+        ),
+    },
+    "chc.scm._ar1_check": {
+        "cites": ("scm_ar1_intervals.mac",),
+        "via": "blank_period_inference",
+        "tests": (
+            "test_scm_blank_inference.py::test_ar1_check_reads_the_donors_innovations_written_out_and_sees_an_ar2",
         ),
     },
     "chc.gate.ChannelMove.price": {
