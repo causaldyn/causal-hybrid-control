@@ -89,6 +89,17 @@ from chc.graph import CausalGraph
 from chc.integrate import rk4_step, rollout
 from chc.panel import Panel
 
+__all__ = [
+    "SALES",
+    "SEASON",
+    "MarketingMixPlant",
+    "MarketingMixSystem",
+    "MmmArm",
+    "MmmReport",
+    "adstock_dynamics",
+    "run_marketing_mix",
+]
+
 SEASON = "season"
 SALES = "sales"
 

@@ -20,6 +20,10 @@ from scipy.optimize import minimize
 
 from chc.games import project_simplex
 
+__all__ = [
+    "MeanFieldControl",
+]
+
 
 @partial(jax.jit, static_argnums=0)
 def _meanfield_cost(planner: MeanFieldControl, u_seq: Array) -> Array:

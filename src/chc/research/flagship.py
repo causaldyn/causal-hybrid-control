@@ -18,6 +18,12 @@ from jax import Array
 from chc.causal import ConfoundedLinearSystem, estimate_control_effect
 from chc.estimators import BackdoorOLS, CausalEffectEstimator
 
+__all__ = [
+    "certainty_equivalent_control",
+    "closed_loop",
+    "run_flagship",
+]
+
 
 def certainty_equivalent_control(
     a: float, b_hat: float, x: Array, x_target: float, u_lo: float, u_hi: float

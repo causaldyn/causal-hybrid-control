@@ -28,6 +28,11 @@ from chc.toeplitz import (
     circulant_operator_norm,
 )
 
+__all__ = [
+    "SpectralResidualCurve",
+    "spectral_residual_certificate",
+]
+
 
 @dataclass(frozen=True)
 class SpectralResidualCurve:

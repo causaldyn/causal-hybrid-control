@@ -35,6 +35,16 @@ from numpy.typing import NDArray
 
 from chc.residual import RBFKANLayer
 
+__all__ = [
+    "LIBRARY",
+    "SymbolicEdge",
+    "SymbolicExtractionCurve",
+    "extract_symbolic",
+    "extract_symbolic_edge",
+    "kan_edge",
+    "symbolic_extraction_certificate",
+]
+
 Vector = NDArray[np.float64]
 
 # The candidate closed forms, in a fixed order so a fit is reproducible. Deliberately small: the

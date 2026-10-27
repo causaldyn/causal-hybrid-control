@@ -27,6 +27,13 @@ from chc import _units
 from chc.estimators import CausalEffectEstimator
 from chc.frames import _real_numbers, _refuse_shared_names
 
+__all__ = [
+    "LalondeData",
+    "lalonde_ate",
+    "lalonde_report",
+    "load_lalonde",
+]
+
 _BASE_URL = "https://vincentarelbundock.github.io/Rdatasets/csv/causaldata/{name}.csv"
 _COVARIATES = ("age", "educ", "black", "hisp", "marr", "nodegree", "re74", "re75")
 

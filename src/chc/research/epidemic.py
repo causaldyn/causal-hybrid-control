@@ -18,6 +18,12 @@ from jax import Array
 
 from chc.integrate import rollout
 
+__all__ = [
+    "SIRDynamics",
+    "epidemic_cost",
+    "optimal_npi",
+]
+
 
 class SIRDynamics(eqx.Module):
     """Normalised SIR; state ``[S, I]``, control ``u in [0,1]`` scales ``beta -> beta*(1-u)``."""

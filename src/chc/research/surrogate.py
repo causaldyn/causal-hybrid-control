@@ -21,6 +21,10 @@ import numpy as np
 
 from chc.frames import _real_numbers
 
+__all__ = [
+    "GradientBoostedDynamics",
+]
+
 _TREES_HINT = (
     "GradientBoostedDynamics needs the 'trees' extra: pip install 'causal-hybrid-control[trees]'."
 )

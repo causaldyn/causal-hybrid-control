@@ -20,6 +20,14 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
+__all__ = [
+    "BangBangResult",
+    "bang_bang_control",
+    "bang_bang_rollout",
+    "double_integrator_min_time",
+    "switching_function",
+]
+
 
 @dataclass(frozen=True)
 class BangBangResult:

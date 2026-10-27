@@ -41,6 +41,13 @@ from chc.integrate import rollout
 from chc.plan import CausalPlan, SafetyCertificate, causal_plan, certify_safety
 from chc.residual import ZeroResidual
 
+__all__ = [
+    "SpineArm",
+    "SpineReport",
+    "run_spine",
+    "two_zone_market",
+]
+
 
 def two_zone_market(
     effect: float, *, decay: float = 0.6, coupling: float = 0.3, drain: float = 0.25

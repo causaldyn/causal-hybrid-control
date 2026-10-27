@@ -23,6 +23,17 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array, lax
 
+__all__ = [
+    "ConvectionDiffusionCurve",
+    "convection_diffusion_1d",
+    "convection_diffusion_certificate",
+    "convection_diffusion_exact",
+    "optimal_upwind",
+    "poisson_1d",
+    "poisson_2d",
+    "thomas_solve",
+]
+
 
 def thomas_solve(sub: Array, diag: Array, sup: Array, rhs: Array) -> Array:
     """Solve a tridiagonal system (Thomas / progonka). ``sub[0]`` and ``sup[-1]`` are unused."""

@@ -24,6 +24,12 @@ from chc import _units
 from chc.frames import _real_numbers
 from chc.regret import dlqr
 
+__all__ = [
+    "KoopmanModel",
+    "koopman_controller",
+    "koopman_lqr_gain",
+]
+
 
 def _lift(x: np.ndarray, degree: int) -> np.ndarray:
     """Polynomial dictionary ``phi(x)``: the state first, then higher-order monomials, then 1."""

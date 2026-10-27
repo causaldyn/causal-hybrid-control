@@ -29,6 +29,18 @@ from jax import Array
 
 from chc.splitting import strang_marchuk_step
 
+__all__ = [
+    "MeanFieldTransport",
+    "advection_diffusion_field",
+    "advection_diffusion_kernel",
+    "advection_diffusion_propagator",
+    "advection_diffusion_symbol",
+    "periodic_smoothing_kernel",
+    "periodic_wavenumbers",
+    "solve_transport",
+    "transport_step",
+]
+
 
 def _upwind_divergence(rho: Array, v: Array, dx: float) -> Array:
     """Semi-discrete conservative upwind flux divergence ``-d(rho v)/dx`` on a periodic grid.

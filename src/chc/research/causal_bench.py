@@ -19,6 +19,12 @@ from chc.estimators import RLearner
 from chc.gmethods import naive_pooled_effect, sequential_g_formula
 from chc.scm import augmented_synthetic_control, synthetic_control
 
+__all__ = [
+    "CausalBenchRow",
+    "causal_bench_report",
+    "run_causal_bench",
+]
+
 
 @dataclass(frozen=True)
 class CausalBenchRow:
