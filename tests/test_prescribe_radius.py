@@ -141,11 +141,12 @@ def test_a_fit_with_no_absolute_radius_reads_the_relative_one_and_says_so_quietl
 
 
 def test_an_absolute_radius_asked_of_a_fit_that_gives_none_is_refused() -> None:
-    """``radius="absolute"`` on an ``rk4`` fit names the fit's refusal and the two ways out."""
+    """``radius="absolute"`` on an ``rk4`` fit names the fit's refusal and the two ways out, each
+    once: up to 0.24.0 the advice to fit under Euler came twice."""
     with pytest.raises(DecisionError, match="rk4") as refused:
         _ask(integrator="rk4", radius="absolute")
-    assert "integrator='euler'" in str(refused.value)
-    assert "radius='relative'" in str(refused.value)
+    assert str(refused.value).count("integrator='euler'") == 1
+    assert str(refused.value).count("radius='relative'") == 1
 
 
 def test_every_finite_level_reads_the_absolute_radius() -> None:

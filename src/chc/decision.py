@@ -817,14 +817,20 @@ class DecisionCertificate:
         tell apart predicts differently. The two ``None`` values mean different things.
         ``certified_horizon is None`` means the tube was not evaluated, so nothing bounds the
         trajectory's error and it contributes zero rather than infinity --- a barrier cleared by an
-        unbounded trajectory proves nothing. ``barrier_certified_steps is None`` means no state was
-        bounded, so there is no safety prefix to respect and the tube alone decides.
+        unbounded trajectory proves nothing. A tube read against an infinite ``tolerance``
+        (``certificate_status`` ``no_tolerance``) contributes zero as well: it holds every finite
+        radius at every step, and bounds nothing. ``barrier_certified_steps is None`` means no
+        state was bounded, so there is no safety prefix to respect and the tube alone decides.
 
         Where the channel's residual persists within units (``noise_persistence_p`` at most 0.05)
         the noise the tube reads may not be the plant's, and a ``tube`` warning says so; the
         prefix still counts the tube's steps (ADR 0105).
         """
-        if self.identification == "not_identified" or self.certified_horizon is None:
+        if (
+            self.identification == "not_identified"
+            or self.certified_horizon is None
+            or self.certificate_status == "no_tolerance"
+        ):
             return 0
         steps = self.certified_horizon
         if self.barrier_certified_steps is not None:
@@ -1574,7 +1580,12 @@ class Prescription:
             + ("" if certificate.regret_status is None else f", {certificate.regret_status}"),
             *self._cost_bias_lines(),
             "",
-            f"**Trustworthy prefix: {certificate.trustworthy_steps} steps.**",
+            f"**Trustworthy prefix: {certificate.trustworthy_steps} steps.**"
+            + (
+                " The tube was read against an infinite tolerance, which bounds nothing."
+                if certificate.certificate_status == "no_tolerance"
+                else ""
+            ),
             "",
             "## Provenance",
             "",
@@ -4725,8 +4736,8 @@ def _sensitivity(fit: CausalDynamicsFit, required: bool) -> ChannelSensitivity |
         if required:
             raise DecisionError(
                 f"radius='absolute', but the fit gives no absolute radius on its channel: "
-                f"{refusal}. Fit with integrator='euler', or pass radius='relative' for a margin "
-                "on a share of the fitted channel"
+                f"{refusal}. Pass radius='relative' for a margin on a share of the fitted "
+                "channel"
             ) from refusal
         _log.info(
             "the barrier's radius is relative, a share of the fitted channel: the fit gives no "
