@@ -455,7 +455,9 @@ def _weighted_van_trees_floors(
         return 4.0 * xt * b * rr / (rr + b * b) ** 2
 
     split = -mean / width
-    points = [split] if abs(split) < _PRIOR_REACH else None
+    # a kink within rounding of an end leaves QUADPACK a subinterval of no width, which it reports
+    # as bad behaviour; past 39 standard deviations the prior's mass is below e^-760 anyway
+    points = [split] if abs(split) < _PRIOR_REACH - 1.0 else None
     density = 1.0 / np.sqrt(2.0 * np.pi)
 
     def prior_mean(f: Any) -> float:

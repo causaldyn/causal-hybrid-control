@@ -1305,6 +1305,7 @@ def _prior_mean(f, centre, scale):
     width=st.floats(0.05, 1.5),
     log_info=st.floats(-1.0, 4.0),
 )
+@example(b=1.9999999999999998, rr=0.5, xt=0.625, width=0.05, log_info=0.0)
 def test_information_weighted_floors_order_below_the_bayes_regret(b, rr, xt, width, log_info):
     """weighted_van_trees.mac STEP 4: the best weight's floor is at least the floors of C = W psi'
     and of C = 1, and the latter is at least rr times the action floor; the Bayes regret, read here
