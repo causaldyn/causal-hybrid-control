@@ -6,6 +6,10 @@ channel's error that ADR 0053 and ADR 0075 read stays the tube's other part. Ame
 action, so it reads no lever's units. Amended by ADR 0096, 2026-10-13: on a field affine in the
 state the tube is carried by the fitted slope at each planned action, and the noise's radius
 is its exact 0.95 quantile where the covariance is exact.
+Re-measured 2026-10-27 (`scripts/bench_boptest_tube.py cover`): under the case's first call the tube
+trusts 1.9 to 2.8 steps on average by cell on 0.22.0, where the plant allows 2 to 4. Under its rerun
+call the tube no longer holds as stated below: on 0.22.0 it holds the plant at the first step on 91%
+to 98% of draws, and trusts more than a log's own plant allows on 0 to 61% of logs in a cell.
 
 ## Context
 
