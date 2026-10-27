@@ -1803,7 +1803,12 @@ def causal_plan(
             penalty's Gauss-Newton part, which with the cost's has the square of that metric for
             its diagonal. A diagonal metric does not solve a round the penalty has made
             ill-conditioned, and its rounds can spend ``steps`` with the plan's
-            :attr:`~CausalPlan.stationarity_status` ``beyond``; Newton's do not stall there. A
+            :attr:`~CausalPlan.stationarity_status` ``beyond``; Newton's do not stall there while
+            the round is smooth. A held condition's worst case, ``a + <w, u> - d ||D^+ (u - c)||``,
+            has a kink at the barrier's ``centre`` ``c`` (zero where it is None), and a plan that
+            comes to rest there stalls under either solve: on the plans
+            :func:`chc.decision.prescribe` holds, whose centre is the log's mean action, Newton,
+            like the diagonal descent, can end ``max_iterations`` with stationarity ``beyond``. A
             Newton step whose block of the matrix does not factor, or that buys no fall, hands the
             round to the descent. It takes the box alone, and factors an ``(H m, H m)`` matrix at
             each step: a support model, linear rows, or more than 4096 actions are refused.

@@ -126,6 +126,17 @@ documented, and what is not built yet. Every name below is importable from `chc`
   quadratic, and warns when they did (*experimental*): a premise failing, not a measured cost
   ([ADR 0028](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0028-asking-the-panel-what-the-logger-read.md)).
   See [`chc.decision`](api/decision.md).
+- **`PlanEvaluation.to_json`** (*experimental*). An evaluation, from `evaluate_plan` or a
+  prescription's `evaluate`, as plain JSON beside the decision's record: the estimate, its
+  intervals, the certificate, the logger check and how it was asked for. It has no reader; an
+  audit makes the evaluation again from the panel and the plan. See
+  [`chc.evaluation`](api/evaluation.md).
+- **A logged draw tests the graph** (*experimental*). Where the logger added a random draw to the
+  levers and logged it, `prescribe(..., dither=<column>)` fits the channel again with the draw as
+  its instrument and reads the plan's channel against it in the plan's own regret.
+  `Prescription.dither_check` holds the contrast and its p-value, and a rejection at 5 % is
+  logged as a warning and named in the report; the plan is the one without it, bit for bit.
+  See [`chc.decision`](api/decision.md).
 - **`off_policy_value`.** It weights one step at a time. So it estimates a candidate's value on
   the logger's own states, which is the contextual-bandit value. That is not the value of
   deploying a plan on a plant with memory. See [`chc.offpolicy`](api/offpolicy.md).
@@ -197,8 +208,12 @@ documented, and what is not built yet. Every name below is importable from `chc`
   `centred` (*experimental*), the experiment reads each reward less a level set from the arms'
   earlier rewards: the guarantees hold, and where rewards sit far from 0 a deploy comes in far
   fewer decisions or blocks. In blocks, set `check_burn_in` with `centred`: a centred
-  experiment also deploys sooner a candidate whose read periods still see the block before. See
-  [`chc.gate`](api/gate.md).
+  experiment also deploys sooner a candidate whose read periods still see the block before. A
+  deployed zone in blocks runs the candidate in every block, so it has no baseline block to read
+  harm from, and only a drift alarm rolls it back. With `rollback_baseline_share` (*experimental*)
+  each deployed block runs the baseline with that probability, and the rollback reads the blocks
+  since the deploy: each wrong rollback has probability at most `alpha_harm`, and the zone gives
+  up that share of the candidate's gain. See [`chc.gate`](api/gate.md).
 
 ## 6. Adapt: after deployment
 
