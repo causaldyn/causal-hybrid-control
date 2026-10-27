@@ -416,8 +416,8 @@ def test_an_infinite_setting_is_text_and_none_is_not_given() -> None:
 
 def test_a_record_of_another_schema_or_without_inputs_is_refused(quickstart: Prescription) -> None:
     record = _text(quickstart.to_json())
-    with pytest.raises(DecisionError, match=r"^schema_version: this release replays 2, not 3"):
-        Prescription.from_json({**record, "schema_version": 3}, QUICKSTART)
+    with pytest.raises(DecisionError, match=r"^schema_version: this release replays 3, not 4"):
+        Prescription.from_json({**record, "schema_version": 4}, QUICKSTART)
     without = {key: value for key, value in record.items() if key != "inputs"}
     with pytest.raises(DecisionError, match=r"^inputs: the record holds no inputs"):
         Prescription.from_json(without, QUICKSTART)

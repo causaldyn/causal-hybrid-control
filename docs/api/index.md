@@ -5,8 +5,8 @@ its module, which is where it stays; the modules that each carry one research re
 [`chc.research`](research/index.md) in 0.19.0, and 0.20.0 deleted their old paths. The top-level
 `chc` namespace holds the
 [lifecycle's](../lifecycle.md) names, the classes a call to one of them takes and the errors they
-raise, and its `__all__` lists them. Any other name 0.7.0 bound there still imports from it until
-1.0, with a `DeprecationWarning` that names its module.
+raise, and its `__all__` lists them. The other names 0.7.0 bound there left it in 1.0: each imports
+from its module.
 
 The pages are grouped by stability tier — by what a break would cost you — and each page states its
 tier at the top.

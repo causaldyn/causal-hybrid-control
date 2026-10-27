@@ -1640,17 +1640,3 @@ def interference_bias(
     predicted = float(jnp.dot(response.marginal, allocation))
     realised = market.value(allocation) - market.value(jnp.zeros(market.n_zones))
     return predicted - realised
-
-
-def __getattr__(name: str) -> object:
-    """``DitherCheck``, the name :class:`GradientDitherCheck` had before 0.24.0, served with a
-    ``DeprecationWarning`` until 1.0."""
-    if name == "DitherCheck":
-        warnings.warn(
-            "DitherCheck is renamed GradientDitherCheck and leaves in 1.0:"
-            " chc.decision.DitherCheck is another test of the same name",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return GradientDitherCheck
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

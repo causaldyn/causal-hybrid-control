@@ -370,7 +370,7 @@ def test_the_report_lists_the_levers_kept_in_the_order_greedy_added_them() -> No
 def test_the_selection_travels_in_the_json() -> None:
     result = _prescribe(max_levers=2)
     payload = json.loads(json.dumps(result.to_json()))
-    assert payload["schema_version"] == 2  # a number that is not finite reads null (ADR 0055)
+    assert payload["schema_version"] == 3  # the certificate's old key gone (ADR 0130)
     assert result.selection is not None
     assert payload["selection"] == {
         "idle_cost": result.selection.idle_cost,

@@ -80,7 +80,7 @@ PRIVATE_LABEL = re.compile(
 # it, or a page right after it, as in `Kendall (1954) §3` or `(§3.4, p. 501)`.
 DATED_SOURCE = re.compile(r"(?:19|20)[0-9]{2}|arXiv")
 PAGE = re.compile(r"§[0-9.]+,\s+pp?\. [0-9]")
-# Old names that still serve their value under a DeprecationWarning until 1.0.
+# Old names that 1.0 removed, which a test checks are gone.
 RENAMED = ("denominator_against_result_55",)
 
 

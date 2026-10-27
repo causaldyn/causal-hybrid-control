@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 import chc
-from chc.decision import _linearised
+from chc.decision import Prescription, _linearised
 from chc.evaluation import AffineSchedule, PlanEvaluation, _evaluate_across_time
 
 DT = 0.1
@@ -90,7 +90,7 @@ def _value(actions: np.ndarray | None, starts: np.ndarray, cost: chc.QuadraticCo
 
 
 @pytest.fixture(scope="module")
-def prescription() -> chc.Prescription:
+def prescription() -> Prescription:
     rows, _, _, _ = _market(400, seed=0, leave=False)
     return chc.prescribe(
         chc.Panel.from_frame(rows, unit="zone", time="time", seed=0),
@@ -105,7 +105,7 @@ def prescription() -> chc.Prescription:
 
 
 def test_a_zone_that_leaves_on_its_outcome_does_not_set_where_its_windows_start(
-    prescription: chc.Prescription,
+    prescription: Prescription,
 ) -> None:
     """On the calendar the intervals cover the plan's value and its difference from the logger's.
     Cut back from where each zone left, the windows before a zone strayed are those in which it
@@ -152,7 +152,7 @@ def test_a_zone_that_leaves_on_its_outcome_does_not_set_where_its_windows_start(
 
 
 def test_the_draws_of_the_zones_are_the_callers_to_set_and_to_repeat(
-    prescription: chc.Prescription,
+    prescription: Prescription,
 ) -> None:
     rows, _, _, _ = _market(400, seed=1, leave=False)
     panel = chc.Panel.from_frame(rows, unit="zone", time="time", seed=0)
@@ -169,7 +169,7 @@ def test_the_draws_of_the_zones_are_the_callers_to_set_and_to_repeat(
 
 
 def test_the_evaluation_refuses_a_time_zero_or_a_count_of_draws_it_cannot_read(
-    prescription: chc.Prescription,
+    prescription: Prescription,
 ) -> None:
     rows, _, _, _ = _market(40, seed=1, leave=False)
     panel = chc.Panel.from_frame(rows, unit="zone", time="time", seed=0)
@@ -181,7 +181,7 @@ def test_the_evaluation_refuses_a_time_zero_or_a_count_of_draws_it_cannot_read(
 
 
 def test_the_share_of_refused_draws_the_reading_tolerates_is_the_callers_to_set(
-    prescription: chc.Prescription,
+    prescription: Prescription,
 ) -> None:
     """``max_refused`` reaches the bootstrap's record, from 0 up to but not including 1; a share
     outside that is refused before any draw is taken."""
@@ -200,7 +200,7 @@ def test_the_share_of_refused_draws_the_reading_tolerates_is_the_callers_to_set(
 
 
 def _one_zone_by_hand(
-    prescription: chc.Prescription,
+    prescription: Prescription,
     supply: np.ndarray,
     incentive: np.ndarray,
     starts: np.ndarray,
@@ -236,7 +236,7 @@ def _one_zone_by_hand(
 
 
 def test_one_zones_windows_are_read_across_their_time_zeros_by_cosines(
-    prescription: chc.Prescription, caplog: pytest.LogCaptureFixture
+    prescription: Prescription, caplog: pytest.LogCaptureFixture
 ) -> None:
     """One zone's windows leave no zones to resample, and they follow each other through its
     supply. Each interval reads the windows' influences across their time zeros by 45 cosines,
@@ -302,7 +302,7 @@ def test_one_zones_windows_are_read_across_their_time_zeros_by_cosines(
     ],
 )
 def test_one_zones_windows_across_a_gap_keep_their_places_on_the_grid(
-    prescription: chc.Prescription, time_zero: str, starts: np.ndarray, places: np.ndarray
+    prescription: Prescription, time_zero: str, starts: np.ndarray, places: np.ndarray
 ) -> None:
     """Period 1000 missing, the calendar drops the window that holds it and leaves its place empty;
     cut back from each run's end, the later run's windows start at 1002 and the earlier's end at

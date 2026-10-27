@@ -176,12 +176,6 @@ addopts = "-q -m 'not misspecification'"
 markers = [
     "misspecification: a certificate read on a plant its model gets wrong; holds, or says so",
 ]
-# a name the top level only serves with a warning, or an old name a rename keeps until 1.0, is the
-# library's own to stop using first
-filterwarnings = [
-    "error:chc\\.\\w+ leaves the top level:DeprecationWarning",
-    "error:\\S+ is renamed \\S+ and leaves in 1\\.0:DeprecationWarning",
-]
 
 [tool.ty.environment]
 # The interpreter `.python-version` pins, not the floor: ty reads the environment's stubs at this

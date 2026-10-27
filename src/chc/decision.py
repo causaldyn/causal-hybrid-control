@@ -36,7 +36,6 @@ import logging
 import math
 import re
 import time
-import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from importlib import metadata
@@ -167,9 +166,10 @@ __all__ = [
     "prescribe",
 ]
 
-SCHEMA_VERSION = 2
-"""``to_json``'s schema version. Bumped when a field changes meaning, not when one is added: 2
-writes a number that is not finite as null (ADR 0055)."""
+SCHEMA_VERSION = 3
+"""``to_json``'s schema version. Bumped when a field changes meaning or leaves, not when one is
+added: 2 writes a number that is not finite as null (ADR 0055); 3 no longer writes the
+certificate's ``identification_radius``, which repeated ``channel_error`` (ADR 0130)."""
 
 POLICY_SCHEMA_VERSION = 1
 """:meth:`PrescribedPolicy.to_json`'s schema version, which :meth:`PrescribedPolicy.from_json`
@@ -815,17 +815,6 @@ class DecisionCertificate:
     # *Experimental.*
     planned_cost_bias: PlannedCostBias | None = None
     planned_cost_bias_reason: str | None = None
-
-    @property
-    def identification_radius(self) -> float | None:
-        """``channel_error`` under the name it had before 0.20.0, which leaves in 1.0."""
-        warnings.warn(
-            "DecisionCertificate.identification_radius is renamed channel_error and leaves in "
-            "1.0: it is the channel's standard error, not a radius",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.channel_error
 
     @property
     def stationarity_status(self) -> DiagnosticStatus | None:
@@ -1640,12 +1629,10 @@ class Prescription:
         infinite ``regret_bound``, a selection step's own ``regret_status`` for its bound,
         ``gamma_star_status`` for ``gamma_star`` (:data:`GammaStarStatus`), and
         ``stationarity_status`` and ``violation_status`` for ``stationarity`` and
-        ``constraint_violation`` (:data:`chc.plan.DiagnosticStatus`). The certificate's
-        ``identification_radius`` repeats ``channel_error``, the name it had before 0.20.0, until
-        1.0.
+        ``constraint_violation`` (:data:`chc.plan.DiagnosticStatus`).
 
         Since 0.24.0 the record also holds, under keys of their own, so that no key's meaning
-        moves and ``schema_version`` stays 2 (ADR 0145):
+        moves (ADR 0145):
 
         * the certificate's ``planned_cost_bias``, the planned cost, its bias's three terms, the
           bias, its ``direction`` and the corrected cost, or None, and
@@ -1684,7 +1671,6 @@ class Prescription:
                 "adjusted_for": list(certificate.adjustment.covariates),
                 "reason": certificate.adjustment.reason,
                 "channel_error": certificate.channel_error,
-                "identification_radius": certificate.channel_error,
                 "overlap": certificate.overlap,
                 "certificate_status": certificate.certificate_status,
                 "certified_horizon": certificate.certified_horizon,
@@ -1795,10 +1781,10 @@ class Prescription:
         that wrote it (ADR 0145).
 
         The rule: a record replays on the release of the library that wrote it, under the same
-        ``jax_enable_x64``, with ``schema_version`` 2 and ``inputs``, which records of 0.23.0 and
-        before do not hold. Its other versions (``run.versions``: jax, jaxlib, numpy, scipy) and
-        its device are not asked first; where one differs and moves a number, the check below
-        names it.
+        ``jax_enable_x64``, with ``schema_version`` 3 and ``inputs``, which no record before 1.0
+        holds: 0.24.0 wrote version 2, and 0.23.0 and before no ``inputs``. Its other versions
+        (``run.versions``: jax, jaxlib, numpy, scipy) and its device are not asked first; where
+        one differs and moves a number, the check below names it.
 
         Raises:
             DecisionError: naming the field, on a record of another ``schema_version``, without

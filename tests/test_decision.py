@@ -1539,14 +1539,14 @@ def test_an_evaluation_window_does_not_span_a_period_no_unit_logged() -> None:
 def test_the_report_and_the_json_carry_the_same_decision() -> None:
     result = _prescribe(_panel(), CausalGraph.from_edges(EDGES))
     payload = json.loads(json.dumps(result.to_json()))
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["target"] == "supply"
     assert payload["levers"] == ["incentive"]
     assert np.allclose(payload["schedule"], np.asarray(result.plan.actions))
     assert payload["certificate"]["adjusted_for"] == ["demand"]
     assert payload["certificate"]["channel_error"] == result.certificate.channel_error
-    # the key the error had before 0.20.0, written beside it until 1.0
-    assert payload["certificate"]["identification_radius"] == result.certificate.channel_error
+    # the key the error had before 0.20.0 left with schema 3
+    assert "identification_radius" not in payload["certificate"]
     assert payload["provenance"]["data_sha256"] == result.provenance.data_sha256
     start = result.start
     assert start is not None

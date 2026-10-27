@@ -85,15 +85,6 @@ def test_a_split_module_no_longer_has_its_moved_half(name: str) -> None:
     assert not hasattr(old, "_MOVED")
 
 
-def test_the_top_level_serves_each_name_that_moved_from_its_chc_research_path() -> None:
-    """The top level's deprecated names stay until 1.0: each must still be served from a module
-    that defines it, now that the paths the research modules left are gone."""
-    research = {name: m for name, m in chc._MOVED.items() if m.startswith("chc.research.")}
-    assert len(research) == 166
-    assert [name for name, m in research.items() if name not in _defined(m)] == []
-    assert [name for name, m in chc._MOVED.items() if name not in _defined(m)] == []
-
-
 @pytest.mark.parametrize("statement", ["import chc", "import chc.decision"])
 def test_importing_the_library_loads_nothing_from_research_and_warns_nothing(
     statement: str,

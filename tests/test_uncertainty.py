@@ -243,7 +243,7 @@ def test_sharded_path_runs_across_a_multi_device_mesh() -> None:
     # XLA_FLAGS is read when the backend initialises, so the >=2-device path needs a fresh process.
     source = (
         "import json, jax; jax.config.update('jax_enable_x64', True);"
-        "from chc import sharded_ensemble_certificate as c;"
+        "from chc.uncertainty import sharded_ensemble_certificate as c;"
         "r = c(n_members=8, parity_steps=40);"
         "print(json.dumps(r.__dict__))"
     )

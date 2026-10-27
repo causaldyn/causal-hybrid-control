@@ -3,8 +3,8 @@
    decision-relevant question: how much regret does a source-optimal controller incur on the target? It
    splits into a TRANSPORTABLE part (if the causal effect is recoverable on the target, regret = 0 no
    matter the distributional distance) and a NON-transportable residual bounded by the Wasserstein-1
-   distance W1(P,P') via Kantorovich-Rubinstein duality -- the exact object chc.WassersteinPenalty
-   penalises. Maxima is the source of truth. */
+   distance W1(P,P') via Kantorovich-Rubinstein duality -- the exact object
+   chc.uncertainty.WassersteinPenalty penalises. Maxima is the source of truth. */
 display2d : false$
 
 C : xt^2*(rr - b^2)^2 / (rr + b^2)^3$
@@ -23,7 +23,8 @@ Rnt : subst(db = Lip*d, R)$
 print("(B) non-transportable (db = Lip*d): R =", Rnt, " = C*Lip^2*d^2 (quadratic in W1)")$
 
 /* Kantorovich-Rubinstein: W1(P,Q) = sup_{f 1-Lipschitz} |E_P f - E_Q f|, so for a Lip-Lipschitz cost
-   the deployment cost gap is <= Lip*W1(P,Q). This is the same W1 that chc.WassersteinPenalty uses:
+   the deployment cost gap is <= Lip*W1(P,Q). This is the same W1 that
+   chc.uncertainty.WassersteinPenalty uses:
    worst-case over a W1-ball of radius eps = empirical + eps*Lipschitz (Gao-Kleywegt). */
 print("KR duality: |E_P' cost - E_P cost| <= Lip*W1(P,P') ; W-DRO worst-case = empirical + eps*Lip")$
 

@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 import chc
-from chc.decision import _Columns, _linearised
+from chc.decision import Prescription, _Columns, _linearised
 
 DT = 0.1
 STEP = np.array([[0.94, 0.03], [0.0, 1.025]])  # (supply, wait), one period, Euler at DT
@@ -68,7 +68,7 @@ def _value(actions: np.ndarray, starts: np.ndarray, cost: chc.QuadraticCost) -> 
     return total
 
 
-def _prescription() -> chc.Prescription:
+def _prescription() -> Prescription:
     panel = chc.Panel.from_frame(_market(400, seed=0), unit="unit", time="time", seed=0)
     return chc.prescribe(
         panel,

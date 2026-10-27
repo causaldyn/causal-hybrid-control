@@ -9,13 +9,11 @@ the most natural line there is.
 
 from __future__ import annotations
 
-import ast
 import importlib
 import inspect
 import pkgutil
 import re
 import typing
-import warnings
 from pathlib import Path
 
 import pytest
@@ -120,30 +118,16 @@ def test_the_top_level_holds_what_a_lifecycle_call_takes() -> None:
     assert sorted(cls.__name__ for cls in taken if cls.__name__ not in chc.__all__) == []
 
 
-def test_a_name_that_left_the_top_level_still_resolves_with_a_warning_naming_its_module() -> None:
-    """0.7.0 bound 459 names here: `__version__`, 37 the lifecycle files, and these 421."""
-    assert len(chc._MOVED) == 421
-    for name, module in chc._MOVED.items():
-        with pytest.warns(
-            DeprecationWarning, match=rf"^chc\.{name} leaves the top level in 1\.0: "
-        ):
-            found = getattr(chc, name)
-        assert found is getattr(importlib.import_module(module), name), name
-
-
-def test_the_warning_points_at_the_line_that_imported_the_name() -> None:
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        from chc import ConfoundedLinearSystem  # noqa: F401
-    assert caught
-    assert {(w.category, w.filename) for w in caught} == {(DeprecationWarning, __file__)}
-    assert all("import it from chc.causal" in str(w.message) for w in caught)
-
-
-def test_a_name_that_left_the_top_level_is_neither_bound_nor_advertised() -> None:
-    moved = set(chc._MOVED)
-    assert sorted(moved & set(vars(chc))) == []
-    assert sorted(moved & set(chc.__all__)) == []
+def test_the_top_level_binds_its_all_its_modules_and_nothing_else() -> None:
+    """0.7.0 bound 459 names here; 1.0 removed the 421 the lifecycle does not hold, which 0.8.0 to
+    0.24.0 served with a warning. A public name bound here is advertised or is a module, the
+    `__future__` import's `annotations` aside."""
+    public = {name for name in vars(chc) if not name.startswith("_")} - {"annotations"}
+    modules = {name for name in public if inspect.ismodule(getattr(chc, name))}
+    assert sorted(public - set(chc.__all__) - modules) == []
+    for name in ("rollout", "ConfoundedLinearSystem", "van_trees_certificate"):
+        with pytest.raises(AttributeError, match=f"no attribute '{name}'"):
+            getattr(chc, name)
 
 
 def test_a_name_the_library_never_had_is_still_an_error() -> None:
@@ -151,24 +135,3 @@ def test_a_name_the_library_never_had_is_still_an_error() -> None:
         _ = chc.no_such_name
     with pytest.raises(ImportError):
         from chc import no_such_name  # noqa: F401
-
-
-def test_type_checkers_see_every_name_that_left_the_top_level() -> None:
-    """The names bound under `TYPE_CHECKING` are what a checked caller's imports resolve to, so
-    they must be exactly the ones served at run time, each from the same module."""
-    tree = ast.parse(Path(chc.__file__).read_text())
-    block = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.If)
-        and isinstance(node.test, ast.Name)
-        and node.test.id == "TYPE_CHECKING"
-    )
-    bound = {
-        alias.name: statement.module
-        for statement in block.body
-        if isinstance(statement, ast.ImportFrom)
-        for alias in statement.names
-        if alias.asname == alias.name
-    }
-    assert bound == chc._MOVED

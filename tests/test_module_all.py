@@ -14,8 +14,6 @@ The rules, read from each module's source:
 - It holds every name the module's API page renders. ``docs/api/<module>.md`` renders the module
   with mkdocstrings' defaults: each top-level function, class and attribute that is not private
   and has a docstring (a string literal right below an assignment is an attribute's docstring).
-- Each name the top level still serves from another module, with a warning naming that module, is
-  in that module's ``__all__``: the warning sends a caller to an export.
 """
 
 from __future__ import annotations
@@ -104,12 +102,3 @@ def test_the_re_export_points_are_public_modules_that_re_export() -> None:
         _, imported, _ = _bindings(module)
         assert name in MODULES
         assert set(module.__all__) & imported
-
-
-def test_each_moved_name_is_an_export_of_the_module_its_warning_names() -> None:
-    absent = {
-        name: owner
-        for name, owner in chc._MOVED.items()
-        if name not in importlib.import_module(owner).__all__
-    }
-    assert absent == {}

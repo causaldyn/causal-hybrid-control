@@ -16,7 +16,6 @@ it is called.
 from __future__ import annotations
 
 import itertools
-import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
@@ -106,9 +105,7 @@ __all__ = [
     "confounding_robust_control",
     "confounding_robust_control_benchmark",
     "confounding_robust_control_certificate",
-    "confounding_robust_lq_regret",
     "confounding_robust_lq_regret_certificate",
-    "confounding_robust_lq_regret_matrix",
     "confounding_robust_lq_second_order_regret",
     "confounding_robust_lq_second_order_regret_matrix",
     "confounding_robust_tracking_benchmark",
@@ -127,7 +124,6 @@ __all__ = [
     "finite_horizon_pl_certificate",
     "fold_exactness_certificate",
     "fold_heuristic_certificate",
-    "highprob_regret_certificate",
     "hinf_robust_regret_certificate",
     "information_lower_bound_certificate",
     "interference_convexity_certificate",
@@ -653,17 +649,6 @@ class MultivariateActionFloor:
     spectral_alignment: Vector  # (Psi' v)' M (Psi' v) per eigendirection, in that same order
     direction_alignment: Vector  # the same weight per SUPPLIED direction: diag(Psi' M Psi')
 
-    @property
-    def floor(self) -> float:
-        """``local_floor`` under the name it had before 0.21.0, which leaves in 1.0."""
-        warnings.warn(
-            "MultivariateActionFloor.floor is renamed local_floor and leaves in 1.0: it is read "
-            "at the plant supplied, and a Bayes action can go below it",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.local_floor
-
 
 def _finite(**arrays: NDArray[np.float64]) -> None:
     """Refuse a nan or an inf at entry: numpy's ``eigh`` returns finite eigenvalues for a nan
@@ -865,17 +850,6 @@ class MultivariateVanTreesCurve:
     # on the action error: van Trees weighted by C = M Psi' I^-1; nan where the mean over the prior
     # does not settle (see the function)
     weighted_bayes_floor: float
-
-    @property
-    def floor(self) -> float:
-        """``local_floor`` under the name it had before 0.21.0, which leaves in 1.0."""
-        warnings.warn(
-            "MultivariateVanTreesCurve.floor is renamed local_floor and leaves in 1.0: it is read "
-            "at the reference plant, and bayes_floor is the floor over the prior",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.local_floor
 
 
 _PRIOR_NODES = (32, 64, 128, 256)  # the Gauss-Hermite rules read in each direction, in turn
@@ -1246,19 +1220,6 @@ def local_highprob_regret_certificate(
     for i, band in enumerate(bands):
         coverage[i] = float(np.mean(regrets <= band))
     return HighProbRegretCurve(ds, bands, coverage, conf_bands, bands / floor, float(floor))
-
-
-def highprob_regret_certificate(**kwargs: Any) -> HighProbRegretCurve:
-    """:func:`local_highprob_regret_certificate` under the name it had before 0.20.0, which
-    leaves in 1.0: the band is local, not a high-probability bound on the realised regret."""
-    warnings.warn(
-        "highprob_regret_certificate is renamed local_highprob_regret_certificate and leaves in "
-        "1.0: its band holds only where the regret's curvature is constant over the confidence "
-        "region",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return local_highprob_regret_certificate(**kwargs)
 
 
 @dataclass(frozen=True)
@@ -5371,22 +5332,6 @@ def confounding_robust_lq_second_order_regret(
     return regret_sensitivity * (stat_error + confounding_halfwidth) ** 2
 
 
-def confounding_robust_lq_regret(
-    regret_sensitivity: float, stat_error: float, confounding_halfwidth: float
-) -> float:
-    """:func:`confounding_robust_lq_second_order_regret` under the name it had before 0.21.0,
-    which leaves in 1.0: it is the regret to second order, not a bound on the worst regret."""
-    warnings.warn(
-        "confounding_robust_lq_regret is renamed confounding_robust_lq_second_order_regret and "
-        "leaves in 1.0: it is the regret to second order, not a bound on the worst regret",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return confounding_robust_lq_second_order_regret(
-        regret_sensitivity, stat_error, confounding_halfwidth
-    )
-
-
 def confounding_robust_lq_second_order_regret_matrix(
     curvature: Matrix, stat_error: Matrix, confounding: Matrix
 ) -> float:
@@ -5408,22 +5353,6 @@ def confounding_robust_lq_second_order_regret_matrix(
     return float(np.trace(e.T @ h @ e))
 
 
-def confounding_robust_lq_regret_matrix(
-    curvature: Matrix, stat_error: Matrix, confounding: Matrix
-) -> float:
-    """:func:`confounding_robust_lq_second_order_regret_matrix` under the name it had before
-    0.21.0, which leaves in 1.0: it is the regret to second order, not a bound on the worst
-    regret."""
-    warnings.warn(
-        "confounding_robust_lq_regret_matrix is renamed "
-        "confounding_robust_lq_second_order_regret_matrix and leaves in 1.0: it is the regret to "
-        "second order, not a bound on the worst regret",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return confounding_robust_lq_second_order_regret_matrix(curvature, stat_error, confounding)
-
-
 @dataclass(frozen=True)
 class ConfoundingRobustLQRegretCurve:
     """Evidence the confounding regret order-doubles effect error and floors at Delta^2."""
@@ -5436,17 +5365,6 @@ class ConfoundingRobustLQRegretCurve:
     floor_quadratic_ratio: float  # floor(2*Delta)/floor(Delta): ~4.0 => quadratic in the width
     order_doubling_ratio: float  # exact regret / (L_reg*delta^2) at small delta: ~1.0
     ok: bool
-
-    @property
-    def regret_bounds(self) -> Vector:
-        """``second_order_regrets`` under the name it had before 0.20.0, which leaves in 1.0."""
-        warnings.warn(
-            "ConfoundingRobustLQRegretCurve.regret_bounds is renamed second_order_regrets and "
-            "leaves in 1.0: each is the regret to second order, not a bound on it",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.second_order_regrets
 
 
 def confounding_robust_lq_regret_certificate(

@@ -111,15 +111,6 @@ from chc.research.regret import (
     lq_regret_sensitivity,
     worst_case_asymmetric_loss,
 )
-
-# The names the two regret functions had before 0.21.0, served until 1.0 and left out of
-# ``__all__``: each warns when called, naming its new name.
-from chc.research.regret import (
-    confounding_robust_lq_regret as confounding_robust_lq_regret,
-)
-from chc.research.regret import (
-    confounding_robust_lq_regret_matrix as confounding_robust_lq_regret_matrix,
-)
 from chc.uncertainty import (
     ConfoundingRobustCertificate,
     ConfoundingRobustClosedLoopCertificate,

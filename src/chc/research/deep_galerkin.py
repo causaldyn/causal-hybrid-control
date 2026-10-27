@@ -27,7 +27,6 @@ proved in ``proofs/lq_mean_field.v``.
 from __future__ import annotations
 
 import math
-import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import partial
@@ -1485,20 +1484,6 @@ class NonlinearDwrCurve:
     affine_model_error: float  # affine field for BOTH defect and adjoint: stops tracking
     affine_model_exponent: float  # -> 0
     ok: bool
-
-    @property
-    def denominator_against_result_55(self) -> float:
-        """``denominator_against_closed_form`` under the name it had before 0.20.0, which leaves
-        in 1.0."""
-        warnings.warn(
-            "NonlinearDwrCurve.denominator_against_result_55 is renamed "
-            "denominator_against_closed_form and leaves in 1.0: it is the gap to the LQ "
-            "closed-form denominator, and the number in its old name pointed nowhere a reader can "
-            "follow",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.denominator_against_closed_form
 
 
 def _perturbation(times: np.ndarray, horizon: float) -> tuple[np.ndarray, np.ndarray]:
