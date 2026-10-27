@@ -808,15 +808,22 @@ class WassersteinPenalty(eqx.Module):
     """Wasserstein-1 distributionally-robust penalty on the learned residual.
 
     Where ``SupportModel`` scores *in-distribution* density distance ``D`` and the ensemble scores
-    epistemic *spread* ``U``, this scores robustness to a *distribution shift* of the states.
-    By Kantorovich-Rubinstein W1 duality the worst-case cost over a Wasserstein-1 ball of radius
-    ``radius`` equals the empirical cost plus ``radius`` times the cost's Lipschitz constant
-    (Gao-Kleywegt; Blanchet-Kang-Murthy; Shafieezadeh-Abadeh-Esfahani-Kuhn). The fragile quantity is
-    the *learned* residual ``r`` (the known physics ``f_known`` is trusted, hence excluded), so the
-    penalty is ``radius * Sigma_t ||d r / d x||`` -- a gradient-norm margin that steers control away
-    from states where a small deployment shift moves the learned dynamics a lot. Satisfies the
-    ``PenaltyModel`` protocol, so it drops into the ``lam_unc`` channel of
-    :func:`chc.support.pessimistic_control` unchanged; ``radius`` is the distribution-shift budget.
+    epistemic *spread* ``U``, this scores sensitivity to a *distribution shift* of the states. It
+    is a heuristic local-gradient margin, not the Wasserstein-1 worst case. Kantorovich-Rubinstein
+    duality bounds the worst-case mean cost over a W1 ball of radius ``radius`` by the empirical
+    mean plus ``radius`` times the cost's global Lipschitz constant, with equality only for
+    special costs (Gao and Kleywegt 2023; Blanchet, Kang and Murthy 2019; Shafieezadeh-Abadeh,
+    Esfahani and Kuhn 2015). The penalty is instead ``radius * Sigma_t ||d r / d x||_F``, the
+    *learned* residual ``r``'s local gradient at each visited state (the known physics
+    ``f_known`` is trusted, hence excluded), summed over the trajectory rather than averaged. So
+    it is zero where the residual is stationary at every visited state, however far a shift of
+    ``radius`` would move it; it grows with the horizon; and it is neither the global constant nor a
+    bound on the worst case. For ``r = -cos(x)``, four states at ``x = 0`` and ``radius = 0.5`` it
+    reads 0 where moving each state by the radius raises the mean by 0.122; at ``x = pi/2`` it
+    reads 2.0 where ``radius`` times the global constant is 0.5. What it does: steer control away
+    from states where the learned dynamics are locally steep. Satisfies the ``PenaltyModel``
+    protocol, so it drops into the ``lam_unc`` channel of :func:`chc.support.pessimistic_control`
+    unchanged; ``radius`` scales it.
     """
 
     residual: Dynamics
@@ -828,12 +835,14 @@ class WassersteinPenalty(eqx.Module):
         return cls(residual=model.residual, radius=radius)
 
     def local_lipschitz(self, x: Array, u: Array) -> Array:
-        """Local Lipschitz constant of the residual in ``x``: Frobenius norm of ``d r / d x``."""
+        """The residual's local slope in ``x`` at one point: the Frobenius norm of ``d r / d x``,
+        zero at a stationary point, below or above the global Lipschitz constant elsewhere."""
         jac = jax.jacobian(lambda z: self.residual(0.0, z, u))(x)
         return jnp.linalg.norm(jac)  # ||dr/dx||_F; = |grad r| for a scalar residual
 
     def penalty_trajectory(self, xs: Array, us: Array) -> Array:
-        """W1-DRO margin ``radius * Sigma_t ||d r/d x||`` over the visited ``(x, u)`` pairs."""
+        """The local-gradient margin ``radius * Sigma_t ||d r/d x||_F`` over the visited ``(x, u)``
+        pairs: a sum over the steps, not the W1 worst case."""
         return self.radius * jnp.sum(jax.vmap(self.local_lipschitz)(xs, us))
 
 
