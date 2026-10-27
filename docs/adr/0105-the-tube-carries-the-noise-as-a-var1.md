@@ -2,6 +2,16 @@
 
 **Status:** accepted, 2026-10-19. Amends the noise model of ADR 0080. Amended 2026-10-19: the tube
 carries the error of the noise it reads off the log.
+Measured 2026-10-27 (`scripts/bench_boptest_tube.py cover --call rerun`, 100 logs a cell, 200 draws
+a log): on the one-zone cell whose unlogged rate noise is AR(0.99), the noise read off the log has
+a standard deviation of 0.056 K a step, where the plant's is 0.09 K; the white and AR(0.5) cells
+read 0.093 K. The warning fires on all 100 logs of the AR(0.5), AR(0.9) and AR(0.99) cells, and on
+6 of 100 white-noise logs. On the AR(0.99) cell's logs the tube held the plant at the first step
+on 0.950 of draws before ADR 0104 added the field's error in quadrature and on 0.909 after it, the
+tube one step ahead 0.134 K and 0.121 K. On 0.22.0 it holds 0.913 there, and 0.957, 0.955 and
+0.944 in the white, AR(0.5) and AR(0.9) cells. ADR 0104 names this cost: the sum in quadrature
+fits worse where the field's error is not an honest standard error. The tube does not widen here,
+as decided below.
 
 ## Context
 
