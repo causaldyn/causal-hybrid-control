@@ -1,0 +1,55 @@
+/* The half-panel jackknife (chc.switchback.read_switchback, jackknife=True; Dhaene and Jochmans,
+   Review of Economic Studies 2015).
+
+   An estimate over T periods with E theta_T = theta + B/T + C/T^2 + O(T^-3) is jackknifed over
+   the run and its two halves, each read on its own periods: J = 2 theta_T - (theta_1 + theta_2)/2.
+
+   STEP 1  even T, disjoint halves of T/2: the 1/T term cancels and -2C/T^2 is left.
+   STEP 2  odd T, halves of m = (T + 1)/2 sharing the middle period: the 1/T term still cancels,
+           to B/(T m) = O(T^-2).
+   STEP 3  an estimate whose mean is known exactly: the variance with divisor T,
+           E = s2 (1 - 1/T), is unbiased once jackknifed (B = -s2, C = 0).
+   STEP 4  the jackknife's influence on one row: a half's bread is half the run's to first order,
+           so a row's influence is twice its run's in the half that holds it, and
+           2 phi - (2 phi)/2 = phi: J's first-order variance is the run's, and what the code sums
+           are the second-order differences between the three fits.
+   STEP 5  the 1/T bias of a least-squares AR(1) slope with an intercept, -(1 + 3a)/T (Kendall
+           1954), as an instance of STEP 1's B: the jackknife removes it to O(T^-2).
+   Maxima is the source of truth. */
+display2d : false$
+ratprint : false$
+
+mean_of(n) := theta + B/n + C/n^2$
+j_even : ratsimp(2*mean_of(T) - (mean_of(T/2) + mean_of(T/2))/2 - theta)$
+print("STEP 1 even T: E J - theta =", j_even,
+      if ratsimp(j_even + 2*C/T^2) = 0 then "(PASS: -2 C/T^2)" else "(FAIL)")$
+
+m : (T + 1)/2$
+j_odd : ratsimp(2*mean_of(T) - (mean_of(m) + mean_of(m))/2 - theta)$
+lead : ratsimp(subst(C = 0, j_odd))$
+print("STEP 2 odd T: E J - theta =", factor(j_odd), "; its B part", factor(lead),
+      if ratsimp(lead - B/(T*m)) = 0 then "(PASS: B/(T m), O(T^-2))" else "(FAIL)")$
+print("STEP 2 T * (E J - theta) as T -> inf:", limit(T*j_odd, T, inf), "(0: no 1/T term)")$
+
+ev(n) := s2*(1 - 1/n)$
+j_var : ratsimp(2*ev(T) - (ev(T/2) + ev(T/2))/2)$
+print("STEP 3 the variance with divisor T, jackknifed: E J =", j_var,
+      if ratsimp(j_var - s2) = 0 then "(PASS: unbiased)" else "(FAIL)")$
+/* and the sample at T = 4: x = (1, 2, 4, 7) */
+xs : [1, 2, 4, 7]$
+vT(v) := block([n : length(v), mu], mu : apply("+", v)/n, apply("+", map(lambda([t], (t - mu)^2), v))/n)$
+jk : 2*vT(xs) - (vT([1, 2]) + vT([4, 7]))/2$
+print("STEP 3 at x = (1, 2, 4, 7): the run's", vT(xs), ", the halves'", vT([1, 2]), vT([4, 7]),
+      ", jackknifed", jk)$
+
+/* a row's influence: phi_T = Binv x e / T-scale; the half's bread is (B/2)^-1 = 2 Binv */
+phi : Binv*xe$
+q : 2*phi - (2*Binv*xe)/2$
+print("STEP 4 2 phi - (half's influence)/2 =", ratsimp(q), if ratsimp(q - phi) = 0 then "(PASS)" else "(FAIL)")$
+
+kendall(n) := a - (1 + 3*a)/n$
+j_ar : ratsimp(2*kendall(T) - (kendall(T/2) + kendall(T/2))/2)$
+print("STEP 5 the AR(1) slope's first-order mean, jackknifed:", j_ar,
+      if ratsimp(j_ar - a) = 0 then "(PASS)" else "(FAIL)")$
+print("STEP 5 at a = 0.9: the slope's bias over 200 periods", float(-(1 + 3*0.9)/200),
+      ", over a half of 100", float(-(1 + 3*0.9)/100))$

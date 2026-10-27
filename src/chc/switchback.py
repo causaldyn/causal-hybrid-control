@@ -41,7 +41,8 @@ its minimum detectable effect and its loss against the effect's own best design,
 favourable ``a`` of the prior. Every variance is asymptotic in ``T``. :func:`read_switchback` reads
 an effect off the data a design produced, with a standard error from the data, and
 :func:`restate_mde` reads it off the first periods of the run, an internal pilot, and restates the
-minimum detectable effect the whole run can detect. :func:`randomisation_test` and
+minimum detectable effect the whole run can detect. A reading's ``jackknife`` removes the 1/T bias
+of the plug-in and the local projection by the half-panel jackknife. :func:`randomisation_test` and
 :func:`randomisation_interval` infer from the design's own randomisation instead of from ``T``
 being large: the test is exact at any number of blocks, and the interval is exact given a range
 for ``a``.
@@ -1035,6 +1036,106 @@ def _design_projection(u, y, h: int, z: float):
     return estimate, se, (estimate - z * se, estimate + z * se)
 
 
+def _influence(target, regressors, lags: int) -> tuple[np.ndarray, np.ndarray]:
+    """One least-squares fit of :func:`_fit` with ``lags`` read the same way: its coefficients,
+    and each row's influence on them, ``(X'X)^-1 x_t e_t`` shaped ``(coefficients, zones, rows)``
+    and scaled by the square root of :func:`_fit`'s small-sample factor, so that the influences'
+    products summed within a zone up to ``lags`` apart are :func:`_fit`'s covariance."""
+    y, x = _within(target), _within(regressors)
+    bread = np.linalg.inv(np.einsum("izt,jzt->ij", x, x))
+    theta = bread @ np.einsum("izt,zt->i", x, y)
+    scores = x * (y - np.einsum("i,izt->zt", theta, x))[None]
+    n = y.shape[-2] * y.shape[-1]
+    scale = n / (n - x.shape[0] - y.shape[-2])
+    return theta, np.einsum("ij,jzt->izt", bread, scores) * math.sqrt(scale)
+
+
+def _long_run(q: np.ndarray, lags: int) -> float:
+    """The zones' summed long-run variance of ``q``, shaped ``(zones, rows)``: its autocovariances
+    within a zone up to ``lags`` apart, unweighted, as :func:`_fit` sums them."""
+    total = float((q * q).sum())
+    for lag in range(1, lags + 1):
+        total += 2.0 * float((q[:, lag:] * q[:, :-lag]).sum())
+    return total
+
+
+def _half_panel(u, y, estimand: Horizon, analysis: SwitchbackAnalysis, z: float):
+    """The half-panel jackknife of the plug-in or the local projection, ``2 tau_T - (tau_1 +
+    tau_2) / 2`` over the run and its two halves, each half fitted on its own periods, and its
+    standard error from the three fits' influences on each row: twice the run's, less half of
+    each half's. The steady state's interval is Fieller's at the jackknifed ``(a, b)``."""
+    periods = u.shape[1]
+    h = estimand.periods
+    projection = analysis == "local_projection"
+    if projection:
+        _iid_lever(u)
+    elif h > 1.0 or abs(_lag_one(u)) * math.sqrt(u.size) > _IID:
+        _first_order(u, y)
+    # an odd run's halves share its middle period, which still cancels the 1/T term
+    half = (periods + 1) // 2
+    reach = int(h) if projection else 1
+    if half - reach + 1 < 3:
+        raise ValueError(
+            f"the jackknife reads each half of the run on its own, and a half of {half} periods "
+            f"leaves fewer than 3 rows a zone for {estimand.name}"
+        )
+    estimates, parameters, influences = [], [], []
+    for start, stop in ((0, periods), (0, half), (periods - half, periods)):
+        lever, outcome = u[:, start:stop], y[:, start : stop + 1]
+        if not (lever.max(axis=1) > lever.min(axis=1)).any():
+            raise ValueError(
+                "the jackknife reads each half of the run on its own, and the lever never "
+                f"switches in periods {start} to {stop - 1}"
+            )
+        # each row's influence on (tau, a, b), or on tau alone, placed at its period in the run
+        placed = np.zeros((1 if projection else 3, *y[:, 1:].shape))
+        if projection:
+            rows = stop - start - reach + 1
+            ahead = sum(outcome[:, j : j + rows] for j in range(1, reach + 1))
+            theta, influence = _influence(
+                ahead, np.stack([lever[:, :rows], outcome[:, :rows]]), reach - 1
+            )
+            estimates.append(float(theta[0]))
+            placed[0, :, start : start + rows] = influence[0]
+        else:
+            theta, influence = _influence(outcome[:, 1:], np.stack([outcome[:, :-1], lever]), 0)
+            a, b = float(theta[0]), float(theta[1])
+            if math.isinf(h) and a >= 1.0:
+                raise ValueError(
+                    f"the fitted persistence a_hat = {a:.4f} over periods {start} to {stop - 1} "
+                    "is at or past 1: the jackknife has no steady state to read there"
+                )
+            estimates.append(b * _s(a, h))
+            placed[0, :, start:stop] = b * _ds(a, h) * influence[0] + _s(a, h) * influence[1]
+            placed[1:, :, start:stop] = influence
+        parameters.append(theta)
+        influences.append(placed)
+    full, first, second = estimates
+    estimate = 2.0 * full - 0.5 * (first + second)
+    q = 2.0 * influences[0] - 0.5 * (influences[1] + influences[2])
+    variance = _long_run(q[0], reach - 1)
+    _finite_variance(variance)
+    se = math.sqrt(variance)
+    if projection:
+        return estimate, se, (estimate - z * se, estimate + z * se)
+    a = float(parameters[0][0])
+    near = math.sqrt(float((influences[0][1] ** 2).sum()) * u.shape[0]) / (1.0 - a)
+    if h > 1.0 and near > _NEAR_UNIT_ROOT:
+        _log.warning(
+            "a_hat = %.4f, and one zone's standard error on it is %.0f%% of 1 - a_hat: each half "
+            "reads a_hat on half the periods, closer still to the unit root, and the jackknife "
+            "spreads further (3.3 times the uncorrected reading at a = 0.95 over 200 periods)",
+            a,
+            100.0 * near,
+            extra={"chc_event": "switchback_near_unit_root", "a_hat": a, "ratio": near},
+        )
+    if math.isinf(h):
+        jack = 2.0 * parameters[0] - 0.5 * (parameters[1] + parameters[2])
+        cov = np.einsum("izt,jzt->ij", q[1:], q[1:])
+        return estimate, se, _fieller(float(jack[0]), float(jack[1]), cov, z)
+    return estimate, se, (estimate - z * se, estimate + z * se)
+
+
 def _block_totals(y, blocks: BlockDesign, count: int) -> np.ndarray:
     """Each of the first ``count`` blocks' total over the periods it keeps, zone by zone."""
     zones, length = y.shape[0], blocks.length
@@ -1113,6 +1214,7 @@ def read_switchback(
     blocks: BlockDesign | None = None,
     alpha: float = 0.05,
     se: Literal["model", "design"] = "model",
+    jackknife: bool = False,
 ) -> SwitchbackReading:
     """Read ``estimand`` off a switchback's data by ``analysis``.
 
@@ -1142,8 +1244,9 @@ def read_switchback(
     above, and is asymptotic in ``T``: the regression fits its intercept and ``y_t`` on the same
     periods, which biases the local projection by ``-(H - 1) tau_H / (T - H + 1)`` to first order
     on one zone on the working model, less on more zones, and reads its variance low on a short
-    run. Neither has an exact correction: on more zones the bias depends on ``a``
-    (``validation/local_projection_bias.mac``). On ``x' = 0.8 x + 2 u + eps`` with i.i.d. ``eps``
+    run. Neither has an exact correction, though ``jackknife`` below removes it to first order: on
+    more zones the bias depends on ``a`` (``validation/local_projection_bias.mac``). On
+    ``x' = 0.8 x + 2 u + eps`` with i.i.d. ``eps``
     its 95 % interval for ``tau_3`` on one zone covered 0.880 over 60 periods, 0.901 over 100,
     0.929 over 200, 0.940 over 400 and 0.947 over 1000, and as much with ``eps`` AR(0.5); on 64
     zones, where the bias weighs more against the pooled standard error, 0.926 over 300 periods
@@ -1166,6 +1269,30 @@ def read_switchback(
     asymptotic in ``T``. It is wider than the model's where the model's holds, since it uses
     neither the regression's intercept nor ``y_t``.
 
+    ``jackknife=True`` reads the plug-in (``"state_aware"``) or the local projection by the
+    half-panel jackknife (Dhaene and Jochmans, Review of Economic Studies 2015),
+    ``2 tau_T - (tau_1 + tau_2) / 2``: each half of the run is read on its own periods, with its
+    own intercepts and fit, and an odd run's halves share the middle period. It removes the 1/T
+    bias both readings carry, the local projection's and the one ``a_hat`` passes to the plug-in,
+    leaving ``O(1/T^2)`` (``validation/half_panel_jackknife.mac``); Dhaene and Juodis (arXiv
+    2610.26427) show it stays effective for persistent local projections.
+    Its standard error is its own, from each row's influence on the three fits, twice the run's
+    less half each half's, summed within a zone over the lags the reading keeps, so it is read on
+    one zone as on many. The steady state's interval is Fieller's at the jackknifed ``a`` and
+    ``b``, and every other interval is normal. On ``x' = a x + u + eps`` with fair coins (1000 to
+    6000 runs a cell), the steady state at ``a = 0.9`` over 200 periods read -0.68 of its 10 on
+    one zone and -0.73 on 16 zones, and the jackknife -0.12 and -0.04; their intervals covered
+    0.965 and 0.934 of 0.95, against 0.931 and 0.821 for the uncorrected reading's Fieller
+    interval, since ``a_hat``'s bias does not shrink with zones. Over 400 periods the bias went
+    from -0.33 to -0.02 (covered 0.942); ``tau_5`` at ``a = 0.9`` over 200, -0.120 to -0.002
+    (0.931 to 0.943); ``tau_3``'s local projection at ``a = 0.8`` over 60, 100 and 200 periods,
+    -0.082, -0.060 and -0.040 to +0.031, +0.005 and -0.011 (0.895, 0.912 and 0.932 to 0.935,
+    0.945 and 0.949). Its standard error was 0.94 to 1.06 of its spread. The correction costs
+    spread, 3 % to 19 % where there is a bias to remove, and 0.6 % on the channel at an i.i.d.
+    lever, which has none. On a short run near the unit root each half reads ``a_hat`` closer
+    still to it: at ``a = 0.95`` over 200 periods the jackknife spread 3.3 times as far as the
+    uncorrected reading, and it warns where the run's own reading does.
+
     Raises:
         ValueError: when the shapes disagree, the lever is not 0 or 1 or never switches, the
             outcome is not finite, ``alpha`` is outside ``(0, 1)``, ``blocks`` is given without
@@ -1176,7 +1303,10 @@ def read_switchback(
             is neither ``"model"`` nor ``"design"``, or ``"design"`` is asked of another analysis
             than the local projection, of a lever that is not a fair coin each period, of a run no
             longer than the ``6 log T`` lags the plug-in reads, or of an outcome that never moves
-            off its first reading.
+            off its first reading; and when ``jackknife`` is asked of another analysis or with
+            ``se="design"``, of a run whose halves leave fewer than 3 rows a zone, of a half in
+            which the lever never switches, or of a steady state some half fits ``a_hat >= 1``
+            to.
     """
     u = np.atleast_2d(np.asarray(_real_numbers(lever, "lever"), dtype=np.float64))
     y = np.atleast_2d(np.asarray(_real_numbers(outcome, "outcome"), dtype=np.float64))
@@ -1199,6 +1329,11 @@ def read_switchback(
         raise ValueError(
             f"a design standard error reads the local projection of an i.i.d. lever, not {analysis}"
         )
+    if jackknife and (se != "model" or analysis not in ("state_aware", "local_projection")):
+        raise ValueError(
+            "the jackknife corrects the plug-in's and the local projection's 1/T bias under the "
+            f"model standard error, not {analysis} with se={se!r}"
+        )
     h = estimand.periods
     z = NormalDist().inv_cdf(1.0 - alpha / 2.0)
     if blocks is not None:
@@ -1207,9 +1342,11 @@ def read_switchback(
                 f"{estimand.name} is read by blocks of {int(h)} keeping the last, got {blocks}"
             )
         estimate, error, interval = _block_difference(u, y, blocks, z)
+    elif analysis == "local_projection" and math.isinf(h):
+        raise ValueError("a local projection reads a finite horizon, not the steady state")
+    elif jackknife:
+        estimate, error, interval = _half_panel(u, y, estimand, analysis, z)
     elif analysis == "local_projection":
-        if math.isinf(h):
-            raise ValueError("a local projection reads a finite horizon, not the steady state")
         reader = _design_projection if se == "design" else _projection
         estimate, error, interval = reader(u, y, int(h), z)
     else:
@@ -1224,6 +1361,7 @@ def read_switchback(
             "estimate": estimate,
             "se": error,
             "se_over": se,
+            "jackknife": jackknife,
         },
     )
     return SwitchbackReading(estimand, analysis, estimate, error, interval, zones, periods)
