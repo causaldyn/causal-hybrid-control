@@ -139,7 +139,7 @@ def _split(doc: str) -> tuple[str, dict[str, str]]:
 def _marked(module: str) -> set[tuple[str, str]]:
     """The entries of ``chc.<module>`` its docstrings and field comments mark experimental, each
     with the module it is listed under."""
-    path = ROOT / "src" / "chc" / f"{module}.py"
+    path = Path(chc.__file__).resolve().parent / f"{module}.py"
     lines = path.read_text().splitlines()
     marked: set[str] = set()
 

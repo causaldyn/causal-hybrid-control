@@ -143,7 +143,8 @@ def test_the_list_holds_each_kind_and_no_entry_twice() -> None:
         "record key",
     }
     assert all(re.fullmatch(r"0\.\d+\.\d+", entry.since) for entry in REMOVALS)
-    adrs = {path.name[:4] for path in (SRC.parent.parent / "docs" / "adr").glob("[0-9]*.md")}
+    adr_dir = Path(__file__).resolve().parent.parent / "docs" / "adr"
+    adrs = {path.name[:4] for path in adr_dir.glob("[0-9]*.md")}
     assert sorted({adr for entry in REMOVALS for adr in entry.adrs} - adrs) == []
 
 
