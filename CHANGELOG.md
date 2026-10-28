@@ -9,10 +9,10 @@ experimental may change in any minor release (`docs/api/index.md`).
 
 ## [1.0.0] — 2026-10-28
 
-The surface freezes: what 0.24.1 warned about leaves, and from here the stable tier follows
-semantic versioning. No default and no number moves. To prepare, run your suite on 0.24.1 with
-`-W error::DeprecationWarning`: every name under Removed warns there, naming its replacement
-(ADR 0147).
+The surface freezes: what 0.24.1 warned about leaves, and from here the stable tier follows semantic
+versioning. No default moves, and one number only where a solver stopped short (Fixed). To prepare,
+run your suite on 0.24.1 with `-W error::DeprecationWarning`: every name under Removed warns there,
+naming its replacement (ADR 0147).
 
 ### Removed
 
@@ -50,6 +50,16 @@ semantic versioning. No default and no number moves. To prepare, run your suite 
   keyword arguments and change a default in a minor, with a changelog entry arguing why;
   `chc.research` and the names marked experimental may change or be withdrawn in any minor
   release (`docs/api/index.md`). The classifier is `Development Status :: 5 - Production/Stable`.
+
+### Fixed
+
+- **`plan_regret_bound(constraints=)` meets the maximum it bounds.** Its dual descent, L-BFGS-B
+  from the linear program's multipliers, could stop well short where a lever meets its box: the
+  dual's gradient bends there and the secant pairs taken across the bend spoil the search. On one
+  three-lever, two-row problem the bound was 0.5218 against a maximum of 0.4332. The descent now
+  restarts where it stopped while the dual still falls, at most 8 times; that problem meets its
+  maximum, and 12 000 random problems are all within 3e-14 of it. A bound stopped short was valid
+  before and is valid now; it is only tighter.
 
 ## [0.24.1] — 2026-10-28
 

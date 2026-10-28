@@ -4043,6 +4043,9 @@ def _stacked_rows(
     return matrix, np.concatenate(rights)
 
 
+_ROW_BOUND_RESTARTS = 8
+
+
 def _row_bound(
     gradient: NDArray[np.float64],
     curvature: NDArray[np.float64],
@@ -4059,8 +4062,9 @@ def _row_bound(
     (``validation/regret_bound_rows.mac``). It is separable, each term's maximiser the clip of
     ``-t_i / c_i`` to the box, or the box's end ``-t_i`` points to where ``c_i = 0``. The linear
     program, solved by HiGHS, gives the ``c = 0`` multipliers; where ``c > 0`` they start
-    L-BFGS-B's descent of ``q``, whose gradient is ``right - G d(lam)``. Each bound is ``q`` at
-    the multipliers its solver ended on, so a solver stopped short loosens it and never voids it.
+    L-BFGS-B's descent of ``q``, whose gradient is ``right - G d(lam)``, restarted where it stops
+    while ``q`` still falls and its projected gradient exceeds ``1e-12``. Each bound is ``q`` at the
+    multipliers its solver ended on, so a solver stopped short loosens it and never voids it.
 
     Returns:
         Each action's gain at the dual's maximiser ``d(lam)``, the dual bound, and the linear
@@ -4096,15 +4100,25 @@ def _row_bound(
     linear = dual(start, np.zeros_like(flat_c))[0]
     lam = start
     if np.any(flat_c > 0.0):
-        descent = minimize(
-            lambda value: dual(value, flat_c),
-            start,
-            jac=True,
-            method="L-BFGS-B",
-            bounds=[(0.0, None)] * matrix.shape[0],
-            options={"maxiter": 10_000, "ftol": 1e-15, "gtol": 1e-12},
-        )
-        lam = np.maximum(np.asarray(descent.x, dtype=np.float64), 0.0)
+        # q's gradient bends where a lever meets its box, and secant pairs taken across a bend can
+        # stop L-BFGS-B well above the minimum; a restart from where it stopped drops them.
+        value = dual(lam, flat_c)[0]
+        for _ in range(_ROW_BOUND_RESTARTS):
+            descent = minimize(
+                lambda point: dual(point, flat_c),
+                lam,
+                jac=True,
+                method="L-BFGS-B",
+                bounds=[(0.0, None)] * matrix.shape[0],
+                options={"maxiter": 10_000, "ftol": 1e-15, "gtol": 1e-12},
+            )
+            ended = np.maximum(np.asarray(descent.x, dtype=np.float64), 0.0)
+            ended_value, slope = dual(ended, flat_c)
+            if ended_value >= value:
+                break
+            lam, value = ended, ended_value
+            if np.max(np.abs(lam - np.maximum(lam - slope, 0.0))) <= 1e-12:
+                break
     total = dual(lam, flat_c)[0]
     d = move(lam, flat_c)
     gains = (-flat_g * d - 0.5 * flat_c * d**2).reshape(gradient.shape)

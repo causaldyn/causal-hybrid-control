@@ -913,6 +913,8 @@ def _primal(gradient, curvature, below, above, matrix, right, starts) -> float:
     rows=st.integers(1, 2),
     flat=st.booleans(),
 )
+# L-BFGS-B stopped 0.089 above the maximum here, its secant pairs spoilt by the box's kinks
+@example(seed=33666, levers=3, rows=2, flat=False)
 def test_row_bound_meets_the_concave_program(seed, levers, rows, flat) -> None:
     """regret_bound_rows.mac STEP 1 (weak duality) and STEP 3c (strong duality): the dual bound is
     never below the box-and-rows maximum, found by SLSQP from five starts, and with every
