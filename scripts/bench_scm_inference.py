@@ -19,6 +19,9 @@ the treated unit out of every placebo's donor pool, from the same exact weights.
               which looks at the blank periods; drawn at random; an effect of 1 and of 2; factors
               and errors white noise, where the theorem's exchangeability holds; 10 blank; and
               effects of 0, 1 and 2 with white-noise factors and errors and with AR(1) 0.8.
+    blank_rho the serial="ar1" intervals where the AR(1) coefficient's error matters: factors and
+              errors AR(1) at 0.95, 2, 4 and 19 donors, 15 fitting, 5 blank and 10 post periods,
+              the unit chosen on the fitting periods, an effect of 1.
 
 Each of the first three reports the placebo's rejections at 5% and 10%, both constructions and the
 replicates where only one rejects; and, at alpha = 0.05 (the default) and 0.10, how often the
@@ -31,8 +34,13 @@ check of the AR(1) model rejects at 5% and 10%, and at alpha = 0.05, 0.10 and 0.
 reading, how often each period's interval covers its effect, how many are unbounded, and their
 median width.
 
-Run: uv run python scripts/bench_scm_inference.py {size,power,designed,blank} [--replicates N]
-     [--workers W]
+The blank_rho section reports, at alpha = 0.05 and 0.10, each post period's coverage under the
+plug-in coefficient, under ar_error="jackknife" (not with 2 donors, which it refuses) and at the
+true coefficient, with each rate's standard error; the median radius at the last post period;
+and the mean and spread of the estimate and of its jackknife standard error.
+
+Run: uv run python scripts/bench_scm_inference.py {size,power,designed,blank,blank_rho}
+     [--replicates N] [--workers W]
 """
 
 from __future__ import annotations
@@ -45,7 +53,12 @@ from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
-from chc.scm import blank_period_inference, synthetic_control, synthetic_control_inference
+from chc.scm import (
+    _ar1_intervals,
+    blank_period_inference,
+    synthetic_control,
+    synthetic_control_inference,
+)
 
 SEED = 20260930
 N_PRE = 20
@@ -75,10 +88,20 @@ BLANK_CASES = [
     (19, 0.8, 2.0, "fit", 5),
 ]
 BLANK_ALPHAS = (0.05, 0.10, 0.20)
+# (donors, AR(1) coefficient of the errors and the factors, effect): 15 fitting, 5 blank and 10 post
+# periods
+RHO_CASES = [(2, 0.95, 1.0), (4, 0.95, 1.0), (19, 0.95, 1.0)]
+RHO_FIT, RHO_BLANK, RHO_POST = 15, 5, 10
+RHO_ALPHAS = (0.05, 0.10)
 
 
-def _panel(rng: np.random.Generator, units: int, rho: float, factor_rho: float = 0.5) -> np.ndarray:
-    periods = N_PRE + N_POST
+def _panel(
+    rng: np.random.Generator,
+    units: int,
+    rho: float,
+    factor_rho: float = 0.5,
+    periods: int = N_PRE + N_POST,
+) -> np.ndarray:
     factors = np.empty((periods, 3))
     factors[0] = rng.normal(size=3) / math.sqrt(1.0 - factor_rho**2)
     for t in range(1, periods):
@@ -210,6 +233,76 @@ def _blank_summary(case, rows: list[dict]) -> dict:
     return out
 
 
+def _rho_replicate(job) -> dict:
+    (donors, rho, effect), index = job
+    rng = np.random.default_rng([SEED, donors, round(100 * rho), round(100 * effect), index, 4])
+    n_pre = RHO_FIT + RHO_BLANK
+    outcomes = _panel(rng, donors + 1, rho, factor_rho=rho, periods=n_pre + RHO_POST)
+    fits = [synthetic_control(outcomes, unit, RHO_FIT).pre_rmspe for unit in range(donors + 1)]
+    treated = int(np.argmin(fits))
+    outcomes[treated, n_pre:] += effect
+    row: dict = {}
+    for alpha in RHO_ALPHAS:
+        readings = ("plug-in", "jackknife") if donors >= 3 else ("plug-in",)
+        for reading in readings:
+            found = blank_period_inference(
+                outcomes, treated, n_pre, RHO_BLANK, alpha=alpha, serial="ar1", ar_error=reading
+            )
+            row["estimate"] = found.ar_coefficient
+            if found.ar_coefficient_variance is not None:
+                row["jackknife_se"] = math.sqrt(found.ar_coefficient_variance)
+            row[(reading, alpha)] = found.intervals
+        weights = found.estimate.weights
+        gaps = outcomes[treated] - np.delete(outcomes, treated, axis=0).T @ weights
+        innovations = gaps[RHO_FIT:n_pre] - rho * gaps[RHO_FIT - 1 : n_pre - 1]
+        row[("true", alpha)] = _ar1_intervals(
+            innovations, float(gaps[n_pre - 1]), gaps[n_pre:], rho, alpha
+        )
+    for key, intervals in list(row.items()):
+        if isinstance(key, tuple):
+            lo, hi = intervals.T
+            row[key] = {
+                "covers": [bool(c) for c in (lo <= effect) & (effect <= hi)],
+                "last_radius": float(hi[-1] - lo[-1]) / 2.0,
+            }
+    return row
+
+
+def _rho_summary(case, rows: list[dict]) -> dict:
+    donors, rho, effect = case
+    n = len(rows)
+    estimates = [r["estimate"] for r in rows]
+    out: dict = {
+        "donors": donors,
+        "rho": rho,
+        "effect": effect,
+        "replicates": n,
+        "estimate": {
+            "mean": round(float(np.mean(estimates)), 4),
+            "sd": round(float(np.std(estimates)), 4),
+        },
+    }
+    if donors >= 3:
+        errors = [r["jackknife_se"] for r in rows]
+        out["jackknife_se"] = {
+            "mean": round(float(np.mean(errors)), 4),
+            "sd": round(float(np.std(errors)), 4),
+        }
+    for reading in ("plug-in", "jackknife", "true"):
+        for alpha in RHO_ALPHAS:
+            cells = [r[(reading, alpha)] for r in rows if (reading, alpha) in r]
+            if not cells:
+                continue
+            hits = np.sum([cell["covers"] for cell in cells], axis=0)
+            out[f"{reading}_{alpha:.2f}"] = {
+                "covers": [_rate(int(h), n) for h in hits],
+                "median_last_radius": round(
+                    float(np.median([cell["last_radius"] for cell in cells])), 4
+                ),
+            }
+    return out
+
+
 def _rate(hits: int, n: int) -> dict:
     p = hits / n
     return {"rate": round(p, 4), "se": round(math.sqrt(p * (1.0 - p) / n), 4)}
@@ -247,7 +340,7 @@ def _summarise(case, rows: list[dict]) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("section", choices=[*sorted(CASES), "blank"])
+    parser.add_argument("section", choices=[*sorted(CASES), "blank", "blank_rho"])
     parser.add_argument("--replicates", type=int, default=1000)
     parser.add_argument("--workers", type=int, default=4)
     args = parser.parse_args()
@@ -259,6 +352,12 @@ def main() -> None:
                 jobs = [(case, i) for i in range(args.replicates)]
                 rows = list(pool.map(_blank_replicate, jobs, chunksize=8))
                 results.append(_blank_summary(case, rows))
+                print(json.dumps(results[-1]), flush=True)
+        if args.section == "blank_rho":
+            for case in RHO_CASES:
+                jobs = [(case, i) for i in range(args.replicates)]
+                rows = list(pool.map(_rho_replicate, jobs, chunksize=8))
+                results.append(_rho_summary(case, rows))
                 print(json.dumps(results[-1]), flush=True)
         for case in CASES.get(args.section, []):
             jobs = [(args.section, case, i) for i in range(args.replicates)]
