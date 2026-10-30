@@ -9,6 +9,7 @@ the worst share than the reference, and its level's mean gain is the gains' own.
 the boxes' search is checked against every split of a grid, with and without carryover.
 """
 
+import hashlib
 import importlib
 import logging
 from fractions import Fraction
@@ -911,3 +912,46 @@ def test_its_programs_keep_their_costs_out_of_highs_scaling(monkeypatch, builder
     assert plan.stopped == "closed"
     assert least
     assert min(least) >= 0.1
+
+
+def _digest(plan) -> str:
+    """A digest of what a plan decides and reports, its seconds left out."""
+    digest = hashlib.sha256()
+    for array in (plan.spend, plan.gain, np.array([plan.cvar, plan.bound])):
+        digest.update(np.ascontiguousarray(array, dtype="<f8").tobytes())
+    digest.update(f"{plan.stopped}:{plan.boxes}".encode())
+    return digest.hexdigest()
+
+
+def _pinned_problems() -> dict[str, tuple[list[tuple[Channel, ...]], float, int, dict]]:
+    """Three fixed problems: concave channels without carryover, Hill channels that start convex,
+    and concave channels with carryover over a history; each split moves off its reference."""
+    concave = [tuple(Channel(ONE, c.curve, c.coefficient) for c in r) for r in _readings(6, 21)]
+    s_shaped = {"lower": np.zeros(2), "upper": np.full(2, 2.0), "against": np.array([1.2, 0.8])}
+    box = {"against": CURRENT, "lower": LOWER, "upper": UPPER}
+    return {
+        "concave": (concave, 180.0, 1, {"level": 0.7, **box}),
+        "s_shaped": (_hill_readings(5, seed=3), 2.0, 1, {"level": 0.4, **s_shaped}),
+        "carryover": (
+            _readings(8, seed=13, spread=0.1),
+            BUDGET,
+            PERIODS,
+            {"level": 0.4, "history": HISTORY, **box},
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("problem", "digest"),
+    [
+        ("concave", "451555d8df150f41550b653d464396759a643185105884aeb2ca2614239db4bd"),
+        ("s_shaped", "e04ff945e849c3b249652b12aff92da758b60e456eec806f77640ccfda09419c"),
+        ("carryover", "2eab7f497be3c8152f6ef3915ccaa328a81e8479626132699a5bc8ae7030e7c3"),
+    ],
+)
+def test_the_readings_weighed_alike_plan_as_they_did(problem, digest):
+    """The split, gains, ``cvar``, ``bound``, how the search stopped and its boxes, on three fixed
+    problems, are the bits 1.0.0 returned, the same under both resolutions of the lock's
+    dependencies."""
+    readings, budget, periods, box = _pinned_problems()[problem]
+    assert _digest(cvar_allocate(readings, budget, periods, **box)) == digest
