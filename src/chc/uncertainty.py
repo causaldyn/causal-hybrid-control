@@ -23,7 +23,7 @@ import operator
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import equinox as eqx
 import jax
@@ -33,9 +33,9 @@ import optax
 from jax import Array
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from numpy.typing import ArrayLike, NDArray
-from scipy import integrate
+from scipy import integrate, sparse
 from scipy import linalg as scipy_linalg
-from scipy.optimize import brentq
+from scipy.optimize import brentq, linprog
 from scipy.stats import chi2
 from scipy.stats import t as student_t
 
@@ -2083,7 +2083,8 @@ def confounding_robust_inflation(cvar_upper: float, cvar_lower: float, gamma: fl
     relaxes ``E[w | x] = 1`` to ``E[w] = 1``: still valid, and wider by ``sd(Y) / sd(Y | X)``,
     ``1 / sqrt(1 - R^2)`` in a Gaussian location model, 1.41 at ``R^2 = 0.5`` and 4.47 at 0.95
     (``validation/msm_level_bound.mac``); :func:`msm_worst_case_mean`'s ``covariates`` reads the
-    residual's tails instead.
+    residual's tails instead, and its ``covariate_form="quantile"`` the tails of ``Y | x`` about
+    a linear conditional quantile.
 
     It bounds a level, not a slope: a contrast of two levels is bounded by the upper bound
     at one less the lower bound at the other (Frauen et al., Lemma 3). A channel radius spent as
@@ -2099,10 +2100,9 @@ def confounding_robust_inflation(cvar_upper: float, cvar_lower: float, gamma: fl
 _CROSS_FIT_FOLDS = 5
 
 
-def _cross_fitted(outcomes: NDArray[np.float64], covariates: ArrayLike) -> NDArray[np.float64]:
-    """Each outcome's least-squares prediction from ``(1, covariates)``, fitted on the
-    :data:`_CROSS_FIT_FOLDS` interleaved folds it is not in: a prediction fitted on its own row
-    would read the residual's tails narrower than they are."""
+def _covariate_design(outcomes: NDArray[np.float64], covariates: ArrayLike) -> NDArray[np.float64]:
+    """``(1, covariates)``, one row per outcome, refused where too few outcomes lie outside each of
+    the :data:`_CROSS_FIT_FOLDS` folds to fit its coefficients."""
     x = np.asarray(_real_numbers(covariates, "covariates"), dtype=np.float64)
     if x.ndim == 1:
         x = x[:, None]
@@ -2117,6 +2117,15 @@ def _cross_fitted(outcomes: NDArray[np.float64], covariates: ArrayLike) -> NDArr
             f"cross-fitting {design.shape[1]} coefficients on {_CROSS_FIT_FOLDS} folds needs more "
             f"than {design.shape[1]} outcomes outside each fold; got {n} outcomes"
         )
+    return design
+
+
+def _cross_fitted(outcomes: NDArray[np.float64], covariates: ArrayLike) -> NDArray[np.float64]:
+    """Each outcome's least-squares prediction from ``(1, covariates)``, fitted on the
+    :data:`_CROSS_FIT_FOLDS` interleaved folds it is not in: a prediction fitted on its own row
+    would read the residual's tails narrower than they are."""
+    design = _covariate_design(outcomes, covariates)
+    n = outcomes.size
     fold = np.arange(n) % _CROSS_FIT_FOLDS
     fitted = np.empty(n)
     for k in range(_CROSS_FIT_FOLDS):
@@ -2158,6 +2167,94 @@ def _box_worst_case(residuals, low, high) -> tuple[float, float]:
     return float(weights @ residuals) / n, threshold
 
 
+def _weight_box(
+    gamma: float, propensity: ArrayLike | None, n: int
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Each unit's weight box: ``[1/Gamma, Gamma]``, or Tan's where a propensity is given."""
+    if propensity is None:
+        return np.full(n, 1.0 / gamma), np.full(n, gamma)
+    return _odds_weights(gamma, propensity, n)
+
+
+def _quantile_regression(
+    design: NDArray[np.float64],
+    outcomes: NDArray[np.float64],
+    gamma: float,
+    weights: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """The coefficients ``beta`` minimising ``sum weights_i rho(outcomes_i - design_i beta)``,
+    ``rho`` the pinball loss at level ``Gamma / (Gamma + 1)`` (Koenker and Bassett 1978): the
+    linear program in ``(beta, u, v)`` with ``design beta + u - v = outcomes``, ``u, v >= 0``,
+    solved by HiGHS. The costs are scaled so the least is 1: HiGHS cycles on degenerate programs
+    whose costs lie below 0.1."""
+    n, p = design.shape
+    above, below = gamma / (gamma + 1.0), 1.0 / (gamma + 1.0)
+    scale = float(np.min(weights)) * min(above, below)
+    cost = np.concatenate([np.zeros(p), weights * (above / scale), weights * (below / scale)])
+    identity = sparse.identity(n, format="csr")
+    program = linprog(
+        cost,
+        A_eq=sparse.hstack([sparse.csr_matrix(design), identity, -identity], format="csr"),
+        b_eq=outcomes,
+        bounds=[(None, None)] * p + [(0.0, None)] * (2 * n),
+        method="highs",
+    )
+    if program.status != 0:
+        raise RuntimeError(f"the quantile regression's linear program failed: {program.message}")
+    return np.asarray(program.x[:p], dtype=np.float64)
+
+
+def _quantile_level_bound(
+    outcomes: NDArray[np.float64],
+    gamma: float,
+    design: NDArray[np.float64],
+    propensity: ArrayLike | None,
+    *,
+    cross_fitted: bool = True,
+) -> tuple[float, NDArray[np.float64]]:
+    """The upper MSM bound on the mean with a linear conditional quantile taken out of the tails,
+    and the per-unit term whose mean it is: ``psi = q + lo (Y - q) + (hi - lo) (Y - q)_+``,
+    ``E[w Y] <= E[psi]`` for any ``q(x)`` and any weight in ``[lo, hi]`` with ``E[w | x] = 1``,
+    equal at the quantile of ``Y | x`` at level ``Gamma / (Gamma + 1)`` (Dorn and Guo 2023). ``q``
+    is the quantile regression of ``outcomes`` on ``design`` weighted by ``hi - lo``, fitted on
+    the :data:`_CROSS_FIT_FOLDS` interleaved folds each unit is not in (on every unit where not
+    ``cross_fitted``). The bound is ``mean(psi)`` on the held units and never the program's
+    optimum, so the solver's tolerance can cost sharpness and not validity."""
+    if gamma == 1.0:
+        return float(np.mean(outcomes)), outcomes.copy()
+    n = outcomes.size
+    low, high = _weight_box(gamma, propensity, n)
+    room = high - low
+    if not cross_fitted:
+        q = design @ _quantile_regression(design, outcomes, gamma, room)
+    else:
+        fold = np.arange(n) % _CROSS_FIT_FOLDS
+        q = np.empty(n)
+        for k in range(_CROSS_FIT_FOLDS):
+            held = fold == k
+            fit = _quantile_regression(design[~held], outcomes[~held], gamma, room[~held])
+            q[held] = design[held] @ fit
+    residuals = outcomes - q
+    term = q + low * residuals + room * np.maximum(residuals, 0.0)
+    return float(np.mean(term)), term
+
+
+def _quantile_design(
+    outcomes: NDArray[np.float64], covariate_form: str, covariates: ArrayLike | None
+) -> NDArray[np.float64] | None:
+    """The design the quantile form fits on, or None for the residualised form; refused where
+    ``covariate_form`` names neither form or asks for the quantile with no covariates."""
+    if covariate_form not in ("residualised", "quantile"):
+        raise ValueError(
+            f"covariate_form must be 'residualised' or 'quantile', got {covariate_form!r}"
+        )
+    if covariate_form == "residualised":
+        return None
+    if covariates is None:
+        raise ValueError("covariate_form='quantile' fits a quantile on covariates; none were given")
+    return _covariate_design(outcomes, covariates)
+
+
 def _level_bound(
     outcomes: NDArray[np.float64],
     gamma: float,
@@ -2168,11 +2265,7 @@ def _level_bound(
     weight box Tan's where a propensity is given, and the per-unit term whose mean it is (at the
     optimum's threshold, so the threshold's own error moves it at second order only)."""
     residuals = outcomes - fitted
-    n = outcomes.size
-    if propensity is None:
-        low, high = np.full(n, 1.0 / gamma), np.full(n, gamma)
-    else:
-        low, high = _odds_weights(gamma, propensity, n)
+    low, high = _weight_box(gamma, propensity, outcomes.size)
     value, q = _box_worst_case(residuals, low, high)
     term = fitted + q + low * (residuals - q) + (high - low) * np.maximum(residuals - q, 0.0)
     if propensity is None:
@@ -2187,6 +2280,7 @@ def msm_worst_case_mean(
     *,
     covariates: ArrayLike | None = None,
     propensity: ArrayLike | None = None,
+    covariate_form: Literal["residualised", "quantile"] = "residualised",
 ) -> float:
     """Sharp MSM worst-case (upper) mean of ``outcomes`` over the ``[1/Gamma, Gamma]`` weight box.
 
@@ -2214,13 +2308,43 @@ def msm_worst_case_mean(
     (``validation/msm_level_bound.mac``). Without it the box ``[1/Gamma, Gamma]`` is that of a
     continuous dose, and on a binary lever's odds it overstates the inflation by ``1 / (1 - e)``.
 
+    ``covariate_form="quantile"`` takes the conditional quantile of ``Y | x`` out of the tails in
+    place of a mean, Dorn and Guo's quantile balancing. For any ``q(x)`` and a weight in the box
+    ``[lo, hi]`` with ``E[w | x] = 1``, ``E[w Y] <= E[psi]``, ``psi = q + lo (Y - q) + (hi - lo)
+    (Y - q)_+``, with equality at the quantile at level ``Gamma / (Gamma + 1)``, for the box and
+    for Tan's alike. ``mean(psi) - mean(Y)`` is the pinball loss at that level weighted by ``hi -
+    lo``, so ``q``, linear in ``(1, covariates)``, is a weighted quantile regression (Koenker and
+    Bassett 1978), a linear program solved by HiGHS on the 5 folds each outcome is not in. The
+    bound is ``psi``'s mean on the held outcomes and never the program's optimum: ``psi`` bounds
+    the mean for any ``q``, so the solver's tolerance costs sharpness and not validity. It is
+    sharp per ``x`` where that quantile is linear in the covariates and valid otherwise, and it
+    reads a spread of ``Y | x`` that moves with ``x``, which the residualised form pools: at
+    ``Gamma = 2`` the residualised inflation is 1.064 times the per-``x`` one on two equal cells
+    of sd 0.3 and 3 and 1.25 on two-point cells, and on ``Y = 2X + (1 + 2X) eps``, ``X ~ U(0,
+    1)``, its bound is 2.0998 where the per-``x`` one is 2.0908
+    (``validation/msm_quantile_balancing.mac``). It costs 5 linear programs of ``n`` units each,
+    one a fold, at each ``Gamma``, none at ``Gamma = 1``, where it is the mean. Its limits: a
+    quantile that is not linear in the columns passed leaves it valid but wider than the per-``x``
+    bound, and the columns must carry the basis expansion, as for the residualised form; each fold
+    fits ``p + 1`` coefficients out of sample, which widens it as ``p`` grows; and where the
+    spread does not move with ``x`` it buys nothing over the residualised form, whose threshold
+    is read in sample where its own is cross-fitted.
+
     ``outcomes`` are one per unit, of shape ``(n,)`` or the column ``(n, 1)``.
+
+    Args:
+        covariate_form: what ``covariates`` take out of the tails. ``"residualised"``, the
+            default, a least-squares prediction of the mean; ``"quantile"``, *experimental*, a
+            linear conditional quantile at level ``Gamma / (Gamma + 1)``, which needs
+            ``covariates`` and reads ``propensity`` as the default does.
 
     Raises:
         ValueError: when ``outcomes`` have another shape, none, or one not finite, ``Gamma`` is
             below 1 or not finite, ``covariates`` do not have one row a outcome or are not
-            finite, there are too few outcomes to cross-fit their coefficients, or
-            ``propensity`` is not one number or one per outcome in ``(0, 1)``.
+            finite, there are too few outcomes to cross-fit their coefficients,
+            ``propensity`` is not one number or one per outcome in ``(0, 1)``, or
+            ``covariate_form`` names neither form or is ``"quantile"`` without ``covariates``.
+        RuntimeError: when HiGHS leaves a quantile regression unsolved.
     """
     # a nan Gamma reached the tail's length as nan, and an infinite one an empty tail
     if not math.isfinite(gamma):
@@ -2229,6 +2353,9 @@ def msm_worst_case_mean(
     if gamma < 1.0:
         raise ValueError(f"MSM sensitivity Gamma must be >= 1, got {gamma}")
     y = _outcome_vector(outcomes)
+    design = _quantile_design(y, covariate_form, covariates)
+    if design is not None:
+        return _quantile_level_bound(y, gamma, design, propensity)[0]
     if covariates is not None or propensity is not None:
         fitted = np.zeros_like(y) if covariates is None else _cross_fitted(y, covariates)
         return _level_bound(y, gamma, fitted, propensity)[0]
@@ -2248,6 +2375,7 @@ def confounding_robust_radius(
     *,
     covariates: ArrayLike | None = None,
     propensity: ArrayLike | None = None,
+    covariate_form: Literal["residualised", "quantile"] = "residualised",
 ) -> float:
     """Inflate a pessimism radius by the MSM confounding gap: ``rho0 + (worst_case - mean)``.
 
@@ -2259,10 +2387,21 @@ def confounding_robust_radius(
     cover. Feeds :func:`chc.support.pessimistic_control` as a widened uncertainty budget.
     ``outcomes``, ``covariates`` and ``propensity`` are :func:`msm_worst_case_mean`'s, refused as
     it refuses them.
+
+    Args:
+        covariate_form: :func:`msm_worst_case_mean`'s, ``"residualised"`` by default.
+            ``"quantile"``, *experimental*, takes a linear conditional quantile of the outcome out
+            of the tails, at 5 linear programs, one a fold; it needs ``covariates``.
     """
     outcomes = _outcome_vector(outcomes)
     mu = float(np.mean(outcomes))
-    worst = msm_worst_case_mean(outcomes, gamma, covariates=covariates, propensity=propensity)
+    worst = msm_worst_case_mean(
+        outcomes,
+        gamma,
+        covariates=covariates,
+        propensity=propensity,
+        covariate_form=covariate_form,
+    )
     return nominal_radius + (worst - mu)
 
 
@@ -2674,6 +2813,7 @@ def negative_control_gamma(
     level: float | None = None,
     covariates: ArrayLike | None = None,
     propensity: ArrayLike | None = None,
+    covariate_form: Literal["residualised", "quantile"] = "residualised",
 ) -> float:
     """Smallest ``Gamma`` whose MSM interval covers zero on a KNOWN-NULL outcome.
 
@@ -2729,6 +2869,19 @@ def negative_control_gamma(
     that of each unit's prediction plus its residual's term, and leaves out the prediction's own
     error, which enters at first order only where the residual's law moves with the covariates.
     ``outcomes`` are :func:`msm_worst_case_mean`'s, refused as it refuses them.
+
+    ``covariate_form="quantile"`` reads the endpoint with :func:`msm_worst_case_mean`'s quantile
+    form, refitting the quantile at each ``Gamma`` the bisection visits: 5 linear programs a
+    ``Gamma``, about ``5 log2(gamma_max / tol)`` in all, 250 at the defaults. At ``level`` the
+    endpoint's standard error is its ``psi``'s over ``sqrt(n)``: the quantile's own error moves
+    the endpoint at second order (Dorn, Guo and Kallus, JASA 2025). ``psi`` grows with ``Gamma``
+    at a fixed quantile, but the quantile is refitted at each, so the endpoint need not be
+    monotone; the bisection then returns one ``Gamma`` at which it crosses zero.
+
+    Args:
+        covariate_form: :func:`msm_worst_case_mean`'s, ``"residualised"`` by default.
+            ``"quantile"``, *experimental*, needs ``covariates`` and costs 5 linear programs at
+            each ``Gamma`` the search visits.
     """
     # a nan returned gamma_max, as if it were the confounding measured
     y = _outcome_vector(outcomes)
@@ -2740,16 +2893,27 @@ def negative_control_gamma(
         raise ValueError(f"level must lie in (0, 1), got {level}")
     if level is not None and y.size < 2:
         raise ValueError("a confidence bound needs at least two outcomes to read a spread from")
+    design = _quantile_design(y, covariate_form, covariates)
     mu = float(np.mean(y))
     if mu == 0.0:
         return 1.0
     reflected = -np.sign(mu) * y  # mean is now -|mu| < 0; the binding endpoint is the upper one
     if covariates is not None or propensity is not None:
         z = 0.0 if level is None else float(student_t.ppf(0.5 + 0.5 * level, y.size - 1))
-        fitted = np.zeros_like(y) if covariates is None else _cross_fitted(reflected, covariates)
+        if design is not None:
+
+            def bound(gamma: float) -> tuple[float, NDArray[np.float64]]:
+                return _quantile_level_bound(reflected, gamma, design, propensity)
+        else:
+            fitted = (
+                np.zeros_like(y) if covariates is None else _cross_fitted(reflected, covariates)
+            )
+
+            def bound(gamma: float) -> tuple[float, NDArray[np.float64]]:
+                return _level_bound(reflected, gamma, fitted, propensity)
 
         def endpoint(gamma: float) -> float:
-            value, term = _level_bound(reflected, gamma, fitted, propensity)
+            value, term = bound(gamma)
             if level is None:
                 return value
             return value + z * float(np.std(term, ddof=1) / math.sqrt(y.size))
