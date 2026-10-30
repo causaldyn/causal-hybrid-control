@@ -2099,21 +2099,23 @@ def cvar_allocate(
     rtol: float = 1e-9,
     atol: float = 0.0,
     max_boxes: int = 500,
+    weights: ArrayLike | None = None,
 ) -> CvarAllocation:
     """Spend ``budget`` for the most mean gain over ``against`` in the worst ``level`` share of
     ``readings`` of the channels: the gain's conditional value at risk.
 
     Each reading is a whole set of channels, one a column, as :func:`minimax_allocate` takes them: a
-    posterior's draws, say, weighed alike. A split's gain under a reading is its return less the
-    reference's, both on the reading's curves, and the split returned has the most mean gain over
-    the worst ``level`` share of the readings, to the tolerance ``rtol`` and ``atol`` set, or as
-    near as 500 rounds of cutting planes come on concave curves and ``max_boxes`` boxes of the
-    rates past them; :attr:`CvarAllocation.stopped` says which, and :attr:`CvarAllocation.limit`
-    what stopped it. A program HiGHS leaves unsolved, one it stalls on stopped by an iteration
-    limit, leaves its box the bound of the programs before it. The reference spends the budget in
-    the box and gains nothing under any reading, so the split returned never does worse in that
-    share than keeping it. At ``level = 1`` the split has the most mean gain, the posterior's
-    expected return; as the level falls it moves only as far as the worst readings agree it gains.
+    posterior's draws, say, weighed alike unless ``weights`` weigh them. A split's gain under a
+    reading is its return less the reference's, both on the reading's curves, and the split returned
+    has the most mean gain over the worst ``level`` share of the readings, to the tolerance ``rtol``
+    and ``atol`` set, or as near as 500 rounds of cutting planes come on concave curves and
+    ``max_boxes`` boxes of the rates past them; :attr:`CvarAllocation.stopped` says which, and
+    :attr:`CvarAllocation.limit` what stopped it. A program HiGHS leaves unsolved, one it stalls on
+    stopped by an iteration limit, leaves its box the bound of the programs before it. The reference
+    spends the budget in the box and gains nothing under any reading, so the split returned never
+    does worse in that share than keeping it. At ``level = 1`` the split has the most mean gain, the
+    posterior's expected return; as the level falls it moves only as far as the worst readings agree
+    it gains.
 
     The mean of the worst share is ``max_eta eta - E[(eta - gain)_+] / level`` (Rockafellar and
     Uryasev 2000), concave in the split where every curve is concave. The cutting planes (Kelley
@@ -2135,6 +2137,17 @@ def cvar_allocate(
     on the first: on the envelopes the planes propose ``[1.27, 0.33]``, which returns 0.705 against
     the reference's 0.804, and the search closes on the reference, its ``cvar`` 0.
 
+    A posterior that stacks several fits (Yao, Vehtari, Simpson and Gelman 2018) weighs its draws
+    unequally, and ``weights`` carry that: the worst share's mean is then
+    ``max_eta eta - sum_i w_i (eta - gain_i)_+ / level``, the weights scaled to sum to 1, its
+    boundary a weighted quantile, the reading there taking the rest of the share. The planes, the
+    boxes' cuts, ``cvar`` and ``bound`` all read the weights. Integer weights plan as the readings
+    repeated that many times, to the search's tolerance, without a reading a copy; a reading of
+    weight 0 is left out of the share, its gain still read on the split. Two linear readings, A
+    returning 3 and 1 a unit on two channels and B 1 and 2, the reference the even split of 100, at
+    the level 0.8: weighed alike the split moves all onto the first channel, ``cvar`` 6.25;
+    weighed 1 and 3 it moves all onto the second, ``cvar`` 3.125.
+
     Args:
         readings: the readings, each with one channel a column; at least one.
         budget, periods, lower, upper, history: as :func:`allocate` takes them.
@@ -2150,12 +2163,16 @@ def cvar_allocate(
             (:attr:`CvarAllocation.floored`).
         max_boxes: the most boxes the search plans. A box is cut only where its halves fit
             within the count.
+        weights: ``(readings,)`` each reading's weight in the share, finite and at least 0, not
+            all 0, scaled to sum to 1; ``None``, the default, weighs every reading alike, as
+            before weights were taken. With weights the tolerance's scale is the reference's
+            largest return among the readings of positive weight.
 
     Raises:
         TypeError, ValueError: what :func:`allocate` refuses of any reading, the box, the history
             or the search's settings; no readings; readings of different numbers of channels; a
             level outside ``(0, 1]``; a reference of the wrong shape, outside the box or not
-            spending the budget.
+            spending the budget; weights of the wrong shape, not finite, negative or all 0.
     """
     settings = _Settings(rtol, atol, max_boxes)
     readings = tuple(tuple(reading) for reading in readings)
@@ -2168,6 +2185,7 @@ def cvar_allocate(
         )
     if not 0.0 < level <= 1.0:
         raise ValueError(f"level={level!r} is not a share of the readings in (0, 1]")
+    weighed = None if weights is None else _reading_weights(weights, len(readings))
     lower_rates, upper_rates, spent = _inputs(readings[0], periods, lower, upper, history)
     for reading in readings[1:]:
         _check(reading, periods, lower_rates, upper_rates, spent)
@@ -2184,19 +2202,31 @@ def cvar_allocate(
             f"the reference spends {float(reference.sum())} a period and the budget {rate}; the "
             "gain is read against a split of the same budget"
         )
+    # a reading of no weight is no reading of the share's: the split is searched without it, and
+    # its gain read on the split after
+    kept = np.ones(len(readings), dtype=bool) if weighed is None else weighed > 0.0
     with _Stopwatch() as clock:
-        curves = _stacks([_worths(reading, spent, periods) for reading in readings])
+        worths = [_worths(reading, spent, periods) for reading in readings]
+        curves = _stacks([w for w, keep in zip(worths, kept, strict=True) if keep])
         spend, gains, cvar, bound, ending = _cvar_search(
             curves,
             [reference],
-            _read(curves, reference, len(readings))[0].sum(axis=1),
+            _read(curves, reference, int(kept.sum()))[0].sum(axis=1),
             math.inf,
             rate,
             level,
             lower_rates,
             upper_rates,
             settings,
+            None if weighed is None else weighed[kept],
         )
+        if not kept.all():
+            left = _stacks([w for w, keep in zip(worths, kept, strict=True) if not keep])
+            out = int((~kept).sum())
+            on_split, on_reference = _read(left, spend, out)[0], _read(left, reference, out)[0]
+            every = np.empty(len(readings))
+            every[kept], every[~kept] = gains, on_split.sum(axis=1) - on_reference.sum(axis=1)
+            gains = every
         compiling, searching = clock.read()
     if ending.stopped == "cap":
         _log.warning(
@@ -2231,6 +2261,22 @@ def cvar_allocate(
         compile_seconds=compiling,
         search_seconds=searching,
     )
+
+
+def _reading_weights(weights: ArrayLike, count: int) -> np.ndarray:
+    """``weights``, one a reading of ``count``, finite, none below 0 and not all 0, scaled to sum
+    to 1: first by their largest, so that no sum of them overflows."""
+    weighed = np.asarray(weights, dtype=float)
+    if weighed.shape != (count,):
+        raise ValueError(f"weights has shape {weighed.shape}; it needs one a reading, {count}")
+    if not np.all(np.isfinite(weighed)):
+        raise ValueError(f"weights {weighed} are not all finite")
+    if np.any(weighed < 0.0):
+        raise ValueError(f"weights {weighed} has a negative weight; a reading weighs 0 or more")
+    if not np.any(weighed > 0.0):
+        raise ValueError("weights are all 0; at least one reading must weigh something")
+    weighed = weighed / weighed.max()
+    return weighed / weighed.sum()
 
 
 @dataclass(frozen=True)
@@ -2334,6 +2380,7 @@ def _cvar_search(
     lower: np.ndarray,
     upper: np.ndarray,
     settings: _Settings,
+    weights: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, float, float, _Ending]:
     """:func:`cvar_allocate`'s split, its gains, their worst share's mean, a bound on every
     split's, and how the search ended.
@@ -2343,7 +2390,8 @@ def _cvar_search(
     ``starts`` first, and the first of them is the split returned where none gains more; ``top``
     bounds every split's worst share's mean before any plane does. The tolerance is set by
     ``settings`` on the largest of ``base``, and a box is cut only where the count of boxes, with
-    its halves, stays within ``settings.max_boxes``."""
+    its halves, stays within ``settings.max_boxes``. The readings are weighed alike, or each by its
+    own of ``weights``, positive and summing to 1."""
     count, size = sum(members.size for members in curves[0].members), starts[0].size
     # where every curve is concave each envelope is its curve: one box, each split read once
     alike = all(bends is None for stack in curves for bends in stack.bends)
@@ -2361,14 +2409,19 @@ def _cvar_search(
     # share's mean times -max(share, 1), so its least cost is 1: HiGHS folds the costs into its
     # scaling when the least is under 0.1, and at 1 / share that stretched the scaling's factors to
     # 2^15; the solution then missed 1e-10 once unscaled, and HiGHS's second, unscaled solve, its
-    # costs unperturbed, cycled at the level 1, where every excess's reduced cost is zero
+    # costs unperturbed, cycled at the level 1, where every excess's reduced cost is zero. Weighed,
+    # a reading's excess costs its weight over the level times the same factor, so a reading of
+    # weight 1 / count costs what it costs alike. Raising the least weight's cost to 1 instead
+    # raised eta's to the level over that weight: past a spread of 1e7 in the weights HiGHS then
+    # stalled, or read the program unbounded
     share = level * count
     weight = max(share, 1.0)
+    costs = weight / share if weights is None else weight * weights / level
     lines = np.repeat(np.arange(count), size + 2)
     columns = np.concatenate(
         [np.tile(np.arange(size + 1), (count, 1)), size + 1 + np.arange(count)[:, None]], axis=1
     ).ravel()
-    objective = np.concatenate([np.zeros(size), [-weight], np.full(count, weight / share)])
+    objective = np.concatenate([np.zeros(size), [-weight], np.broadcast_to(costs, count)])
     unit, measure = _unit(rate), _unit(scale)
     best: tuple[float, np.ndarray, np.ndarray] = (-np.inf, starts[0], np.zeros(count))
 
@@ -2382,7 +2435,7 @@ def _cvar_search(
         values, slopes = _read(envelopes, split, count)
         exact = values if alike else _read(curves, split, count)[0]
         gain = exact.sum(axis=1) - base
-        value = _cvar(gain, level)
+        value = _cvar(gain, level, weights)
         if value > best[0]:
             best = (value, split, gain)
         return values.sum(axis=1) - base, slopes, values - exact, gain
@@ -2405,9 +2458,9 @@ def _cvar_search(
         for _ in range(_ROUNDS if alike else _BOX_ROUNDS):
             for split in splits:
                 gain, slopes, over, actual = tried(envelopes, split)
-                value = _cvar(gain, level)
+                value = _cvar(gain, level, weights)
                 if value > relaxed:
-                    relaxed, at, excess = value, split, _cvar_weights(actual, level) @ over
+                    relaxed, at, excess = value, split, _cvar_weights(actual, level, weights) @ over
                 plane = np.concatenate(
                     [-slopes * (unit / measure), np.ones((count, 1)), -np.ones((count, 1))], 1
                 )
@@ -2445,7 +2498,7 @@ def _cvar_search(
                     (least, most),
                     *((0.0, float(np.nextafter(most - least, np.inf))),) * count,
                 ],
-                partial(_evened, reading=reading, count=count, cap=weight / share, total=weight),
+                partial(_evened, reading=reading, count=count, cap=costs, total=weight),
             )
             if program.status in _UNSOLVED:
                 unsolved.append(int(program.nit))
@@ -2558,11 +2611,12 @@ def _cut(
 
 
 def _evened(
-    duals: np.ndarray, reading: np.ndarray, count: int, cap: float, total: float
+    duals: np.ndarray, reading: np.ndarray, count: int, cap: float | np.ndarray, total: float
 ) -> np.ndarray:
     """The duals of :func:`_cvar_search`'s planes rescaled reading by reading, ``reading`` each
-    plane's, so that no reading's mass passes ``cap``, its excess's cost, and the masses come to
-    ``total``, eta's, as far as the readings with a mass can take them.
+    plane's, so that no reading's mass passes ``cap``, its excess's cost, one for every reading or
+    one a reading, and the masses come to ``total``, eta's, as far as the readings with a mass can
+    take them.
 
     A reading's mass past its excess's cost leaves that excess's reduced cost below nothing, and
     masses that miss eta's cost leave eta's off nothing; either costs the bound read from them the
@@ -2581,9 +2635,16 @@ def _evened(
     return np.where(duals < 0.0, duals * factor[reading], 0.0)
 
 
-def _cvar_weights(gain: np.ndarray, level: float) -> np.ndarray:
+def _cvar_weights(gain: np.ndarray, level: float, weights: np.ndarray | None = None) -> np.ndarray:
     """The weight :func:`_cvar` puts on each of ``gain``: ``1 / (level * n)`` on each of the worst
-    whole share, the rest of the share on the next, none on the others."""
+    whole share, the rest of the share on the next, none on the others. Where the readings carry
+    ``weights``, summing to 1, each of the worst takes its own weight over ``level`` until the share
+    is full, the reading at its boundary the rest of it."""
+    if weights is not None:
+        order, taken = _taken(gain, level, weights)
+        out = np.zeros(gain.size)
+        out[order] = taken / level
+        return out
     order = np.argsort(gain, kind="stable")
     share = level * gain.size
     whole = int(np.floor(share))
@@ -2594,8 +2655,21 @@ def _cvar_weights(gain: np.ndarray, level: float) -> np.ndarray:
     return weights
 
 
-def _cvar(gain: np.ndarray, level: float) -> float:
-    """The mean of the worst ``level`` share of ``gain``, each weighed alike, the last in part."""
+def _taken(gain: np.ndarray, level: float, weights: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """``gain``'s order, worst first, and the mass of the ``level`` share each takes in that order:
+    its whole weight up to the share's boundary, a weighted quantile, the reading there the rest."""
+    order = np.argsort(gain, kind="stable")
+    mass = weights[order]
+    before = np.concatenate([[0.0], np.cumsum(mass)[:-1]])
+    return order, np.clip(level - before, 0.0, mass)
+
+
+def _cvar(gain: np.ndarray, level: float, weights: np.ndarray | None = None) -> float:
+    """The mean of the worst ``level`` share of ``gain``, each weighed alike, the last in part, or
+    each by its own of ``weights``, summing to 1, where the readings carry them."""
+    if weights is not None:
+        order, taken = _taken(gain, level, weights)
+        return float(taken @ gain[order]) / level
     ordered = np.sort(gain)
     share = level * ordered.size
     whole = int(np.floor(share))
