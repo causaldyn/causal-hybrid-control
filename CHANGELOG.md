@@ -7,6 +7,37 @@ experimental may change in any minor release (`docs/api/index.md`).
 
 ## [Unreleased]
 
+Four opt-in readings; no default moves, each pinned to the bit against 1.0.0.
+
+### Added
+
+- `blank_period_inference(serial="ar1", ar_error="jackknife")` (experimental) and
+  `BlankPeriodInference.ar_coefficient_variance`: the AR(1) intervals widen by the coefficient's
+  donor-jackknife variance through the delta method, about the plug-in's centres. On factor panels
+  at 0.95, 10 post periods, `alpha = 0.1`, 4 donors cover 0.895–0.912 where the plug-in falls to
+  0.852, at a last-period radius 13 % wider; 19 donors cover 0.903–0.916 against the plug-in's
+  0.884. It refuses fewer than three donors and costs `n_donors - 1` times the plug-in's fits
+  (ADR 0148).
+- `cvar_allocate(weights=)` (experimental): the worst share's mean weighs each reading, as a
+  stacked posterior's draws are weighed; its boundary is a weighted quantile. Integer weights plan
+  as the readings repeated, and a reading of weight 0 is left out of the share, its gain still read
+  on the split (ADR 0149).
+- `msm_worst_case_mean(covariate_form="quantile")`, and the same argument of
+  `confounding_robust_radius` and `negative_control_gamma` (experimental): a cross-fitted linear
+  quantile regression at level `Gamma / (Gamma + 1)` is taken out of the tails in place of a mean
+  (Dorn and Guo's quantile balancing). Sharp per `x` where that quantile is linear in the
+  covariates and valid otherwise. Where the spread of `Y | x` moves with `x` it reads it: on
+  `Y = 2X + (1 + 2X) eps` at `Gamma = 2` the per-`x` bound is 2.0908, the residualised form's
+  2.0998. It costs 5 linear programs a `Gamma`, about 250 for `negative_control_gamma` at its
+  defaults (ADR 0150).
+- `LaggedGraph.state_p_values`, `LaggedGraph.control_p_values` and `LaggedGraph.causal_graph()`
+  (experimental): `discover_lagged_parents` keeps each edge's p-value, the shrink phase's last
+  test of it given the target's other kept parents, nominal and not post-selection valid, and
+  `causal_graph` unrolls the edges into a `CausalGraph` whose every edge is `discovered` by
+  `partial_corr_test` with that p-value, which `prescribe(adjustment=)` writes into the decision
+  record. A graph built by hand or by `TigramiteDiscovery` holds none, and `causal_graph` refuses
+  it (ADR 0151).
+
 ## [1.0.0] — 2026-10-28
 
 The surface freezes: what 0.24.1 warned about leaves, and from here the stable tier follows semantic
