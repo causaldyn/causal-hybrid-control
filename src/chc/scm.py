@@ -343,6 +343,8 @@ class BlankPeriodInference:
     the donors' gaps filtered by ``ar_coefficient``: small when their innovations still correlate
     at lags 1 and 2, which an AR(2), or factors and errors that persist at different rates, leave.
     It is reported and refuses nothing. Both are ``None`` in the default reading.
+    ``ar_coefficient_variance``, under ``ar_error="jackknife"`` alone, is the donor jackknife's
+    variance of ``ar_coefficient`` that widened the intervals; ``None`` otherwise.
 
     ``intervals[k]`` holds the effect in post period ``k`` with probability at least ``1 - alpha``:
     the gap there, plus or minus the ``ceil((1 - alpha) (T_blank + 1))``-th smallest absolute
@@ -352,8 +354,8 @@ class BlankPeriodInference:
     ``serial="ar1"``, ``intervals[k]`` is the prediction interval of a ``k + 1``-step forecast of
     the gaps from the last blank one, from the blank periods' innovations, with probability
     ``1 - alpha`` when they are normal at the true ``rho`` (see :func:`blank_period_inference`);
-    with ``ar_coefficient`` estimated, few donors or a long post period lower it; infinite with
-    fewer than two blank periods.
+    with ``ar_coefficient`` estimated, few donors or a long post period lower it, and
+    ``ar_error="jackknife"`` widens them by its error; infinite with fewer than two blank periods.
 
     Measured on factor panels of 19 donors, 15 fitting, 5 blank and 5 post periods, the treated
     unit the one its donors fit best on the fitting periods, 4000 a case
@@ -376,6 +378,7 @@ class BlankPeriodInference:
     arrangements: int
     ar_coefficient: float | None = None
     ar_check_p_value: float | None = None
+    ar_coefficient_variance: float | None = None
 
 
 def blank_period_inference(
@@ -386,6 +389,7 @@ def blank_period_inference(
     *,
     alpha: float = 0.05,
     serial: Literal["exchangeable", "ar1"] = "exchangeable",
+    ar_error: Literal["plug-in", "jackknife"] = "plug-in",
 ) -> BlankPeriodInference:
     """A designed geo test read as Abadie and Zhao read it: fit on the earlier periods before
     treatment, hold out the last ``n_blank`` of them, permute over the blank and post periods.
@@ -455,19 +459,35 @@ def blank_period_inference(
       at 0.8, 79.4%, 89.6% and 94.8%. They assume normal innovations, which the test does not.
     - The intervals' level is the true ``rho``'s. They plug the estimate in as if it were known,
       and its downward bias with few donors enters the forecast through ``rho^k`` and the level's
-      sum, so the shortfall grows with the post period. On factor panels whose factors and
-      errors are AR(1) at 0.95, 15 fitting, 5 blank and 10 post periods, at ``alpha = 0.1``
-      (2000 panels a case, 1000 at 19 donors; one standard error 0.007 and 0.010):
+      sum, so the shortfall grows with the post period.
+    - ``ar_error="jackknife"`` carries the estimate's error into the intervals. Each donor is left
+      out in turn, the other donors' gaps are rebuilt from each other alone and the coefficient
+      read again; ``ar_coefficient_variance`` is the jackknife variance of those estimates
+      (Efron and Stein, Annals of Statistics 9, 1981). The treated unit never enters it. Each
+      post period's centre ``c_k = u_k - rho^k u_0 - m a_k`` moves with ``rho``, the innovations'
+      mean ``m`` too, and the delta method adds ``(dc_k / drho)^2`` times that variance to the
+      forecast's variance under the same t quantile (``validation/scm_ar1_rho_error.mac``). The
+      centres, the test and every other output stay the plug-in's. It refits each donor's
+      synthetic control once for each other donor left out, ``n_donors - 1`` times the plug-in's
+      fits. On factor panels whose factors and errors are AR(1) at 0.95, 15 fitting, 5 blank and
+      10 post periods, the unit chosen on the fitting periods, at ``alpha = 0.1`` (2000 panels a
+      case, one standard error 0.007; ``scripts/bench_scm_inference.py blank_rho``):
 
-      | donors | mean estimate | coverage at k = 1 .. 10 | at the true ``rho`` |
-      |---|---|---|---|
-      | 2 | 0.857 | 0.904 falling to 0.854-0.858 | 0.904-0.912 |
-      | 4 | 0.893 | 0.892 falling to 0.864-0.870 | 0.886-0.898 |
-      | 19 | 0.917 | 0.889 falling to 0.878 | 0.883-0.899 |
+      | donors | mean estimate | plug-in, k = 1 .. 10 | ``"jackknife"`` | at the true ``rho`` |
+      |---|---|---|---|---|
+      | 2 | 0.857 | 0.903 falling to 0.830-0.836 | refused | 0.884-0.904 |
+      | 4 | 0.893 | 0.890 falling to 0.852-0.856 | 0.895-0.912 | 0.884-0.896 |
+      | 19 | 0.916 | 0.912 falling to 0.884-0.886 | 0.903-0.916 | 0.900-0.910 |
 
-      At ``alpha = 0.05`` on 4 donors they covered 0.946 falling to 0.920. Two donors' gaps are one
-      series and its negative, each donor fitted by the other, so the estimate reads one series
-      however the donors are resampled.
+      At ``alpha = 0.05`` on 4 donors the plug-in covered 0.942 falling to 0.916-0.918, the
+      jackknife 0.949-0.954. The jackknife's median radius at the last post period was 13% above
+      the plug-in's on 4 donors and 5% on 19. Its standard error averaged 0.116 and 0.061 where
+      the estimate's spread was 0.105 and 0.046: the jackknife overstates the error, as Efron and
+      Stein's inequality has it in expectation, and on 19 donors it covers above ``1 - alpha``
+      by up to 1.6 points where the plug-in fell short by 1.6. It widens; it does not remove the
+      estimate's bias, so the centres stay off where the bias puts them. It refuses 2 donors:
+      their gaps are one series and its negative, each donor fitted by the other, so leaving
+      either out leaves no gaps, and no resampling of the donors sees the estimate's error.
     - ``ar_check_p_value`` checks the AR(1) model on the donors' gaps the coefficient came from.
       Each donor's innovations less their mean are multiplied at lags 1 and 2 and summed over the
       donors period by period, since the donors' common factors correlate them; each lag's total,
@@ -483,13 +503,21 @@ def blank_period_inference(
             n_pre - 1]``; when ``alpha`` is outside ``(0, 1)``; when ``serial`` is neither
             reading; when there are more than a million arrangements to enumerate; or, for
             ``"ar1"``, with fewer than two donors or when the donors' gaps cannot give an AR(1)
-            coefficient (fewer than four periods after their fit, or none that move).
+            coefficient (fewer than four periods after their fit, or none that move); when
+            ``ar_error`` is neither reading, is ``"jackknife"`` without ``serial="ar1"``, or is
+            ``"jackknife"`` with fewer than three donors.
     """
     if not 0.0 < alpha < 1.0:
         msg = f"alpha must lie in (0, 1), got {alpha}"
         raise ValueError(msg)
     if serial not in ("exchangeable", "ar1"):
         msg = f"serial must be 'exchangeable' or 'ar1', got {serial!r}"
+        raise ValueError(msg)
+    if ar_error not in ("plug-in", "jackknife"):
+        msg = f"ar_error must be 'plug-in' or 'jackknife', got {ar_error!r}"
+        raise ValueError(msg)
+    if ar_error != "plug-in" and serial != "ar1":
+        msg = "ar_error reads the AR(1) coefficient's error, so it needs serial='ar1'"
         raise ValueError(msg)
     donor_pre, donor_post, treated_pre, treated_post = _split(outcomes, treated_unit, n_pre)
     if not 1 <= n_blank < n_pre:
@@ -519,11 +547,14 @@ def blank_period_inference(
         count=math.comb(n_held, n_post) * n_post,
     ).reshape(-1, n_post)
     # the last combination in lexicographic order is the post periods
-    ar_coefficient = ar_check_p_value = None
+    ar_coefficient = ar_check_p_value = ar_coefficient_variance = None
     if serial == "ar1":
-        donor_gaps = _donor_gaps(np.concatenate([donor_pre, donor_post], axis=1), n_fit)
+        donors = np.concatenate([donor_pre, donor_post], axis=1)
+        donor_gaps = _donor_gaps(donors, n_fit)
         ar_coefficient = _ar1_coefficient(donor_gaps)
         ar_check_p_value = _ar1_check(donor_gaps, ar_coefficient)
+        if ar_error == "jackknife":
+            ar_coefficient_variance = _ar1_jackknife_variance(donors, n_fit)
         last_fit_gap = treated_pre[n_fit - 1] - donor_pre[:, n_fit - 1] @ weights
         path = np.concatenate([[last_fit_gap], blank_gaps, att])
         innovations = path[1:] - ar_coefficient * path[:-1]
@@ -551,7 +582,13 @@ def blank_period_inference(
 
     if ar_coefficient is not None:
         intervals = _ar1_intervals(
-            innovations[:n_blank], float(blank_gaps[-1]), att, ar_coefficient, alpha
+            innovations[:n_blank],
+            float(blank_gaps[-1]),
+            att,
+            ar_coefficient,
+            alpha,
+            lagged_mean=float(np.mean(path[:n_blank])),
+            rho_variance=ar_coefficient_variance or 0.0,
         )
     else:
         # rounded first, so that (1 - alpha) (n_blank + 1) one ulp above a whole number takes its
@@ -568,6 +605,7 @@ def blank_period_inference(
         arrangements,
         ar_coefficient,
         ar_check_p_value,
+        ar_coefficient_variance,
     )
 
 
@@ -603,6 +641,28 @@ def _ar1_coefficient(gaps: Outcomes) -> float:
         raise ValueError(msg)
     estimate = float(np.sum(regressor * (gaps[:, end] - gaps[:, start]))) / denominator
     return min(max(estimate, -1.0), 1.0)
+
+
+def _ar1_jackknife_variance(donors: Outcomes, n_fit: int) -> float:
+    """The jackknife variance of the donors' AR(1) coefficient over its donors: each donor left out
+    in turn, the others' gaps rebuilt from the others alone and the coefficient read again,
+    ``(n - 1) / n`` times the sum of the left-out estimates' squared deviations from their mean
+    (Efron and Stein, Annals of Statistics 9, 1981)."""
+    n_donors = donors.shape[0]
+    if n_donors < 3:
+        msg = (
+            f"ar_error='jackknife' needs at least three donors, got {n_donors}: two donors' gaps "
+            f"are one series and its negative, each fitted by the other, so leaving either out "
+            f"leaves no gaps and no resampling of them sees the coefficient's error"
+        )
+        raise ValueError(msg)
+    left_out = np.array(
+        [
+            _ar1_coefficient(_donor_gaps(np.delete(donors, j, axis=0), n_fit))
+            for j in range(n_donors)
+        ]
+    )
+    return (n_donors - 1) / n_donors * float(np.sum((left_out - left_out.mean()) ** 2))
 
 
 # the lags the AR(1) model's residual check reads
@@ -641,7 +701,14 @@ def _ar1_check(gaps: Outcomes, rho: float) -> float:
 
 
 def _ar1_intervals(
-    innovations: Vector, last_blank_gap: float, att: Vector, rho: float, alpha: float
+    innovations: Vector,
+    last_blank_gap: float,
+    att: Vector,
+    rho: float,
+    alpha: float,
+    *,
+    lagged_mean: float = 0.0,
+    rho_variance: float = 0.0,
 ) -> NDArray[np.float64]:
     """Each post period's interval under gaps that follow an AR(1) with Gaussian innovations.
 
@@ -652,7 +719,15 @@ def _ar1_intervals(
     ``(u_k - rho^k u_0 - m a_k - tau_k) / (s sqrt(v_k + a_k^2 / T_B))`` is Student's t with
     ``T_B - 1`` degrees of freedom when the innovations are normal: the prediction interval of a
     ``k``-step forecast of an AR(1) with a known coefficient and an unknown level. Infinite with
-    fewer than two blank periods."""
+    fewer than two blank periods.
+
+    ``rho_variance`` is the coefficient's variance, carried into each interval by the delta method
+    (``validation/scm_ar1_rho_error.mac``). The centre ``c_k = tau^_k - rho^k u_0 - m a_k`` moves
+    with ``rho`` through ``rho^k``, ``a_k`` and ``m``, the innovations' mean ``m = mean(u_t) - rho
+    mean(u_(t-1))``, whose lagged gaps' mean is ``lagged_mean``; so ``dc_k / drho = -k rho^(k-1)
+    u_0 + lagged_mean a_k - m a_k'``, ``a_k' = sum_(j<k) j rho^(j-1)``, and ``(dc_k / drho)^2``
+    times ``rho_variance`` is added to the forecast's variance under the same t quantile. At 0 the
+    radius is the known coefficient's to the bit."""
     n_blank = innovations.size
     if n_blank < 2:
         return np.full((att.size, 2), [-math.inf, math.inf])
@@ -662,4 +737,14 @@ def _ar1_intervals(
     centre = att - rho ** (lags + 1) * last_blank_gap - float(np.mean(innovations)) * level
     quantile = float(special.stdtrit(n_blank - 1, 1.0 - alpha / 2.0))
     radius = quantile * float(np.std(innovations, ddof=1)) * np.sqrt(spread + level**2 / n_blank)
+    if rho_variance > 0.0:
+        level_slope = np.cumsum(lags * rho ** np.maximum(lags - 1, 0))
+        slope = (
+            -(lags + 1) * rho**lags * last_blank_gap
+            + lagged_mean * level
+            - float(np.mean(innovations)) * level_slope
+        )
+        # hypot(radius, 0) is radius to the bit, and hypot(q s sqrt(w), q |c'| sd) is q times the
+        # root of the two variances' sum
+        radius = np.hypot(radius, quantile * np.abs(slope) * math.sqrt(rho_variance))
     return np.column_stack([centre - radius, centre + radius])

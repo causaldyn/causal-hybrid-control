@@ -10,7 +10,7 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
-from scipy import stats
+from scipy import special, stats
 
 from chc.scm import _ar1_intervals, blank_period_inference, synthetic_control
 
@@ -480,11 +480,154 @@ def _ar1_outputs(found) -> list:
 def test_ar1_plug_in_reading_is_what_it_was() -> None:
     """Four panels with AR(0.8) factors and errors, 3, 5 and 19 donors, at ``alpha`` 0.05 and
     0.2: every output of the ``"ar1"`` reading, intervals and check included, digested as the
-    release produced them."""
+    previous release produced them, before ``ar_error`` existed; the default is ``"plug-in"`` and
+    carries no variance."""
     values: list = []
     for seed, units in ((0, 4), (1, 6), (2, 20), (3, 20)):
         outcomes = _ar_panel(5000 + seed, 0.8, units=units, periods=30)
         for alpha in (0.05, 0.2):
             found = blank_period_inference(outcomes, 0, 20, 5, alpha=alpha, serial="ar1")
+            assert found.ar_coefficient_variance is None
+            named = blank_period_inference(
+                outcomes, 0, 20, 5, alpha=alpha, serial="ar1", ar_error="plug-in"
+            )
+            assert _ar1_outputs(named) == _ar1_outputs(found)
             values += _ar1_outputs(found)
     assert _digest(values) == "47b4b0a8e5fff52100e47847f48944c89ecda0cfd559ac13635bdce2b5efb283"
+
+
+def test_ar_error_refuses_what_it_cannot_read() -> None:
+    outcomes = _ar_panel(12, 0.5, units=6)
+    with pytest.raises(ValueError, match="ar_error must be"):
+        blank_period_inference(outcomes, 0, 20, 5, serial="ar1", ar_error="bootstrap")  # ty: ignore[invalid-argument-type]
+    with pytest.raises(ValueError, match="needs serial='ar1'"):
+        blank_period_inference(outcomes, 0, 20, 5, ar_error="jackknife")
+    blank_period_inference(outcomes, 0, 20, 5, ar_error="plug-in")
+    with pytest.raises(ValueError, match="at least three donors, got 2: two donors' gaps"):
+        blank_period_inference(outcomes[:3], 0, 20, 5, serial="ar1", ar_error="jackknife")
+    found = blank_period_inference(outcomes[:4], 0, 20, 5, serial="ar1", ar_error="jackknife")
+    assert found.ar_coefficient_variance is not None
+
+
+def _coefficient(donors: np.ndarray, n_seen: int) -> float:
+    """Han, Phillips and Sul's estimator over each donor's synthetic control from the others,
+    written out as in the test of the coefficient above."""
+    numerator = denominator = 0.0
+    for j in range(donors.shape[0]):
+        gaps = synthetic_control(donors, j, n_seen).att
+        for s in range(gaps.size):
+            for t in range(s + 3, gaps.size):
+                regressor = gaps[t - 1] - gaps[s + 1]
+                numerator += regressor * (gaps[t] - gaps[s])
+                denominator += regressor**2
+    return min(max(numerator / denominator, -1.0), 1.0)
+
+
+def test_ar_error_jackknife_leaves_out_each_donor_and_never_the_treated_unit() -> None:
+    """Eight donors: each left out in turn, the other seven's synthetic controls rebuilt from each
+    other on the first 8 of 15 fitting periods, the coefficient read again; the variance is
+    ``(n - 1) / n`` times the left-out estimates' squared deviations. Moving the treated unit's
+    every period leaves it as it was."""
+    outcomes = _ar_panel(13, 0.8, units=9)
+    found = blank_period_inference(outcomes, 0, 20, 5, serial="ar1", ar_error="jackknife")
+    donors = outcomes[1:]
+    n = donors.shape[0]
+    left_out = [_coefficient(np.delete(donors, j, axis=0), 8) for j in range(n)]
+    mean = sum(left_out) / n
+    variance = (n - 1) / n * sum((r - mean) ** 2 for r in left_out)
+    assert variance > 0.0
+    assert found.ar_coefficient_variance == pytest.approx(variance, rel=0, abs=1e-12)
+    moved = outcomes.copy()
+    moved[0] += np.random.default_rng(2).normal(size=moved.shape[1])
+    again = blank_period_inference(moved, 0, 20, 5, serial="ar1", ar_error="jackknife")
+    assert again.ar_coefficient_variance == found.ar_coefficient_variance
+
+
+def test_ar_error_widening_is_the_delta_method_maxima_computes() -> None:
+    """``scm_ar1_intervals``' sample path at a coefficient variance of 1/50: the endpoints
+    ``validation/scm_ar1_rho_error.mac`` computes in exact arithmetic. At a variance of 0 the
+    intervals are the known coefficient's to the bit, whatever the lagged gaps' mean."""
+    path = np.array([0.3, -0.5, 1.1, 0.4, 0.9, -0.2])
+    innovations = path[1:4] - 0.6 * path[:3]
+    lagged = float(np.mean(path[:3]))
+    found = _ar1_intervals(
+        innovations, 0.4, path[4:], 0.6, 0.2, lagged_mean=lagged, rho_variance=1 / 50
+    )
+    expected = [[-1.888274503775009, 2.901607837108343], [-3.675078816224816, 2.496412149558149]]
+    np.testing.assert_allclose(found, expected, rtol=0, atol=1e-12)
+    rng = np.random.default_rng(3)
+    for _ in range(200):
+        innovations, att = rng.normal(size=5), rng.normal(size=10)
+        last, rho = float(rng.normal()), float(rng.uniform(-1.0, 1.0))
+        known = _ar1_intervals(innovations, last, att, rho, 0.1)
+        zero = _ar1_intervals(
+            innovations, last, att, rho, 0.1, lagged_mean=float(rng.normal()), rho_variance=0.0
+        )
+        np.testing.assert_array_equal(zero, known)
+        # the radius as the previous release computed it, operation for operation: the digest
+        # above rounds to ten digits, this holds the last bit
+        lags = np.arange(10)
+        level, spread = np.cumsum(rho**lags), np.cumsum(rho ** (2 * lags))
+        quantile = float(special.stdtrit(4, 0.95))
+        radius = quantile * float(np.std(innovations, ddof=1)) * np.sqrt(spread + level**2 / 5)
+        centre = att - rho ** (lags + 1) * last - float(np.mean(innovations)) * level
+        np.testing.assert_array_equal(known, np.column_stack([centre - radius, centre + radius]))
+
+
+def test_ar_error_jackknife_widens_about_the_same_centres_by_the_delta_method() -> None:
+    """Through the public reading: the jackknife's intervals share the plug-in's centres, and each
+    radius, squared, is the plug-in's plus the centre's derivative in the coefficient, squared,
+    times the jackknife variance and the t quantile squared, the derivative written out."""
+    outcomes = _ar_panel(14, 0.8, units=6)
+    plug_in = blank_period_inference(outcomes, 2, 20, 5, alpha=0.1, serial="ar1")
+    found = blank_period_inference(
+        outcomes, 2, 20, 5, alpha=0.1, serial="ar1", ar_error="jackknife"
+    )
+    rho, variance = found.ar_coefficient, found.ar_coefficient_variance
+    assert rho == plug_in.ar_coefficient
+    assert rho is not None
+    assert variance is not None
+    assert variance > 0.0
+    assert found.p_value == plug_in.p_value
+    np.testing.assert_allclose(
+        found.intervals.sum(axis=1), plug_in.intervals.sum(axis=1), rtol=0, atol=1e-12
+    )
+    gaps = outcomes[2] - np.delete(outcomes, 2, axis=0).T @ found.estimate.weights
+    innovations = gaps[15:20] - rho * gaps[14:19]
+    quantile = stats.t.ppf(0.95, 4)
+    for k in range(1, 6):
+        level = sum(rho**j for j in range(k))
+        level_slope = sum(j * rho ** (j - 1) for j in range(1, k))
+        slope = -k * rho ** (k - 1) * gaps[19] + gaps[14:19].mean() * level
+        slope -= innovations.mean() * level_slope
+        old = (plug_in.intervals[k - 1, 1] - plug_in.intervals[k - 1, 0]) / 2
+        new = (found.intervals[k - 1, 1] - found.intervals[k - 1, 0]) / 2
+        assert new**2 == pytest.approx(
+            old**2 + quantile**2 * slope**2 * variance, rel=1e-10, abs=0.0
+        )
+
+
+def test_ar_error_jackknife_lifts_four_donors_last_period_coverage() -> None:
+    """300 panels whose factors and errors are AR(1) at 0.95, 4 donors, 15 fitting, 5 blank and
+    10 post periods, the unit chosen on the fitting periods, ``alpha = 0.1``. The plug-in
+    coefficient, biased low, leaves the last post period's coverage below 90%; the jackknife's
+    is within two binomial standard errors of 300 panels of 90% or above it."""
+    panels, alpha = 300, 0.1
+    plug_in = jackknife = 0
+    for seed in range(panels):
+        outcomes = _ar_panel(6000 + seed, 0.95, units=5, periods=30)
+        fits = [synthetic_control(outcomes, unit, 15).pre_rmspe for unit in range(5)]
+        treated = int(np.argmin(fits))
+        for reading in ("plug-in", "jackknife"):
+            found = blank_period_inference(
+                outcomes, treated, 20, 5, alpha=alpha, serial="ar1", ar_error=reading
+            )
+            lo, hi = found.intervals[-1]
+            covered = lo <= 0.0 <= hi
+            if reading == "plug-in":
+                plug_in += covered
+            else:
+                jackknife += covered
+    se = math.sqrt(alpha * (1 - alpha) / panels)
+    assert jackknife / panels >= 1 - alpha - 2 * se
+    assert jackknife > plug_in
