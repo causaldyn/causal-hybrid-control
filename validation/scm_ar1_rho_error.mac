@@ -1,0 +1,92 @@
+/* The AR(1) coefficient's error in chc.scm.blank_period_inference's serial = "ar1" intervals,
+   under ar_error = "jackknife".
+
+   Post period k's interval is centred at c_k(rho) = tau^_k - rho^k u_0 - m(rho) a_k(rho), u_0 the
+   last blank gap, a_k = sum_(j<k) rho^j, and m(rho) = (1/T) sum_(t=1..T) (u_t - rho u_(t-1)) the
+   mean of the T blank innovations, u_0' the last fitting gap. validation/scm_ar1_intervals.mac
+   derives its radius at a known rho. With rho estimated, with variance V, the delta method adds
+   (dc_k/drho)^2 V to the forecast's variance.
+
+   STEP 1  dc_k/drho = -k rho^(k-1) u_0 + lbar a_k - m a_k', lbar the mean of the T lagged gaps
+           u_0' .. u_(T-1) and a_k' = sum_(j<k) j rho^(j-1), the code's form, for T = 3 and
+           k = 1 .. 6, against Maxima's derivative of c_k
+   STEP 2  a_k' is the derivative of a_k's closed form (1 - rho^k)/(1 - rho), k = 1 .. 6
+   STEP 3  the widened radius: hypot(q s sqrt(w), q |c'| sqrt(V)) = q sqrt(s^2 w + c'^2 V), and at
+           V = 0 it is q s sqrt(w)
+   STEP 4  the jackknife variance (n - 1)/n sum_i (theta_(i) - theta_bar)^2 of a sample mean, the
+           theta_(i) the means without draw i, is the sample variance over n, at n = 5 (Efron and
+           Stein, Annals of Statistics 9, 1981): the formula the code uses
+   STEP 5  the delta method to first order: (c_k(rho + h) - c_k(rho - h))/(2 h) tends to dc_k/drho
+           at a rational point, the gap O(h^2)
+   STEP 6  the widened intervals at a sample path, in exact arithmetic and the t quantile at 2
+           degrees of freedom, against the values tests/test_scm_blank_inference.py pins for
+           chc.scm._ar1_intervals
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/scm_ar1_rho_error.mac */
+
+display2d : false$
+fpprintprec : 16$
+pass(ok) := if ok then "(PASS)" else "(FAIL)"$
+
+/* STEP 1: u[0] the last fitting gap, u[1] .. u[3] the blank gaps, u0 = u[3] */
+TT : 3$
+a(k) := sum(rho^j, j, 0, k - 1)$
+da(k) := sum(j*rho^(j - 1), j, 1, k - 1)$
+m(r) := sum(u[t] - r*u[t - 1], t, 1, TT)/TT$
+lbar : sum(u[t - 1], t, 1, TT)/TT$
+centre(k) := tau[k] - rho^k*u[TT] - m(rho)*a(k)$
+code(k) := -k*rho^(k - 1)*u[TT] + lbar*a(k) - m(rho)*da(k)$
+s1 : makelist(ratsimp(diff(centre(k), rho) - code(k)), k, 1, 6)$
+print("STEP 1  dc_k/drho less the code's form, k = 1..6:", s1, pass(s1 = [0, 0, 0, 0, 0, 0]))$
+
+/* STEP 2 */
+s2 : makelist(ratsimp(da(k) - diff((1 - rho^k)/(1 - rho), rho)), k, 1, 6)$
+print("STEP 2  a_k' less the closed form's derivative, k = 1..6:", s2,
+      pass(s2 = [0, 0, 0, 0, 0, 0]))$
+
+/* STEP 3 */
+assume(q > 0, s > 0, w > 0, V >= 0)$
+hyp : sqrt((q*s*sqrt(w))^2 + (q*abs(cp)*sqrt(V))^2)$
+s3a : ratsimp(hyp^2 - q^2*(s^2*w + cp^2*V))$
+s3b : radcan(subst(V = 0, hyp) - q*s*sqrt(w))$
+print("STEP 3  the hypot's square less q^2 (s^2 w + c'^2 V):", s3a, "; at V = 0 less q s sqrt(w):",
+      s3b, pass(s3a = 0 and s3b = 0))$
+
+/* STEP 4 */
+nj : 5$
+xs : makelist(x[i], i, 1, nj)$
+xbar : sum(x[i], i, 1, nj)/nj$
+loo : makelist((sum(x[i], i, 1, nj) - x[l])/(nj - 1), l, 1, nj)$
+loobar : sum(loo[l], l, 1, nj)/nj$
+jack : (nj - 1)/nj*sum((loo[l] - loobar)^2, l, 1, nj)$
+s4 : ratsimp(jack - sum((x[i] - xbar)^2, i, 1, nj)/(nj - 1)/nj)$
+print("STEP 4  the jackknife variance of a mean less its sample variance over n:", s4, pass(s4 = 0))$
+
+/* STEP 5: at rho = 3/5 and the gaps of STEP 6, k = 4 */
+pt : [u[0] = 3/10, u[1] = -1/2, u[2] = 11/10, u[3] = 2/5, tau[4] = 1]$
+c4(r) := subst(append([rho = r], pt), centre(4))$
+d4 : subst(append([rho = 3/5], pt), code(4))$
+fd(h) := (c4(3/5 + h) - c4(3/5 - h))/(2*h)$
+g5 : [abs(fd(1/100) - d4), abs(fd(1/1000) - d4)]$
+print("STEP 5  central differences at h = 1e-2, 1e-3 less dc_4/drho:", float(g5),
+      pass(g5[2] < g5[1]/90 and g5[2] < 1/10^4))$
+
+/* STEP 6: last fitting gap 3/10, blank gaps -1/2, 11/10, 2/5, post gaps 9/10, -1/5; rho = 3/5,
+   alpha = 1/5, V = 1/50 */
+path : [3/10, -1/2, 11/10, 2/5, 9/10, -1/5]$
+r6 : 3/5$
+V6 : 1/50$
+inn : makelist(path[i + 1] - r6*path[i], i, 1, 3)$
+mbar : sum(inn[i], i, 1, 3)/3$
+lag6 : sum(path[i], i, 1, 3)/3$
+sd6 : sqrt(sum((inn[i] - mbar)^2, i, 1, 3)/2)$
+q6 : (2*(9/10) - 1)/sqrt(2*(9/10)*(1/10))$
+ends : makelist(block([c, cp, rad],
+    c : path[4 + k] - r6^k*path[4] - mbar*subst(rho = r6, a(k)),
+    cp : -k*r6^(k - 1)*path[4] + lag6*subst(rho = r6, a(k)) - mbar*subst(rho = r6, da(k)),
+    rad : q6*sqrt(sd6^2*subst(rho = r6, sum(rho^(2*j), j, 0, k - 1) + a(k)^2/3) + cp^2*V6),
+    float([c - rad, c + rad])), k, 1, 2)$
+pinned : [[-1.888274503775009, 2.901607837108343], [-3.675078816224816, 2.496412149558149]]$
+gap6 : lmax(map(lambda([x, y], abs(x - y)), flatten(ends), flatten(pinned)))$
+print("STEP 6  the widened intervals:", ends, "; largest gap to the pinned values:", gap6,
+      pass(gap6 < 1e-12))$
