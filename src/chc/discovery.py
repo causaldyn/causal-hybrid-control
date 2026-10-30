@@ -3,9 +3,10 @@ selection (not PC, not PCMCI).
 
 For each next-state component ``x^j_t`` this finds which lagged variables
 ``{x^i_{t-tau}, u^k_{t-tau}}`` are its direct parents with the MCI-calibrated partial-correlation
-test (:func:`chc.independence.partial_corr_test`), in two phases (Margaritis and Thrun's
-grow-shrink; Tsamardinos et al. 2003's IAMB). **Grow**: add the candidate with the strongest
-association *given the already-selected parents*, until none is significant. Conditioning on the
+test (:func:`chc.independence.partial_corr_test`), in two phases (the grow-shrink of Margaritis
+and Thrun, NIPS 1999; the IAMB of Tsamardinos, Aliferis and Statnikov, FLAIRS 2003). **Grow**: add
+the candidate with the strongest association *given the already-selected parents*, until none is
+significant. Conditioning on the
 selected parents (dominant autoregressive lags are picked first) removes indirect-path false
 positives -- ``x^i_{t-2} -> x^i_{t-1} -> x^j_t`` makes ``x^i_{t-2}`` look like a parent to a naive
 test, but not once ``x^i_{t-1}`` is conditioned on. **Shrink**: drop, one at a time and weakest
@@ -20,6 +21,16 @@ every candidate left at ``alpha``, so a target with ``m`` of them gains a false 
 probability up to about ``m * alpha``. For a family-wise level, pass ``alpha`` over the candidates,
 ``alpha / ((d_state + d_control) * max_lag)``.
 
+Each kept edge carries a p-value (:attr:`LaggedGraph.state_p_values`): the partial-correlation
+test of the parent with its target given every *other* kept parent of that target, the shrink
+phase's last pass, which kept it (one kept parent is tested given none). The test ran once, on the
+lag-aligned design, so the p-value belongs to the time-homogeneous edge, not to a slice. It is
+*nominal*: the parents were chosen by these same data, and a p-value read after a data-driven
+selection is not uniform under the null. It is not a selective p-value, valid given the selection
+(Berk, Brown, Buja, Zhang and Zhao, "Valid post-selection inference", Annals of Statistics 2013),
+and it is not corrected for the multiplicity above. On a long series it reads 0.0 where ``erfc``
+underflows, and two such edges are no longer ranked by it.
+
 Deliberately minimal: lag-capped, next-state targets only, no contemporaneous-link search. The heavy
 algorithms (PCMCI+/LPCMCI) stay a lazy, opt-in tigramite adapter; the point here is to feed
 ``GraphResidual``'s adjacency and the effect estimators' adjustment set from data, not by hand.
@@ -27,7 +38,8 @@ algorithms (PCMCI+/LPCMCI) stay a lazy, opt-in tigramite adapter; the point here
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from typing import Any
 
 import jax.numpy as jnp
@@ -35,6 +47,7 @@ import numpy as np
 from jax import Array
 
 from chc.frames import _real_numbers
+from chc.graph import CausalGraph, EdgeProvenance
 from chc.independence import partial_corr_test
 
 __all__ = [
@@ -44,13 +57,58 @@ __all__ = [
 ]
 
 
+_TEST = "partial_corr_test"  # the test a discovered edge names (chc.independence)
+
+
 @dataclass(frozen=True)
 class LaggedGraph:
-    """Discovered lagged parents. ``state_parents[j, i, tau-1]`` = ``x^i_{t-tau} -> x^j_t``."""
+    """Discovered lagged parents. ``state_parents[j, i, tau-1]`` = ``x^i_{t-tau} -> x^j_t``.
+
+    ``state_p_values`` and ``control_p_values`` hold, at each edge, the p-value of the test that
+    kept it (see the module docstring for which test, on which conditioning set, and why it is
+    nominal), and nan where there is no edge; :func:`discover_lagged_parents` fills them, and
+    :class:`TigramiteDiscovery` and a graph built by hand leave them None. They are float64 numpy
+    arrays, read-only, and not jax ones: without ``jax_enable_x64`` a jax array rounds to float32,
+    which reads a p-value of 1e-300 as 0.0.
+
+    Raises:
+        ValueError: on p-values of another shape than their parents, not nan exactly where there is
+            no edge, outside ``[0, 1]`` at an edge, or given for one kind of parent and not the
+            other.
+    """
 
     state_parents: Array  # (d_state, d_state, max_lag) bool
     control_parents: Array | None  # (d_state, d_control, max_lag) bool, or None if no controls
     max_lag: int
+    state_p_values: np.ndarray | None = None  # (d_state, d_state, max_lag) float64, nan: no edge
+    control_p_values: np.ndarray | None = None  # (d_state, d_control, max_lag), or None
+
+    def __post_init__(self) -> None:
+        given = self.state_p_values is not None
+        if given and (self.control_parents is None) != (self.control_p_values is None):
+            raise ValueError(
+                "a graph with p-values holds one for each kind of parent it has: control_p_values "
+                "is given exactly when control_parents is"
+            )
+        if not given and self.control_p_values is not None:
+            raise ValueError("control_p_values is given without state_p_values")
+        for name, parents in (
+            ("state_p_values", self.state_parents),
+            ("control_p_values", self.control_parents),
+        ):
+            p_values = getattr(self, name)
+            if p_values is None:
+                continue
+            edge = np.asarray(parents, dtype=bool)
+            held = np.array(p_values, dtype=np.float64)  # a copy, so the caller's array may move
+            if held.shape != edge.shape:
+                raise ValueError(f"{name} has shape {held.shape}, its parents {edge.shape}")
+            if not np.array_equal(np.isnan(held), ~edge):
+                raise ValueError(f"{name} is nan exactly where there is no edge")
+            if not np.all((held[edge] >= 0.0) & (held[edge] <= 1.0)):
+                raise ValueError(f"{name} holds a p-value outside [0, 1]")
+            held.flags.writeable = False
+            object.__setattr__(self, name, held)
 
     def adjacency(self) -> Array:
         """State-to-state coupling collapsed over lags -- a ``GraphResidual`` adjacency (0/1)."""
@@ -78,6 +136,72 @@ class LaggedGraph:
             for target, source, lag in zip(targets, sources, lags, strict=True):
                 found.append((int(target), int(source), int(lag) + 1, kind))
         return found
+
+    def causal_graph(
+        self, state_names: Sequence[str], control_names: Sequence[str] | None = None
+    ) -> CausalGraph:
+        """The edges as a :class:`~chc.graph.CausalGraph` unrolled over ``max_lag``, each edge
+        ``discovered`` by ``partial_corr_test`` with its p-value.
+
+        The graph is :meth:`CausalGraph.unrolled` of the ``(source, target, lag)`` triples over
+        ``lags=max_lag``, and is equal to it. Every unrolled copy of an edge carries the edge's
+        p-value: the test ran once, on the lag-aligned design, and the edge holds at every slice.
+        :func:`chc.decision.prescribe` takes the graph as ``adjustment=``, and its record writes
+        each edge's source, test and p-value.
+
+        Args:
+            state_names: one distinct name per state component, in the series' column order.
+            control_names: one per control column; None or empty for a graph without controls.
+
+        Raises:
+            ValueError: on a count of names other than the components', a name given twice, or a
+                graph without p-values (built by hand or by :class:`TigramiteDiscovery`): a
+                discovered edge carries its test's p-value.
+        """
+        if self.state_p_values is None:
+            raise ValueError(
+                "this graph holds no p-values (it was built by hand or by TigramiteDiscovery), "
+                "and a discovered edge carries its test's p-value; discover it with "
+                "discover_lagged_parents"
+            )
+        if isinstance(state_names, str) or isinstance(control_names, str):
+            raise ValueError("names are a sequence of names, not one string")
+        names = {"state": tuple(state_names), "control": tuple(control_names or ())}
+        counts = {
+            "state": self.state_parents.shape[1],
+            "control": 0 if self.control_parents is None else self.control_parents.shape[1],
+        }
+        for kind, count in counts.items():
+            if len(names[kind]) != count:
+                raise ValueError(
+                    f"the graph has {count} {kind} components, and {len(names[kind])} "
+                    f"{kind} names were given"
+                )
+        every = names["state"] + names["control"]
+        repeated = sorted({name for name in every if every.count(name) > 1})
+        if repeated:
+            raise ValueError(f"each component has its own name; {repeated} are given twice")
+
+        p_values = {"state": self.state_p_values, "control": self.control_p_values}
+        triples = []
+        provenance: dict[tuple[str, str], EdgeProvenance] = {}
+        for target, source, lag, kind in self.edges():
+            parent, child = names[kind][source], names["state"][target]
+            triples.append((parent, child, lag))
+            held = p_values[kind]
+            assert held is not None  # __post_init__: p-values for each kind of parent there is
+            found = EdgeProvenance("discovered", _TEST, float(held[target, source, lag - 1]))
+            for step in range(self.max_lag - lag + 1):
+                pair = (
+                    CausalGraph.lagged_name(parent, step + lag),
+                    CausalGraph.lagged_name(child, step),
+                )
+                provenance[pair] = found
+        unrolled = CausalGraph.unrolled(triples, lags=self.max_lag)
+        graph = CausalGraph.from_edges(
+            unrolled.edges, latent=unrolled.latent, provenance=provenance
+        )
+        return replace(graph, lags=unrolled.lags)
 
 
 def _lagged_design(
@@ -117,9 +241,14 @@ def _scored(
 
 def _select_parents(
     target: np.ndarray, candidates: np.ndarray, alpha: float, max_parents: int
-) -> list[int]:
+) -> dict[int, float]:
     """Grow-shrink selection: add the strongest candidate given the current parents while it is
-    significant, then drop the weakest parent given the rest while it is not."""
+    significant, then drop the weakest parent given the rest while it is not.
+
+    Returns each kept column and its p-value given the other kept columns, from the shrink's last
+    pass, in the order the columns were selected. The grow phase's p-value of a column was read
+    given the parents selected before it, a set that has changed since.
+    """
     selected: list[int] = []
     remaining = list(range(candidates.shape[1]))
     while remaining and len(selected) < max_parents:
@@ -129,13 +258,14 @@ def _select_parents(
         selected.append(best_c)
         remaining.remove(best_c)
     while selected:
-        worst_p, _, worst_c = max(
+        scores = [
             _scored(target, candidates, [c], [s for s in selected if s != c])[0] for c in selected
-        )
-        if worst_p < alpha:
-            break  # every parent left is significant given the others
+        ]
+        worst_p, _, worst_c = max(scores)
+        if worst_p < alpha:  # every parent left is significant given the others
+            return {c: p_value for p_value, _, c in scores}
         selected.remove(worst_c)
-    return selected
+    return {}
 
 
 def discover_lagged_parents(
@@ -149,6 +279,10 @@ def discover_lagged_parents(
 
     ``series`` is ``(T, d_state)``; ``controls`` an optional ``(T, d_control)``. ``max_parents``
     caps the forward selection per target (default: the candidate count). Returns a ``LaggedGraph``.
+
+    Each edge's p-value is the shrink's last test of it, given the target's other kept parents
+    (``state_p_values``, ``control_p_values``); no test runs for it beyond the selection's own. It
+    is nominal, not selective, and 0.0 where ``erfc`` underflows (see the module docstring).
 
     ``alpha`` is each test's level, not the graph's: a candidate that is not a parent enters at
     about that rate, so a graph of many candidates holds a false edge far more often; on three
@@ -172,19 +306,26 @@ def discover_lagged_parents(
 
     state_parents = np.zeros((d_state, d_state, max_lag), dtype=bool)
     control_parents = np.zeros((d_state, d_control, max_lag), dtype=bool) if d_control else None
+    state_p_values = np.full(state_parents.shape, np.nan)
+    control_p_values = None if control_parents is None else np.full(control_parents.shape, np.nan)
     n = series.shape[0]
     for target_index in range(d_state):
         target = series[max_lag:n, target_index]
-        for candidate in _select_parents(target, design, alpha, cap):
+        for candidate, p_value in _select_parents(target, design, alpha, cap).items():
             kind, source_index, lag = tags[candidate]
             if kind == "state":
                 state_parents[target_index, source_index, lag - 1] = True
+                state_p_values[target_index, source_index, lag - 1] = p_value
             else:
                 assert control_parents is not None  # a control parent implies d_control > 0
+                assert control_p_values is not None
                 control_parents[target_index, source_index, lag - 1] = True
+                control_p_values[target_index, source_index, lag - 1] = p_value
 
     control_out = None if control_parents is None else jnp.asarray(control_parents)
-    return LaggedGraph(jnp.asarray(state_parents), control_out, max_lag)
+    return LaggedGraph(
+        jnp.asarray(state_parents), control_out, max_lag, state_p_values, control_p_values
+    )
 
 
 _TIGRAMITE_HINT = (
@@ -203,6 +344,10 @@ class TigramiteDiscovery:
     minimal grow-shrink is not enough -- dense coupling, or nonlinear dependencies via a
     nonparametric test (``cond_ind_test=GPDC()``/``CMIknn()``). tigramite is GPL-3.0, so it stays
     bring-your-own-env and is never a chc dependency.
+
+    The graph holds no p-values (``state_p_values`` is None), so
+    :meth:`LaggedGraph.causal_graph` refuses it: PCMCI's own p-value matrix is not read into it,
+    since tigramite is not installed where this library is tested.
     """
 
     pc_alpha: float = 0.01
