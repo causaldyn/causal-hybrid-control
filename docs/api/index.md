@@ -66,7 +66,7 @@ on the zone plant, for the response curves `response` in the plans they warm-sta
 the geo world `geo_world` in the geo models scored on it. They may change or be withdrawn in
 any minor release. Pin an exact version if you depend on one.
 
-87 entries in modules of other tiers are experimental on the same terms, for the same
+90 entries in modules of other tiers are experimental on the same terms, for the same
 reason. An entry is a name, `Class.member` for a field or a method, `function(argument=)` for an
 argument, or a value or key in quotes:
 
@@ -77,7 +77,9 @@ argument, or a value or key in quotes:
   `omitted_confounder_bound`, `OmittedConfounderBound`, `persistence_check`, `PersistenceCheck`,
   `interference_check`, `InterferenceCheck`, `lag_check`, `LagCheck`, `channel_region`,
   `ChannelRegion`, `RegionForm`;
-- `chc.uncertainty`: `horizon_errors`, `HorizonConformal`, `mixing_penalty`, `gaussian_mixing`;
+- `chc.uncertainty`: `horizon_errors`, `HorizonConformal`, `mixing_penalty`, `gaussian_mixing`,
+  `msm_worst_case_mean(covariate_form=)`, `confounding_robust_radius(covariate_form=)`,
+  `negative_control_gamma(covariate_form=)`;
 - `chc.decision`: `prescribe(tube_actions=)`, `prescribe(dither=)`, `prescribe(neighbours=)`,
   `prescribe(planned_cost_bias=)`, `DecisionCertificate.noise_persistence`,
   `DecisionCertificate.noise_persistence_p`, `DecisionCertificate.tube_per_log_spread`,
