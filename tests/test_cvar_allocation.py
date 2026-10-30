@@ -954,23 +954,30 @@ def _pinned_problems() -> dict[str, tuple[list[tuple[Channel, ...]], float, int,
 @pytest.mark.parametrize(
     ("problem", "digests"),
     [
-        ("concave", {"451555d8df150f41550b653d464396759a643185105884aeb2ca2614239db4bd"}),
+        # one value a class of machine and dependencies, as 1.0.0 returns it: the machine class
+        # that pinned it under the lockfile's versions; an AVX2 machine without AVX-512 under them;
+        # that machine under the dependency floors, numpy 2.0, scipy 1.13 and jax 0.4.30
+        (
+            "concave",
+            {
+                "451555d8df150f41550b653d464396759a643185105884aeb2ca2614239db4bd",
+                "93f1d599f421362d830e4c7e095ce1e1529513509d50598c15b8487d572dd63b",
+            },
+        ),
         ("s_shaped", {"e04ff945e849c3b249652b12aff92da758b60e456eec806f77640ccfda09419c"}),
-        # one value a machine class: 1.0.0 returns the first on the machine class that pinned it and
-        # the second on an AVX2 machine without AVX-512
         (
             "carryover",
             {
                 "2eab7f497be3c8152f6ef3915ccaa328a81e8479626132699a5bc8ae7030e7c3",
                 "8a912e468267d0c2cc9564fe5bddab132b500fa550b68b9ebda5830efd4c1173",
+                "0d58ac69b8716d9d365456675c80f9e491314d66ec3b8bf1059027f7cd56aa30",
             },
         ),
     ],
 )
 def test_the_readings_weighed_alike_plan_as_they_did(problem, digests):
     """The split, gains, ``cvar``, ``bound``, how the search stopped and its boxes, on three fixed
-    problems, are the bits 1.0.0 returned, the same under both resolutions of the lock's
-    dependencies."""
+    problems, are the bits 1.0.0 returned on the same machine and dependencies."""
     readings, budget, periods, box = _pinned_problems()[problem]
     assert _digest(cvar_allocate(readings, budget, periods, **box)) in digests
 
