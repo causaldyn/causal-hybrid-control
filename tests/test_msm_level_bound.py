@@ -3,6 +3,8 @@ lever (``propensity=``), against ``validation/msm_level_bound.mac``."""
 
 from __future__ import annotations
 
+import hashlib
+import itertools
 import math
 import re
 
@@ -205,3 +207,22 @@ def test_a_non_finite_outcome_is_refused_rather_than_carried_to_the_bound(bad) -
     ):
         with pytest.raises(ValueError, match="outcomes must be finite"):
             call()
+
+
+def test_the_default_form_reads_as_it_did_before_the_quantile_form() -> None:
+    """Every keyword combination the three functions took before ``covariate_form``, digested to
+    the bit on the tree that did not have it."""
+    rng = np.random.default_rng(20261030)
+    n = 200
+    x = rng.standard_normal((n, 2))
+    y = 0.3 + x @ np.array([1.0, -0.5]) + (1.0 + 0.5 * np.abs(x[:, 0])) * rng.standard_normal(n)
+    e = rng.uniform(0.2, 0.8, n)
+    values = []
+    for covariates, propensity in itertools.product((None, x), (None, 0.4, e)):
+        kwargs = {"covariates": covariates, "propensity": propensity}
+        for gamma in (1.0, 1.7, 2.0, 3.0):
+            values.append(msm_worst_case_mean(y, gamma, **kwargs))
+            values.append(confounding_robust_radius(0.1, y, gamma, **kwargs))
+        values.extend(negative_control_gamma(y, level=level, **kwargs) for level in (None, 0.95))
+    digest = hashlib.sha256(" ".join(float(v).hex() for v in values).encode()).hexdigest()
+    assert digest == "16293ad3c89be5d275092cb0f66d49c6457c5cd64c903d4caae0b8730d667fc0"
