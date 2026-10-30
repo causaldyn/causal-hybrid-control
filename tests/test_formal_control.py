@@ -177,12 +177,14 @@ FORMAL_LINKS = {
         "tests": ("test_robust_radius_is_the_linear_program_and_grows_with_gamma",),
     },
     "chc.uncertainty.msm_worst_case_mean": {
-        "cites": ("msm_level_bound.mac",),
+        "cites": ("msm_level_bound.mac", "msm_quantile_balancing.mac"),
         "tests": (
             "test_msm_level_bound.py::test_the_pooled_and_residualised_bounds_are_maximas_linear_programs",
             "test_msm_level_bound.py::test_tans_boxes_are_maximas_linear_programs",
             "test_msm_level_bound.py::test_one_propensity_scales_the_inflation_by_one_less_it",
             "test_msm_level_bound.py::test_the_residualised_bound_narrows_by_the_covariates_share",
+            "test_msm_quantile_form.py::test_two_cells_read_maximas_linear_programs",
+            "test_msm_quantile_form.py::test_a_spread_that_moves_with_x_is_read_per_x",
         ),
     },
     "chc.uncertainty.negative_control_gamma": {

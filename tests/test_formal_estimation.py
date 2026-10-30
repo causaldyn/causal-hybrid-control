@@ -172,10 +172,18 @@ FORMAL_LINKS = {
         ),
     },
     "chc.scm.blank_period_inference": {
-        "cites": ("scm_ar1_intervals.mac",),
+        "cites": ("scm_ar1_intervals.mac", "scm_ar1_rho_error.mac"),
         "tests": (
             "test_scm_blank_inference.py::test_ar1_intervals_read_the_gaps_innovations_written_out",
             "test_scm_blank_inference.py::test_ar1_intervals_cover_at_their_level_where_the_errors_persist",
+            "test_scm_blank_inference.py::test_ar_error_jackknife_widens_about_the_same_centres_by_the_delta_method",
+        ),
+    },
+    "chc.scm._ar1_intervals": {
+        "cites": ("scm_ar1_rho_error.mac",),
+        "via": "blank_period_inference",
+        "tests": (
+            "test_scm_blank_inference.py::test_ar_error_widening_is_the_delta_method_maxima_computes",
         ),
     },
     "chc.scm._ar1_check": {
