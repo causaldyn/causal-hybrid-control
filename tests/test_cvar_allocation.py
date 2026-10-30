@@ -6,7 +6,10 @@ carryover under thirty readings against every split of a fine grid, the gains th
 the channels run over the history, the plan and the tail as one series; against `allocate` where
 every reading is one; and for what holds at any readings and level: the split never does worse in
 the worst share than the reference, and its level's mean gain is the gains' own. On S-shaped curves
-the boxes' search is checked against every split of a grid, with and without carryover.
+the boxes' search is checked against every split of a grid, with and without carryover. Readings
+that carry weights are checked against the readings repeated, against closed forms derived in exact
+arithmetic, and at the level 1 against the weighted mean's best split on a grid; the readings
+weighed alike plan the bits they did before weights were taken.
 """
 
 import hashlib
@@ -815,11 +818,17 @@ def test_the_split_never_loses_to_the_reference_in_its_worst_share(seed, count, 
         ({"against": CURRENT[:2]}, "against has shape"),
         ({"against": np.array([5.0, 85.0, 90.0])}, "outside the box"),
         ({"against": CURRENT * 1.01}, "the gain is read against a split of the same budget"),
+        ({"weights": [1.0]}, r"weights has shape \(1,\); it needs one a reading, 2"),
+        ({"weights": [1.0, 1.0, 1.0]}, r"weights has shape \(3,\)"),
+        ({"weights": [1.0, -0.5]}, "has a negative weight"),
+        ({"weights": [1.0, np.nan]}, "are not all finite"),
+        ({"weights": [np.inf, 1.0]}, "are not all finite"),
+        ({"weights": [0.0, 0.0]}, "weights are all 0"),
     ],
 )
 def test_it_refuses_what_it_cannot_plan(change, match):
     readings = _readings(2, seed=1)
-    arguments = {"readings": readings, "level": 0.5, "against": CURRENT}
+    arguments = {"readings": readings, "level": 0.5, "against": CURRENT, "weights": None}
     arguments.update(change)
     if arguments["readings"] == "mixed":
         arguments["readings"] = [readings[0], readings[1][:2]]
@@ -833,6 +842,7 @@ def test_it_refuses_what_it_cannot_plan(change, match):
             lower=LOWER,
             upper=UPPER,
             history=HISTORY,
+            weights=arguments["weights"],
         )
 
 
@@ -955,3 +965,292 @@ def test_the_readings_weighed_alike_plan_as_they_did(problem, digest):
     dependencies."""
     readings, budget, periods, box = _pinned_problems()[problem]
     assert _digest(cvar_allocate(readings, budget, periods, **box)) == digest
+
+
+def _weighted_tail(gains: np.ndarray, weights: np.ndarray, level: float) -> float:
+    """The weighted mean of the worst ``level`` share of ``gains``, read as Rockafellar and Uryasev
+    (2000) write it, ``max_eta eta - sum_i w_i (eta - g_i)_+ / level``, the weights scaled to sum
+    to 1: the function is concave and piecewise linear in ``eta``, with its kinks at the gains, so
+    its most is at one of them."""
+    weights = np.asarray(weights, dtype=float) / np.sum(weights)
+    below = np.maximum(gains[:, None] - gains[None, :], 0.0) @ weights
+    return float(np.max(gains - below / level))
+
+
+def _exact_weighted_tail(gains, weights, level) -> Fraction:
+    """:func:`_weighted_tail` in exact arithmetic, on ``Fraction`` gains, weights and level."""
+    total = sum(weights)
+    return max(
+        eta - sum(w * max(eta - g, 0) for g, w in zip(gains, weights, strict=True)) / total / level
+        for eta in gains
+    )
+
+
+@pytest.mark.parametrize(
+    ("weights", "level", "first", "cvar"),
+    [
+        ((1, 3), 0.5, 50.0, 0.0),
+        ((1, 3), 0.8, 0.0, 3.125),
+        ((1, 3), 1.0, 0.0, 12.5),
+        ((3, 1), 0.5, 100.0, 25.0),
+        ((3, 1), 0.8, 100.0, 53.125),
+        ((3, 1), 1.0, 100.0, 62.5),
+    ],
+)
+def test_two_weighted_linear_readings_move_the_split_where_their_weighted_share_gains(
+    weights, level, first, cvar
+):
+    """Reading A returns 3 and 1 a unit on the two channels, B 1 and 2; from the even split of 100
+    their gains are `2 d` and `-d`, `d` the first channel's move, and the weighted worst share's
+    mean is piecewise linear in `d` with its one kink at 0, so its most is at an end or at 0.
+    Weighed 1 and 3, B fills the worst half alone wherever `d > 0` and A's quarter takes the lead
+    where `d < 0`: the split stays at 0.5, and moves all onto the second channel at 0.8, to 3.125,
+    where the readings alike move it onto the first, and at 1, to the mean's 12.5. Weighed 3 and 1
+    it moves onto the first at every level, to 25, 53.125 and 62.5. Each closed form is checked in
+    exact arithmetic here and in validation/cvar_weighted_closed_forms.mac."""
+    weighed = [Fraction(w) for w in weights]
+    exact = {
+        Fraction(d): _exact_weighted_tail(
+            [2 * Fraction(d), -Fraction(d)], weighed, Fraction(str(level))
+        )
+        for d in (-50, 0, 50)
+    }
+    best = max(exact, key=exact.__getitem__)
+    assert (best + 50, exact[best]) == (Fraction(first), Fraction(cvar))
+    assert sorted(exact.values())[-2] < exact[best]  # the best is unique
+    plan = cvar_allocate(
+        [_linear(3.0, 1.0), _linear(1.0, 2.0)],
+        100.0,
+        1,
+        level=level,
+        against=[50.0, 50.0],
+        lower=np.zeros(2),
+        upper=np.full(2, 100.0),
+        weights=weights,
+    )
+    np.testing.assert_allclose(plan.spend, [first, 100.0 - first], rtol=1e-9, atol=1e-9)
+    d = first - 50.0
+    np.testing.assert_allclose(plan.gain, [2.0 * d, -d], rtol=1e-9, atol=1e-9)
+    assert plan.cvar == pytest.approx(cvar, rel=1e-9, abs=1e-9)
+    assert plan.cvar <= plan.bound <= plan.cvar + 1e-9 * 200.0
+    assert (plan.stopped, plan.readings) == ("closed", 2)
+
+
+def _repeated_problem(kind: str) -> tuple[list[tuple[Channel, ...]], float, int, dict]:
+    """Three readings and their box: concave channels with carryover, or Hill channels that
+    start convex."""
+    if kind == "concave":
+        box = {"against": CURRENT, "lower": LOWER, "upper": UPPER, "history": HISTORY}
+        return _readings(3, seed=4), BUDGET, PERIODS, box
+    box = {"against": np.array([1.8, 0.2]), "lower": np.zeros(2), "upper": np.full(2, 2.0)}
+    return _hill_readings(3, seed=0), 2.0, 1, box
+
+
+@pytest.mark.parametrize("level", [0.45, 1.0])
+@pytest.mark.parametrize("kind", ["concave", "s_shaped"])
+def test_integer_weights_plan_as_the_readings_repeated(kind, level):
+    """Weights 2, 1 and 3 are the readings repeated twice, once and three times: the same ``cvar``
+    and ``bound`` to the search's tolerance, a split that gains as much in the repeated readings'
+    worst share, and the same boxes, each cut on the channel the worst share weighs alike: on the
+    Hill readings at 0.45, 23, where a cut that weighed the readings alike would search 25. Near its
+    best the share's mean is flat in the split to first order, so two splits within the tolerance
+    of the best may part by the tolerance's square root of the budget."""
+    readings, budget, periods, box = _repeated_problem(kind)
+    repeated = cvar_allocate(
+        [readings[0], readings[0], readings[1], *[readings[2]] * 3],
+        budget,
+        periods,
+        level=level,
+        **box,
+    )
+    weighed = cvar_allocate(readings, budget, periods, level=level, weights=[2, 1, 3], **box)
+    tolerance = repeated.tolerance
+    assert (repeated.stopped, weighed.stopped) == ("closed", "closed")
+    assert weighed.tolerance == tolerance
+    assert weighed.cvar == pytest.approx(repeated.cvar, rel=0.0, abs=tolerance)
+    assert weighed.bound == pytest.approx(repeated.bound, rel=0.0, abs=tolerance)
+    as_repeated = float(_tail_mean(np.repeat(weighed.gain, [2, 1, 3]), level))
+    assert as_repeated == pytest.approx(weighed.cvar, rel=1e-12, abs=1e-15 * tolerance)
+    assert as_repeated >= repeated.cvar - tolerance
+    np.testing.assert_allclose(weighed.spend, repeated.spend, rtol=0.0, atol=1e-4 * budget)
+    assert weighed.boxes == repeated.boxes
+    assert weighed.readings == 3
+
+
+@pytest.mark.parametrize("kind", ["concave", "s_shaped"])
+def test_weights_scaled_alike_plan_alike_and_a_reading_of_no_weight_is_left_out(kind):
+    """Weights scaled by any positive factor are the same weights. A reading of weight 0 is no
+    reading of the share: the plan is the plan without it, to the bit against the same positive
+    weights and to the tolerance against the readings weighed alike, and its gain is read on the
+    split. A weight of 1e-200 is as good as none."""
+    readings, budget, periods, box = _repeated_problem(kind)
+    level = 0.45
+    plain = cvar_allocate(readings, budget, periods, level=level, weights=[2, 1, 3], **box)
+    for factor in (1e-7 * np.pi, 3.0, 2.0**600):
+        scaled = cvar_allocate(
+            readings, budget, periods, level=level, weights=[2 * factor, factor, 3 * factor], **box
+        )
+        assert scaled.cvar == pytest.approx(plain.cvar, rel=0.0, abs=plain.tolerance)
+        assert scaled.bound == pytest.approx(plain.bound, rel=0.0, abs=plain.tolerance)
+        np.testing.assert_allclose(scaled.spend, plain.spend, rtol=0.0, atol=1e-4 * budget)
+
+    kept = [readings[0], readings[2]]
+    without = cvar_allocate(kept, budget, periods, level=level, weights=[2, 3], **box)
+    left_out = cvar_allocate(readings, budget, periods, level=level, weights=[2, 0, 3], **box)
+    np.testing.assert_array_equal(left_out.spend, without.spend)
+    np.testing.assert_array_equal(left_out.gain[[0, 2]], without.gain)
+    assert (left_out.cvar, left_out.bound, left_out.boxes) == (
+        without.cvar,
+        without.bound,
+        without.boxes,
+    )
+    assert left_out.readings == 3
+    if kind == "concave":
+        own = _worth(readings[1], left_out.spend) - _worth(readings[1], CURRENT)
+        scale = _worth(readings[1], CURRENT)
+    else:
+        one, two = readings[1]
+
+        def returns(split):
+            return float(
+                one.coefficient * one.curve(jnp.asarray(split[0]))
+                + two.coefficient * two.curve(jnp.asarray(split[1]))
+            )
+
+        own = returns(left_out.spend) - returns(box["against"])
+        scale = returns(box["against"])
+    assert left_out.gain[1] == pytest.approx(own, rel=1e-9, abs=1e-12 * scale)
+
+    alike = cvar_allocate(readings, budget, periods, level=level, weights=[1, 0, 1], **box)
+    unweighed = cvar_allocate(kept, budget, periods, level=level, **box)
+    assert alike.cvar == pytest.approx(unweighed.cvar, rel=0.0, abs=unweighed.tolerance)
+    assert alike.bound == pytest.approx(unweighed.bound, rel=0.0, abs=unweighed.tolerance)
+    faint = cvar_allocate(readings, budget, periods, level=level, weights=[2, 1e-200, 3], **box)
+    assert faint.cvar == pytest.approx(without.cvar, rel=0.0, abs=without.tolerance)
+    assert faint.bound == pytest.approx(without.bound, rel=0.0, abs=without.tolerance)
+
+
+def _two_channel_readings(kind: str) -> list[tuple[Channel, ...]]:
+    """Four readings of two channels without carryover, concave or S-shaped."""
+    if kind == "s_shaped":
+        return _hill_readings(4, seed=17)
+    rng = np.random.default_rng(17)
+    families = (MichaelisMenten, Exponential, Tanh)
+    return [
+        tuple(
+            Channel(ONE, families[int(rng.integers(3))](float(s)), float(c))
+            for s, c in zip(rng.uniform(0.5, 1.5, 2), rng.uniform(0.5, 1.5, 2), strict=True)
+        )
+        for _ in range(4)
+    ]
+
+
+@pytest.mark.parametrize("kind", ["concave", "s_shaped"])
+def test_at_level_one_the_split_has_the_most_weighted_mean_gain(kind):
+    """At the level 1 the worst share is every reading, each by its weight: no split on a grid of
+    2001 points of the budget has a larger weighted mean gain than the split, nor one above the
+    bound, and the split's ``cvar`` is its gains' weighted mean."""
+    readings = _two_channel_readings(kind)
+    weights = np.array([0.1, 0.5, 0.15, 0.25])
+    budget = 2.0
+    reference = np.array([0.7, 1.3])
+    plan = cvar_allocate(
+        readings,
+        budget,
+        1,
+        level=1.0,
+        against=reference,
+        lower=np.zeros(2),
+        upper=np.full(2, budget),
+        weights=weights * 8.0,
+    )
+
+    def returns(reading: tuple[Channel, ...], first: np.ndarray) -> np.ndarray:
+        one, two = reading
+        return np.asarray(
+            one.coefficient * one.curve(jnp.asarray(first))
+            + two.coefficient * two.curve(jnp.asarray(budget - first))
+        )
+
+    base = np.array([float(returns(r, reference[:1])[0]) for r in readings])
+    first = np.linspace(0.0, budget, 2001)
+    grid = weights @ (np.stack([returns(r, first) for r in readings]) - base[:, None])
+    gain = np.array([float(returns(r, plan.spend[:1])[0]) for r in readings]) - base
+    np.testing.assert_allclose(plan.gain, gain, rtol=1e-9, atol=1e-12 * base.max())
+    assert plan.cvar == pytest.approx(float(weights @ gain), rel=1e-9, abs=1e-12 * base.max())
+    assert plan.stopped == "closed"
+    assert plan.cvar >= float(grid.max()) - plan.tolerance
+    assert plan.bound >= float(grid.max())
+    assert float(grid.max()) > 0.01 * base.max()  # the best is a move, so the grid bites
+    # the readings weighed alike have another best
+    alike = float((np.stack([returns(r, first) for r in readings]) - base[:, None]).mean(0).max())
+    assert float(np.mean(gain)) < alike - 1e-6 * base.max()
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    seed=st.integers(0, 2**32 - 1),
+    count=st.integers(1, 8),
+    level=st.floats(0.01, 1.0),
+    weights=st.lists(st.floats(0.0, 1.0), min_size=8, max_size=8),
+)
+@example(seed=4, count=3, level=0.5, weights=[1.0, 0.25, 9.244250458183258e-206, *[0.0] * 5])
+@example(seed=0, count=3, level=1.0, weights=[0.0, 1.0, 9.244250458183258e-206, *[0.0] * 5])
+def test_a_weighted_split_never_loses_to_the_reference_in_its_weighted_worst_share(
+    seed, count, level, weights
+):
+    """Whatever the readings, their weights and the level: the reference gains 0 under every
+    reading, so the split's weighted mean gain in the worst share is at least 0; it is its own
+    gains' weighted worst share, read in numpy as Rockafellar and Uryasev write it; and the bound
+    is above it by no more than the tolerance, in one box of concave curves. The examples are
+    weights 1e205 apart, which HiGHS read unbounded, or stalled on, where the least weight's
+    excess cost 1 and eta's the level over that weight."""
+    weighed = np.array(weights[:count])
+    if not np.any(weighed > 0.0):
+        weighed[0] = 1.0
+    readings = _readings(count, seed=seed)
+    plan = cvar_allocate(
+        readings,
+        BUDGET,
+        PERIODS,
+        level=level,
+        against=CURRENT,
+        lower=LOWER,
+        upper=UPPER,
+        history=HISTORY,
+        weights=weighed,
+    )
+    scale = max(abs(_worth(r, CURRENT)) for r in readings)
+    assert plan.cvar >= 0.0
+    assert plan.cvar == pytest.approx(
+        _weighted_tail(plan.gain, weighed, level), rel=1e-9, abs=1e-12 * scale
+    )
+    assert plan.cvar <= plan.bound <= plan.cvar + plan.tolerance
+    assert (plan.stopped, plan.boxes, plan.readings) == ("closed", 1, count)
+
+
+@settings(max_examples=100, deadline=None)
+@given(
+    data=st.data(),
+    size=st.integers(1, 20),
+    level=st.floats(0.01, 1.0),
+)
+def test_the_weighted_worst_shares_weights_read_its_mean(data, size, level):
+    """With the readings' own weights the worst share's: none above a reading's weight over the
+    level, summing to 1, their mean of the gains the weighted worst share's, which is Rockafellar
+    and Uryasev's. A reading of weight 0 takes none of it."""
+    gain = np.array(data.draw(st.lists(st.floats(-1e3, 1e3), min_size=size, max_size=size)))
+    raw = np.array(data.draw(st.lists(st.floats(0.0, 1.0), min_size=size, max_size=size)))
+    if not np.any(raw > 0.0):
+        raw[0] = 1.0
+    weights = raw / raw.sum()
+    taken = _cvar_weights(gain, level, weights)
+    assert np.all(taken >= 0.0)
+    assert np.all(taken <= weights / level * (1.0 + 1e-12))
+    assert np.all(taken[weights == 0.0] == 0.0)
+    assert taken.sum() == pytest.approx(1.0, rel=1e-12, abs=0.0)
+    scale = float(np.abs(gain).max()) or 1.0
+    assert taken @ gain == pytest.approx(_cvar(gain, level, weights), rel=1e-9, abs=1e-12 * scale)
+    assert _cvar(gain, level, weights) == pytest.approx(
+        _weighted_tail(gain, weights, level), rel=1e-9, abs=1e-12 * scale
+    )
