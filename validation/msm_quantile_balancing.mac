@@ -1,0 +1,111 @@
+/* The MSM bound on a mean with a conditional quantile taken out of the tails
+   (chc.uncertainty.msm_worst_case_mean, confounding_robust_radius and negative_control_gamma,
+   their covariate_form="quantile").
+
+   Q1  For any q(x) and a weight w in [lo, hi] with E[w | x] = 1,
+       E[w Y | x] <= E[psi | x], psi = q + lo (Y - q) + (hi - lo) (Y - q)_+ (Dorn and Guo, JASA
+       2023), with equality at the conditional quantile at level Gamma/(Gamma + 1), for the box
+       [1/Gamma, Gamma] and for Tan's (2006) box [e + (1 - e)/Gamma, e + (1 - e) Gamma] alike.
+   Q2  psi - Y = (hi - lo) rho(Y - q), rho the pinball loss at level Gamma/(Gamma + 1): mean(psi)
+       over a linear q is a quantile regression (Koenker and Bassett, Econometrica 1978) weighted
+       by hi - lo, a linear program.
+   Q3  Two cells, Gamma = 2, Y | x = m_x -+ s_x, m = (0, 4): the quantile form (that LP, cell
+       dummies), the residualised form and the pooled one, with the box and with Tan's boxes at
+       e = (1/4, 3/4), each a linear program (simplex) in exact rationals.
+   Q4  Continuous populations at Gamma = 2: the residualised inflation over the per-x one on
+       N(0, 1)/N(0, 9) and N(0, 0.09)/N(0, 9) cells and on the two-point cells of Q3; the bounds on
+       Y = 2X + (1 + 2X) eps, X ~ U(0, 1), eps ~ N(0, 1), by quad_qags.
+   Maxima is the source of truth. */
+display2d : false$
+ratprint : false$
+load("simplex")$
+assume(G > 1, e > 0, e < 1)$
+
+/* ---------- Q1, Q2 ---------- */
+boxes : [[1/G, G], [e + (1 - e)/G, e + (1 - e)*G]]$
+lev : G/(G + 1)$
+for b in boxes do block([lo : b[1], hi : b[2], c],
+  c : hi - lo,
+  /* u = Y - q. Above q: (hi - w) u >= 0; below: (lo - w) u >= 0 with u < 0 */
+  print("Q1a psi - w u above q, below q:", factor(lo*u + c*u - w*u), ";", factor(lo*u - w*u),
+        if ratsimp((lo*u + c*u - w*u) - (hi - w)*u) = 0 and ratsimp((lo*u - w*u) - (lo - w)*u) = 0
+        then "(PASS: (hi - w) u, (lo - w) u, each >= 0 on its side)" else "(FAIL)"),
+  /* the weight hi above the quantile, lo below, has mean 1 when P(Y > q) = 1 - lev */
+  print("Q1b mean of the weight at the quantile:", ratsimp(lo*lev + hi*(1 - lev)),
+        if ratsimp(lo*lev + hi*(1 - lev) - 1) = 0 then "(PASS: E[w | x] = 1, so the bound is attained)"
+        else "(FAIL)"),
+  /* psi - Y on each side of q against (hi - lo) times the pinball loss */
+  print("Q2 psi - Y - c rho above, below:",
+        ratsimp(q + lo*u + c*u - (q + u) - c*lev*u), ";",
+        ratsimp(q + lo*u - (q + u) - c*(lev - 1)*u),
+        if ratsimp(q + lo*u + c*u - (q + u) - c*lev*u) = 0
+           and ratsimp(q + lo*u - (q + u) - c*(lev - 1)*u) = 0
+        then "(PASS: mean(psi) = mean(Y) + mean((hi - lo) rho(Y - q)))" else "(FAIL)"))$
+
+/* ---------- Q3 ---------- */
+/* four atoms of mass 1/4: (x, y) = (0, -s0), (0, s0), (1, 4 - s1), (1, 4 + s1) */
+Gm : 2$  tq : Gm/(Gm + 1)$
+xs : [0, 0, 1, 1]$  ms : [0, 0, 4, 4]$
+weights_lp(vals, lows, highs, cells) := block([ws : makelist(concat(w, i), i, 1, 4), cons],
+    cons : append(makelist(ws[i] >= lows[i], i, 1, 4), makelist(ws[i] <= highs[i], i, 1, 4)),
+    if cells then cons : append(cons, [ws[1] + ws[2] = 2, ws[3] + ws[4] = 2])
+    else cons : endcons(sum(ws[i], i, 1, 4) = 4, cons),
+    maximize_lp(sum(ws[i]*vals[i], i, 1, 4)/4, cons)[1])$
+/* min over q = b0 + b1 x of mean(Y) + mean(c rho(Y - q)): u - v = Y - q, u, v >= 0 */
+pinball_lp(vals, lows, highs) := block([us : makelist(concat(u, i), i, 1, 4),
+                                       vs : makelist(concat(v, i), i, 1, 4), cons, obj],
+    obj : apply("+", vals)/4
+          + sum((highs[i] - lows[i])*(tq*us[i] + (1 - tq)*vs[i]), i, 1, 4)/4,
+    cons : append(makelist(b0 + b1*xs[i] + us[i] - vs[i] = vals[i], i, 1, 4),
+                  makelist(us[i] >= 0, i, 1, 4), makelist(vs[i] >= 0, i, 1, 4)),
+    minimize_lp(obj, cons)[1])$
+forms(s0, s1, lows, highs) := block([ys : [-s0, s0, 4 - s1, 4 + s1], resid],
+    resid : ys - ms,
+    [pinball_lp(ys, lows, highs), weights_lp(ys, lows, highs, true),
+     apply("+", ms)/4 + weights_lp(resid, lows, highs, false), weights_lp(ys, lows, highs, false)])$
+box_lo : makelist(1/Gm, i, 1, 4)$  box_hi : makelist(Gm, i, 1, 4)$
+es : [1/4, 1/4, 3/4, 3/4]$
+odds_lo : makelist(es[i] + (1 - es[i])/Gm, i, 1, 4)$
+odds_hi : makelist(es[i] + (1 - es[i])*Gm, i, 1, 4)$
+/* expected: quantile = per-x, residualised, pooled */
+cases : [["box s = (1, 1)", 1, 1, box_lo, box_hi, [5/2, 5/2, 13/4]],
+         ["box s = (1, 3)", 1, 3, box_lo, box_hi, [3, 13/4, 15/4]],
+         ["Tan s = (1, 1)", 1, 1, odds_lo, odds_hi, [9/4, 9/4, 41/16]],
+         ["Tan s = (1, 3)", 1, 3, odds_lo, odds_hi, [19/8, 39/16, 41/16]]]$
+for k in cases do block([f : forms(k[2], k[3], k[4], k[5])],
+  print("Q3", k[1], ": quantile", f[1], "; per-x", f[2], "; residualised", f[3], "; pooled", f[4],
+        if f[1] = f[2] and [f[1], f[3], f[4]] = k[6] and f[1] <= f[3] and f[3] <= f[4]
+        then "(PASS: the quantile form is the per-x bound)" else "(FAIL)"))$
+
+/* ---------- Q4 ---------- */
+phi(x) := exp(-x^2/2)/sqrt(2*%pi)$
+Phi(x) := (1 + erf(x/sqrt(2)))/2$
+tauq : float(Gm/(Gm + 1))$  cq : float(Gm - 1/Gm)$
+/* E rho(Y - q) at the quantile of N(0, s^2) is s phi(z), so the box's inflation is c s phi(z) */
+z23 : find_root(Phi(x) - tauq, x, -5, 5)$
+unit : float(cq*phi(z23))$
+print("Q4 inflation per unit sd at Gamma = 2:", unit)$
+/* E rho(Y - q) = tauq E[Y - q] + E[(q - Y)_+]; for N(0, s^2), E[(q - Y)_+] = q Phi(q/s) + s phi(q/s) */
+shortfall(q, s) := q*Phi(q/s) + s*phi(q/s)$
+mix_inflation(s0, s1) := block([q],
+    q : find_root((Phi(x/s0) + Phi(x/s1))/2 - tauq, x, -50, 50),
+    float(cq*(-tauq*q + (shortfall(q, s0) + shortfall(q, s1))/2)))$
+ratio(s0, s1) := mix_inflation(s0, s1)/(unit*(s0 + s1)/2)$
+r1 : ratio(1.0, 3.0)$  r2 : ratio(0.3, 3.0)$
+print("Q4a residualised / per-x on N(0, 1)/N(0, 9) cells:", r1,
+      if abs(r1 - 1.023) < 5e-4 then "(PASS: 1.023)" else "(FAIL)")$
+print("Q4a residualised / per-x on N(0, 0.09)/N(0, 9) cells:", r2,
+      if abs(r2 - 1.064) < 5e-4 then "(PASS: 1.064)" else "(FAIL)")$
+/* Q3's box s = (1, 3): residualised 13/4 and per-x 3 over the mean 2 */
+r3 : (13/4 - 2)/(3 - 2)$
+print("Q4a residualised / per-x on the two-point cells:", r3,
+      if r3 = 5/4 then "(PASS: 1.25)" else "(FAIL)")$
+/* Y = 2X + (1 + 2X) eps: least squares on (1, X) is 2X; the residual is eps times a scale
+   sigma = 1 + 2X ~ U(1, 3), of law F(r) = integral of Phi(r/sigma) d sigma / 2 */
+F(r) := quad_qags(float(Phi(r/sg)), sg, 1, 3)[1]/2 - tauq$
+qres : find_root(F, 0, 10)$
+resid_bound : 1 + cq*(-tauq*qres + quad_qags(float(shortfall(qres, sg)), sg, 1, 3)[1]/2)$
+perx_bound : 1 + unit*quad_qags(sg, sg, 1, 3)[1]/2$
+print("Q4b Y = 2X + (1 + 2X) eps: residualised", resid_bound, "; per-x", perx_bound,
+      if abs(resid_bound - 2.0998) < 5e-5 and abs(perx_bound - 2.0908) < 5e-5
+      then "(PASS: 2.0998 against 2.0908)" else "(FAIL)")$
