@@ -63,7 +63,13 @@ def test_the_discovered_graphs_and_a_pathway_are_what_they_were() -> None:
         read += [edge.source, edge.kind, edge.lag, edge.sign, edge.contribution, edge.peak_horizon]
         read += [edge.actionable, *map(float, edge.irf)]
     assert len(pathway.edges) == 3
-    assert _digest(read) == "796047fe4499c4a2ea3be412085562a074626055ee76d9d937a11ad903b92965"
+    # one value a machine class: 1.0.0 gives the first on the machine class that pinned it and the
+    # second on an AVX2 machine without AVX-512. Each response's first step is a structural zero
+    # that float32 reads as noise near 1e-8, so its ten digits are the machine's
+    assert _digest(read) in {
+        "796047fe4499c4a2ea3be412085562a074626055ee76d9d937a11ad903b92965",
+        "72bed82385476326fdf5f923ae642868bf882688c8e4f4437c71ffbea2d53d64",
+    }
 
 
 def _series(shape: str) -> tuple[np.ndarray, np.ndarray | None, int]:

@@ -225,4 +225,9 @@ def test_the_default_form_reads_as_it_did_before_the_quantile_form() -> None:
             values.append(confounding_robust_radius(0.1, y, gamma, **kwargs))
         values.extend(negative_control_gamma(y, level=level, **kwargs) for level in (None, 0.95))
     digest = hashlib.sha256(" ".join(float(v).hex() for v in values).encode()).hexdigest()
-    assert digest == "16293ad3c89be5d275092cb0f66d49c6457c5cd64c903d4caae0b8730d667fc0"
+    # one value a machine class: 1.0.0 gives the first on the machine class that pinned it and the
+    # second on an AVX2 machine without AVX-512
+    assert digest in {
+        "16293ad3c89be5d275092cb0f66d49c6457c5cd64c903d4caae0b8730d667fc0",
+        "6f695541fa6838604e0e4e5828da292854c6ac02919385d27f9de015ee09a0ee",
+    }

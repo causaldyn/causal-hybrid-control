@@ -952,19 +952,27 @@ def _pinned_problems() -> dict[str, tuple[list[tuple[Channel, ...]], float, int,
 
 
 @pytest.mark.parametrize(
-    ("problem", "digest"),
+    ("problem", "digests"),
     [
-        ("concave", "451555d8df150f41550b653d464396759a643185105884aeb2ca2614239db4bd"),
-        ("s_shaped", "e04ff945e849c3b249652b12aff92da758b60e456eec806f77640ccfda09419c"),
-        ("carryover", "2eab7f497be3c8152f6ef3915ccaa328a81e8479626132699a5bc8ae7030e7c3"),
+        ("concave", {"451555d8df150f41550b653d464396759a643185105884aeb2ca2614239db4bd"}),
+        ("s_shaped", {"e04ff945e849c3b249652b12aff92da758b60e456eec806f77640ccfda09419c"}),
+        # one value a machine class: 1.0.0 returns the first on the machine class that pinned it and
+        # the second on an AVX2 machine without AVX-512
+        (
+            "carryover",
+            {
+                "2eab7f497be3c8152f6ef3915ccaa328a81e8479626132699a5bc8ae7030e7c3",
+                "8a912e468267d0c2cc9564fe5bddab132b500fa550b68b9ebda5830efd4c1173",
+            },
+        ),
     ],
 )
-def test_the_readings_weighed_alike_plan_as_they_did(problem, digest):
+def test_the_readings_weighed_alike_plan_as_they_did(problem, digests):
     """The split, gains, ``cvar``, ``bound``, how the search stopped and its boxes, on three fixed
     problems, are the bits 1.0.0 returned, the same under both resolutions of the lock's
     dependencies."""
     readings, budget, periods, box = _pinned_problems()[problem]
-    assert _digest(cvar_allocate(readings, budget, periods, **box)) == digest
+    assert _digest(cvar_allocate(readings, budget, periods, **box)) in digests
 
 
 def _weighted_tail(gains: np.ndarray, weights: np.ndarray, level: float) -> float:
