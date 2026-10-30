@@ -463,3 +463,28 @@ def test_ar1_check_reads_the_donors_innovations_written_out_and_sees_an_ar2() ->
         assert found.ar_check_p_value is not None
         rejects += found.ar_check_p_value <= 0.05
     assert rejects / 300 > 0.4
+
+
+def _ar1_outputs(found) -> list:
+    return [
+        found.p_value,
+        found.arrangements,
+        found.ar_coefficient,
+        found.ar_check_p_value,
+        found.estimate.overall,
+        *found.intervals.ravel().tolist(),
+        *found.blank_gaps.tolist(),
+    ]
+
+
+def test_ar1_plug_in_reading_is_what_it_was() -> None:
+    """Four panels with AR(0.8) factors and errors, 3, 5 and 19 donors, at ``alpha`` 0.05 and
+    0.2: every output of the ``"ar1"`` reading, intervals and check included, digested as the
+    release produced them."""
+    values: list = []
+    for seed, units in ((0, 4), (1, 6), (2, 20), (3, 20)):
+        outcomes = _ar_panel(5000 + seed, 0.8, units=units, periods=30)
+        for alpha in (0.05, 0.2):
+            found = blank_period_inference(outcomes, 0, 20, 5, alpha=alpha, serial="ar1")
+            values += _ar1_outputs(found)
+    assert _digest(values) == "47b4b0a8e5fff52100e47847f48944c89ecda0cfd559ac13635bdce2b5efb283"
