@@ -458,8 +458,9 @@ class CvarAllocation:
         spend: ``(channels,)`` spend a period, in the budget's currency.
         gain: ``(readings,)`` each reading's return on the split less its return on the reference,
             both on its curves.
-        cvar: the mean of the worst ``level`` share of ``gain``, the split's; never below 0, which
-            is the reference's own.
+        cvar: the mean of the worst ``level`` share of ``gain``, the split's, each reading weighed
+            by its ``weights`` where :func:`cvar_allocate` was given them; never below 0, which is
+            the reference's own.
         bound: no split in the box at the budget has a ``cvar`` above this, so ``bound - cvar``
             bounds how far the split is from the best. On S-shaped curves it is the largest bound
             the search left.
@@ -467,8 +468,9 @@ class CvarAllocation:
             at its cap (:data:`SearchStatus`).
         boxes: how many boxes of the rates were searched: 1 where every curve is concave.
         gap: ``bound - cvar``.
-        relative_gap: ``gap`` as a share of the reference's largest return, the scale ``rtol`` is
-            a share of, or of 1 where every return on the reference is 0.
+        relative_gap: ``gap`` as a share of the reference's largest return, among the readings of
+            positive weight where weights were given, the scale ``rtol`` is a share of, or of 1
+            where every such return on the reference is 0.
         tolerance: the gap the search closes at: the larger of ``atol`` and ``rtol`` of the
             reference's largest return, but not below 64 epsilons of the dtype the curves are read
             in, of that return.
@@ -478,7 +480,8 @@ class CvarAllocation:
             the gap closed.
         unsolved: the iterations of each linear program HiGHS left unsolved, in the order they
             were solved; each left its box the bound of the programs before it.
-        readings: how many readings the split was chosen over.
+        readings: how many readings were passed, one a ``gain``; those of weight 0 among them
+            are left out of the share the split was chosen over.
         compile_seconds: the seconds JAX spent compiling during the call: tracing, lowering and
             the backend's compile, none where every program was compiled before.
         search_seconds: the rest of the call's seconds. Both are recorded, not promised.
