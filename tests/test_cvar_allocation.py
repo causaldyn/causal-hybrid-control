@@ -12,7 +12,6 @@ arithmetic, and at the level 1 against the weighted mean's best split on a grid;
 weighed alike plan the bits they did before weights were taken.
 """
 
-import hashlib
 import importlib
 import logging
 from fractions import Fraction
@@ -924,15 +923,6 @@ def test_its_programs_keep_their_costs_out_of_highs_scaling(monkeypatch, builder
     assert min(least) >= 0.1
 
 
-def _digest(plan) -> str:
-    """A digest of what a plan decides and reports, its seconds left out."""
-    digest = hashlib.sha256()
-    for array in (plan.spend, plan.gain, np.array([plan.cvar, plan.bound])):
-        digest.update(np.ascontiguousarray(array, dtype="<f8").tobytes())
-    digest.update(f"{plan.stopped}:{plan.boxes}".encode())
-    return digest.hexdigest()
-
-
 def _pinned_problems() -> dict[str, tuple[list[tuple[Channel, ...]], float, int, dict]]:
     """Three fixed problems: concave channels without carryover, Hill channels that start convex,
     and concave channels with carryover over a history; each split moves off its reference."""
@@ -951,35 +941,84 @@ def _pinned_problems() -> dict[str, tuple[list[tuple[Channel, ...]], float, int,
     }
 
 
-@pytest.mark.parametrize(
-    ("problem", "digests"),
-    [
-        # one value a class of machine and dependencies, as 1.0.0 returns it: the machine class
-        # that pinned it under the lockfile's versions; an AVX2 machine without AVX-512 under them;
-        # that machine under the dependency floors, numpy 2.0, scipy 1.13 and jax 0.4.30
-        (
-            "concave",
-            {
-                "451555d8df150f41550b653d464396759a643185105884aeb2ca2614239db4bd",
-                "93f1d599f421362d830e4c7e095ce1e1529513509d50598c15b8487d572dd63b",
-            },
-        ),
-        ("s_shaped", {"e04ff945e849c3b249652b12aff92da758b60e456eec806f77640ccfda09419c"}),
-        (
-            "carryover",
-            {
-                "2eab7f497be3c8152f6ef3915ccaa328a81e8479626132699a5bc8ae7030e7c3",
-                "8a912e468267d0c2cc9564fe5bddab132b500fa550b68b9ebda5830efd4c1173",
-                "0d58ac69b8716d9d365456675c80f9e491314d66ec3b8bf1059027f7cd56aa30",
-            },
-        ),
-    ],
-)
-def test_the_readings_weighed_alike_plan_as_they_did(problem, digests):
+# cvar_allocate's plans on the three problems as 1.0.0 returned them, on the machine and the
+# lockfile's dependencies that pinned them: numpy 2.5.4, scipy 1.18.1 and jax 0.11.2
+_PLANS_OF_1_0_0 = {
+    "concave": {
+        "spend": [94.36935180119515, 52.361282718042915, 33.269365480761934],
+        "gain": [
+            11.818775410272224,
+            -14.284172527549572,
+            12.020940084925314,
+            8.467816484875357,
+            -0.3851577995116031,
+            11.818774497959453,
+        ],
+        "cvar": 1.9002418423400171,
+        "bound": 1.9002424744757473,
+        "stopped": "closed",
+        "boxes": 1,
+    },
+    "s_shaped": {
+        "spend": [0.9821235216649018, 1.0178764783350982],
+        "gain": [
+            0.11187322652524223,
+            -0.04255927332235965,
+            0.11187322653716458,
+            0.11839243214523987,
+            0.1602341395030802,
+        ],
+        "cvar": 0.03465697660144129,
+        "bound": 0.03465697663023554,
+        "stopped": "closed",
+        "boxes": 7,
+    },
+    "carryover": {
+        "spend": [88.35184967721887, 59.74476346726391, 31.903386855517226],
+        "gain": [
+            17.89358616240861,
+            7.1209256700294645,
+            34.04329256434903,
+            16.507461367336873,
+            13.759812334770686,
+            -12.270745166644701,
+            37.24093343646018,
+            8.837245043843723,
+        ],
+        "cvar": 2.0123087544320706,
+        "bound": 2.0123174132239647,
+        "stopped": "closed",
+        "boxes": 1,
+    },
+}
+
+
+@pytest.mark.parametrize("problem", ["concave", "s_shaped", "carryover"])
+def test_the_readings_weighed_alike_plan_as_they_did(problem):
     """The split, gains, ``cvar``, ``bound``, how the search stopped and its boxes, on three fixed
-    problems, are the bits 1.0.0 returned on the same machine and dependencies."""
+    problems, are what 1.0.0 returned. To a tolerance, not to the bit: a digest of the bits took
+    one value a class of machine and dependencies, a fourth on the CI runners, and every class
+    returns the same numbers. The search closes ``bound - cvar`` to ``tolerance``, 1e-9 of the
+    largest reference return, and both lie within it of the optimum, so each is compared within
+    one tolerance. The split is the argmax, which that gap lets wander by about its square root,
+    3e-5 of a period's budget, and a gain, a difference of two returns, moves with it by the
+    same share of the largest return; three classes moved a spend by at most 1e-7 of the
+    period's budget and a gain by 2e-8 of the largest return, and 1e-6 of each is the
+    tolerance, well above what was seen and below what the gap allows."""
     readings, budget, periods, box = _pinned_problems()[problem]
-    assert _digest(cvar_allocate(readings, budget, periods, **box)) in digests
+    plan = cvar_allocate(readings, budget, periods, **box)
+    expected = _PLANS_OF_1_0_0[problem]
+    assert (plan.stopped, plan.boxes) == (expected["stopped"], expected["boxes"])
+    np.testing.assert_allclose(
+        plan.spend, expected["spend"], rtol=0.0, atol=1e-6 * budget / periods
+    )
+    np.testing.assert_allclose(plan.gain, expected["gain"], rtol=0.0, atol=1e3 * plan.tolerance)
+    np.testing.assert_allclose(
+        [plan.cvar, plan.bound],
+        [expected["cvar"], expected["bound"]],
+        rtol=0.0,
+        atol=plan.tolerance,
+    )
 
 
 def _weighted_tail(gains: np.ndarray, weights: np.ndarray, level: float) -> float:
