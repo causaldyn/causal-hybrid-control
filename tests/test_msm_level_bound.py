@@ -3,7 +3,6 @@ lever (``propensity=``), against ``validation/msm_level_bound.mac``."""
 
 from __future__ import annotations
 
-import hashlib
 import itertools
 import math
 import re
@@ -209,27 +208,104 @@ def test_a_non_finite_outcome_is_refused_rather_than_carried_to_the_bound(bad) -
             call()
 
 
+# the three functions on the panel below, each keyword combination's values in the loop's
+# order, as the tree before ``covariate_form`` returned them: 1.0.0 under numpy 2.5.4 and
+# scipy 1.18.1, keyed by the covariates and the propensity passed
+_BEFORE_COVARIATE_FORM = {
+    ("none", "none"): [
+        0.14370377737484355,
+        0.1,
+        0.8351057267114872,
+        0.7914019493366437,
+        1.0332598490909783,
+        0.9895560717161348,
+        1.5035997694997947,
+        1.4598959921249512,
+        1.1134927531673142,
+        1.0,
+    ],
+    ("none", "0.4"): [
+        0.14370377737484352,
+        0.09999999999999998,
+        0.5585449469768299,
+        0.5148411696019863,
+        0.677437420404525,
+        0.6337336430296815,
+        0.9596413726498146,
+        0.9159375952749711,
+        1.1956877821340122,
+        1.0,
+    ],
+    ("none", "e"): [
+        0.14370377737484352,
+        0.09999999999999998,
+        0.48554773456641065,
+        0.4418439571915671,
+        0.582836967866459,
+        0.5391331904916155,
+        0.8119456764177474,
+        0.7682418990429039,
+        1.2420311528944508,
+        1.0,
+    ],
+    ("x", "none"): [
+        0.14370377737484355,
+        0.1,
+        0.7253608515785378,
+        0.6816570742036943,
+        0.8979960360175914,
+        0.8542922586427478,
+        1.3037831388155374,
+        1.260079361440694,
+        1.1364720872717982,
+        1.0,
+    ],
+    ("x", "0.4"): [
+        0.14370377737484355,
+        0.1,
+        0.4926980218970602,
+        0.4489942445222166,
+        0.5962791325604926,
+        0.552575355185649,
+        0.83975139423926,
+        0.7960476168644165,
+        1.2371137073650615,
+        1.0,
+    ],
+    ("x", "e"): [
+        0.14370377737484355,
+        0.1,
+        0.438043842408094,
+        0.3943400650332505,
+        0.5247246440978672,
+        0.4810208667230237,
+        0.7277162958373778,
+        0.6840125184625343,
+        1.2851212448200044,
+        1.0,
+    ],
+}
+
+
 def test_the_default_form_reads_as_it_did_before_the_quantile_form() -> None:
-    """Every keyword combination the three functions took before ``covariate_form``, digested to
-    the bit on the tree that did not have it."""
+    """Every keyword combination the three functions took before ``covariate_form``, as the tree
+    that did not have it returned them. To 1e-9, not to the bit: a digest of the bits took one
+    value a class of machine and dependencies, a fourth on the CI runners, where the numbers
+    differ by a few epsilons (under 5e-16 between the lockfile and the dependency floors), and the
+    quantile form moves them in their first digits."""
     rng = np.random.default_rng(20261030)
     n = 200
     x = rng.standard_normal((n, 2))
     y = 0.3 + x @ np.array([1.0, -0.5]) + (1.0 + 0.5 * np.abs(x[:, 0])) * rng.standard_normal(n)
     e = rng.uniform(0.2, 0.8, n)
-    values = []
-    for covariates, propensity in itertools.product((None, x), (None, 0.4, e)):
+    passed = {"none": None, "x": x}, {"none": None, "0.4": 0.4, "e": e}
+    for (c, covariates), (p, propensity) in itertools.product(*(d.items() for d in passed)):
         kwargs = {"covariates": covariates, "propensity": propensity}
+        values = []
         for gamma in (1.0, 1.7, 2.0, 3.0):
             values.append(msm_worst_case_mean(y, gamma, **kwargs))
             values.append(confounding_robust_radius(0.1, y, gamma, **kwargs))
         values.extend(negative_control_gamma(y, level=level, **kwargs) for level in (None, 0.95))
-    digest = hashlib.sha256(" ".join(float(v).hex() for v in values).encode()).hexdigest()
-    # one value a class of machine and dependencies, as 1.0.0 gives it: the machine class that
-    # pinned it under the lockfile's versions; an AVX2 machine without AVX-512 under them; that
-    # machine under the dependency floors, numpy 2.0, scipy 1.13 and jax 0.4.30
-    assert digest in {
-        "16293ad3c89be5d275092cb0f66d49c6457c5cd64c903d4caae0b8730d667fc0",
-        "6f695541fa6838604e0e4e5828da292854c6ac02919385d27f9de015ee09a0ee",
-        "71f98af27c6dc28fe20a16aa82a743e24281bd3d51996fe85837124a9910b2cb",
-    }
+        np.testing.assert_allclose(
+            values, _BEFORE_COVARIATE_FORM[c, p], rtol=1e-9, atol=0.0, err_msg=f"{c=} {p=}"
+        )
