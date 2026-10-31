@@ -63,7 +63,7 @@ wastes your time:
     --bundle causal-hybrid-control-<version>.provenance.sigstore.json \
     --repo causaldyn/causal-hybrid-control
   # the PEP 740 attestation, straight from the index:
-  curl -s https://pypi.org/integrity/causal-hybrid-control/1.0.0/causal_hybrid_control-1.0.0-py3-none-any.whl/provenance
+  curl -s https://pypi.org/integrity/causal-hybrid-control/1.1.0/causal_hybrid_control-1.1.0-py3-none-any.whl/provenance
   ```
 
   The bundle route still fetches Sigstore's trust root; with no network at all, add
