@@ -15,7 +15,7 @@ from chc.discovery import LaggedGraph, _lagged_design, discover_lagged_parents
 from chc.graph import CausalGraph
 from chc.independence import partial_corr_test
 from chc.panel import Panel
-from chc.pathway import causal_pathway
+from chc.pathway import _SIGN_TOL, causal_pathway
 from test_discovery import _simulate_var
 
 
@@ -43,10 +43,75 @@ def _graph_values(graph: LaggedGraph) -> list:
     return [np.asarray(graph.state_parents).tolist(), graph.max_lag, graph.edges(), control]
 
 
+# the pathway on the series with the lever as 1.0.0 returned it, on the machine and the
+# lockfile's dependencies that pinned it: numpy 2.5.4 and jax 0.11.2, in float64
+_PATHWAY_OF_1_0_0 = {
+    "target": 1,
+    "horizon": 6,
+    "edges": [
+        {
+            "source": 0,
+            "kind": "state",
+            "lag": 1,
+            "sign": 1,
+            "contribution": 2.1795095786335033,
+            "peak_horizon": 2,
+            "actionable": False,
+            "irf": [
+                3.3520628110866295e-16,
+                0.40044636621076796,
+                0.5301524507244522,
+                0.4543728349884632,
+                0.3188414894715093,
+                0.2637905651636151,
+                0.21190587207469552,
+            ],
+        },
+        {
+            "source": 0,
+            "kind": "control",
+            "lag": 2,
+            "sign": 1,
+            "contribution": 1.302029148999526,
+            "peak_horizon": 3,
+            "actionable": True,
+            "irf": [
+                -4.8588643196336046e-17,
+                -0.0017498799083171196,
+                0.33451147982393337,
+                0.3397678486221726,
+                0.2538216989321083,
+                0.22730569184687963,
+                0.1448725498661149,
+            ],
+        },
+        {
+            "source": 1,
+            "kind": "state",
+            "lag": 1,
+            "sign": 1,
+            "contribution": 1.0872555736932819,
+            "peak_horizon": 1,
+            "actionable": False,
+            "irf": [
+                0.9999999999999994,
+                0.5450817560076686,
+                0.30651740131784166,
+                0.15485474566492857,
+                -0.009794599685808767,
+                -0.031821674159276385,
+                -0.039185396857757786,
+            ],
+        },
+    ],
+}
+
+
 def test_the_discovered_graphs_and_a_pathway_are_what_they_were() -> None:
     """A VAR series and one with a lever, at ``alpha`` 0.01 and 0.05 and with ``max_parents``
-    capped, and a pathway on the series with the lever: every parent, edge and impulse response,
-    digested as the previous release produced them."""
+    capped, and a pathway on the series with the lever: every parent and edge digested, and every
+    pathway edge and impulse response within a tolerance, as the previous release produced
+    them."""
     var = _simulate_var(600, seed=0)
     x, u = _with_controls(600, seed=1)
     values: list = []
@@ -58,18 +123,20 @@ def test_the_discovered_graphs_and_a_pathway_are_what_they_were() -> None:
     assert _digest(values) == "888ed9ceccfe300fb374f435d23e4c52da4661b7c8881f2f31a035386e60d260"
 
     pathway = causal_pathway(x, 1, u, horizon=6, max_lag=2)
-    read: list = [pathway.target, pathway.horizon]
-    for edge in pathway.edges:
-        read += [edge.source, edge.kind, edge.lag, edge.sign, edge.contribution, edge.peak_horizon]
-        read += [edge.actionable, *map(float, edge.irf)]
-    assert len(pathway.edges) == 3
-    # one value a machine class: 1.0.0 gives the first on the machine class that pinned it and the
-    # second on an AVX2 machine without AVX-512. Each response's first step is a structural zero
-    # that float32 reads as noise near 1e-8, so its ten digits are the machine's
-    assert _digest(read) in {
-        "796047fe4499c4a2ea3be412085562a074626055ee76d9d937a11ad903b92965",
-        "72bed82385476326fdf5f923ae642868bf882688c8e4f4437c71ffbea2d53d64",
-    }
+    expected = _PATHWAY_OF_1_0_0
+    assert (pathway.target, pathway.horizon) == (expected["target"], expected["horizon"])
+    assert len(pathway.edges) == len(expected["edges"])
+    # to a tolerance, not a digest: a response's impact step is structural, 1 of the target on
+    # itself and 0 of every other source, and rounding reads the zero as noise near 1e-16 whose
+    # digits are the machine's (a digest took one value a class, a third on the CI runners); the
+    # module reads a response below _SIGN_TOL as zero. The dynamic steps and their sum are the
+    # machine's in their last bits only
+    for edge, read in zip(pathway.edges, expected["edges"], strict=True):
+        shape = ("source", "kind", "lag", "sign", "peak_horizon", "actionable")
+        assert tuple(getattr(edge, name) for name in shape) == tuple(read[name] for name in shape)
+        np.testing.assert_allclose(edge.irf[:1], read["irf"][:1], rtol=0.0, atol=_SIGN_TOL)
+        np.testing.assert_allclose(edge.irf[1:], read["irf"][1:], rtol=1e-9, atol=0.0)
+        np.testing.assert_allclose(edge.contribution, read["contribution"], rtol=1e-9, atol=0.0)
 
 
 def _series(shape: str) -> tuple[np.ndarray, np.ndarray | None, int]:
