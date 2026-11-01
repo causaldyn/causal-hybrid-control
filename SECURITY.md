@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---|---|
-| 1.0.x | yes |
-| < 1.0 | no |
+| 1.1.x | yes |
+| < 1.1 | no |
 
 This is a single-author research library. Only the latest minor gets fixes; there are no
 backports. If you are pinned to an older minor, the upgrade path is the
