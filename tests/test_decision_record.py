@@ -418,6 +418,10 @@ def test_a_record_of_another_schema_or_without_inputs_is_refused(quickstart: Pre
     record = _text(quickstart.to_json())
     with pytest.raises(DecisionError, match=r"^schema_version: this release replays 3, not 4"):
         Prescription.from_json({**record, "schema_version": 4}, QUICKSTART)
+    # a number equal to 3 that is not JSON's integer 3
+    for other in (3.0, True):
+        with pytest.raises(DecisionError, match=rf"^schema_version: .* not {other}$"):
+            Prescription.from_json({**record, "schema_version": other}, QUICKSTART)
     without = {key: value for key, value in record.items() if key != "inputs"}
     with pytest.raises(DecisionError, match=r"^inputs: the record holds no inputs"):
         Prescription.from_json(without, QUICKSTART)
@@ -498,10 +502,11 @@ def test_a_moved_number_is_refused_naming_the_versions_that_differ(
 
 def test_a_record_replayed_on_other_data_is_refused(quickstart: Prescription) -> None:
     record = _text(quickstart.to_json())
+    other = Panel.from_frame(_quickstart_logs(seed=1), unit="region", time="week", seed=0)
     with pytest.raises(
         DecisionError, match=r"^inputs\.panel_sorted_sha256: the record was made from data whose"
     ):
-        Prescription.from_json(record, TWO)
+        Prescription.from_json(record, other)
 
 
 # ---- the panel's rows, in whatever order they were handed in ----
@@ -1108,7 +1113,10 @@ _APPEND = object()
         (("gamma",), 0.5, "inputs.gamma"),
         (("radius",), "wide", "inputs.radius"),
         (("tube_actions",), "vertex", "inputs.tube_actions"),
-        (("levers", 0, "name"), "bonus", "inputs"),
+        (("adjustment", "kind"), "guessed", "inputs.adjustment.kind"),
+        (("levers", 0, "name"), "bonus", "inputs.levers"),
+        (("target", "name"), "bonus", "inputs.target"),
+        (("constraints", 0, "state"), "bonus", "inputs.constraints"),
     ],
     ids=[
         "horizon text",
@@ -1120,7 +1128,10 @@ _APPEND = object()
         "gamma below 1",
         "a radius",
         "a tube form",
-        "a column not in the panel",
+        "an adjustment of no kind",
+        "a lever's column not in the panel",
+        "a target's column not in the panel",
+        "a constraint's column not in the panel",
     ],
 )
 def test_a_record_prescribe_refuses_is_refused_naming_its_input(
@@ -1129,10 +1140,52 @@ def test_a_record_prescribe_refuses_is_refused_naming_its_input(
     """Each refusal is a ``DecisionError`` that opens with the ``inputs`` key it reads, or with
     ``inputs`` where the refusal names none; up to 0.24.0 four of them were a bare ``ValueError``,
     a ``CyclicGraphError`` or prescribe's message with no path, and a negative weight replayed to
-    a schedule the record does not hold."""
+    a schedule the record does not hold. Up to 1.1 a column the panel does not have was refused
+    under ``inputs`` alone, and an adjustment of no kind under its path twice."""
     record = _tampered(_text(quickstart.to_json()), path, value)
     with pytest.raises(DecisionError, match=rf"^{named.replace('.', chr(92) + '.')}: "):
         Prescription.from_json(record, QUICKSTART)
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "named"),
+    [
+        (("dither",), ["eta1", "bonus"], "inputs.dither"),
+        (("adjustment", "covariates"), ["bonus"], "inputs.adjustment"),
+    ],
+    ids=["a draw's column", "an asserted covariate"],
+)
+def test_a_column_the_panel_does_not_have_is_refused_naming_the_input_that_names_it(
+    two_levers: Prescription, path: tuple[Any, ...], value: Any, named: str
+) -> None:
+    record = _tampered(_text(two_levers.to_json()), path, value)
+    with pytest.raises(DecisionError, match=rf"^{named.replace('.', chr(92) + '.')}: "):
+        Prescription.from_json(record, TWO)
+
+
+@pytest.mark.parametrize(
+    ("label", "options", "named"),
+    [
+        ("seed", {"seed": 1}, r"seed is 0, and this panel's is 1$"),
+        (
+            "frequency",
+            {"seed": 0, "frequency": 1.0},
+            r"frequency is None, and this panel's is 1\.0$",
+        ),
+    ],
+)
+def test_a_panel_of_other_labels_is_refused_before_the_replay_naming_them(
+    quickstart: Prescription, label: str, options: dict[str, Any], named: str
+) -> None:
+    """The panel's seed is a caller's label outside the data's digest, and its declared frequency
+    is inside it: up to 1.1 a replay on another seed ran whole and was refused as one that does
+    not give the record back, and one on another frequency as a panel of other data."""
+    panel = Panel.from_frame(_quickstart_logs(), unit="region", time="week", **options)
+    with pytest.raises(
+        DecisionError,
+        match=rf"^provenance\.{label}: the record was made from a panel whose {named}",
+    ):
+        Prescription.from_json(_text(quickstart.to_json()), panel)
 
 
 # ---- the graph's edges ----

@@ -1804,24 +1804,27 @@ class Prescription:
         number, the check below names the number and the versions that differ.
 
         Raises:
-            DecisionError: naming the field, on a record of another ``schema_version``, without
-                ``inputs`` or a field the replay needs, written by another release of the library
-                (``run.versions``) or under another precision (``run.x64``), on a panel of other
-                data (``inputs.panel_sorted_sha256``) or of another declared cluster
+            DecisionError: naming the field, on a record of another ``schema_version``, or one
+                that is not JSON's integer, without ``inputs`` or a field the replay needs,
+                written by another release of the library (``run.versions``) or under another
+                precision (``run.x64``), on a panel of another seed or frequency
+                (``provenance.seed``, ``provenance.frequency``), of other data
+                (``inputs.panel_sorted_sha256``) or of another declared cluster
                 (``inputs.panel_cluster``), without the known model the record names, or with
                 one of another digest or where the record names none (``inputs.known``); on an
                 input that does not read as :func:`prescribe`'s argument, or that it refuses,
-                naming ``inputs.<key>`` where the refusal names the argument and ``inputs`` where
-                it does not, with the refusal's own words; and where
+                naming ``inputs.<key>`` where the refusal names the argument or a column the
+                argument names, and ``inputs`` where it names neither, with the refusal's own
+                words; and where
                 the replay does not give the record back, naming the first field that differs and
                 the versions that differ from the record's.
         """
         if not isinstance(record, Mapping):
             raise DecisionError(f"a decision record is a mapping, not {type(record).__name__}")
-        if record.get("schema_version") != SCHEMA_VERSION:
+        version = record.get("schema_version")
+        if isinstance(version, bool) or not isinstance(version, int) or version != SCHEMA_VERSION:
             raise DecisionError(
-                f"schema_version: this release replays {SCHEMA_VERSION}, not "
-                f"{record.get('schema_version')!r}"
+                f"schema_version: this release replays {SCHEMA_VERSION}, not {version!r}"
             )
         inputs = record.get("inputs")
         if not isinstance(inputs, Mapping):
@@ -1846,13 +1849,26 @@ class Prescription:
                 f"run.x64: the record was made with jax_enable_x64 {run.get('x64')!r}, and this "
                 f"process runs with {_x64_enabled()}"
             )
+        labels = record.get("provenance")
+        labels = labels if isinstance(labels, Mapping) else {}
+        # a caller's labels of the data, which the record's provenance holds beside its digest
+        for name, held in (
+            ("seed", panel.provenance.seed),
+            ("frequency", panel.provenance.frequency),
+        ):
+            if labels.get(name) != held:
+                raise DecisionError(
+                    f"provenance.{name}: the record was made from a panel whose {name} is "
+                    f"{labels.get(name)!r}, and this panel's is {held!r}"
+                )
         arguments = _replay_arguments(inputs, panel, model)
         try:
             replayed = prescribe(panel, **arguments)
         except (KeyError, TypeError, ValueError) as refusal:  # the record's inputs, refused
             message = _refusal(refusal)
             raise DecisionError(
-                f"{_refused_input(message)}: prescribe refuses the record's inputs: {message}"
+                f"{_refused_input(message, inputs)}: prescribe refuses the record's inputs: "
+                f"{message}"
             ) from refusal
         difference = _first_difference(
             _without_environment(_without_row_order(replayed.to_json())),
@@ -6136,6 +6152,8 @@ def _replay_arguments(
         try:
             arguments[key] = read()
         except (KeyError, TypeError, ValueError) as error:  # a record's own shape, at its boundary
+            if isinstance(error, DecisionError) and str(error).startswith(f"inputs.{key}."):
+                raise  # it names the field already
             raise DecisionError(
                 f"inputs.{key}: the record's value does not read as prescribe's: {_refusal(error)}"
             ) from error
@@ -6154,17 +6172,43 @@ def _refusal(error: Exception) -> str:
     return str(error.args[0]) if isinstance(error, KeyError) and error.args else str(error)
 
 
-def _refused_input(message: str) -> str:
-    """The record's ``inputs.<key>`` that :func:`prescribe`'s refusal ``message`` names, as its
-    messages open with the argument they refuse (``gamma=0.5 is ...``, ``lever 'u' has ...``), or
-    ``inputs`` where it opens with none."""
+def _refused_input(message: str, inputs: Mapping[str, Any]) -> str:
+    """The record's ``inputs.<key>`` that :func:`prescribe`'s refusal ``message`` names: the key
+    that names the column, where it refuses a column the panel does not have; else the argument
+    its messages open with (``gamma=0.5 is ...``, ``lever 'u' has ...``), or ``inputs`` where
+    they open with none."""
+    for key, names in _columns_named(inputs).items():
+        if any(message.startswith(f"column {name!r} is not in the panel") for name in names):
+            return f"inputs.{key}"
     match = re.match(r"[a-z_0-9]+", message)
     word = "" if match is None else match.group()
     key = _REFUSED_BY.get(word, word)
     return f"inputs.{key}" if key in _INPUT_KEYS else "inputs"
 
 
-_REFUSED_BY = {"lever": "levers", "constraint": "constraints", "driver": "drivers"}
+_REFUSED_BY = {
+    "lever": "levers",
+    "constraint": "constraints",
+    "driver": "drivers",
+    "asserted": "adjustment",
+}
+
+
+def _columns_named(inputs: Mapping[str, Any]) -> dict[str, list[Any]]:
+    """The columns each of a record's ``inputs`` names, in the order :func:`prescribe` looks them
+    up in the panel."""
+    neighbours, dither = inputs["neighbours"], inputs["dither"]
+    return {
+        "target": [inputs["target"]["name"]],
+        "constraints": [constraint["state"] for constraint in inputs["constraints"]],
+        "levers": [lever["name"] for lever in inputs["levers"]],
+        "drivers": [driver["name"] for driver in inputs["drivers"]],
+        "clusters": [] if inputs["clusters"] is None else [inputs["clusters"]],
+        "neighbours": [neighbours["column"]]
+        if isinstance(neighbours, Mapping) and "column" in neighbours
+        else [],
+        "dither": [] if dither is None else [dither] if isinstance(dither, str) else list(dither),
+    }
 
 
 def _read_adjustment(written: Mapping[str, Any]) -> CausalGraph | list[str]:
