@@ -18,8 +18,6 @@ most ``alpha = 1/1000`` (:mod:`_misspec_counts`), on seeds read from its block.
 
 from __future__ import annotations
 
-import logging
-
 import numpy as np
 import pytest
 from _misspec_counts import at_least, at_most, seeds
@@ -52,7 +50,6 @@ def _logs(c: float, seed: int) -> Panel:
 
 
 def _p_values(c: float, seeds: range) -> np.ndarray:
-    logging.getLogger("chc").setLevel(logging.ERROR)
     values = []
     for seed in seeds:
         check = prescribe(
