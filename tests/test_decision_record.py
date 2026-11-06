@@ -41,9 +41,9 @@ from chc.evaluation import (
     evaluate_plan,
 )
 from chc.graph import CausalGraph, EdgeProvenance
-from chc.misspecification import _clustered_squares, planned_cost_bias
+from chc.misspecification import _clustered_squares, _parameter_cost, planned_cost_bias
 from chc.panel import Panel
-from chc.plan import PlannedCostBias
+from chc.plan import PlannedCostBias, _bias_terms
 from chc.residual import ControlAffineResidual
 
 DT = 0.1
@@ -684,6 +684,14 @@ def test_the_certificate_s_bias_is_the_fit_s_at_the_quickstart(
     assert made.certificate.planned_cost_bias_reason is None
     assert bias is not None
     assert bias.planned_cost == made.plan.task_cost
+    # the fit is clustered two ways, and the bias reads the two ways' covariance, which here is
+    # also the read of the largest tr(W S) the bias took up to 1.1: its number does not move
+    reads = _reads(plan, fit)
+    assert len(reads) == 3
+    assert (bias.optimism, bias.curvature) == (reads[0].optimism, reads[0].curvature)
+    assert max(reads, key=lambda read: read.optimism) == reads[0]
+    assert bias.bias == pytest.approx(2.8435e-05, rel=1e-3, abs=0.0)
+    assert bias.bias_upper == max(read.bias for read in reads)
     written = made.to_json()["certificate"]["planned_cost_bias"]
     assert written == {
         "planned_cost": bias.planned_cost,
@@ -691,6 +699,7 @@ def test_the_certificate_s_bias_is_the_fit_s_at_the_quickstart(
         "curvature": bias.curvature,
         "first_order": 0.0,
         "bias": bias.bias,
+        "bias_upper": bias.bias_upper,
         "direction": bias.direction,
         "corrected_cost": bias.corrected_cost,
         "unseen": bias.unseen,
@@ -698,6 +707,71 @@ def test_the_certificate_s_bias_is_the_fit_s_at_the_quickstart(
         "residual": bias.residual,
     }
     assert "planned cost's bias, to second order" in made.report()
+
+
+def _reads(plan: Any, fit: Any) -> list[PlannedCostBias]:
+    """The bias at each read of the fit's covariance: two ways, then each dimension alone."""
+    problem, cost, count = _parameter_cost(plan, fit.residual, "the fit")
+    terms = _bias_terms(problem, plan.actions, cost, count, None)
+    squares = _clustered_squares(np.asarray(fit.influence), fit.clusters, fit.periods)
+    return [terms.bias(square, None) for square in squares]
+
+
+def _short_logs(seed: int, units: int = 20, periods: int = 4) -> Panel:
+    """``x' = 0.7 x + 0.6 u + 0.3 e``, the lever drawn afresh each period: a log short in both
+    dimensions, on which the reads of the error's covariance part by noise."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(0.0, 0.5, units)
+    rows: dict[str, list[np.ndarray]] = {"unit": [], "t": [], "x": [], "u": []}
+    for t in range(periods):
+        u = rng.normal(0.0, 1.0, units)
+        for name, value in zip(
+            rows, (np.arange(units), np.full(units, t), x.copy(), u), strict=True
+        ):
+            rows[name].append(value)
+        x = 0.7 * x + 0.6 * u + 0.3 * rng.standard_normal(units)
+    frame = {name: np.concatenate(values) for name, values in rows.items()}
+    return Panel.from_frame(frame, unit="unit", time="t")
+
+
+def test_the_bias_reads_the_fit_s_own_dependence_and_its_largest_read_apart() -> None:
+    """``prescribe`` fits a log of 20 units over 4 periods clustered two ways, and the bias reads
+    the two ways' covariance; ``bias_upper`` is the largest bias over that read and each
+    dimension's alone. Up to 1.1 the bias was the read of the largest ``tr(W S)``, another read
+    than the two ways' on most of these logs: the largest of three noisy reads sits above each
+    read's own mean, 55 % above the bias the parameters' covariance across 600 such logs gives."""
+    seen: list[tuple[Any, Any]] = []
+    real = decision._fit_cost_bias
+
+    def spy(plan: Any, fit: Any) -> PlannedCostBias:
+        seen.append((plan, fit))
+        return real(plan, fit)
+
+    moved = 0
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(decision, "_fit_cost_bias", spy)
+        for seed in range(4):
+            made = prescribe(
+                _short_logs(seed),
+                adjustment=CausalGraph.from_edges([("u", "x")]),
+                levers=[Lever("u", lo=-10.0, hi=10.0, unit_cost=0.2)],
+                target=Target("x", value=1.0),
+                horizon=3,
+                dt=1.0,
+                integrator="euler",
+                x0=[0.0],
+                planned_cost_bias=True,
+            )
+            plan, fit = seen[-1]
+            bias = made.certificate.planned_cost_bias
+            assert bias is not None
+            assert np.ndim(fit.clusters) == 2
+            reads = _reads(plan, fit)
+            assert (bias.optimism, bias.curvature) == (reads[0].optimism, reads[0].curvature)
+            assert bias.bias_upper == max(read.bias for read in reads)
+            assert bias.bias_upper >= bias.bias
+            moved += max(reads, key=lambda read: read.optimism) != reads[0]
+    assert moved >= 2
 
 
 def test_the_bias_moves_nothing_else_and_is_off_by_default(quickstart: Prescription) -> None:

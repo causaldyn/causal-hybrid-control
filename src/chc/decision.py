@@ -1646,8 +1646,8 @@ class Prescription:
         moves (ADR 0145):
 
         * the certificate's ``planned_cost_bias``, the planned cost, its bias's three terms, the
-          bias, its ``direction`` and the corrected cost, or None, and
-          ``planned_cost_bias_reason``, why it is None;
+          bias, the largest over the reads of its covariance (``bias_upper``), its ``direction``
+          and the corrected cost, or None, and ``planned_cost_bias_reason``, why it is None;
         * ``logger_check``, the logger check's verdict (:class:`~chc.evaluation.LoggerCheck`): its
           statistic, p-value, each pair's partial correlation and the one it could detect, a nan
           correlation or an infinite detectable one None; None where it was not run;
@@ -1874,9 +1874,12 @@ class Prescription:
         certificate = self.certificate
         bias = certificate.planned_cost_bias
         if bias is not None:
+            upper = bias.bias_upper
+            above = "" if upper is None or not upper > bias.bias else f"; up to {upper:+.4g}"
             return [
-                f"- planned cost's bias, to second order: {bias.bias:+.4g}, {bias.direction} "
-                f"(planned {bias.planned_cost:.6g}, corrected {bias.corrected_cost:.6g})"
+                f"- planned cost's bias, to second order, its first-order term not read: "
+                f"{bias.bias:+.4g}, {bias.direction} (planned {bias.planned_cost:.6g}, corrected "
+                f"{bias.corrected_cost:.6g}{above})"
             ]
         reason = certificate.planned_cost_bias_reason
         if reason is None or reason == _BIAS_NOT_ASKED:
@@ -5800,6 +5803,7 @@ def _bias_json(bias: PlannedCostBias | None) -> dict[str, Any] | None:
         "curvature": bias.curvature,
         "first_order": bias.first_order,
         "bias": bias.bias,
+        "bias_upper": bias.bias_upper,
         "direction": bias.direction,
         "corrected_cost": bias.corrected_cost,
         "unseen": bias.unseen,
