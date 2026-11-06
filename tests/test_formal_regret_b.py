@@ -110,6 +110,8 @@ FORMAL_LINKS = {
             "test_highprob_band_is_a_log_multiple_of_the_floor",
             "test_highprob_band_covers_the_exact_regret_where_c_holds",
             "test_highprob_band_undercovers_outside_the_local_regime",
+            "test_highprob_band_undercovers_near_the_knife_edge",
+            "test_highprob_band_reads_nan_at_the_knife_edge",
         ),
     },
     "chc.research.regret.hinf_robust_regret_certificate": {
@@ -1020,6 +1022,41 @@ def test_highprob_band_undercovers_outside_the_local_regime():
     # the docstring quoted 0.916, the reading at 2000 trials; the default 4000 read 0.911
     assert curve.empirical_coverage[0] == pytest.approx(0.911, abs=0.0005)
     assert curve.empirical_coverage[0] < 0.99 - 4.0 * sd
+
+
+@pytest.mark.parametrize(("rr", "coverage"), [(0.98, 0.725), (0.9, 0.967)])
+def test_highprob_band_undercovers_near_the_knife_edge(rr, coverage):
+    """The documented coverages at ``delta = 0.01`` near ``rr = b^2 = 1``, where ``C`` vanishes and
+    the regret is fourth order: 0.7248 and 0.9667 of the 4000 default trials, against 0.99."""
+    curve = R.local_highprob_regret_certificate(rr=rr, n=50, deltas=(0.01,))
+    sd = math.sqrt(0.01 * 0.99 / 4000)
+    assert curve.empirical_coverage[0] == pytest.approx(coverage, abs=0.0005)
+    assert curve.empirical_coverage[0] < 0.99 - 4.0 * sd
+
+
+@pytest.mark.parametrize(
+    ("b", "rr"),
+    [
+        (1.0, 1.0),
+        (math.sqrt(0.5), 0.5),  # b * b rounds to 0.5000000000000001
+        (1.0, 1.0 + 6.0 * np.finfo(np.float64).eps),  # 3 units in the last place above b^2
+    ],
+)
+def test_highprob_band_reads_nan_at_the_knife_edge(b, rr):
+    """At ``rr = b^2`` the coefficient ``C``, the bands and the floor are zero. ``band / floor``
+    was 0/0 there, a nan with a RuntimeWarning, and the coverage of a band of zero read 0. One
+    rounding off the edge, at ``b = sqrt(0.5)``, the bands were near 1e-34, their coverage 0 and
+    their ratio to the floor ``2 log(2/delta)``, as if the band held. Within four units of
+    rounding, as for the information certificate, both have nothing to measure and read nan,
+    with no warning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        curve = R.local_highprob_regret_certificate(b=b, rr=rr, n=50, n_trials=20)
+    assert curve.cr_floor == 0.0
+    assert np.all(curve.highprob_bands == 0.0)
+    assert np.all(curve.confounded_bands == 0.0)
+    assert np.all(np.isnan(curve.band_over_floor))
+    assert np.all(np.isnan(curve.empirical_coverage))
 
 
 # ------------------------------------------------------------------------------------- H-infinity

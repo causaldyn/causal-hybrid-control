@@ -380,6 +380,14 @@ class InformationLowerBoundCurve:
     best_weighted_bayes_floor: float
 
 
+def _knife_edge(b: float, rr: float) -> bool:
+    """Whether ``rr = b^2`` to rounding: there the optimal action is stationary in ``b``, and the
+    regret's local coefficient ``(rr - b^2)^2/(rr + b^2)^3`` is zero. ``b = sqrt(rr)`` and ``b*b``
+    each round once, so there ``|rr - b^2| <= 1.5 eps rr``, and an exact test missed it:
+    ``b = sqrt(0.5)`` left 1.1e-16 and a coefficient of 1.2e-32."""
+    return abs(rr - b * b) <= 4.0 * np.finfo(np.float64).eps * (rr + b * b)
+
+
 def information_lower_bound_certificate(
     *,
     b: float = 1.0,
@@ -463,10 +471,8 @@ def information_lower_bound_certificate(
         raise ValueError(
             f"the prior width is a standard deviation, positive and finite: got {prior_width}"
         )
-    # At the knife edge rr = b^2 the coefficient is 0: no rate to fit, no floor to compare with.
-    # b = sqrt(rr) and b*b each round once, so there |rr - b^2| <= 1.5 eps rr, and an exact test
-    # missed it: b = sqrt(0.5) left 1.1e-16 and a coefficient of 1e-33 to fit a rate to.
-    knife_edge = abs(rr - b * b) <= 4.0 * np.finfo(np.float64).eps * (rr + b * b)
+    # At the knife edge the coefficient is 0: no rate to fit, no floor to compare with.
+    knife_edge = _knife_edge(b, rr)
     coeff = 0.0 if knife_edge else xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     v_exp = alpha**2 + 1.0  # total action variance (Var(alpha*z + nu), Vz = Vnu = 1)
     v_conf = 1.0  # residual identifying variance Var(u|z) = Var(nu) under confounding
@@ -1240,14 +1246,20 @@ def local_highprob_regret_certificate(
     4000 default trials (Monte Carlo SD 0.0045), where the proxy reads 0.996. Near the knife edge
     ``rr = b^2``, where ``C`` vanishes and the regret is fourth order, the band fails outright: at
     ``rr = 0.98``, ``n = 50`` it covers 0.725 at ``delta = 0.01``, and at ``rr = 0.9``, ``n = 50``
-    0.967.
+    0.967. At the knife edge itself, ``rr = b^2`` to within rounding, ``C`` is zero, and so are
+    the bands and the floor: ``band_over_floor`` and ``empirical_coverage`` have nothing to
+    measure there, and read ``nan``.
     """
-    coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
+    knife_edge = _knife_edge(b, rr)
+    coeff = 0.0 if knife_edge else xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     ds = np.asarray(deltas, dtype=np.float64)
     logs = np.log(2.0 / ds)
     floor = coeff * sigma**2 / (n * v_exp)
     bands = coeff * 2.0 * sigma**2 * logs / (n * v_exp)
     conf_bands = coeff * 2.0 * sigma**2 * logs / (n * v_conf)
+    if knife_edge:
+        unread = np.full(ds.size, np.nan)
+        return HighProbRegretCurve(ds, bands, unread, conf_bands, unread.copy(), float(floor))
     coverage = np.zeros(ds.size)
     regrets = np.empty(n_trials)
     for t in range(n_trials):
