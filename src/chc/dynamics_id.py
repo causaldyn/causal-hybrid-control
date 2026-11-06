@@ -1180,7 +1180,14 @@ def _representer(sensitivity: Array) -> Array:
 
 def _kept(residual: Array, scale: Array) -> Array:
     """Unit columns ``(k, r)``, in the units ``scale`` divides out: the combinations of
-    ``residual``'s columns that, scaled, keep less than the square root of the working precision."""
+    ``residual``'s columns that, scaled, keep at most ``chc._units.ROUNDING`` eps of the working
+    precision, rounding, as :func:`_instrument_relevance` reads a push.
+
+    The cut was the square root of the precision, 3.5e-4 in float32: a lever logged at 293 of its
+    units with a spread of 0.05, whose residual keeps 1.7e-4 of its raw size, read as never moved,
+    and the fit returned no channel, where float64 read 1.001 with an error of 0.046. A lever the
+    covariates set exactly keeps 1.4e-6 or less in float32, below the cut of 7.6e-6, on logs of
+    4000 to 200000 rows and nuisances of degree 2 and 3."""
     residual = residual * scale
     # A log of fewer transitions than coefficients has fewer singular values than directions, and a
     # thin SVD returns no row for the rest, which no transition moves: zero rows bring them back
@@ -1189,7 +1196,7 @@ def _kept(residual: Array, scale: Array) -> Array:
     if short > 0:
         residual = jnp.concatenate([residual, jnp.zeros((short, residual.shape[1]))])
     _, singular, rows = jnp.linalg.svd(residual, full_matrices=False)
-    null = rows[singular <= jnp.sqrt(jnp.finfo(singular.dtype).eps)].T * scale[:, None]
+    null = rows[singular <= _units.ROUNDING * jnp.finfo(singular.dtype).eps].T * scale[:, None]
     return null / jnp.linalg.norm(null, axis=0)
 
 
@@ -1203,8 +1210,8 @@ def _unmoved_directions(
 ) -> Array:
     """The channel's coefficient directions, unit columns ``(m k, r)``, along which the log's
     actions, less their least-squares projection on the nuisance's features (``sieve`` where
-    given, :func:`_nuisance_sieve`), keep less than the square root of the working precision of
-    their raw size.
+    given, :func:`_nuisance_sieve`), keep at most rounding of their raw size,
+    ``chc._units.ROUNDING`` eps of the working precision (:func:`_kept`).
 
     Projected without the cross-fit's ridge and folds, a policy the covariates determine leaves
     rounding, where the ridge would leave a bias that grows as the log shrinks. Scaled to the raw
@@ -1334,7 +1341,8 @@ def _split_unmoved(directions: Array, raw: Array, design: Array) -> _Unmoved:
     short = left.shape[1] - left.shape[0]
     padded = jnp.concatenate([left, jnp.zeros((short, left.shape[1]))]) if short > 0 else left
     out, singular, rows = jnp.linalg.svd(padded, full_matrices=False)
-    seen = singular > jnp.sqrt(jnp.finfo(singular.dtype).eps)
+    # rounding of the raw actions' size, as _kept cuts
+    seen = singular > _units.ROUNDING * jnp.finfo(singular.dtype).eps
     return _Unmoved(
         raw=raw,
         basis=basis,

@@ -1203,6 +1203,59 @@ def test_the_fit_names_the_directions_its_log_never_moves(
     assert fit.unmoved.shape[1] == unmoved
 
 
+def _far_lever_log(level: float, spread: float, determined: bool = False) -> dict[str, jax.Array]:
+    """A lever logged ``level`` of its units from zero, ``level + spread (-z + eta)``, or set by its
+    covariate exactly, ``level + 0.3 z + 0.1 z^2``, moving one state by its move from the level,
+    as float32 columns: ``x' = x + 0.1 (-0.5 x + (u - level) + z)``."""
+    rng = np.random.default_rng(0)
+    rows = 2000
+    z = rng.normal(size=(rows, 1))
+    move = 0.3 * z + 0.1 * z**2 if determined else spread * (-z + rng.normal(size=(rows, 1)))
+    x = rng.normal(size=(rows, 1))
+    x_next = x + 0.1 * (-0.5 * x + move + z) + 1e-2 * rng.normal(size=(rows, 1))
+    log = {"x": x, "u": level + move, "z": z, "x_next": x_next}
+    return {name: jnp.asarray(column, dtype=jnp.float32) for name, column in log.items()}
+
+
+@pytest.mark.parametrize(
+    ("level", "spread"),
+    [(0.0, 1.0), (100.0, 1.0), (100.0, 0.05), (293.0, 0.05), (1000.0, 0.1), (1000.0, 1.0)],
+)
+def test_a_lever_far_from_zero_that_moves_a_little_is_read_in_float32(
+    level: float, spread: float
+) -> None:
+    """In float32, JAX's default. At 293 of its units with a spread of 0.05, and at 1000 with 0.1,
+    the lever's residual keeps 1.7e-4 and 1.0e-4 of its raw size, under the square root of the
+    precision, 3.5e-4, where the fit cut: it read the lever as never moved, and returned no
+    channel, where float64 read 1.001 and 0.961, within 0.03 and 1.7 errors of the truth, 1. Cut
+    at rounding, 7.6e-6, the fit reads every lever within two of its errors of the channel."""
+    with enable_x64(False):
+        fit = fit_causal_residual(
+            _ZERO, _far_lever_log(level, spread), 0.1, adjust_for=("z",), channel_degree=0
+        )
+    assert fit.residual.channel.dtype == jnp.float32
+    assert fit.identified
+    assert fit.channel_error is not None
+    assert abs(float(np.asarray(fit.residual.channel)[0, 0, 0]) - 1.0) < 2.0 * fit.channel_error
+
+
+@pytest.mark.parametrize("level", [0.0, 293.0, 1000.0])
+def test_a_lever_its_covariate_sets_stays_unmoved_in_float32(level: float) -> None:
+    """Set by its covariate exactly, a lever keeps 5e-8 to 1.4e-6 of its raw size in float32, its
+    projection's rounding, under the cut of 7.6e-6: still never moved."""
+    with enable_x64(False):
+        fit = fit_causal_residual(
+            _ZERO,
+            _far_lever_log(level, 0.0, determined=True),
+            0.1,
+            adjust_for=("z",),
+            channel_degree=0,
+        )
+    assert not fit.identified
+    assert fit.unmoved is not None
+    assert fit.unmoved.shape[1] == 1
+
+
 @pytest.mark.parametrize(
     ("rows", "actions", "nuisance_degree", "unmoved"),
     [(3, 3, 2, 9), (2, 1, 0, 1)],
