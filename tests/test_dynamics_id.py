@@ -42,6 +42,7 @@ from chc.dynamics_id import (
     _unmoved_actions,
     _unmoved_directions,
     fit_causal_residual,
+    lag_check,
     nuisance_shift,
     omitted_confounder_bound,
     persistence_check,
@@ -3306,6 +3307,25 @@ def test_the_persistence_check_on_one_pair_or_none_reads_no_test() -> None:
     assert (none.pairs, none.units) == (0, 0)
     assert math.isnan(none.correlation)
     assert math.isnan(none.p_value)
+
+
+def test_both_checks_refuse_periods_no_unit_steps_through() -> None:
+    """Periods counted in days a week apart, 0, 7, 14: no unit had two transitions one period
+    apart, and both checks read nothing and returned nan without a word. So did ``lag_check`` at
+    more lags than any unit's run of consecutive transitions."""
+    data, units, periods = _persistent_log(0.0, units=20, periods=10)
+    fit = fit_causal_residual(_known, data, 0.1, adjust_for=("z",), channel_degree=0)
+    weekly = 7 * periods
+    with pytest.raises(ValueError, match="the least spacing within a unit is 7"):
+        persistence_check(fit, units, weekly)
+    with pytest.raises(ValueError, match="the least spacing within a unit is 7"):
+        lag_check(fit, data, units, weekly, lags=1, adjust_for=("z",))
+    with pytest.raises(ValueError, match="no unit has two transitions one period apart"):
+        persistence_check(fit, np.arange(units.size), periods)
+    with pytest.raises(ValueError, match="no unit has 11 transitions in consecutive periods"):
+        lag_check(fit, data, units, periods, lags=10, adjust_for=("z",))
+    assert lag_check(fit, data, units, periods, lags=9, adjust_for=("z",)).transitions == 20
+    assert persistence_check(fit, units, periods).pairs == 20 * 9
 
 
 def test_the_persistence_check_of_a_fit_given_periods_sums_each_period_s_products() -> None:

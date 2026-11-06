@@ -79,7 +79,6 @@ from chc.dynamics_id import (
     _unmoved_actions,
     fit_causal_residual,
     interference_check,
-    persistence_check,
 )
 from chc.evaluation import (
     AffinePolicy,
@@ -2795,7 +2794,9 @@ def prescribe(
     persistence = (
         None
         if fit.moment_residual is None
-        else persistence_check(fit, units=labels[:, 2], periods=labels[:, 1])
+        else _persistence(
+            fit.moment_residual, labels[:, 2], labels[:, 1], fit.periods is not None, fit.clusters
+        )
     )
     interference = (
         None

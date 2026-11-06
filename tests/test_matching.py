@@ -153,6 +153,26 @@ def test_sinkhorn_refuses_a_problem_that_is_no_number(change: dict, match: str) 
         sinkhorn(**{**problem, **change})
 
 
+@pytest.mark.parametrize(
+    ("cost", "supply", "demand"),
+    [
+        (COST, np.array([4, 5, 3]), np.array([6, 3, 3])),
+        (COST, np.array([4, 5, 3], dtype=np.int32), np.array([6, 3, 3], dtype=np.int32)),
+        (np.array([[1, 2, 3], [4, 1, 2], [3, 2, 1]]), np.array([4, 5, 3]), np.array([6, 3, 3])),
+        (COST, SUPPLY.astype(jnp.float32), DEMAND.astype(jnp.float32)),
+    ],
+    ids=["int64 masses", "int32 masses", "integers throughout", "float32 masses"],
+)
+def test_sinkhorn_reads_integer_or_narrower_masses_as_the_float_ones(cost, supply, demand) -> None:
+    """Integer masses were refused reading the rounding of their type, which has none, and
+    float32 masses beside a float64 cost failed in the scan, whose potentials changed type."""
+    want = sinkhorn(COST, SUPPLY, DEMAND, eps=0.5)
+    got = sinkhorn(cost, supply, demand, eps=0.5)
+    assert got.plan.dtype == want.plan.dtype
+    np.testing.assert_allclose(got.plan, want.plan, rtol=1e-12, atol=0.0)
+    assert got.transport_cost == pytest.approx(want.transport_cost, rel=1e-12, abs=0.0)
+
+
 # ---- the global effect of an experiment on a matching, read off its rents ----
 
 

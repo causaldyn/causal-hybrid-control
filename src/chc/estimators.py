@@ -19,6 +19,8 @@ ignores what it does not need, so every backend is swappable without touching th
 
 from __future__ import annotations
 
+import math
+import warnings
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -117,6 +119,23 @@ def _alias(data: Data, treatment: str, outcome: str, names: tuple[str, ...]) -> 
     return {**cols, "u": cols[treatment], "x_next": cols[outcome]}
 
 
+def _t_stat(effect: float, se: float) -> float:
+    """``effect / se``, which is nan where either is, and where the error is 0 the infinity of the
+    effect's sign; where both are 0, as on an outcome the regression reads exactly as nothing, nan
+    with a warning, since no number weighs an effect of nothing against no noise."""
+    if se != 0.0:
+        return effect / se
+    if effect != 0.0:
+        return math.copysign(math.inf, effect)
+    warnings.warn(
+        "the effect and its standard error are both 0, as on an outcome the regression reads "
+        "exactly as nothing: its t statistic reads nan",
+        UserWarning,
+        stacklevel=3,
+    )
+    return math.nan
+
+
 @dataclass(frozen=True)
 class BackdoorOLS:
     """Backdoor adjustment: OLS of ``outcome`` on ``[treatment, *covariates]`` and an intercept.
@@ -143,7 +162,7 @@ class BackdoorOLS:
         design = [columns[treatment]] + [columns[c] for c in covariates]
         beta, se = _ols_with_hc3_se(jnp.stack(design, axis=1), columns[outcome])
         effect, stderr = float(beta[0]), float(se[0])  # treatment is column 0
-        return EffectEstimate(effect, stderr, diagnostics={"t_stat": effect / stderr})
+        return EffectEstimate(effect, stderr, diagnostics={"t_stat": _t_stat(effect, stderr)})
 
 
 @dataclass(frozen=True)
@@ -232,9 +251,10 @@ class DoubleML:
             ridge=self.ridge,
         )
         lo, hi = effect - 1.96 * se, effect + 1.96 * se
-        t_stat = float("inf") if se == 0.0 else effect / se  # a nan error reads a nan statistic
         return EffectEstimate(
-            effect, std_error=se, diagnostics={"t_stat": t_stat, "ci95_low": lo, "ci95_high": hi}
+            effect,
+            std_error=se,
+            diagnostics={"t_stat": _t_stat(effect, se), "ci95_low": lo, "ci95_high": hi},
         )
 
 

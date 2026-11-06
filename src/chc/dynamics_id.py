@@ -3461,12 +3461,38 @@ def persistence_check(
 
     Raises:
         ValueError: the fit kept no moment residual, as where its channel is not identified; the
-            labels are not one a transition; a period is not a whole number; or a unit has two
-            transitions starting in one period.
+            labels are not one a transition; a period is not a whole number; a unit has two
+            transitions starting in one period; or the log spans two periods or more and no unit
+            has two transitions one period apart, as on periods counted in days a week apart,
+            where the check read no pair and returned nan without a word.
     """
     if fit.moment_residual is None:
         raise ValueError("the fit kept no moment residual: its channel is not identified")
-    return _persistence(fit.moment_residual, units, periods, fit.periods is not None, fit.clusters)
+    check = _persistence(fit.moment_residual, units, periods, fit.periods is not None, fit.clusters)
+    steps = np.asarray(periods).reshape(-1)
+    if check.pairs == 0 and np.unique(steps).size >= 2:
+        raise ValueError(_no_step_apart(np.asarray(units).reshape(-1), steps))
+    return check
+
+
+def _no_step_apart(units: np.ndarray, steps: np.ndarray) -> str:
+    """The refusal of a log of two periods or more on which no unit has two transitions one
+    period apart, naming its least spacing within a unit."""
+    codes = np.unique(units, return_inverse=True)[1].reshape(-1)
+    order = np.lexsort((steps, codes))
+    same = codes[order[:-1]] == codes[order[1:]]
+    apart = (steps[order[1:]] - steps[order[:-1]])[same]
+    seen = (
+        f"the least spacing within a unit is {apart.min():g}"
+        if apart.size
+        else "no unit has two transitions"
+    )
+    return (
+        f"no unit has two transitions one period apart on a log of {np.unique(steps).size} "
+        f"periods ({seen}): periods are whole numbers of steps, a unit's consecutive transitions "
+        "1 apart, so codes on a coarser grid, as 0, 7, 14 for weeks counted in days, leave "
+        "nothing to read; give the periods in steps"
+    )
 
 
 def nuisance_shift(fit: CausalDynamicsFit, refit: CausalDynamicsFit, states: ArrayLike) -> float:
@@ -3761,7 +3787,10 @@ def lag_check(
     Raises:
         ValueError: the fit kept no moment residual, as where its channel is not identified; the
             columns or the labels are not one row a transition; ``lags`` is not a positive whole
-            number; or a unit has two transitions starting in one period.
+            number; a unit has two transitions starting in one period; or the log spans two
+            periods or more and no transition has its unit's transitions 1 to ``lags`` periods
+            earlier, as on periods counted in days a week apart, where the check read no
+            transition and returned nan without a word.
     """
     if fit.moment_residual is None:
         raise ValueError("the fit kept no moment residual: its channel is not identified")
@@ -3793,6 +3822,13 @@ def lag_check(
         [[where.get((code, step - lag), -1) for lag in range(1, lags + 1)] for code, step in pairs]
     ).reshape(rows, lags)
     keep = np.all(late >= 0, axis=1)
+    if not np.any(keep) and np.unique(steps).size >= 2:
+        if not np.any(late[:, 0] >= 0):
+            raise ValueError(_no_step_apart(labels, steps))
+        raise ValueError(
+            f"no transition has its unit's transitions 1 to {lags} periods earlier: no unit has "
+            f"{lags + 1} transitions in consecutive periods; lower lags"
+        )
     n_states, n_levers = residual.shape[1], levers.shape[1]
     nan = np.full((n_states, lags, n_levers), math.nan)
     clustered = codes if fit.clusters is None else np.asarray(fit.clusters).reshape(rows, -1)[:, 0]

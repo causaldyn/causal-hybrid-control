@@ -2222,21 +2222,69 @@ def _quantile_level_bound(
     optimum, so the solver's tolerance can cost sharpness and not validity."""
     if gamma == 1.0:
         return float(np.mean(outcomes)), outcomes.copy()
+    q = _quantile_fit(outcomes, gamma, design, propensity, cross_fitted)
+    term = _quantile_term(outcomes, q, gamma, propensity)
+    return float(np.mean(term)), term
+
+
+def _quantile_fit(
+    outcomes: NDArray[np.float64],
+    gamma: float,
+    design: NDArray[np.float64],
+    propensity: ArrayLike | None,
+    cross_fitted: bool,
+) -> NDArray[np.float64]:
+    """:func:`_quantile_level_bound`'s ``q`` at ``Gamma > 1``, each unit's from the folds it is not
+    in where ``cross_fitted``."""
     n = outcomes.size
     low, high = _weight_box(gamma, propensity, n)
     room = high - low
     if not cross_fitted:
-        q = design @ _quantile_regression(design, outcomes, gamma, room)
-    else:
-        fold = np.arange(n) % _CROSS_FIT_FOLDS
-        q = np.empty(n)
-        for k in range(_CROSS_FIT_FOLDS):
-            held = fold == k
-            fit = _quantile_regression(design[~held], outcomes[~held], gamma, room[~held])
-            q[held] = design[held] @ fit
+        return design @ _quantile_regression(design, outcomes, gamma, room)
+    fold = np.arange(n) % _CROSS_FIT_FOLDS
+    q = np.empty(n)
+    for k in range(_CROSS_FIT_FOLDS):
+        held = fold == k
+        fit = _quantile_regression(design[~held], outcomes[~held], gamma, room[~held])
+        q[held] = design[held] @ fit
+    return q
+
+
+def _quantile_term(
+    outcomes: NDArray[np.float64],
+    q: NDArray[np.float64],
+    gamma: float,
+    propensity: ArrayLike | None,
+) -> NDArray[np.float64]:
+    """``psi = q + lo (Y - q) + (hi - lo) (Y - q)_+`` over ``Gamma``'s weight box, for any ``q``."""
+    low, high = _weight_box(gamma, propensity, outcomes.size)
     residuals = outcomes - q
-    term = q + low * residuals + room * np.maximum(residuals, 0.0)
-    return float(np.mean(term)), term
+    return q + low * residuals + (high - low) * np.maximum(residuals, 0.0)
+
+
+_RADIUS_STEPS_PER_DOUBLING = 4
+
+
+def _quantile_running_max(
+    outcomes: NDArray[np.float64],
+    gamma: float,
+    design: NDArray[np.float64],
+    propensity: ArrayLike | None,
+) -> float:
+    """The quantile form's worst case read as :func:`confounding_robust_radius` reads it, for
+    ``Gamma > 1``: the largest over ``k >= 1`` with ``Gamma_(k-1) < Gamma`` of ``psi``'s mean at
+    ``min(Gamma_k, Gamma)`` with the quantile cross-fitted at ``Gamma_k = 2^(k/4)``. Each term
+    grows with ``Gamma`` at its fixed quantile, and a larger ``Gamma`` adds terms, so the maximum
+    grows with ``Gamma`` without exception."""
+    best = -math.inf
+    k = 1
+    while 2.0 ** ((k - 1) / _RADIUS_STEPS_PER_DOUBLING) < gamma:
+        fitted_at = 2.0 ** (k / _RADIUS_STEPS_PER_DOUBLING)
+        q = _quantile_fit(outcomes, fitted_at, design, propensity, cross_fitted=True)
+        term = _quantile_term(outcomes, q, min(fitted_at, gamma), propensity)
+        best = max(best, float(np.mean(term)))
+        k += 1
+    return best
 
 
 def _quantile_design(
@@ -2326,9 +2374,14 @@ def msm_worst_case_mean(
     one a fold, at each ``Gamma``, none at ``Gamma = 1``, where it is the mean. Its limits: a
     quantile that is not linear in the columns passed leaves it valid but wider than the per-``x``
     bound, and the columns must carry the basis expansion, as for the residualised form; each fold
-    fits ``p + 1`` coefficients out of sample, which widens it as ``p`` grows; and where the
+    fits ``p + 1`` coefficients out of sample, which widens it as ``p`` grows; where the
     spread does not move with ``x`` it buys nothing over the residualised form, whose threshold
-    is read in sample where its own is cross-fitted.
+    is read in sample where its own is cross-fitted; and its growth with ``Gamma`` is checked, not
+    proved. ``psi`` grows with ``Gamma`` at a fixed quantile, but the quantile is refitted at each
+    ``Gamma`` and its sampling error moves the bound both ways: on 20 samples of 60 rows with two
+    covariates and a heavy-tailed spread that moves with one, the bound fell between neighbouring
+    values of ``Gamma`` 0.025 apart in 3 of them, by up to 0.038, and on 10 samples of 400 rows
+    in none. :func:`confounding_robust_radius` reads its running maximum over ``Gamma``.
 
     ``outcomes`` are one per unit, of shape ``(n,)`` or the column ``(n, 1)``.
 
@@ -2388,6 +2441,24 @@ def confounding_robust_radius(
     ``outcomes``, ``covariates`` and ``propensity`` are :func:`msm_worst_case_mean`'s, refused as
     it refuses them.
 
+    Under ``covariate_form="quantile"`` the worst case refits its quantile at each ``Gamma``, and
+    the refit can make it fall as ``Gamma`` grows (:func:`msm_worst_case_mean`), so the radius
+    reads its running maximum over ``Gamma' <= Gamma``. The quantile is cross-fitted at each
+    ``Gamma_k = 2^(k/4)``, ``k >= 1``, up to the first at or above ``Gamma``, and each fit's
+    ``psi`` is read at ``min(Gamma_k, Gamma)``. ``psi`` bounds the worst case at its own
+    ``Gamma' <= Gamma`` for any quantile, and the worst case grows with ``Gamma``, so each term is
+    a valid bound below the one at ``Gamma``; at a fixed quantile ``psi`` grows with ``Gamma``,
+    so the maximum grows with ``Gamma`` without exception. At each ``Gamma_k`` it is the largest
+    of :func:`msm_worst_case_mean`'s bounds at ``Gamma_1, ..., Gamma_k``, never below the one at
+    ``Gamma_k``. Between them, the top term reads the quantile fitted at the ``Gamma_k`` above
+    ``Gamma``, which costs sharpness at second order in the level and not validity: on 10
+    samples of 2000 rows of ``Y = 2X + (1 + 2X) eps``, ``X ~ U(0, 1)``, the radius's inflation
+    read 0.13 %, 0.26 % and 0.01 % above the pointwise bound's at ``Gamma`` 2.2, 2.5 and 2.8, on
+    average. On few rows two cross-fitted reads of one bound differ by more than that, and either
+    can be the larger: on :func:`msm_worst_case_mean`'s 20 samples of 60 rows it read below the
+    pointwise bound at 759 of 1620 values of ``Gamma``, by up to 0.12. It costs 5 linear programs
+    a ``Gamma_k``, 35 at ``Gamma = 3``.
+
     Args:
         covariate_form: :func:`msm_worst_case_mean`'s, ``"residualised"`` by default.
             ``"quantile"``, *experimental*, takes a linear conditional quantile of the outcome out
@@ -2395,6 +2466,9 @@ def confounding_robust_radius(
     """
     outcomes = _outcome_vector(outcomes)
     mu = float(np.mean(outcomes))
+    design = _quantile_design(outcomes, covariate_form, covariates)
+    if design is not None and math.isfinite(gamma) and gamma > 1.0:
+        return nominal_radius + (_quantile_running_max(outcomes, gamma, design, propensity) - mu)
     worst = msm_worst_case_mean(
         outcomes,
         gamma,

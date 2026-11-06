@@ -209,6 +209,21 @@ def test_an_empty_set_a_graph_proves_enough_fits_an_identified_channel_and_its_t
     assert "no unit has two consecutive transitions" not in asserted.report()
 
 
+def test_a_log_with_no_two_consecutive_transitions_leaves_the_persistence_unread() -> None:
+    """Each unit logs two periods of every three, so each transition is its unit's only one in a
+    row: no pair to read the noise's persistence from, which the certificate leaves unread and the
+    public check refuses."""
+    logs = _logs(n_units=60)
+    kept = logs["time"] % 3 != 2
+    panel = Panel.from_frame(
+        {name: values[kept] for name, values in logs.items()}, unit="unit", time="time", seed=0
+    )
+    result = _prescribe(panel, CausalGraph.from_edges(EDGES))
+    assert result.model_fit.moment_residual is not None
+    assert result.certificate.noise_persistence is None
+    assert "not read, no unit has two consecutive transitions" in result.report()
+
+
 def test_a_latent_confounder_produces_no_schedule_at_all() -> None:
     graph = CausalGraph.from_edges(EDGES, latent=("demand",))
     panel = _panel()
