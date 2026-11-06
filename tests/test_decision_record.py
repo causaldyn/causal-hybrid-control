@@ -451,6 +451,49 @@ def test_a_record_of_another_release_or_precision_is_refused(quickstart: Prescri
         Prescription.from_json(single, QUICKSTART)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        (("versions", "numpy"), None),
+        (("versions", "jax"), None),
+        (("versions", "jaxlib"), None),
+        (("versions", "scipy"), None),
+        (("backend",), "tpu"),
+        (("device_kind",), "TPU v5 lite"),
+    ],
+    ids=["numpy", "jax", "jaxlib", "scipy", "backend", "device_kind"],
+)
+def test_a_record_of_another_machine_replays(
+    quickstart: Prescription, field: tuple[str, ...], value: str | None
+) -> None:
+    """A dependency's version (a post-release of it, as a patch upgrade moves it), the backend and
+    the device kind name the machine, not the decision: a record that differs in one alone
+    replays, and the replay holds this machine's."""
+    record = _text(quickstart.to_json())
+    edited = copy.deepcopy(record)
+    holder = edited["run"]
+    for step in field[:-1]:
+        holder = holder[step]
+    holder[field[-1]] = f"{holder[field[-1]]}.post1" if value is None else value
+    assert edited != record
+    assert Prescription.from_json(edited, QUICKSTART).to_json() == record
+
+
+def test_a_moved_number_is_refused_naming_the_versions_that_differ(
+    quickstart: Prescription,
+) -> None:
+    record = _text(quickstart.to_json())
+    record["run"]["versions"]["numpy"] += ".post1"
+    record["run"]["device_kind"] = "TPU v5 lite"
+    record["certificate"]["channel_error"] *= 1.0 + 2.0**-40
+    with pytest.raises(
+        DecisionError,
+        match=r"^certificate\.channel_error: the replay does not give the record back; these "
+        r"versions differ from the record's: \['numpy'\]$",
+    ):
+        Prescription.from_json(record, QUICKSTART)
+
+
 def test_a_record_replayed_on_other_data_is_refused(quickstart: Prescription) -> None:
     record = _text(quickstart.to_json())
     with pytest.raises(DecisionError, match=r"^inputs\.panel_sha256: the record was made from"):

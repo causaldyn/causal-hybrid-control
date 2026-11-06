@@ -1777,14 +1777,16 @@ class Prescription:
         ``cluster``, which moves the channel's error and is not part of the digest, must be the
         ones the record names. ``model`` is the known model the decision was made with, where it
         was made with one: the record holds its digest alone, and refuses a model of another. The
-        replay reproduces the record, every number to the bit, on the versions and the precision
+        replay reproduces the decision, every number to the bit, on the release and the precision
         that wrote it (ADR 0145).
 
         The rule: a record replays on the release of the library that wrote it, under the same
         ``jax_enable_x64``, with ``schema_version`` 3 and ``inputs``, which no record before 1.0
         holds: 0.24.0 wrote version 2, and 0.23.0 and before no ``inputs``. Its other versions
-        (``run.versions``: jax, jaxlib, numpy, scipy) and its device are not asked first; where
-        one differs and moves a number, the check below names it.
+        (``run.versions``: jax, jaxlib, numpy, scipy), its backend and its device kind
+        (``run.backend``, ``run.device_kind``) name the machine, not the decision: they are not
+        compared, and the replay returned holds this machine's. Where one differs and moves a
+        number, the check below names the number and the versions that differ.
 
         Raises:
             DecisionError: naming the field, on a record of another ``schema_version``, without
@@ -1837,7 +1839,9 @@ class Prescription:
             raise DecisionError(
                 f"{_refused_input(message)}: prescribe refuses the record's inputs: {message}"
             ) from refusal
-        difference = _first_difference(replayed.to_json(), dict(record))
+        difference = _first_difference(
+            _without_environment(replayed.to_json()), _without_environment(record)
+        )
         if difference is not None:
             moved = sorted(
                 name
@@ -6160,6 +6164,17 @@ def _read_neighbours(
         return label_of.get(label, label)
 
     return {read(unit): [read(other) for other in others] for unit, others in written}
+
+
+_ENVIRONMENT = ("versions", "backend", "device_kind")
+
+
+def _without_environment(record: Mapping[str, Any]) -> dict[str, Any]:
+    """``record`` less the machine its ``run`` names (:data:`_ENVIRONMENT`), which a replay reads
+    off its own: a replay compares the decision, and the library's own version is checked before
+    it runs (ADR 0145)."""
+    run = record["run"]
+    return {**record, "run": {key: value for key, value in run.items() if key not in _ENVIRONMENT}}
 
 
 def _first_difference(ours: Any, theirs: Any, path: str = "") -> str | None:
