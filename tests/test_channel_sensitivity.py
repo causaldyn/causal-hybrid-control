@@ -10,6 +10,7 @@ sampling error (``validation/channel_bias_bound.mac``).
 
 from __future__ import annotations
 
+import logging
 import math
 
 import jax
@@ -22,7 +23,15 @@ from chc.cost import QuadraticCost
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.dynamics_id import CausalDynamicsFit, fit_causal_residual
 from chc.integrate import rollout
-from chc.plan import BarrierConstraint, ChannelSensitivity, causal_plan, certify_safety
+from chc.plan import (
+    _ROUND_STEPS,
+    BarrierConstraint,
+    CausalPlan,
+    ChannelSensitivity,
+    OuterRule,
+    causal_plan,
+    certify_safety,
+)
 
 _DT, _ROWS, _NOISE, _TRUE_CHANNEL = 0.1, 2000, 0.3, 1.0
 _KNOWN = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
@@ -220,3 +229,76 @@ def test_a_fit_without_a_least_squares_channel_has_no_sensitivity() -> None:
     fit = fit_causal_residual(_KNOWN, data, _DT, adjust_for=("w",), integrator="rk4")
     with pytest.raises(ValueError, match="rk4"):
         ChannelSensitivity.from_fit(fit)
+
+
+def _held_on_an_unstable_drift(seed: int, steps: int, outer: OuterRule) -> CausalPlan:
+    """The plan held to ``x <= 1`` under the fit's own sensitivity at ``Gamma = 1.5``, on a log of
+    an unstable drift, 0.5, whose lever follows the hidden confounder at that level."""
+    fit = _confounded_fit(seed, 1.5, -3.0, drift=0.5)
+    model = HybridDynamics(known=_KNOWN, residual=fit.residual)
+    barrier = BarrierConstraint(
+        _ceiling, gamma=1.5, u_max=(5.0,), sensitivity=ChannelSensitivity.from_fit(fit)
+    )
+    return causal_plan(
+        model, jnp.zeros(1), _COST, _DT, 30, -5.0, 5.0, steps=steps, barrier=barrier, outer=outer
+    )
+
+
+def test_safeguarded_rounds_grow_the_penalty_where_every_round_runs_out_of_its_share(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """On this log every halved round runs out of its share, and grows no penalty: it stayed at
+    its start over all 15 rounds while the shortfall stopped falling. The safeguarded rounds grow
+    it after every round whose measure fails to halve, its share run out or not, here first after
+    the second round, which ran out of its share. It then reaches its ceiling, and a round cut
+    there ends the rounds ``max_iterations``: read ``infeasible``, as after a solved round, it
+    called a condition SLSQP meets at every step infeasible."""
+    with caplog.at_level(logging.DEBUG, logger="chc.plan"):
+        plan = _held_on_an_unstable_drift(2, 10_000, "safeguarded")
+    rounds = [
+        (float(record.penalty), int(record.descent_steps))  # type: ignore[attr-defined]
+        for record in caplog.records
+        if getattr(record, "chc_event", None) == "barrier_round"
+    ]
+    grown = [k for k in range(len(rounds) - 1) if rounds[k + 1][0] > rounds[k][0]]
+    assert grown
+    assert rounds[grown[0]][1] == _ROUND_STEPS
+    assert plan.solver_status == "max_iterations"
+    assert plan.safety is not None
+    assert plan.safety.certified_steps > 0
+
+
+def _safeguarded_rounds(
+    seed: int, steps: int, caplog: pytest.LogCaptureFixture
+) -> list[tuple[int, float, float, int]]:
+    """Each safeguarded round's number, penalty, measure and descent steps, as the plan logs."""
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="chc.plan"):
+        _held_on_an_unstable_drift(seed, steps, "safeguarded")
+    return [
+        (r.round, r.penalty, r.measure, r.descent_steps)  # type: ignore[attr-defined]
+        for r in caplog.records
+        if getattr(r, "chc_event", None) == "barrier_round"
+    ]
+
+
+@pytest.mark.parametrize("seed", [1, 2])
+def test_a_larger_budget_runs_the_same_safeguarded_rounds_further(
+    seed: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A safeguarded round's share is the same whatever the budget, so ten times the budget runs
+    the same rounds further: every round of the 10 000-step plan but its last, which the budget
+    cut, is a round of the 100 000-step plan, and the larger budget stops no sooner. Here it cost
+    65.95086 against 65.95203 on log 1, both certified on 30 steps of 30, and log 2's rounds
+    stopped at the penalty's ceiling at either budget; the halved shares move with the budget,
+    and on log 2 the plan at 100 000 steps was certified on 27 steps of 30, at 10 000 on all 30.
+    Those costs are of plans the rounds did not converge on, so only the rounds are compared."""
+    small = _safeguarded_rounds(seed, 10_000, caplog)
+    large = _safeguarded_rounds(seed, 100_000, caplog)
+    shared = len(small) - 1
+    assert shared > 0
+    assert len(large) >= len(small)
+    for one, other in zip(small[:shared], large[:shared], strict=True):
+        assert one[0] == other[0]
+        assert one[3] == other[3]
+        assert one[1:3] == pytest.approx(other[1:3], rel=1e-9, abs=0.0)

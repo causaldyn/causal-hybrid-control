@@ -102,8 +102,9 @@ argument, or a value or key in quotes:
 - `chc.estimators`: `IV2SLS.estimate["instrument_relevance"]`;
 - `chc.regret`: `minimax_regret_move`, `MinimaxRegretMove`, `MoveRule`;
 - `chc.plan`: `CausalPlan.decision_weight`, `DecisionWeight`, `CausalPlan.relaxed_cost`,
-  `CausalPlan.planned_cost_bias`, `PlannedCostBias`, `CostBiasDirection`, `causal_plan(inner=)`;
-- `chc.mpc`: `RecedingHorizon.inner`.
+  `CausalPlan.planned_cost_bias`, `PlannedCostBias`, `CostBiasDirection`, `causal_plan(inner=)`,
+  `causal_plan(outer=)`;
+- `chc.mpc`: `RecedingHorizon.inner`, `RecedingHorizon.outer`.
 
 ## Research
 
