@@ -1,6 +1,8 @@
 # ADR 0046 — A discount DLM over geos
 
-**Status:** proposed, 2026-10-02. Experimental, as `chc.dlm` is.
+**Status:** proposed, 2026-10-02. Experimental, as `chc.dlm` is. Amended 2026-11-06: a term in
+both the national and the regional blocks leaves a direction no row reads; the filter finds it
+from the blocks, logs it, and the directional form holds it.
 
 ## Context
 
@@ -38,6 +40,25 @@ sampling. A discount DLM's filter is exact and in closed form, and its coefficie
   product of theirs.
 - **A regressor held while idle** (`Regression(hold_when_idle=True)`) is idle on a national
   coordinate when no geo's column on it moves, and on a geo's own when that geo's does not.
+- **A term in both kinds of block is read only through the sums (amended 2026-11-06).** A
+  national level beside each geo's level, a slope beside each geo's slope, a harmonic beside the
+  same harmonic of the same period: a geo reads the national copy only through its sum with its
+  own, and the evolution moves the two alike, so the national copy minus the sum of the geos'
+  copies is read by no row, whatever the data. `forward_filter_geos` finds these directions from
+  the blocks when it starts (a polynomial's terms up to the lower order, each harmonic's
+  coordinates), adds them to the regression directions the window leaves unread, and logs them
+  (`chc_event="dlm_geo_unread"`). The directional form (ADR 0121) holds them, so what the filter
+  knows on them stays the prior's; the other forms grow them by `1 / delta` a step, as they grow
+  any direction the data never read. Up to 1.1.0 only the regression columns were searched, and
+  the directional form discounted these directions as if read: a national level beside three
+  geos' levels at 0.95 failed at step 448 of 1500, with a message that the direction was held,
+  and logged nothing before. The directions are not read off the window by rank: at the
+  module's `1e-6` cut a slow seasonal in a single model is close enough to a polynomial over its
+  window to be taken for one, where the twins' singular value is `1e-17` of the largest. A
+  single model, and a stack with no such term, filter as before to the bit. A single model is
+  not searched for such a pair, so under the directional form a stack of one geo with one
+  differs from `forward_filter` on the same blocks, which discounts the pair's difference as if
+  read; the one-geo equality below is held on blocks without one.
 - **The filter is dense**, a step `O(p^3)` in the stacked state's `p` coordinates, and the fit
   holds `2 T` covariances of `p^2` entries.
 - **Smoothing and sampling are `chc.dlm`'s, over the stacked state.** `smooth` and

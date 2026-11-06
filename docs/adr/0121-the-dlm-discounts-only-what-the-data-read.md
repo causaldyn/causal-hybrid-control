@@ -1,7 +1,9 @@
 # ADR 0121 — The DLM discounts only what the data read
 
 **Status:** accepted, 2026-10-21. Revises ADR 0022's choice of `form="additive"` as the default
-and its "no third form"; ADR 0046's filter over geos takes the same default.
+and its "no third form"; ADR 0046's filter over geos takes the same default. Amended 2026-11-06:
+the nested core's floor is read in correlation units, so no form depends on a regressor's units;
+`forecast(evolution="constant")` holds the first step's evolution variance under every form.
 
 ## Context
 
@@ -43,6 +45,16 @@ The multiplicative form covered 0.88-0.90 on the same grid. It has two defects o
   - the coordinates are grouped by their block's rate `r = (1 - delta) / delta`, slowest first;
   - `E_g` is the part of `P_r` that group `g` explains beyond the slower groups, a Schur
     complement step.
+- **The floor is unit-free (amended 2026-11-06).** `E_g` drops a group's directions whose
+  eigenvalue is below `1e-13` in correlation units, each coordinate against its own variance.
+  Up to 1.1.0 the floor was `1e-13` of the largest variance in the read part, which compares a
+  level's units with a coefficient's. With spend in currency the coefficient's variance fell
+  under it, its group was skipped, and the coefficient was never discounted: at units of
+  `10^6`, a drifting coefficient's 90% intervals covered 0.60 against 0.87 in units of 1, and
+  `S_T / V` read 3.0 against 1.36 (100 series). In exact arithmetic the core follows any
+  rescaling of the coordinates, so the floor was the only breach. Every form now follows a
+  change of coordinates inside each block, units included, to `1e-10` over `10^-8` to `10^8`
+  (`tests/test_dlm.py`); fits at unit scale moved by at most `8e-12`.
 - **What the core guarantees** (`validation/directional_dlm.mac`; tests in
   `tests/test_formal_estimation.py`):
   - the parts add up to `P_r`, so `W = R - P` is a variance and a row's inflation is an average
@@ -60,6 +72,21 @@ The multiplicative form covered 0.88-0.90 on the same grid. It has two defects o
   coordinate is not refused.
 - **A step whose `R - G C G'` is not a variance** is refused by `smooth` and `backward_sample`,
   as `forecast` already refused one.
+- **A constant forecast holds `W_(T+1)` (amended 2026-11-06).** `forecast(evolution="constant")`
+  reads the evolution variance once, off the window that ends at the first step ahead, and adds
+  it at every step. Up to 1.1.0 it read each step's window over the future rows, and spend held
+  or at zero ahead left the coefficient unread there, so its discount stopped part-way: with
+  spend held at 2 for 26 steps the coefficient's standard deviation at the last step read 0.040
+  against the documented 0.068, the predictive one 0.265 against 0.273. A regressor held while
+  idle is not discounted at a step ahead where it is zero: `W` is read with every held regressor
+  live, and each step zeroes the rows and columns of those idle at it, so the discount resumes
+  with the spend. Where one is idle at the first step ahead, that step can differ from the
+  filter's own prior for it under the directional and the multiplicative form, through the
+  cross-terms of `W` read with the regressor live. The alternative, `W` read with it idle, never
+  discounted it over the horizon: on a level beside a regressor idle for the first 4 of 13 steps
+  ahead, the predictive standard deviation at the horizon read 9% (directional) and 17%
+  (additive) narrower, against the promise of `hold_when_idle`. `"compounding"` still discounts
+  each step with its own window and idle regressors.
 
 ## Consequences
 
