@@ -100,7 +100,15 @@ from chc.lqr import linearize_continuous, linearize_discrete
 from chc.misspecification import MisspecificationCost, _contrast
 from chc.misspecification import planned_cost_bias as _fit_cost_bias
 from chc.mpc import PeriodBudget, _period_rows
-from chc.panel import Panel, PanelError, Provenance, _grid_steps, _ordinals, _x64_enabled
+from chc.panel import (
+    Panel,
+    PanelError,
+    Provenance,
+    _grid_steps,
+    _ordinals,
+    _sorted_fingerprint,
+    _x64_enabled,
+)
 from chc.plan import (
     BarrierConstraint,
     CausalPlan,
@@ -1645,9 +1653,10 @@ class Prescription:
           correlation or an infinite detectable one None; None where it was not run;
         * ``dither_check``, the dither check's (:class:`DitherCheck`), None where none was asked;
         * ``inputs``, every argument of :func:`prescribe` that moves the result, the panel's
-          ``data_sha256`` and its declared ``cluster`` (``panel_cluster``) as handed in, and the
-          graph with each edge's provenance (:class:`~chc.graph.EdgeProvenance`); a known model
-          is recorded by a digest of its arrays and structure alone. In ``inputs`` an infinite
+          ``data_sha256`` and its declared ``cluster`` (``panel_cluster``) as handed in, the same
+          digest over its rows sorted by unit and period (``panel_sorted_sha256``), and the graph
+          with each edge's provenance (:class:`~chc.graph.EdgeProvenance`); a known model is
+          recorded by a digest of its arrays and structure alone. In ``inputs`` an infinite
           number is the text ``"inf"`` or ``"-inf"``, so that it stays apart from None, which
           there means not given. None on a prescription :func:`prescribe` did not build.
         """
@@ -1776,12 +1785,15 @@ class Prescription:
         """The decision ``record`` holds, made again: :func:`prescribe` on ``panel`` with the
         record's ``inputs``, checked to give the record back. *Experimental.*
 
-        ``panel`` is the panel the decision was made from: its ``data_sha256`` and its declared
+        ``panel`` is the panel the decision was made from: its rows in any order, which
+        ``inputs.panel_sorted_sha256`` digests sorted by unit and period, and its declared
         ``cluster``, which moves the channel's error and is not part of the digest, must be the
         ones the record names. ``model`` is the known model the decision was made with, where it
         was made with one: the record holds its digest alone, and refuses a model of another. The
         replay reproduces the decision, every number to the bit, on the release and the precision
-        that wrote it (ADR 0145).
+        that wrote it (ADR 0145). The digests of the rows in the order they were handed in,
+        ``inputs.panel_sha256`` and ``provenance.data_sha256``, are not compared: the replay
+        returned holds this panel's.
 
         The rule: a record replays on the release of the library that wrote it, under the same
         ``jax_enable_x64``, with ``schema_version`` 3 and ``inputs``, which no record before 1.0
@@ -1795,7 +1807,7 @@ class Prescription:
             DecisionError: naming the field, on a record of another ``schema_version``, without
                 ``inputs`` or a field the replay needs, written by another release of the library
                 (``run.versions``) or under another precision (``run.x64``), on a panel of other
-                data (``inputs.panel_sha256``) or of another declared cluster
+                data (``inputs.panel_sorted_sha256``) or of another declared cluster
                 (``inputs.panel_cluster``), without the known model the record names, or with
                 one of another digest or where the record names none (``inputs.known``); on an
                 input that does not read as :func:`prescribe`'s argument, or that it refuses,
@@ -1843,7 +1855,8 @@ class Prescription:
                 f"{_refused_input(message)}: prescribe refuses the record's inputs: {message}"
             ) from refusal
         difference = _first_difference(
-            _without_environment(replayed.to_json()), _without_environment(record)
+            _without_environment(_without_row_order(replayed.to_json())),
+            _without_environment(_without_row_order(record)),
         )
         if difference is not None:
             moved = sorted(
@@ -4136,18 +4149,22 @@ def _cluster_panel(
     the group's rows logged that period; ``numbers`` are read as numbers or refused, and
     ``labels`` are carried as they are, refused where a group's rows hold two values.
 
-    The group's label is the unit, and the period label of the group's first row the time, which
-    the panel's ``frequency`` reads to the same period. The declared ``cluster`` is kept where it
-    holds one value over each group's rows."""
+    The group's label is the unit, and the period label of its first unit's row that period the
+    time, which the panel's ``frequency`` reads to the same period. The declared ``cluster`` is
+    kept where it holds one value over each group's rows. The rows are read sorted by unit and
+    period, so the same rows handed in any order give the same panel, bit for bit."""
     groups = _group_of_each_unit(panel, column)
-    _, periods = panel.codes()
-    key = groups * (int(periods.max()) + 1) + periods
+    units, periods = panel.codes()
+    # a group's mean sums its rows in turn, and the sum's rounding moves with their order
+    order = np.lexsort((periods, units))
+    key = (groups * (int(periods.max()) + 1) + periods)[order]
     _, first, inverse = np.unique(key, return_index=True, return_inverse=True)
     inverse = inverse.reshape(-1)
+    rows = order[first]
     counts = np.bincount(inverse)
     data: dict[str, NDArray[Any]] = {
-        column: np.asarray(panel[column])[first],
-        panel.time: np.asarray(panel[panel.time])[first],
+        column: np.asarray(panel[column])[rows],
+        panel.time: np.asarray(panel[panel.time])[rows],
     }
     for name in labels:
         if name in data:
@@ -4157,17 +4174,17 @@ def _cluster_panel(
                 f"a group of {column!r} is in more than one group of {name!r}; a group's rows "
                 "are one unit, which is in one group throughout"
             )
-        data[name] = np.asarray(panel[name])[first]
+        data[name] = np.asarray(panel[name])[rows]
     declared = panel.cluster if panel.cluster not in (None, column, *labels) else None
     if declared is not None and _one_value_per_group(panel, declared, groups):
-        data[declared] = np.asarray(panel[declared])[first]
+        data[declared] = np.asarray(panel[declared])[rows]
     else:
         declared = panel.cluster if panel.cluster in labels else None
     for name in panel.names:
         if name in data or name in (panel.unit, panel.cluster):
             continue
         if name in numbers or _number_column(panel, name):
-            data[name] = np.bincount(inverse, weights=panel._numbers(name)) / counts
+            data[name] = np.bincount(inverse, weights=panel._numbers(name)[order]) / counts
     return Panel.from_frame(
         data,
         unit=column,
@@ -5914,6 +5931,7 @@ def _inputs_record(
     value = np.asarray(target.value, dtype=np.float64)
     return {
         "panel_sha256": panel.provenance.data_sha256,
+        "panel_sorted_sha256": _sorted_fingerprint(panel),
         "panel_cluster": panel.cluster,
         "levers": [
             {
@@ -5978,6 +5996,7 @@ def _inputs_record(
 
 _INPUT_KEYS = (
     "panel_sha256",
+    "panel_sorted_sha256",
     "panel_cluster",
     "levers",
     "target",
@@ -6016,10 +6035,12 @@ def _replay_arguments(
         raise DecisionError(
             f"inputs.{missing[0]}: the record does not hold it, and a replay needs it"
         )
-    if inputs["panel_sha256"] != panel.provenance.data_sha256:
+    # the rows sorted, so that one panel's rows handed in another order are the same data
+    rows = _sorted_fingerprint(panel)
+    if inputs["panel_sorted_sha256"] != rows:
         raise DecisionError(
-            f"inputs.panel_sha256: the record was made from data {inputs['panel_sha256']!r}, and "
-            f"this panel holds {panel.provenance.data_sha256!r}"
+            f"inputs.panel_sorted_sha256: the record was made from data whose rows, sorted by unit "
+            f"and period, read {inputs['panel_sorted_sha256']!r}, and this panel's read {rows!r}"
         )
     # the declared cluster groups the channel's error and is not part of the data's digest
     if inputs["panel_cluster"] != panel.cluster:
@@ -6191,6 +6212,21 @@ def _without_environment(record: Mapping[str, Any]) -> dict[str, Any]:
     it runs (ADR 0145)."""
     run = record["run"]
     return {**record, "run": {key: value for key, value in run.items() if key not in _ENVIRONMENT}}
+
+
+_ROW_ORDER = (("inputs", "panel_sha256"), ("provenance", "data_sha256"))
+
+
+def _without_row_order(record: Mapping[str, Any]) -> dict[str, Any]:
+    """``record`` less the digests that read the panel's rows in the order they were handed in
+    (:data:`_ROW_ORDER`): a replay checks the rows sorted (``inputs.panel_sorted_sha256``) before
+    it runs, and the same rows in another order make the same decision."""
+    out = dict(record)
+    for section, key in _ROW_ORDER:
+        held = out.get(section)
+        if isinstance(held, Mapping):
+            out[section] = {name: value for name, value in held.items() if name != key}
+    return out
 
 
 def _first_difference(ours: Any, theirs: Any, path: str = "") -> str | None:

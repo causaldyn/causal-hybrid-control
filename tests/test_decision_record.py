@@ -425,7 +425,9 @@ def test_a_record_of_another_schema_or_without_inputs_is_refused(quickstart: Pre
         Prescription.from_json([record], QUICKSTART)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("key", ["gamma", "seed", "dither", "panel_sha256", "planned_cost_bias"])
+@pytest.mark.parametrize(
+    "key", ["gamma", "seed", "dither", "panel_sha256", "panel_sorted_sha256", "planned_cost_bias"]
+)
 def test_a_record_missing_a_setting_is_refused_naming_it(
     quickstart: Prescription, key: str
 ) -> None:
@@ -496,8 +498,109 @@ def test_a_moved_number_is_refused_naming_the_versions_that_differ(
 
 def test_a_record_replayed_on_other_data_is_refused(quickstart: Prescription) -> None:
     record = _text(quickstart.to_json())
-    with pytest.raises(DecisionError, match=r"^inputs\.panel_sha256: the record was made from"):
+    with pytest.raises(
+        DecisionError, match=r"^inputs\.panel_sorted_sha256: the record was made from data whose"
+    ):
         Prescription.from_json(record, TWO)
+
+
+# ---- the panel's rows, in whatever order they were handed in ----
+
+_ORDERS = {
+    "shuffled": lambda units, times: np.random.default_rng(1).permutation(units.size),
+    "units reversed": lambda units, times: np.lexsort((times, -units)),
+    "time-major": lambda units, times: np.lexsort((units, times)),
+}
+
+
+def _reordered(logs: dict[str, np.ndarray], order: str) -> Panel:
+    """``logs`` as a panel, its rows in ``order``."""
+    rows = _ORDERS[order](logs["region"], logs["week"])
+    return Panel.from_frame(
+        {name: column[rows] for name, column in logs.items()}, unit="region", time="week", seed=0
+    )
+
+
+def _rows_apart(record: dict[str, Any]) -> dict[str, Any]:
+    """``record`` less the two digests of the panel's rows in the order they were handed in."""
+    kept = copy.deepcopy(record)
+    del kept["inputs"]["panel_sha256"]
+    del kept["provenance"]["data_sha256"]
+    return kept
+
+
+@pytest.fixture(scope="module")
+def zoned() -> tuple[dict[str, np.ndarray], Prescription]:
+    """The quickstart's pool in zones of five regions, and a decision on the zones' means."""
+    logs = _quickstart_logs(regions=60, weeks=8)
+    logs["zone"] = np.asarray([f"z{region // 5}" for region in logs["region"]], dtype=object)
+    made = prescribe(
+        Panel.from_frame(logs, unit="region", time="week", seed=0),
+        adjustment=CausalGraph.from_edges(QUICKSTART_EDGES),
+        levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+        target=Target("supply", value=1.0),
+        horizon=4,
+        dt=DT,
+        tolerance=0.5,
+        integrator="euler",
+        clusters="zone",
+    )
+    return logs, made
+
+
+@pytest.mark.parametrize("order", list(_ORDERS))
+def test_a_record_replays_on_its_rows_in_another_order(
+    quickstart: Prescription, order: str
+) -> None:
+    """A panel is its rows, not the order they were handed in: up to 1.1 a replay compared the
+    digest of the rows as handed in and refused the same rows reordered as other data, though
+    they make the same decision to the bit. The replay holds the reordered panel's own digests."""
+    panel = _reordered(_quickstart_logs(), order)
+    assert panel.provenance.data_sha256 != QUICKSTART.provenance.data_sha256
+    record = _text(quickstart.to_json())
+    replayed = _text(Prescription.from_json(record, panel).to_json())
+    assert replayed["inputs"]["panel_sha256"] == panel.provenance.data_sha256
+    assert replayed["provenance"]["data_sha256"] == panel.provenance.data_sha256
+    assert _rows_apart(replayed) == _rows_apart(record)
+
+
+@pytest.mark.parametrize("order", list(_ORDERS))
+def test_a_grouped_record_replays_on_its_rows_in_another_order(
+    zoned: tuple[dict[str, np.ndarray], Prescription], order: str
+) -> None:
+    """Under ``clusters`` each group's mean summed its rows in the order handed in, and a sum's
+    rounding moves with their order: shuffled, the rows moved the schedule by an ulp. Summed
+    sorted by unit and period, they give the grouped panel bit for bit, its digest too."""
+    logs, made = zoned
+    record = _text(made.to_json())
+    assert record["inputs"]["clusters"] == "zone"
+    replayed = _text(Prescription.from_json(record, _reordered(logs, order)).to_json())
+    assert replayed["provenance"]["data_sha256"] == record["provenance"]["data_sha256"]
+    assert _rows_apart(replayed) == _rows_apart(record)
+
+
+def test_a_grouped_panel_is_the_same_whatever_the_order_of_its_rows(
+    zoned: tuple[dict[str, np.ndarray], Prescription],
+) -> None:
+    logs, _ = zoned
+    numbers = ("supply", "wait", "incentive", "demand")
+    grouped = [
+        decision._cluster_panel(_reordered(logs, order), "zone", numbers) for order in _ORDERS
+    ]
+    first = grouped[0]
+    for other in grouped[1:]:
+        assert other.provenance.data_sha256 == first.provenance.data_sha256
+        for name in first.names:
+            assert np.asarray(other[name]).tobytes() == np.asarray(first[name]).tobytes()
+
+
+def test_a_record_replayed_on_one_changed_value_is_refused(quickstart: Prescription) -> None:
+    logs = _quickstart_logs()
+    logs["supply"][17] = np.nextafter(logs["supply"][17], np.inf)
+    with pytest.raises(
+        DecisionError, match=r"^inputs\.panel_sorted_sha256: the record was made from data whose"
+    ):
+        Prescription.from_json(_text(quickstart.to_json()), _reordered(logs, "shuffled"))
 
 
 def test_a_known_model_must_be_passed_again_and_be_the_same(
