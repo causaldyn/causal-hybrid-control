@@ -2,6 +2,8 @@
 
 **Status:** accepted, 2026-10-25. Adds to the floors ADR 0130 named, and amends ADR 0028: the
 logger check's rejection is logged at `INFO`.
+Amended 2026-11-06: the scalar floors' means are cut at the poles' scale, and a floor whose mean
+does not settle reads `nan`, as the matrix floor does (see the last section).
 
 ## Context
 
@@ -146,3 +148,45 @@ regrets:
 - **A design-based test of the channel** (Hausman 1978): the channel the adjustment reads against
   the one a logged draw instruments, which a fresh confounder cannot reach. It sees what the log
   alone cannot, but it needs a draw the log records. Not built here.
+
+## Amended 2026-11-06: the scalar floors' quadrature
+
+### Context
+
+The scalar floors read each mean by adaptive quadrature split where `b = 0` alone. The integrands
+have poles at `b = +-i sqrt(rr)`, so under a prior wide against `sqrt(rr)` their mass near `b = 0`
+is a spike `sqrt(rr)/tau` wide in standard units. The Gauss-Kronrod panel that ends at the split
+never sampled it, its error estimate was near zero on the wrong value, and it was never bisected;
+the estimate QUADPACK did return was discarded. Under a prior `N(5, 30^2)` at `rr = 1e-3` and
+`I_n = 100` the prior term read 2.7e-6 where it is 814.3, and both floors read 6.50e-3, 2.16
+times the Bayes regret 3.01e-3 they bound. Over priors 10 to 3000 times wider than `sqrt(rr)` the
+failure was not monotone in the width: up to 200 times the Bayes regret at 1000, none at 2000.
+The matrix floor already read `nan` where its rules did not agree; the scalar floors read a
+number.
+
+### Decision
+
+- **Each scalar mean is cut at `b = 0` and at `b = +-k sqrt(rr)` for `k` in 1, 3, 10, 30, 100
+  and 300,** so each panel holds a feature its rule resolves.
+- **A floor reads `nan` where QUADPACK's own estimate on one of its means exceeds `1e-8` of it.**
+  The test is the one the matrix floor applies to its two rules in turn, and one helper reads both.
+
+### Consequences
+
+- Under the prior above the floors read 4.81e-4 and 5.06e-4, the 38 digits of
+  `validation/weighted_van_trees_wide_prior.gp` to `3e-14`. Over its sweep, priors 10 to 3000
+  times wider than `sqrt(rr)` at four amounts of information, every floor is below the Bayes
+  regret, the closest at 0.989 of it.
+- On 400 drawn priors, `rr` from 1e-9 to 10 and widths from 1e-3 to 1e3, one floor reads `nan`,
+  under a prior 2e7 times wider than `sqrt(rr)`; none reads above the Bayes regret.
+- The five scalar priors the tests pin to the 38 digits move by at most 1.3e-15 of themselves,
+  and the matrix floor at the defaults not at all.
+
+### Alternatives
+
+- **Clip the floor to `E[W psi'^2]/I_n`.** That is the value the failure returned, the prior term
+  read as zero, so a clip keeps the wrong number.
+- **Raise where the quadrature does not settle.** The certificate's other fields stand, and the
+  matrix floor already answers `nan`.
+- **A fixed Gauss-Hermite rule, as in the matrix case.** A rule resolves the poles more slowly the
+  wider the prior is against them; the adaptive rule with cuts at their scale needs no node count.

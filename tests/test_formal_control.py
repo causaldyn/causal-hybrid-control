@@ -1,11 +1,11 @@
 """The control line's cited proofs and derivations, checked on the float code that implements them.
 
 Each test reads one statement of a Rocq lemma or a Maxima derivation that a docstring in
-``chc.uncertainty``, ``chc.plan``, ``chc.barrier``, ``chc.research.sensitivity`` or
-``chc.allocation`` cites, and checks it on the library's output by another route: rollouts simulated
-in NumPy against the error tubes, a linear program against the MSM closed form, brute-force grids
-against the barrier margins, re-solved plans against the decision weights and the planned cost's
-bias, a Monte Carlo of the plant against the noise tube.
+``chc.uncertainty``, ``chc.plan``, ``chc.barrier``, ``chc.research.sensitivity``,
+``chc.research.koopman`` or ``chc.allocation`` cites, and checks it on the library's output by
+another route: rollouts simulated in NumPy against the error tubes, a linear program against the
+MSM closed form, brute-force grids against the barrier margins, re-solved plans against the decision
+weights and the planned cost's bias, a Monte Carlo of the plant against the noise tube.
 """
 
 from __future__ import annotations
@@ -114,6 +114,13 @@ FORMAL_LINKS = {
             "test_plan_regret_bound_over_rows_holds_against_their_optimum",
             "test_plan_regret_bound_orders_its_three_numbers",
             "test_plan_regret_bound_vanishes_at_the_box_optimum",
+        ),
+    },
+    "chc.research.koopman.KoopmanModel": {
+        "cites": ("koopman_discrete_closure.mac",),
+        "tests": (
+            "test_koopman.py::test_a_richer_lift_of_a_linear_plant_reads_its_discrete_closure",
+            "test_koopman.py::test_an_exactly_linear_plant_is_granted_its_lqr_gain_at_every_degree",
         ),
     },
     "chc.research.sensitivity": {

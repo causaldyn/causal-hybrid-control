@@ -262,6 +262,75 @@ def test_the_closure_residuals_match_their_closed_form_on_gaussian_transitions()
     assert np.max(bilinear.closure_residuals) <= 1e-5
 
 
+# An equal-weight design whose moments up to the fourth are a standard normal's, 1 and 3: zero four
+# times and +-sqrt(2 -+ sqrt(2)).
+_NORMAL_TO_FOURTH = np.array(
+    [0.0, 0.0, 0.0, 0.0]
+    + [sign * np.sqrt(2.0 + root) for root in (-np.sqrt(2.0), np.sqrt(2.0)) for sign in (-1, 1)]
+)
+
+
+@pytest.mark.parametrize("a", [0.9, 0.5, 0.0])
+def test_a_richer_lift_of_a_linear_plant_reads_its_discrete_closure(a: float) -> None:
+    """``validation/koopman_discrete_closure.mac`` (1) and (2): on ``x' = a x + u/2`` the state's
+    residual is zero under both forms, and the ``x^2`` feature's is ``sqrt(1 - a^4)`` under the
+    linear form and ``1 - a^2`` under the bilinear one, at degree 2 and 3 alike. The state's
+    stationary ``N(0, 1/(4 (1 - a^2)))`` and the action's ``N(0, 1)`` are read on a design that
+    crosses every state with every action, whose moments up to the fourth are the normals': each
+    fold is one replicate of it, so each fit is the population's projection and each held-out
+    residual its residual. Read on the whole lift, the gate refused the gain at every ``a`` here
+    but the bilinear form's at 0.9; read on the state, it grants every one."""
+    b = 0.5
+    x = b / np.sqrt(1.0 - a * a) * np.repeat(_NORMAL_TO_FOURTH, _NORMAL_TO_FOURTH.size)
+    u = np.tile(_NORMAL_TO_FOURTH, _NORMAL_TO_FOURTH.size)
+    xs, us = np.tile(x, 5)[:, None], np.tile(u, 5)[:, None]
+    for degree in (2, 3):
+        linear = KoopmanModel(degree=degree, ridge=0.0).fit(xs, us, a * xs + b * us)
+        bilinear = KoopmanModel(degree=degree, ridge=0.0, form="bilinear").fit(
+            xs, us, a * xs + b * us
+        )
+        assert linear.closure_residuals is not None
+        assert bilinear.closure_residuals is not None
+        assert linear.closure_residuals[0] <= 1e-12
+        assert bilinear.closure_residuals[0] <= 1e-12
+        assert linear.closure_residuals[1] == pytest.approx(np.sqrt(1.0 - a**4), rel=1e-10, abs=0.0)
+        assert bilinear.closure_residuals[1] == pytest.approx(1.0 - a * a, rel=1e-10, abs=0.0)
+        koopman_lqr_gain(linear, np.eye(1), np.eye(1))
+        koopman_lqr_gain(bilinear, np.eye(1), np.eye(1), x_target=np.zeros(1))
+
+
+def _linear_log(a: float, n: int = 600) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """One noise-free trajectory of ``x' = a x + u/2`` from 0, driven by standard normal actions."""
+    us = np.random.default_rng(0).standard_normal((n, 1))
+    xs = np.zeros((n + 1, 1))
+    for t in range(n):
+        xs[t + 1] = a * xs[t] + 0.5 * us[t]
+    return xs[:-1], us, xs[1:]
+
+
+@pytest.mark.parametrize("degree", [1, 2, 3])
+@pytest.mark.parametrize("form", ["linear", "bilinear"])
+@pytest.mark.parametrize("a", [0.9, 0.5])
+def test_an_exactly_linear_plant_is_granted_its_lqr_gain_at_every_degree(
+    a: float, degree: int, form: str
+) -> None:
+    """The default lift of ``x' = 0.9 x + u/2``, degree 3, was refused: its ``x^2`` feature reads
+    0.607, the population's ``sqrt(1 - a^4) = 0.586``, while the lift predicts the next state to
+    round-off and its gain is the plant's LQR, 0.624220. Every degree and form was refused at
+    ``a = 0.5`` but degree 1. The gate reads the state: each gain is granted, within 1e-7 of the
+    plant's, its other entries below 1e-7 of it (7e-10 measured), and its controller granted."""
+    xs, us, x_next = _linear_log(a)
+    model = KoopmanModel(degree=degree, form=form).fit(xs, us, x_next)
+    q, r = np.eye(1), np.eye(1)
+    gain = koopman_lqr_gain(model, q, r, x_target=np.zeros(1))
+    exact = float(dlqr(np.array([[a]]), np.array([[0.5]]), q, r)[0][0, 0])
+    assert model.closure_residuals is not None
+    assert model.closure_residuals[0] <= 1e-7
+    assert gain[0, 0] == pytest.approx(exact, rel=1e-7, abs=0.0)
+    assert np.max(np.abs(gain[0, 1:]), initial=0.0) <= 1e-7 * exact
+    koopman_controller(model, gain, np.zeros(1))
+
+
 def test_every_closure_residual_is_round_off_on_a_linear_plant() -> None:
     rng = np.random.default_rng(2)
     xs, us = rng.standard_normal((200, 2)), rng.standard_normal((200, 1))
@@ -276,7 +345,7 @@ def test_the_lqr_gain_refuses_a_lift_that_does_not_close() -> None:
     xs, us, x_next = _gaussian(400)
     linear = KoopmanModel(degree=1).fit(xs, us, x_next)
     q, r = np.eye(2), np.array([[1.0]])
-    with pytest.raises(ValueError, match=r"feature 1's held-out closure residual is 0\.7"):
+    with pytest.raises(ValueError, match=r"state 1's held-out closure residual is 0\.7"):
         koopman_lqr_gain(linear, q, r)
     assert linear.closure_residuals is not None
     worst = float(np.max(linear.closure_residuals))
@@ -429,7 +498,10 @@ LEVELS = [0.0, 1.0, 5.0, 273.15]
 def test_a_cubic_lift_reads_one_verdict_at_every_level_of_the_state() -> None:
     """``x' = 2x - x^3 + u/10`` at degree 3. Lifted uncentred and without a constant, the same
     plant logged at levels 0, 1, 5 and 273.15 was refused, accepted, refused and refused: the
-    monomials of ``x + c`` span a different space for each ``c``."""
+    monomials of ``x + c`` span a different space for each ``c``. Centred, each level reads one
+    verdict. The next state is a cubic of the state, in the lift's span, so the state closes and
+    the gain is granted; ``x^2`` and ``x^3`` do not (1.00 and 0.33), the gain reads them, and its
+    loop leaves the target at a spectral radius of 1.14, so the controller is refused."""
     rng = np.random.default_rng(0)
     xs, us = rng.uniform(-1.5, 1.5, (600, 1)), rng.uniform(-1.0, 1.0, (600, 1))
     x_next = xs + (xs - xs**3) + 0.1 * us
@@ -438,8 +510,9 @@ def test_a_cubic_lift_reads_one_verdict_at_every_level_of_the_state() -> None:
         model = KoopmanModel(degree=3).fit(xs + level, us, x_next + level)
         assert model.closure_residuals is not None
         residuals.append(model.closure_residuals)
-        with pytest.raises(ValueError, match="does not close"):
-            koopman_lqr_gain(model, np.eye(1), np.array([[0.1]]))
+        gain = koopman_lqr_gain(model, np.eye(1), np.array([[0.1]]))
+        with pytest.raises(ValueError, match=r"spectral radius 1\.14"):
+            koopman_controller(model, gain, np.full(1, level))
     # the data's own rounding at 273.15 is 2.8e-14, which the cubic Gram turns into ~1e-7 here
     np.testing.assert_allclose(residuals, [residuals[0]] * len(LEVELS), rtol=0.0, atol=1e-6)
 

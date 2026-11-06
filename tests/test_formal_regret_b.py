@@ -110,6 +110,8 @@ FORMAL_LINKS = {
             "test_highprob_band_is_a_log_multiple_of_the_floor",
             "test_highprob_band_covers_the_exact_regret_where_c_holds",
             "test_highprob_band_undercovers_outside_the_local_regime",
+            "test_highprob_band_undercovers_near_the_knife_edge",
+            "test_highprob_band_reads_nan_at_the_knife_edge",
         ),
     },
     "chc.research.regret.hinf_robust_regret_certificate": {
@@ -130,6 +132,7 @@ FORMAL_LINKS = {
             "information_lower_bound.v",
             "weighted_van_trees.gp",
             "weighted_van_trees.mac",
+            "weighted_van_trees_wide_prior.gp",
         ),
         "tests": (
             "test_information_floor_constant_is_the_exact_action_curvature",
@@ -137,6 +140,9 @@ FORMAL_LINKS = {
             "test_information_van_trees_floor_lies_below_both_bayes_risks",
             "test_information_certificate_survives_the_knife_edge",
             "test_information_weighted_floors_match_the_38_digit_values",
+            "test_information_weighted_floors_hold_under_a_prior_wide_against_the_poles",
+            "test_information_weighted_floors_stay_below_the_bayes_regret_at_every_width",
+            "test_information_weighted_floor_reads_nan_where_its_quadrature_does_not_settle",
             "test_information_weighted_floors_order_below_the_bayes_regret",
             "test_information_reference_floors_at_the_example_match_the_38_digit_values",
         ),
@@ -1018,6 +1024,41 @@ def test_highprob_band_undercovers_outside_the_local_regime():
     assert curve.empirical_coverage[0] < 0.99 - 4.0 * sd
 
 
+@pytest.mark.parametrize(("rr", "coverage"), [(0.98, 0.725), (0.9, 0.967)])
+def test_highprob_band_undercovers_near_the_knife_edge(rr, coverage):
+    """The documented coverages at ``delta = 0.01`` near ``rr = b^2 = 1``, where ``C`` vanishes and
+    the regret is fourth order: 0.7248 and 0.9667 of the 4000 default trials, against 0.99."""
+    curve = R.local_highprob_regret_certificate(rr=rr, n=50, deltas=(0.01,))
+    sd = math.sqrt(0.01 * 0.99 / 4000)
+    assert curve.empirical_coverage[0] == pytest.approx(coverage, abs=0.0005)
+    assert curve.empirical_coverage[0] < 0.99 - 4.0 * sd
+
+
+@pytest.mark.parametrize(
+    ("b", "rr"),
+    [
+        (1.0, 1.0),
+        (math.sqrt(0.5), 0.5),  # b * b rounds to 0.5000000000000001
+        (1.0, 1.0 + 6.0 * np.finfo(np.float64).eps),  # 3 units in the last place above b^2
+    ],
+)
+def test_highprob_band_reads_nan_at_the_knife_edge(b, rr):
+    """At ``rr = b^2`` the coefficient ``C``, the bands and the floor are zero. ``band / floor``
+    was 0/0 there, a nan with a RuntimeWarning, and the coverage of a band of zero read 0. One
+    rounding off the edge, at ``b = sqrt(0.5)``, the bands were near 1e-34, their coverage 0 and
+    their ratio to the floor ``2 log(2/delta)``, as if the band held. Within four units of
+    rounding, as for the information certificate, both have nothing to measure and read nan,
+    with no warning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        curve = R.local_highprob_regret_certificate(b=b, rr=rr, n=50, n_trials=20)
+    assert curve.cr_floor == 0.0
+    assert np.all(curve.highprob_bands == 0.0)
+    assert np.all(curve.confounded_bands == 0.0)
+    assert np.all(np.isnan(curve.band_over_floor))
+    assert np.all(np.isnan(curve.empirical_coverage))
+
+
 # ------------------------------------------------------------------------------------- H-infinity
 
 
@@ -1279,6 +1320,80 @@ def test_information_weighted_floors_match_the_38_digit_values(case):
     assert curve.weighted_bayes_floor == pytest.approx(weighted, rel=1e-9, abs=0.0)
     assert curve.best_weighted_bayes_floor == pytest.approx(best, rel=1e-9, abs=0.0)
     assert curve.weighted_bayes_floor <= curve.best_weighted_bayes_floor < bayes
+
+
+# validation/weighted_van_trees_wide_prior.gp (2) at 38 digits, to 20: weighted_bayes_floor,
+# best_weighted_bayes_floor and the Bayes regret under a prior N(5, 30^2), rr = 1e-3, xt = 1 and
+# 100 = 50 * 2/1^2 units of information.
+_WIDE_PRIOR_38 = (
+    0.00048101308920188075259,
+    0.00050550690421888755199,
+    0.0030075218960057290942,
+)
+
+
+def test_information_weighted_floors_hold_under_a_prior_wide_against_the_poles():
+    """weighted_van_trees_wide_prior.gp (2): under a prior 950 times wider than ``sqrt(rr)`` the
+    integrands' mass near ``b = 0`` is a spike of width ``sqrt(rr)/prior_width`` in standard units.
+    Cut at ``b = 0`` alone, the quadrature never sampled it: the prior term read 2.7e-6 where it is
+    814.3, with an error estimate of 47 % that was discarded, and both floors read
+    ``E[W psi'^2]/I_n = 0.0065036``, 2.16 times the Bayes regret."""
+    weighted, best, bayes = _WIDE_PRIOR_38
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        curve = R.information_lower_bound_certificate(
+            b=5.0, rr=1e-3, sigma=1.0, sample_sizes=(25, 50), n_seeds=2, prior_width=30.0
+        )
+    assert curve.weighted_bayes_floor == pytest.approx(weighted, rel=1e-9, abs=0.0)
+    assert curve.best_weighted_bayes_floor == pytest.approx(best, rel=1e-9, abs=0.0)
+    assert curve.best_weighted_bayes_floor < bayes
+
+
+# validation/weighted_van_trees_wide_prior.gp (3), to 11 digits: the Bayes regret at rr = 1e-3 under
+# a prior N(tau/6, tau^2), tau = ratio * sqrt(rr), by the ratio and then by I_n.
+_WIDE_SWEEP_INFORMATION = (0.01, 1.0, 100.0, 1e4)
+_WIDE_SWEEP_BAYES = {
+    10: (0.85792353756, 0.78785856809, 0.20792765097, 0.0051950685727),
+    30: (0.92519259596, 0.62322789228, 0.085427367413, 0.0019082589330),
+    100: (0.88921440603, 0.29740936522, 0.027683813504, 0.00059371379628),
+    300: (0.65893747842, 0.11607960662, 0.0094374840872, 0.00020002188462),
+    1000: (0.30830590443, 0.036915868138, 0.0028537093244, 6.0231971389e-5),
+    2000: (0.17264273058, 0.018694239111, 0.0014292773965, 3.0140241664e-5),
+    3000: (0.11972166040, 0.012516004350, 0.00095339081758, 2.0098890183e-5),
+}
+
+
+def test_information_weighted_floors_stay_below_the_bayes_regret_at_every_width():
+    """weighted_van_trees_wide_prior.gp (3): the floors of a prior 10 to 3000 times wider than
+    ``sqrt(rr)``, at four levels of information, each finite and below the Bayes regret, and the
+    quadrature silent. Cut at ``b = 0`` alone, the floors at 1000 times read 1.02 to 200 times
+    the Bayes regret, those at 2000 held, and at 3000 the closed form read 4.5e-11 where it is
+    1.6e-4: no width bounded the failure."""
+    rr = 1e-3
+    for ratio, row in _WIDE_SWEEP_BAYES.items():
+        width = ratio * math.sqrt(rr)
+        for information, bayes in zip(_WIDE_SWEEP_INFORMATION, row, strict=True):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                weighted, best = R._weighted_van_trees_floors(
+                    rr=rr, xt=1.0, mean=width / 6.0, width=width, information=information
+                )
+            # a nan fails each comparison
+            assert 0.0 < weighted <= best < bayes, (ratio, information, weighted, best)
+
+
+@pytest.mark.filterwarnings("ignore::scipy.integrate.IntegrationWarning")
+def test_information_weighted_floor_reads_nan_where_its_quadrature_does_not_settle():
+    """A prior ``10^7`` times wider than ``sqrt(rr)``, centred 1.2 widths from ``b = 0``: QUADPACK's
+    own error estimate on ``E[W psi'^2]`` is 3e-5 of it, 3000 times the ``1e-8`` a floor's means are
+    read to, so the closed form's floor reads nan rather than a number that may sit above the
+    regret it bounds."""
+    rr = 1e-9
+    width = 1e7 * math.sqrt(rr)
+    curve = R.information_lower_bound_certificate(
+        b=-1.2 * width, rr=rr, sigma=1.0, sample_sizes=(25, 50), n_seeds=2, prior_width=width
+    )
+    assert math.isnan(curve.weighted_bayes_floor)
 
 
 def _prior_mean(f, centre, scale):

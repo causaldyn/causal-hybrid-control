@@ -380,6 +380,14 @@ class InformationLowerBoundCurve:
     best_weighted_bayes_floor: float
 
 
+def _knife_edge(b: float, rr: float) -> bool:
+    """Whether ``rr = b^2`` to rounding: there the optimal action is stationary in ``b``, and the
+    regret's local coefficient ``(rr - b^2)^2/(rr + b^2)^3`` is zero. ``b = sqrt(rr)`` and ``b*b``
+    each round once, so there ``|rr - b^2| <= 1.5 eps rr``, and an exact test missed it:
+    ``b = sqrt(0.5)`` left 1.1e-16 and a coefficient of 1.2e-32."""
+    return abs(rr - b * b) <= 4.0 * np.finfo(np.float64).eps * (rr + b * b)
+
+
 def information_lower_bound_certificate(
     *,
     b: float = 1.0,
@@ -441,7 +449,15 @@ def information_lower_bound_certificate(
     it, and ``rr`` times the action floor 0.0172035, 0.230 of it. At ``I_n = 10^4`` both read
     0.99967 of it, and the least-curvature floor 0.216, which is its limit
     (``validation/weighted_van_trees.gp``, at 38 digits). The prior of the van Trees arm is
-    ``N(b, prior_width^2)``.
+    ``N(b, prior_width^2)``. The weighted floors' prior means are read by adaptive quadrature cut
+    at ``b = 0`` and at multiples of ``sqrt(rr)`` around it, the width of the integrands' features
+    there; where the quadrature's own error estimate on a mean exceeds ``1e-8`` of it, the floor
+    that reads it is ``nan``. Under a prior ``N(5, 30^2)`` at ``rr = 1e-3`` and ``I_n = 100`` the
+    two read 4.81e-4 and 5.06e-4, below a Bayes regret of 3.01e-3
+    (``validation/weighted_van_trees_wide_prior.gp``); cut at ``b = 0`` alone, the quadrature had
+    missed the prior term and read 6.50e-3 for both. On 400 random priors with ``rr`` from 1e-9 to
+    10 and widths from 1e-3 to 1e3, one floor read ``nan``, under a prior 2e7 times wider than
+    ``sqrt(rr)``.
 
     The caveat that SURVIVES is the knife edge: at ``rr = b^2`` the optimal action is stationary
     in ``b``, so ``psi'`` and with it the leading floor vanish. That is a property of the problem,
@@ -455,10 +471,8 @@ def information_lower_bound_certificate(
         raise ValueError(
             f"the prior width is a standard deviation, positive and finite: got {prior_width}"
         )
-    # At the knife edge rr = b^2 the coefficient is 0: no rate to fit, no floor to compare with.
-    # b = sqrt(rr) and b*b each round once, so there |rr - b^2| <= 1.5 eps rr, and an exact test
-    # missed it: b = sqrt(0.5) left 1.1e-16 and a coefficient of 1e-33 to fit a rate to.
-    knife_edge = abs(rr - b * b) <= 4.0 * np.finfo(np.float64).eps * (rr + b * b)
+    # At the knife edge the coefficient is 0: no rate to fit, no floor to compare with.
+    knife_edge = _knife_edge(b, rr)
     coeff = 0.0 if knife_edge else xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     v_exp = alpha**2 + 1.0  # total action variance (Var(alpha*z + nu), Vz = Vnu = 1)
     v_conf = 1.0  # residual identifying variance Var(u|z) = Var(nu) under confounding
@@ -532,6 +546,36 @@ def information_lower_bound_certificate(
 
 _HERMITE_DEGREE = 8  # the best weight's basis: W psi' and He_0 .. He_8 of the standardised effect
 _PRIOR_REACH = 40.0  # prior standard deviations read on each side; the mass beyond is e^-800
+# where QUADPACK cuts the prior's span, in multiples of the poles' distance from the real line on
+# each side of b = 0: their features are that wide, and a prior far wider hides them in one panel
+_POLE_CUTS = (0.0, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0)
+_PRIOR_AGREEMENT = 1e-8  # the relative error a prior mean is read to, or the floor reads nan
+
+
+def _settled(value: NDArray[np.float64] | float, error: float) -> bool:
+    """Whether a prior mean read with the error estimate ``error`` holds :data:`_PRIOR_AGREEMENT`
+    of itself, of its largest entry where it is a vector. A nan in either is not settled. The
+    scalar floors read QUADPACK's own estimate, the matrix floor the gap between two Gauss-Hermite
+    rules; where a mean is not settled, its floor is ``nan``, not a number that may sit above the
+    risk it bounds."""
+    return bool(error <= _PRIOR_AGREEMENT * np.max(np.abs(value)))
+
+
+def _pole_cuts(*, mean: float, width: float, pole: float) -> list[float] | None:
+    """The breakpoints, in ``z = (b - mean)/width``, of a prior mean whose integrand has poles at
+    ``b = +-i pole``: at ``b = 0`` and at ``b = +-k pole`` for each ``k`` of :data:`_POLE_CUTS`.
+
+    Under a prior wide against ``pole`` the integrand's mass near ``b = 0`` is a spike of width
+    ``pole/width`` in ``z``. With a breakpoint at ``b = 0`` alone, a Gauss-Kronrod panel ending
+    there never sampled it, its error estimate was near zero on the wrong value, and the panel was
+    never bisected: at a prior ``N(5, 30^2)`` and ``rr = 1e-3`` the prior term read 2.7e-6 where it
+    is 814.3. Cut at the poles' scale, each panel holds a feature its rule resolves.
+    """
+    split = -mean / width
+    marks = {split + side * k * pole / width for k in _POLE_CUTS for side in (-1.0, 1.0)}
+    # a kink within rounding of an end leaves QUADPACK a subinterval of no width, which it reports
+    # as bad behaviour; past 39 standard deviations the prior's mass is below e^-760 anyway
+    return sorted(z for z in marks if abs(z) < _PRIOR_REACH - 1.0) or None
 
 
 def _weighted_van_trees_floors(
@@ -543,11 +587,13 @@ def _weighted_van_trees_floors(
     ``He_0 .. He_8`` of ``z = (b - mean)/width``, ``a' B^+ a`` with ``a = E[C_i psi']`` and
     ``B = E[(information C_i C_j + G_i G_j)/W]``, ``G = C' - C z/width``.
 
-    Every mean is an adaptive quadrature in ``z``, split at ``b = 0``: the integrands' poles sit at
-    ``b = +-i sqrt(rr)``, so a prior wide against ``sqrt(rr)`` packs their features near that point.
-    The closed form is read on its own two integrals, each to a relative ``1e-12``. The basis is
-    read in one vector quadrature, whose error is relative to its largest entry; ``W psi'`` is in
-    the basis, so the best floor is never read below the closed form's.
+    Every mean is an adaptive quadrature in ``z``, cut at ``b = 0`` and at the poles' scale around
+    it (:func:`_pole_cuts`): the integrands' poles sit at ``b = +-i sqrt(rr)``, so a prior wide
+    against ``sqrt(rr)`` packs their features near that point. The closed form is read on its own
+    two integrals, each to a relative ``1e-12``. The basis is read in one vector quadrature, whose
+    error is relative to its largest entry; ``W psi'`` is in the basis, so the best floor is never
+    read below the closed form's. A floor whose means QUADPACK's own error estimate does not hold
+    to :data:`_PRIOR_AGREEMENT` reads ``nan`` (:func:`_settled`).
     """
 
     def psi_slope(b: float) -> float:
@@ -559,17 +605,14 @@ def _weighted_van_trees_floors(
     def weight_slope(b: float) -> float:  # C' = 2 b psi' + W psi''
         return 4.0 * xt * b * rr / (rr + b * b) ** 2
 
-    split = -mean / width
-    # a kink within rounding of an end leaves QUADPACK a subinterval of no width, which it reports
-    # as bad behaviour; past 39 standard deviations the prior's mass is below e^-760 anyway
-    points = [split] if abs(split) < _PRIOR_REACH - 1.0 else None
+    points = _pole_cuts(mean=mean, width=width, pole=float(np.sqrt(rr)))
     density = 1.0 / np.sqrt(2.0 * np.pi)
 
     def prior_mean(f: Any) -> float:
         def integrand(z: float) -> float:
             return float(f(mean + width * z, z)) * density * np.exp(-0.5 * z * z)
 
-        value, _ = quad(
+        value, error = quad(
             integrand,
             -_PRIOR_REACH,
             _PRIOR_REACH,
@@ -578,7 +621,7 @@ def _weighted_van_trees_floors(
             epsrel=1e-12,
             limit=400,
         )
-        return float(value)
+        return float(value) if _settled(value, error) else float("nan")
 
     curvature_mean = prior_mean(lambda b, z: (b * b + rr) * psi_slope(b) ** 2)
     prior_term = prior_mean(
@@ -608,7 +651,7 @@ def _weighted_van_trees_floors(
             ]
         )
 
-    vector, _ = quad_vec(
+    vector, error = quad_vec(
         entries,
         -_PRIOR_REACH,
         _PRIOR_REACH,
@@ -619,6 +662,8 @@ def _weighted_van_trees_floors(
         limit=2000,
     )
     vector = np.asarray(vector, dtype=np.float64)
+    if not _settled(vector, float(error)):
+        return float(weighted), float("nan")
     numerator = vector[:size]
     pairs = upper[0].size
     gram = np.zeros((2, size, size))
@@ -627,7 +672,7 @@ def _weighted_van_trees_floors(
     gram = gram + np.swapaxes(gram, 1, 2) * (1.0 - np.eye(size))
     denominator = information * gram[0] + gram[1]
     best = float(numerator @ np.linalg.lstsq(denominator, numerator, rcond=None)[0])
-    return float(weighted), max(best, float(weighted))
+    return float(weighted), best if np.isnan(weighted) else max(best, float(weighted))
 
 
 @dataclass(frozen=True)
@@ -853,7 +898,6 @@ class MultivariateVanTreesCurve:
 
 
 _PRIOR_NODES = (32, 64, 128, 256)  # the Gauss-Hermite rules read in each direction, in turn
-_PRIOR_AGREEMENT = 1e-8  # how close two rules in turn must read for the finer to be taken
 
 
 def _weighted_matrix_floor(
@@ -875,7 +919,8 @@ def _weighted_matrix_floor(
     ``Psi'`` comes from the solves :func:`_action_sensitivity` makes, batched over the nodes,
     and the divergence of ``C`` from a central difference of them. The mean is a tensor
     Gauss-Hermite rule of ``nodes**d`` points. The rules of :data:`_PRIOR_NODES` are read in turn,
-    and the first that agrees with the one before to :data:`_PRIOR_AGREEMENT` is taken. The
+    and the first that agrees with the one before to :data:`_PRIOR_AGREEMENT` is taken
+    (:func:`_settled`, the scalar floors' test on QUADPACK's estimate). The
     integrands have poles where ``M`` is singular at a complex ``theta``, and a rule resolves them
     more slowly the wider the prior is against their distance; where the last rule still
     disagrees, the floor is ``nan``, not a number that may sit above the risk it bounds.
@@ -922,7 +967,7 @@ def _weighted_matrix_floor(
     previous = floor(_PRIOR_NODES[0])
     for nodes in _PRIOR_NODES[1:]:
         current = floor(nodes)
-        if abs(current - previous) <= _PRIOR_AGREEMENT * abs(current):
+        if _settled(current, abs(current - previous)):
             return current
         previous = current
     return float("nan")
@@ -1201,14 +1246,20 @@ def local_highprob_regret_certificate(
     4000 default trials (Monte Carlo SD 0.0045), where the proxy reads 0.996. Near the knife edge
     ``rr = b^2``, where ``C`` vanishes and the regret is fourth order, the band fails outright: at
     ``rr = 0.98``, ``n = 50`` it covers 0.725 at ``delta = 0.01``, and at ``rr = 0.9``, ``n = 50``
-    0.967.
+    0.967. At the knife edge itself, ``rr = b^2`` to within rounding, ``C`` is zero, and so are
+    the bands and the floor: ``band_over_floor`` and ``empirical_coverage`` have nothing to
+    measure there, and read ``nan``.
     """
-    coeff = xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
+    knife_edge = _knife_edge(b, rr)
+    coeff = 0.0 if knife_edge else xt**2 * (rr - b**2) ** 2 / (rr + b**2) ** 3
     ds = np.asarray(deltas, dtype=np.float64)
     logs = np.log(2.0 / ds)
     floor = coeff * sigma**2 / (n * v_exp)
     bands = coeff * 2.0 * sigma**2 * logs / (n * v_exp)
     conf_bands = coeff * 2.0 * sigma**2 * logs / (n * v_conf)
+    if knife_edge:
+        unread = np.full(ds.size, np.nan)
+        return HighProbRegretCurve(ds, bands, unread, conf_bands, unread.copy(), float(floor))
     coverage = np.zeros(ds.size)
     regrets = np.empty(n_trials)
     for t in range(n_trials):
