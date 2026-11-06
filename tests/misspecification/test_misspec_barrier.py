@@ -269,6 +269,42 @@ def test_a_ceiling_held_under_the_channel_s_sensitivity_model_keeps_the_plant_sa
         assert np.all(barrier >= 0.0), (seed, barrier.min())
 
 
+def test_on_twenty_logs_every_plant_whose_channel_is_in_the_radius_stays_safe() -> None:
+    """The contract of a plan held and certified under the fit's own sensitivity, on 20 logs of an
+    unstable drift, ``xdot = 0.5 x + u - 3 Z`` at steps of 0.1, whose lever follows a hidden
+    confounder at level 1.5: at ``gamma = 1.5`` the plan held to ``x <= 1`` keeps every plant with
+    the model's drift and a channel within the radius in the set over every certified step, the
+    true channel's and both edges of the radius, at which the tube is met exactly on one lever of
+    one sign. The true plant is outside that contract: its drift is missed by the fit's sampling
+    error, ``drift_error`` 0.094 to 0.098 here and the largest miss 1.7 of it, and it left the set
+    on 1 log of 20, least ``h`` -0.09. The drift's error is the error tube's question (ADR 0111)."""
+    gamma, dt, horizon = 1.5, 0.1, 30
+    start = jnp.zeros(1)
+    cost = QuadraticCost(
+        Q=jnp.eye(1), R=1e-4 * jnp.eye(1), Qf=jnp.eye(1), x_target=jnp.array([2.0])
+    )
+    for seed in range(20):
+        fit = _confounded_fit(seed, 0.5, dt)
+        model = HybridDynamics(known=UNKNOWN, residual=fit.residual)
+        barrier = BarrierConstraint(
+            _unit_ceiling,
+            gamma=gamma,
+            u_max=(5.0,),
+            sensitivity=ChannelSensitivity.from_fit(fit),
+        )
+        plan = causal_plan(model, start, cost, dt, horizon, -5.0, 5.0, barrier=barrier)
+        assert plan.safety is not None
+        certified, radius = plan.safety.certified_steps, plan.safety.radius
+        assert certified > 0
+        fitted = float(np.asarray(fit.residual.channel).ravel()[0])
+        assert abs(1.0 - fitted) <= radius, (seed, fitted, radius)
+        for channel in (1.0, fitted - radius, fitted + radius):
+            path = np.asarray(rollout(_with_channel(model, channel), start, plan.actions, dt))
+            # at an edge the plant can meet the room the audit read, zero but for rounding
+            least = float(np.min(1.0 - path[: certified + 1, 0]))
+            assert least >= -1e-12, (seed, channel, certified, least)
+
+
 def test_a_relative_radius_holds_the_plants_in_its_share_and_says_so() -> None:
     """Without a sensitivity model the radius is a share of the fitted channel, so at every level
     it stays within the fit's own size of it: a fitted channel of 0.004 where the plant's is 1

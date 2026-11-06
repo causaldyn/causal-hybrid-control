@@ -3453,13 +3453,19 @@ def certify_safety(
             given a hidden confounder moves by a factor within ``[1/gamma, gamma]``, at the
             sensitivity's ``level``. ``gamma = 1`` is then the sampling error alone, not exact
             identification, and ``gamma_star`` is each step's largest ``gamma`` under that model:
-            finite, or ``inf`` where the drift alone keeps the step. On logs whose levers follow a
-            confounder at ``gamma = 1.5``, a plan held and certified under the fit's own
-            sensitivity at that level kept the true plant in the set over its certified steps on
-            20 logs of 20, on a stable drift and on an unstable one (ADR 0111, ADR 0119). The
-            certificate's ``radius_model`` reads ``"absolute"`` with a ``sensitivity`` and
-            ``"relative"`` without one. :func:`chc.prescribe` passes its fit's own by default,
-            where the fit gives one (ADR 0125).
+            finite, or ``inf`` where the drift alone keeps the step. What it certifies is a plant
+            with the model's drift and a channel within the radius: on 20 logs whose levers follow
+            a confounder at ``gamma = 1.5``, of a stable drift and of an unstable one, a plan held
+            and certified under the fit's own sensitivity at that level kept the plant with the
+            true channel, and those at both edges of the radius, in the set over its certified
+            steps on every log (ADR 0119). The true plant also misses the fitted drift, by the
+            fit's sampling error, ``drift_error`` 0.094 to 0.098 on the unstable drift's logs and
+            the largest miss 1.7 of it, which the radius does not carry: it stayed in the set on
+            all 20 stable logs, and on the unstable drift left it on 1 of 20, least ``h`` -0.09.
+            The drift's error is the error tube's, :func:`causal_plan`'s ``model_error``
+            (ADR 0111). The certificate's ``radius_model`` reads ``"absolute"`` with a
+            ``sensitivity`` and ``"relative"`` without one. :func:`chc.prescribe` passes its fit's
+            own by default, where the fit gives one (ADR 0125).
         centre: the action, one number per lever, every action is read from: the channel's
             error moves the field by an action's distance from it, and the action set,
             ``u_max`` and an action's norm are measured from it, ``||D^+ (u - c)||``. A fit

@@ -4,6 +4,20 @@
 step certified under a sensitivity promises) and ADR 0112 (what the held solve holds at a next
 state). Amended by ADR 0132, 2026-10-25: the room is `h - ||grad h|| e - κ e²/2`, `κ` the
 barrier's curvature, a bound on a quadratic `h` or under the caller's `curvature`.
+Amended 2026-11-06, re-measured on 1.1.0 on the calibrated logs of the Consequences, each plan held
+and certified under the fit's own sensitivity at `Gamma = 1.5`: the promise is the one the
+Decision narrowed it to, about a plant with the model's drift. On the unstable drift (0.5) the
+plants that differ from the model only in the channel, the true channel and both edges of the
+radius, stayed in the set over the certified prefix on all 20 logs, least `h` 0.1985, 0.0000 (the
+edge the tube meets exactly) and 0.8752, and the tube was never narrower than the gap it bounds;
+19 plans are certified on all 30 steps and one on 29, all 20 ending `max_iterations`. The true
+plant left the set on 1 of 20 logs, least `h` -0.086, where the Consequences read none of 20 on
+the plans of 2026-10-21. Its drift is missed by the fit's sampling error, `drift_error` 0.094 to
+0.098 on every log, the largest miss 1.71 of it, which the radius does not carry: that error is
+the error tube's question (ADR 0111). On the stable drift (-1) all 20 plans converge and are
+certified on all 30 steps, and every one of those plants, the true one too, stays in the set, the
+true plant's least `h` 0.34. A misspecification test holds the channel-only promise on the 20
+unstable logs, and `certify_safety(sensitivity=)` states it with these numbers.
 
 ## Context
 
