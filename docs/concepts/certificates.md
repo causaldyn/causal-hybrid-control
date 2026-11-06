@@ -158,7 +158,8 @@ design record is
 `prescribe` gathers the tube, the barrier and the optimality gap into a `DecisionCertificate`,
 beside the identification status, with the barrier's `radius_model` and `lever_range_step`: the
 first step at which the plan sets a lever outside the range the log moved it in, where the fitted
-channel is extrapolated and its error is not read, so the certified horizon ends there. The two axes are never merged: a plan can be fully certified
+channel is extrapolated and its error is not read, so the certified horizon and the barrier's
+certified steps end there. The two axes are never merged: a plan can be fully certified
 against a channel nothing identifies, which is a trustworthy tube around a meaningless action.
 A lever the log never moves apart from what the states and the covariates predict is not
 identified on that log, whatever the graph says: `prescribe` holds it at its logged level and the

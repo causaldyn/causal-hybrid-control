@@ -439,7 +439,7 @@ tube = np.asarray(causal.plan.uncertainty_tube)
 print(f"adjusting for the weather, the forecast's error bound at {clock[-1]}: {tube[-1]:.2f} °C")
 print(
     "adjusting for the weather, hours the barrier keeps inside the band: "
-    f"{causal.certificate.barrier_certified_steps} of {HORIZON}"
+    f"{causal.plan.safety.certified_steps} of {HORIZON}"
 )
 
 # %% [markdown]
@@ -459,10 +459,13 @@ print(
 # two together reach 0.53 °C by 07:00, within the 1 °C tolerance. But that error is measured at
 # the powers the logs saw. It says nothing about powers they did not.
 #
-# The certificate's **barrier** answers a separate question: does the model's forecast keep the
-# room inside the comfort band? It does, for all 8 hours. That is a check on the fitted model, and at 0 and 3 kW
-# it reads the same extended model. It says that the plan keeps to the band if the model is right
-# at those powers, not that the model is right there.
+# The plan's own **barrier** audit (`plan.safety`) answers a separate question: does the model's
+# forecast keep the room inside the comfort band? It does, for all 8 hours. That is a check on the
+# fitted model, and at 0 and 3 kW it reads the same extended model. It says that the plan keeps to
+# the band if the model is right at those powers, not that the model is right there. So the
+# certificate does not count those hours either: its `barrier_certified_steps` is 0, because it
+# stops reading the barrier, as it stops trusting the plan, at the first hour outside the logged
+# range.
 #
 # In this notebook we know the answer, because we wrote the physics: every kilowatt adds the same
 # heat at any power, and section 4 showed the plan working on the real room. A real house gives no
