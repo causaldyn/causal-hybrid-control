@@ -32,6 +32,7 @@ import copy
 import datetime
 import functools
 import hashlib
+import json
 import logging
 import math
 import re
@@ -1517,6 +1518,7 @@ class Prescription:
                 "max_refused": float(max_refused),
                 "panel_sha256": panel.provenance.data_sha256,
                 "clusters": clusters,
+                "plan_sha256": _plan_sha256(self.to_json()),
             },
         )
 
@@ -4613,6 +4615,15 @@ def _priced(evaluation: PlanEvaluation, held_cost: float) -> PlanEvaluation:
         if versus is None
         else replace(versus, logger_value=versus.logger_value + held_cost),
     )
+
+
+def _plan_sha256(record: Mapping[str, Any]) -> str:
+    """The sha256 of a decision ``record``'s ``schema_version``, ``schedule`` and ``inputs`` as
+    canonical JSON (keys sorted, no spaces): the plan an evaluation read, and what it was made
+    from."""
+    named = {key: record[key] for key in ("schema_version", "schedule", "inputs")}
+    text = json.dumps(named, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 @eqx.filter_jit

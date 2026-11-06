@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import hashlib
 import json
 import math
 from typing import Any
@@ -724,9 +725,43 @@ def test_a_prescription_s_evaluation_goes_to_json() -> None:
         "max_refused": 0.05,
         "panel_sha256": panel.provenance.data_sha256,
         "clusters": None,
+        "plan_sha256": _plan_digest(made.to_json()),
     }
     check = evaluation.logger_check
     assert (record["logger_check"] is None) == (check is None)
+
+
+def _plan_digest(record: dict[str, Any]) -> str:
+    """The sha256 of a decision record's ``schema_version``, ``schedule`` and ``inputs``, written as
+    JSON with sorted keys and no spaces: computed here from the record, not by the library."""
+    named = {
+        "schema_version": record["schema_version"],
+        "schedule": record["schedule"],
+        "inputs": record["inputs"],
+    }
+    text = json.dumps(named, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_an_evaluation_names_the_plan_it_read() -> None:
+    """``settings.plan_sha256`` is the digest of the decision record's schedule and inputs, so an
+    evaluation of another plan, or of one made from other data, reads another; up to 1.1.0 the
+    record named no plan, and two evaluations of different plans on one panel read alike."""
+    panel = _market()
+    kwargs: dict[str, Any] = {
+        "levers": [Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.1)],
+        "adjustment": CausalGraph.from_edges([("incentive", "supply")]),
+        "horizon": 3,
+        "dt": DT,
+        "integrator": "rk4",
+    }
+    made = prescribe(panel, target=Target("supply", value=0.5), **kwargs)
+    other = prescribe(panel, target=Target("supply", value=0.6), **kwargs)
+    for prescription in (made, other):
+        settings = prescription.evaluate(panel, n_resamples=10).to_json()["settings"]
+        assert settings["plan_sha256"] == _plan_digest(prescription.to_json())
+    assert _plan_digest(made.to_json()) != _plan_digest(other.to_json())
+    assert EVALUATION_SCHEMA_VERSION == 1
 
 
 def test_an_evaluation_of_logs_goes_to_json_with_the_logger_it_was_given() -> None:
@@ -751,6 +786,7 @@ def test_an_evaluation_of_logs_goes_to_json_with_the_logger_it_was_given() -> No
         "min_effective": 100.0,
         "logger": {"gain": [[0.0]], "offset": [0.0], "covariance": [[1.0]]},
         "logs_sha256": decision_evaluation._logs_sha256({"x": x, "u": u}),
+        "plan_sha256": None,
     }
     assert record["degrees_of_freedom"] == evaluation.degrees_of_freedom
     assert record["bootstrap"] is None

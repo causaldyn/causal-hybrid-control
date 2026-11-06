@@ -132,8 +132,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   See [`chc.decision`](api/decision.md).
 - **An evaluation's record** (*experimental*). `to_json()` writes an evaluation, from
   `evaluate_plan` or a prescription's `evaluate`, as plain JSON beside the decision's record: the estimate, its
-  intervals, the certificate, the logger check and how it was asked for. It has no reader; an
-  audit makes the evaluation again from the panel and the plan. See
+  intervals, the certificate, the logger check, how it was asked for and a digest of the decision
+  it evaluated. It has no reader; an audit makes the evaluation again from the panel and the plan.
+  See
   [`chc.evaluation`](api/evaluation.md).
 - **A logged draw tests the graph** (*experimental*). Where the logger added a random draw to the
   levers and logged it, `prescribe(..., dither=<column>)` fits the channel again with the draw as
