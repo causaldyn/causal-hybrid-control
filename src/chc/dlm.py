@@ -165,8 +165,9 @@ geos is multivariate Student ``t``. That is the update one geo at a time with no
 them, and its density the product of theirs (``validation/geo_dlm.mac``, steps 1 and 2).
 
 * One geo is :func:`forward_filter`'s model of the national blocks and then the regional ones,
-  and with every discount 1 the filter is the conjugate regression on the first state over every
-  observation at once; the tests hold the first to ``1e-12`` and the second to ``1e-10``.
+  unless a term is in both (below), and with every discount 1 the filter is the conjugate
+  regression on the first state over every observation at once; the tests hold the first to
+  ``1e-12`` and the second to ``1e-10``.
 * A term in both the national and the regional blocks -- a national level beside each geo's
   level, a harmonic beside the same harmonic of the same period -- is read by each geo only
   through its sum with the geo's copy, so the national copy minus the sum of the geos' copies is
@@ -1777,10 +1778,14 @@ def forecast(
 
     ``evolution="constant"`` holds the first step's evolution variance ``W_(T+1)`` for every later
     step, whatever the later steps' regressors: the directional form reads it off the window that
-    ends at the first step ahead, and a regressor held while idle is discounted as it is at that
-    step. ``"compounding"`` discounts again at every step, each with its own window and idle
-    regressors. The variance's degrees of freedom decay by ``variance_discount`` a step and its
-    estimate stays at ``S_T``.
+    ends at the first step ahead. A regressor held while idle is not discounted at a step ahead
+    where it is zero: ``W`` is read with every held regressor live, and each step zeroes the rows
+    and columns of those idle at it. Where a held regressor is idle at the first step ahead, that
+    step's state variance can differ from the filter's own prior for it under the directional and
+    the multiplicative form, whose ``W`` with the regressor live couples it to the other
+    coordinates. ``"compounding"`` discounts again at every step, each with its own window and
+    idle regressors. The variance's degrees of freedom decay by ``variance_discount`` a step and
+    its estimate stays at ``S_T``.
 
     Under ``form="multiplicative"`` with blocks whose discounts differ, ``W = D P D - P`` is not a
     variance once the blocks are correlated enough, and holding it would drive the state variance
@@ -1813,7 +1818,7 @@ def forecast(
     window, reads = np.zeros((0, model.size)), _reads(s, model.form)
     for row in fit.design[-(model.size - 1) :] if reads and model.size > 1 else ():
         window = _slide(window, row[None, :], s, model.size - 1)
-    held = None
+    held, checked = None, None
     for k in range(horizon):
         a = g @ a
         if reads:
@@ -1824,16 +1829,21 @@ def forecast(
             if held is None:
                 # read once: a window over held or zero future rows leaves the coefficient unread
                 # and would stop its discount part-way through the horizon
-                held = _sym(_evolve(s, model.form, p_next, active[0], window) - p_next)
-                lowest = float(np.linalg.eigvalsh(held)[0])
+                live = np.ones(model.size, dtype=bool)
+                held = _sym(_evolve(s, model.form, p_next, live, window) - p_next)
+            on = np.where(s.hold, active[k], True)
+            w = held * np.outer(on, on)
+            if checked is None or not np.array_equal(on, checked):
+                lowest = float(np.linalg.eigvalsh(w)[0])
                 if lowest < -1e-12 * float(np.abs(p_next).max()):
                     raise ValueError(
-                        "the first step ahead's evolution variance W = D P D - P has an"
+                        f"step {k + 1} ahead: the evolution variance W = D P D - P has an"
                         f" eigenvalue {lowest:.3g}; blocks with different discounts are"
                         " correlated, so W is not a variance. Use evolution='compounding' or"
                         " form='directional'"
                     )
-            r = _sym(g @ r @ g.T + held)
+                checked = on
+            r = _sym(g @ r @ g.T + w)
         n = beta * n
         state_mean[k], state_scale[k] = a, r
         means[k] = design[k] @ a
@@ -1978,6 +1988,13 @@ class GeoDLM:
     so where both read a column, a geo's coefficient on it is the national coefficient plus the
     geo's own deviation. The regional blocks' prior variance is then the spread of the geos about
     the national coefficient, and the regional discount how long that prior is remembered.
+
+    A national term that a regional block also has, a level beside each geo's level, leaves the
+    national copy minus the geos' copies unread whatever the data, and
+    :func:`forward_filter_geos` finds that direction from the blocks and holds it. A single
+    :class:`DynamicLinearModel` is not searched for such a pair, so under the directional form a
+    stack of one geo with one differs from :func:`forward_filter` on the same blocks, which
+    discounts the pair's difference as if the data read it.
 
     Raises:
         ValueError: on a ``geos`` that is not a positive integer, a ``relative_variance`` that is

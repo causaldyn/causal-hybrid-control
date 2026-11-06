@@ -55,7 +55,10 @@ sampling. A discount DLM's filter is exact and in closed form, and its coefficie
   and logged nothing before. The directions are not read off the window by rank: at the
   module's `1e-6` cut a slow seasonal in a single model is close enough to a polynomial over its
   window to be taken for one, where the twins' singular value is `1e-17` of the largest. A
-  single model, and a stack with no such term, filter as before to the bit.
+  single model, and a stack with no such term, filter as before to the bit. A single model is
+  not searched for such a pair, so under the directional form a stack of one geo with one
+  differs from `forward_filter` on the same blocks, which discounts the pair's difference as if
+  read; the one-geo equality below is held on blocks without one.
 - **The filter is dense**, a step `O(p^3)` in the stacked state's `p` coordinates, and the fit
   holds `2 T` covariances of `p^2` entries.
 - **Smoothing and sampling are `chc.dlm`'s, over the stacked state.** `smooth` and

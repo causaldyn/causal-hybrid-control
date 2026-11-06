@@ -464,44 +464,68 @@ def test_forecast_variance_under_each_evolution_policy():
     assert ratio == pytest.approx(3.854, abs=5e-4)
 
 
-@pytest.mark.parametrize(
-    ("form", "ahead", "hold"),
-    [
-        (form, ahead, hold)
-        for form in ("directional", "additive", "multiplicative")
-        for ahead in ("varies", "held", "pulsed", "zero")
-        for hold in (False, True)
-        # an idle coefficient beside a discounted level: D P D - P is indefinite, and refused
-        if (form, ahead, hold) != ("multiplicative", "zero", True)
-    ],
-)
-def test_a_constant_forecast_holds_the_first_step_s_evolution_variance(
-    form: DiscountForm, ahead: str, hold: bool
-):
-    """``state_scale[k] - G state_scale[k-1] G'`` is ``W_(T+1)`` at every step ahead, whatever
-    the spend ahead. The directional form read ``W`` off each step's window over the future
-    rows, and spend held or at zero ahead left the coefficient unread there, so its discount
-    stopped: with spend held at 2 for 26 steps its standard deviation at the last step read
-    0.040 against the 0.068 a held ``W`` gives. A regressor held while idle was also
-    discounted step by step ahead, under every form."""
+def _ahead(form: DiscountForm, hold: bool, future: np.ndarray):
+    """A level beside a regressor fit over 104 steps of spend that never stops, and its forecast
+    over ``future``."""
     rng = np.random.default_rng(1)
-    horizon, steps = 104, 26
+    horizon = 104
     x = rng.gamma(2.0, 1.0, horizon)
     y = 2.0 + 0.5 * x + 0.3 * rng.standard_normal(horizon)
     blocks = (Polynomial(1, 0.95), Regression(1, 0.9, hold_when_idle=hold))
     model = DynamicLinearModel(blocks, Prior(np.zeros(2), 10.0 * np.eye(2), 0.1, 3.0), form)
     fit = forward_filter(model, y, x)
-    future = {
-        "varies": rng.gamma(2.0, 1.0, steps),
-        "held": np.full(steps, 2.0),
-        "pulsed": np.resize([2.0, 0.0], steps),
-        "zero": np.zeros(steps),
-    }[ahead]
-    ahead_of = forecast(fit, steps, future)
-    first = ahead_of.state_scale[0] - fit.covariance[-1]  # G = I: a level and a coefficient
-    assert first[1, 1] > 0.0 or (hold and ahead == "zero")
-    for k in range(1, steps):
-        _close(ahead_of.state_scale[k] - ahead_of.state_scale[k - 1], first, 1e-12)
+    return fit, forecast(fit, future.size, future)
+
+
+_STEPS = 26
+_FUTURES = {
+    "varies": np.random.default_rng(2).gamma(2.0, 1.0, _STEPS),
+    "held": np.full(_STEPS, 2.0),
+    "pulsed": np.resize([2.0, 0.0], _STEPS),
+    "late": np.where(np.arange(_STEPS) < 4, 0.0, 2.0),
+    "zero": np.zeros(_STEPS),
+}
+
+
+@pytest.mark.parametrize("form", ["directional", "additive", "multiplicative"])
+@pytest.mark.parametrize("ahead", list(_FUTURES))
+@pytest.mark.parametrize("hold", [False, True])
+def test_a_constant_forecast_holds_the_first_step_s_evolution_variance(
+    form: DiscountForm, ahead: str, hold: bool
+):
+    """``state_scale[k] - G state_scale[k-1] G'`` is one matrix ``W`` at every step ahead,
+    whatever the spend ahead; for a regressor held while idle it is ``W``, read with the
+    regressor live, with the coefficient's row and column zeroed at the steps its spend is zero.
+    The directional form read ``W`` off each step's window over the future rows, and spend held
+    or at zero ahead left the coefficient unread there, so its discount stopped: with spend held
+    at 2 for 26 steps its standard deviation at the last step read 0.040 against the 0.068 a held
+    ``W`` gives."""
+    future = _FUTURES[ahead]
+    fit, ahead_of = _ahead(form, hold, future)
+    increments = np.diff(np.concatenate([fit.covariance[-1:], ahead_of.state_scale]), axis=0)
+    on = np.column_stack([np.ones(_STEPS, dtype=bool), (future != 0.0) | (not hold)])
+    live = np.flatnonzero(on.all(axis=1))
+    w = increments[live[0] if live.size else 0]  # G = I: a level and a coefficient
+    assert w[0, 0] > 0.0
+    assert w[1, 1] > 0.0 or live.size == 0  # a held regressor idle at every step ahead is not
+    for k in range(_STEPS):
+        _close(increments[k], w * np.outer(on[k], on[k]), 1e-12)
+
+
+@pytest.mark.parametrize("form", ["directional", "additive", "multiplicative"])
+def test_a_held_regressor_idle_at_the_first_step_ahead_is_discounted_once_it_moves(
+    form: DiscountForm,
+):
+    """Spend held while idle, at zero for the first four steps ahead and at 2 after: its
+    coefficient's variance stays at the filter's last over the idle steps and grows at every
+    step from the first one with spend. Read with the regressor idle at the first step ahead,
+    ``W`` never discounted the coefficient over the horizon: under the directional form its
+    variance at the last step read 1.47e-3 against 4.13e-3, the forecast's standard deviation
+    there read 3% narrower (8% under the additive form), and the multiplicative form refused."""
+    fit, ahead_of = _ahead(form, True, _FUTURES["late"])
+    variance = ahead_of.state_scale[:, 1, 1]
+    np.testing.assert_allclose(variance[:4], fit.covariance[-1, 1, 1], rtol=1e-12, atol=0.0)
+    assert np.all(np.diff(variance[3:]) > 0.0)
 
 
 def test_a_constant_forecast_refuses_an_evolution_variance_that_is_not_one():

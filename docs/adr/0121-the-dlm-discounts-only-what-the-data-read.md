@@ -78,8 +78,15 @@ The multiplicative form covered 0.88-0.90 on the same grid. It has two defects o
   or at zero ahead left the coefficient unread there, so its discount stopped part-way: with
   spend held at 2 for 26 steps the coefficient's standard deviation at the last step read 0.040
   against the documented 0.068, the predictive one 0.265 against 0.273. A regressor held while
-  idle is discounted ahead as it is at the first step ahead; `"compounding"` still discounts each
-  step with its own window and idle regressors.
+  idle is not discounted at a step ahead where it is zero: `W` is read with every held regressor
+  live, and each step zeroes the rows and columns of those idle at it, so the discount resumes
+  with the spend. Where one is idle at the first step ahead, that step can differ from the
+  filter's own prior for it under the directional and the multiplicative form, through the
+  cross-terms of `W` read with the regressor live. The alternative, `W` read with it idle, never
+  discounted it over the horizon: on a level beside a regressor idle for the first 4 of 13 steps
+  ahead, the predictive standard deviation at the horizon read 9% (directional) and 17%
+  (additive) narrower, against the promise of `hold_when_idle`. `"compounding"` still discounts
+  each step with its own window and idle regressors.
 
 ## Consequences
 
