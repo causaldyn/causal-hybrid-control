@@ -1911,7 +1911,7 @@ def fit_causal_residual(
             reads below nothing; and each dimension's sums alone, at its own. A shock every unit
             shares in a period, met by levers every unit moves together, makes one period's scores
             move together across units, which a sum within units leaves out (ADR 0061). A missing
-            label, ``None``, nan or NaT, is refused.
+            label, ``None``, nan, NaT or pandas' ``NA``, is refused.
         periods: each transition's period, a whole number of steps, on a log whose transitions
             fall in one group, one unit's or the units' of one declared cluster, which leaves no
             second cluster to sum within: one label a transition, two periods at least. The
@@ -2755,7 +2755,9 @@ def _period_codes(periods: ArrayLike, rows: int) -> np.ndarray:
 
 
 def _missing_labels(labels: np.ndarray) -> np.ndarray:
-    """Whether each label, flattened, is missing: ``None``, a nan, or a NaT."""
+    """Whether each label, flattened, is missing: ``None``, a nan, a NaT, or pandas' ``NA``, known
+    by its type's name, since pandas is not a dependency. A ``string`` or ``boolean`` column holds
+    ``NA`` as itself, and its truth value raised a ``TypeError`` in the sort."""
     if labels.dtype.kind in "mM":
         return np.isnat(labels).ravel()
     if labels.dtype.kind in "fc":
@@ -2765,6 +2767,7 @@ def _missing_labels(labels: np.ndarray) -> np.ndarray:
     return np.array(
         [
             label is None
+            or type(label).__name__ == "NAType"
             or (isinstance(label, float | np.floating) and math.isnan(label))
             or (isinstance(label, np.datetime64 | np.timedelta64) and bool(np.isnat(label)))
             for label in labels.ravel()

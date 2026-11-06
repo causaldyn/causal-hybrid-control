@@ -5,7 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from chc.did import callaway_santanna, de_chaisemartin, twoway_fixed_effects_att
+from chc.did import (
+    callaway_santanna,
+    callaway_santanna_inference,
+    de_chaisemartin,
+    twoway_fixed_effects_att,
+)
 
 DELTA = 0.5  # per-period dynamic effect: ATT(g,t) = DELTA * (t - g + 1) for t >= g
 
@@ -111,3 +116,51 @@ def test_another_never_treated_label_is_read_as_never_treated() -> None:
     assert twoway_fixed_effects_att(outcomes, relabelled, never_treated=99) == (
         twoway_fixed_effects_att(outcomes, group)
     )
+
+
+def _inference(outcomes, group, **kwargs):
+    return callaway_santanna_inference(outcomes, group, draws=99, **kwargs)
+
+
+@pytest.mark.parametrize("estimator", [callaway_santanna, _inference])
+@pytest.mark.parametrize("control", ["nevr", "never_treated", "not_yet_treated"])
+def test_a_control_neither_estimator_knows_is_refused(estimator, control) -> None:
+    """Any string but ``"never"`` was read as ``"notyet"`` by the estimate, and the inference
+    raised a bare ``KeyError`` on it."""
+    outcomes, group, _ = _staggered_panel(0)
+    with pytest.raises(ValueError, match=rf"control is '{control}': 'notyet' compares"):
+        estimator(outcomes, group, control=control)
+
+
+@pytest.mark.parametrize(
+    "estimator", [twoway_fixed_effects_att, de_chaisemartin, _overall, _inference]
+)
+@pytest.mark.parametrize("as_objects", [False, True], ids=["bool array", "bools as objects"])
+def test_a_group_of_booleans_is_refused(estimator, as_objects) -> None:
+    """A flag of ever treated was read as cohorts 0 and 1: CS returned nan, TWFE 0.24 on a panel of
+    effect 1, and the others refused it for another reason."""
+    outcomes, group, _ = _staggered_panel(0)
+    flag = group >= 0
+    with pytest.raises(ValueError, match=r"says? whether a unit is treated and not when"):
+        estimator(outcomes, flag.astype(object) if as_objects else flag)
+
+
+@pytest.mark.parametrize(
+    "estimator", [twoway_fixed_effects_att, de_chaisemartin, _overall, _inference]
+)
+@pytest.mark.parametrize("never_treated", [1, 5, 7])
+def test_a_never_treated_label_inside_the_panel_is_refused(estimator, never_treated) -> None:
+    """A cohort first treated at the label's period read as never treated: on a panel with
+    cohorts at 2 and 4 of five periods, ``never_treated=4`` returned the cohort at 2 alone."""
+    outcomes, group, _ = _staggered_panel(0)
+    with pytest.raises(ValueError, match=rf"never_treated is {never_treated}, a period"):
+        estimator(outcomes, group, never_treated=never_treated)
+
+
+def test_never_treated_units_may_be_labelled_zero() -> None:
+    """R's ``did`` and diff-diff's coding, where no unit is treated from the first period."""
+    outcomes, group, _ = _staggered_panel(0)
+    zero = np.where(group == -1, 0, group)
+    assert callaway_santanna(outcomes, zero, never_treated=0) == callaway_santanna(outcomes, group)
+    for estimator in (twoway_fixed_effects_att, de_chaisemartin):
+        assert estimator(outcomes, zero, never_treated=0) == estimator(outcomes, group)

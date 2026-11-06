@@ -157,6 +157,29 @@ def test_it_refuses_a_level_or_a_bootstrap_it_cannot_read() -> None:
         callaway_santanna_inference(outcomes, group, draws=1)
 
 
+@needs_diff_diff
+@pytest.mark.parametrize("control", ["notyet", "never"])
+def test_never_treated_units_labelled_zero_are_read_as_at_minus_one(
+    control: Literal["notyet", "never"],
+) -> None:
+    """R's ``did`` and diff-diff label them 0. The rows kept for diff-diff dropped every unit of
+    group 0, meant as units treated from the first period, and with them every never-treated
+    unit: diff-diff then estimated other cells, or found no never-treated unit."""
+    outcomes, group = _panel(12)
+    zero = np.where(group == -1, 0, group)
+    at_zero = callaway_santanna_inference(
+        outcomes, zero, control=control, never_treated=0, draws=199
+    )
+    at_minus_one = callaway_santanna_inference(outcomes, group, control=control, draws=199)
+    assert at_zero.estimate == at_minus_one.estimate
+    assert (at_zero.se, at_zero.band, at_zero.overall_se, at_zero.overall_interval) == (
+        at_minus_one.se,
+        at_minus_one.band,
+        at_minus_one.overall_se,
+        at_minus_one.overall_interval,
+    )
+
+
 def test_it_refuses_a_first_treated_period_outside_the_panel() -> None:
     outcomes, group = _panel(6)
     with pytest.raises(ValueError, match=r"group is 9 at row \d+, outside the panel's 0\.\.7"):

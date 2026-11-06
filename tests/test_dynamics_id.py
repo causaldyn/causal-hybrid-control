@@ -4234,6 +4234,23 @@ def test_a_missing_cluster_label_is_refused_rather_than_pooled_into_one_cluster(
         fit_causal_residual(_known, _clustered_log(50), 0.1, **CLUSTERED, clusters=labels)
 
 
+@pytest.mark.parametrize("dtype", ["string", "boolean", "Int64"])
+def test_pandas_missing_label_is_refused_as_missing(dtype: str) -> None:
+    """A ``string`` or ``boolean`` column holds pandas' ``NA`` as itself, which NumPy keeps as an
+    object, and its truth value raised a ``TypeError`` in the sort; an ``Int64`` column turns it
+    into a nan, which was refused already."""
+    pd = pytest.importorskip("pandas")
+    values = {
+        "string": [f"c{i % 5}" for i in range(50)],
+        "boolean": [i % 2 == 0 for i in range(50)],
+    }
+    labels = pd.array(
+        [pd.NA if i == 6 else v for i, v in enumerate(values.get(dtype, range(50)))], dtype=dtype
+    )
+    with pytest.raises(ValueError, match="clusters hold a missing label at row 6"):
+        fit_causal_residual(_known, _clustered_log(50), 0.1, **CLUSTERED, clusters=labels)
+
+
 def test_a_masked_cluster_label_is_refused() -> None:
     labels = np.ma.masked_array(np.arange(50) % 5, mask=np.arange(50) == 9)
     with pytest.raises(ValueError, match="clusters is masked at row 9"):
