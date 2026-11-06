@@ -2,7 +2,8 @@
 
 **Status:** accepted, 2026-10-21. Revises ADR 0022's choice of `form="additive"` as the default
 and its "no third form"; ADR 0046's filter over geos takes the same default. Amended 2026-11-06:
-the nested core's floor is read in correlation units, so no form depends on a regressor's units.
+the nested core's floor is read in correlation units, so no form depends on a regressor's units;
+`forecast(evolution="constant")` holds the first step's evolution variance under every form.
 
 ## Context
 
@@ -71,6 +72,14 @@ The multiplicative form covered 0.88-0.90 on the same grid. It has two defects o
   coordinate is not refused.
 - **A step whose `R - G C G'` is not a variance** is refused by `smooth` and `backward_sample`,
   as `forecast` already refused one.
+- **A constant forecast holds `W_(T+1)` (amended 2026-11-06).** `forecast(evolution="constant")`
+  reads the evolution variance once, off the window that ends at the first step ahead, and adds
+  it at every step. Up to 1.1.0 it read each step's window over the future rows, and spend held
+  or at zero ahead left the coefficient unread there, so its discount stopped part-way: with
+  spend held at 2 for 26 steps the coefficient's standard deviation at the last step read 0.040
+  against the documented 0.068, the predictive one 0.265 against 0.273. A regressor held while
+  idle is discounted ahead as it is at the first step ahead; `"compounding"` still discounts each
+  step with its own window and idle regressors.
 
 ## Consequences
 

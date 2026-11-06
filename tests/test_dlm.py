@@ -464,6 +464,46 @@ def test_forecast_variance_under_each_evolution_policy():
     assert ratio == pytest.approx(3.854, abs=5e-4)
 
 
+@pytest.mark.parametrize(
+    ("form", "ahead", "hold"),
+    [
+        (form, ahead, hold)
+        for form in ("directional", "additive", "multiplicative")
+        for ahead in ("varies", "held", "pulsed", "zero")
+        for hold in (False, True)
+        # an idle coefficient beside a discounted level: D P D - P is indefinite, and refused
+        if (form, ahead, hold) != ("multiplicative", "zero", True)
+    ],
+)
+def test_a_constant_forecast_holds_the_first_step_s_evolution_variance(
+    form: DiscountForm, ahead: str, hold: bool
+):
+    """``state_scale[k] - G state_scale[k-1] G'`` is ``W_(T+1)`` at every step ahead, whatever
+    the spend ahead. The directional form read ``W`` off each step's window over the future
+    rows, and spend held or at zero ahead left the coefficient unread there, so its discount
+    stopped: with spend held at 2 for 26 steps its standard deviation at the last step read
+    0.040 against the 0.068 a held ``W`` gives. A regressor held while idle was also
+    discounted step by step ahead, under every form."""
+    rng = np.random.default_rng(1)
+    horizon, steps = 104, 26
+    x = rng.gamma(2.0, 1.0, horizon)
+    y = 2.0 + 0.5 * x + 0.3 * rng.standard_normal(horizon)
+    blocks = (Polynomial(1, 0.95), Regression(1, 0.9, hold_when_idle=hold))
+    model = DynamicLinearModel(blocks, Prior(np.zeros(2), 10.0 * np.eye(2), 0.1, 3.0), form)
+    fit = forward_filter(model, y, x)
+    future = {
+        "varies": rng.gamma(2.0, 1.0, steps),
+        "held": np.full(steps, 2.0),
+        "pulsed": np.resize([2.0, 0.0], steps),
+        "zero": np.zeros(steps),
+    }[ahead]
+    ahead_of = forecast(fit, steps, future)
+    first = ahead_of.state_scale[0] - fit.covariance[-1]  # G = I: a level and a coefficient
+    assert first[1, 1] > 0.0 or (hold and ahead == "zero")
+    for k in range(1, steps):
+        _close(ahead_of.state_scale[k] - ahead_of.state_scale[k - 1], first, 1e-12)
+
+
 def test_a_constant_forecast_refuses_an_evolution_variance_that_is_not_one():
     # x = 1 at every step: the level and the coefficient are learned only through their sum, so
     # their posterior correlation is strong, and with discounts that differ D P D - P is indefinite

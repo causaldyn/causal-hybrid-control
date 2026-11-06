@@ -1763,8 +1763,11 @@ def forecast(
     """Forecast ``horizon`` steps past the data, with ``x`` the regression columns over them.
 
     ``evolution="constant"`` holds the first step's evolution variance ``W_(T+1)`` for every later
-    step; ``"compounding"`` discounts again at every step. The variance's degrees of freedom decay
-    by ``variance_discount`` a step and its estimate stays at ``S_T``.
+    step, whatever the later steps' regressors: the directional form reads it off the window that
+    ends at the first step ahead, and a regressor held while idle is discounted as it is at that
+    step. ``"compounding"`` discounts again at every step, each with its own window and idle
+    regressors. The variance's degrees of freedom decay by ``variance_discount`` a step and its
+    estimate stays at ``S_T``.
 
     Under ``form="multiplicative"`` with blocks whose discounts differ, ``W = D P D - P`` is not a
     variance once the blocks are correlated enough, and holding it would drive the state variance
@@ -1797,6 +1800,7 @@ def forecast(
     window, reads = np.zeros((0, model.size)), _reads(s, model.form)
     for row in fit.design[-(model.size - 1) :] if reads and model.size > 1 else ():
         window = _slide(window, row[None, :], s, model.size - 1)
+    held = None
     for k in range(horizon):
         a = g @ a
         if reads:
@@ -1804,15 +1808,19 @@ def forecast(
         if evolution == "compounding":
             r = _sym(_evolve(s, model.form, g @ r @ g.T, active[k], window))
         else:
-            w = _sym(_evolve(s, model.form, p_next, active[k], window) - p_next)
-            lowest = float(np.linalg.eigvalsh(w)[0])
-            if lowest < -1e-12 * float(np.abs(p_next).max()):
-                raise ValueError(
-                    f"step {k + 1} ahead: the evolution variance W = D P D - P has an eigenvalue"
-                    f" {lowest:.3g}; blocks with different discounts are correlated, so W is not"
-                    " a variance. Use evolution='compounding' or form='directional'"
-                )
-            r = _sym(g @ r @ g.T + w)
+            if held is None:
+                # read once: a window over held or zero future rows leaves the coefficient unread
+                # and would stop its discount part-way through the horizon
+                held = _sym(_evolve(s, model.form, p_next, active[0], window) - p_next)
+                lowest = float(np.linalg.eigvalsh(held)[0])
+                if lowest < -1e-12 * float(np.abs(p_next).max()):
+                    raise ValueError(
+                        "the first step ahead's evolution variance W = D P D - P has an"
+                        f" eigenvalue {lowest:.3g}; blocks with different discounts are"
+                        " correlated, so W is not a variance. Use evolution='compounding' or"
+                        " form='directional'"
+                    )
+            r = _sym(g @ r @ g.T + held)
         n = beta * n
         state_mean[k], state_scale[k] = a, r
         means[k] = design[k] @ a
