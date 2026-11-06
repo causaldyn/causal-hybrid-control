@@ -26,6 +26,8 @@ from chc.decision import (
     prescribe,
 )
 from chc.dynamics_id import _interference
+from chc.evaluation import InfeasibleEvaluation
+from chc.graph import CausalGraph
 from chc.panel import Panel
 
 DT = 0.1
@@ -249,3 +251,77 @@ def test_a_grouping_column_the_panel_does_not_have_is_refused(
 ) -> None:
     with pytest.raises(KeyError, match="'district' is not in the panel"):
         _prescribe(spilled, **{argument: "district"})
+
+
+# ---- a plan made on groups is evaluated on them
+
+# 60 zones of four units over 16 periods: at the default min_effective the certificate refuses the
+# zones' 180 windows of four steps (its horizon 1), and at 10 it certifies them with 15.7 effective
+ZONES, PERIODS, MIN_EFFECTIVE = 60, 16, 10.0
+
+
+def _zone_logs(seed: int, zones: int, periods: int) -> Panel:
+    """Units in zones of four, ``x' = 0.8 x + 0.5 u + 0.4 m + N(0, 0.1^2)``, ``m`` the mean lever of
+    the unit's zone-mates, each lever drawn from its unit's state alone, ``u = -0.3 x +
+    N(0, 0.7^2)``: a logger the weights can read, as the demand the levers above chase is not. The
+    units start where 40 periods of that logger leave them."""
+    rng = np.random.default_rng(seed)
+    n = 4 * zones
+
+    def step(x: np.ndarray, u: np.ndarray) -> np.ndarray:
+        mine = u.reshape(zones, 4)
+        mates = (mine.sum(axis=1, keepdims=True) - mine) / 3.0
+        return 0.8 * x + 0.5 * u + 0.4 * mates.ravel() + 0.1 * rng.standard_normal(n)
+
+    x = np.zeros(n)
+    for _ in range(40):
+        x = step(x, -0.3 * x + 0.7 * rng.standard_normal(n))
+    rows: dict[str, list[np.ndarray]] = {name: [] for name in ("unit", "zone", "time", "x", "u")}
+    for period in range(periods):
+        u = -0.3 * x + 0.7 * rng.standard_normal(n)
+        for name, values in (
+            ("unit", np.arange(n)),
+            ("zone", np.arange(n) // 4),
+            ("time", np.full(n, period)),
+            ("x", x),
+            ("u", u),
+        ):
+            rows[name].append(values)
+        x = step(x, u)
+    frame = {name: np.concatenate(values) for name, values in rows.items()}
+    return Panel.from_frame(frame, unit="unit", time="time", seed=0)
+
+
+def test_a_plan_made_on_groups_is_evaluated_on_the_same_groups() -> None:
+    """The evaluation groups the panel by the column the plan was made on before it cuts its
+    windows: the same estimate as on the panel grouped by hand, read off the zones' windows and
+    resampled by zone, its record naming the column and the panel as handed in. At the default
+    ``min_effective`` the certificate refuses the groups' windows and names the horizon it
+    certifies. Up to 1.1.0 the evaluation read the units one by one, weighing a unit's own lever
+    against its zone-mates' logged ones."""
+    plan = prescribe(
+        _zone_logs(0, ZONES, PERIODS),
+        levers=[Lever("u", lo=-2.0, hi=2.0, unit_cost=0.5)],
+        target=Target("x", value=0.3),
+        adjustment=CausalGraph.from_edges([("u", "x")]),
+        horizon=4,
+        dt=1.0,
+        integrator="euler",
+        clusters="zone",
+    )
+    later = _zone_logs(1, ZONES, PERIODS)
+    grouped = _cluster_panel(later, "zone", ("x", "u"))
+    evaluation, by_hand = (
+        plan.evaluate(panel, n_resamples=20, seed=1, model_error=0.0, min_effective=MIN_EFFECTIVE)
+        for panel in (later, grouped)
+    )
+    assert evaluation.bootstrap is not None
+    assert evaluation.bootstrap.units == ZONES
+    assert evaluation.value == pytest.approx(by_hand.value, rel=1e-12, abs=0.0)
+    assert evaluation.interval == pytest.approx(by_hand.interval, rel=1e-12, abs=0.0)
+    settings = evaluation.to_json()["settings"]
+    assert settings["clusters"] == "zone"
+    assert settings["panel_sha256"] == later.provenance.data_sha256
+    assert settings["panel_sha256"] != grouped.provenance.data_sha256
+    with pytest.raises(InfeasibleEvaluation, match="the certifiable horizon is"):
+        plan.evaluate(later, n_resamples=20)

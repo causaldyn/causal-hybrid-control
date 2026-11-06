@@ -1235,6 +1235,25 @@ class Prescription:
         and the plan was chosen on it, so a value read off it can be optimistic; a later one is
         not.
 
+        Where the plan was made on groups (``prescribe(clusters=)``), ``panel`` is grouped by the
+        same column first, as :func:`prescribe` grouped the panel it fitted: a group's row in a
+        period is the mean of its units' rows logged then, so ``panel`` must hold that column. The
+        windows, the logger, the plant and the bootstrap's draws are then the groups', and
+        ``min_effective`` counts the groups' windows. The value is the grouped plan's own cost, the
+        objective it was chosen on: of each group's mean state when every unit of the group
+        follows the schedule. It is not the units' mean cost under the plan, which exceeds it by
+        the target's weight times half the spread of the units' states about their group's mean,
+        a variance, summed over the steps: no grouping of the panel reads that. On panels of 150
+        groups of four units over 24 periods, each unit's state moved 0.5 by its own lever and 0.4
+        by its group-mates' mean, the default ``min_effective`` refused each of 10 panels, its
+        certifiable horizon at most 3 of 4 steps. At 30 it refused 6 of 200, and on the rest the
+        interval at ``model_error=0`` covered the group-mean cost on 0.861 (MC SE 0.025), the
+        value 2.5 MC SEs under it by the normalised weights' bias, which
+        :attr:`~chc.evaluation.PlanEvaluation.normalisation_bias` reports (ADR 0155). Up to 1.1.0
+        the units were read one by one, so the weights read a unit's own lever against its
+        group-mates' logged ones, and that interval covered the group-mean cost on 1 of 40 panels
+        and the units' mean cost on none.
+
         A window starts at its time zero, where a target trial starts each unit's follow-up: when
         the unit is eligible and is assigned a strategy (Hernán and Robins, *Causal Inference:
         What If*, section 22.4). Under ``"calendar"``, the default, the time zeros are the panel's
@@ -1369,14 +1388,20 @@ class Prescription:
         if problem is None:
             raise DecisionError("the plan carries no problem, so there is no model to evaluate on")
         actions = np.asarray(plan.actions, dtype=np.float64)
+        clusters = None if self._inputs is None else self._inputs["clusters"]
+        read = (
+            panel
+            if clusters is None
+            else _cluster_panel(panel, clusters, (*columns.states, *self.lever_names))
+        )
         episodes = _episodes(
-            panel,
+            read,
             states=columns.states,
             levers=self.lever_names,
             horizon=len(actions),
             time_zero=time_zero,
         )
-        logger_check = _check_logger(panel, levers=self.lever_names, columns=columns)
+        logger_check = _check_logger(read, levers=self.lever_names, columns=columns)
         model, dt = problem.model, problem.dt
         schedule = AffineSchedule.open_loop(actions, len(columns.states))
         if np.unique(episodes.units).size < 2:
@@ -1435,6 +1460,7 @@ class Prescription:
                 "seed": int(seed),
                 "max_refused": float(max_refused),
                 "panel_sha256": panel.provenance.data_sha256,
+                "clusters": clusters,
             },
         )
 

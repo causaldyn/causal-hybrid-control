@@ -723,6 +723,7 @@ def test_a_prescription_s_evaluation_goes_to_json() -> None:
         "seed": 3,
         "max_refused": 0.05,
         "panel_sha256": panel.provenance.data_sha256,
+        "clusters": None,
     }
     check = evaluation.logger_check
     assert (record["logger_check"] is None) == (check is None)

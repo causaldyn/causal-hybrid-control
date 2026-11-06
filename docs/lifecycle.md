@@ -108,8 +108,11 @@ documented, and what is not built yet. Every name below is importable from `chc`
 - **A prescription's `evaluate`.** It evaluates the prescribed schedule from a later panel, before
   it is deployed, by importance sampling over episodes: the panel's windows of `H + 1` consecutive
   periods, on the plan's model linearised at their mean. It reads the panel as a target trial
-  emulated from it. The windows start on calendar periods every unit shares, so a unit that leaves
-  the panel does not decide where its windows start. The intervals come from resampling the units,
+  emulated from it. A plan made on groups (`clusters=`) is evaluated on the same groups, at the
+  cost of each group's mean state, the cost it was chosen on
+  ([ADR 0155](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0155-a-plan-made-on-groups-is-evaluated-on-its-groups.md)).
+  The windows start on calendar periods every unit shares, so a unit that leaves the panel does
+  not decide where its windows start. The intervals come from resampling the units,
   the whole evaluation run again on each draw; on a panel of one unit, with none to resample, the
   windows' influences are read across their time by cosines, against Student's `t`
   ([ADR 0083](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0083-one-unit-s-windows-read-across-their-time-zeros.md)).

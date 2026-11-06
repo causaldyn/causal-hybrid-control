@@ -22,7 +22,10 @@ import pytest
 from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
 
 from chc.cost import QuadraticCost
+from chc.decision import Lever, Target, prescribe
 from chc.evaluation import AffinePolicy, InfeasibleEvaluation, LinearGaussianPlant, evaluate_plan
+from chc.graph import CausalGraph
+from chc.panel import Panel
 
 pytestmark = pytest.mark.misspecification
 
@@ -128,3 +131,100 @@ def test_a_plan_outside_the_logged_actions_is_covered_or_refused(
     """The plan's offset is 1 or 3, where the logger's is 0.1 and its dither's sd 0.5: at 1 each
     method covers on 38 to 40 logs, at 3 each refuses on all 40."""
     assert _held_or_refused(method, _plan(offset), MARKET) >= FLOOR
+
+
+# ---- a plan made on groups, evaluated by Prescription.evaluate
+
+# Units in zones of four, x' = 0.8 x + 0.5 u + SPILL m + N(0, 0.1^2), m the mean lever of the unit's
+# zone-mates, each lever drawn from its unit's state alone, u = -0.3 x + N(0, 0.7^2).
+SPILL, ZONE_SIZE, ZONES, ZONE_PERIODS, ZONE_PANELS = 0.4, 4, 150, 24, 40
+ZONE_GOAL, ZONE_PRICE = 0.3, 0.5
+
+
+def _zone_panel(seed: int) -> Panel:
+    """A log of the zones, the units starting where 40 periods of the logger leave them."""
+    rng = np.random.default_rng(seed)
+    n = ZONE_SIZE * ZONES
+
+    def step(x: np.ndarray, u: np.ndarray) -> np.ndarray:
+        mine = u.reshape(ZONES, ZONE_SIZE)
+        mates = (mine.sum(axis=1, keepdims=True) - mine) / (ZONE_SIZE - 1)
+        return 0.8 * x + 0.5 * u + SPILL * mates.ravel() + 0.1 * rng.standard_normal(n)
+
+    x = np.zeros(n)
+    for _ in range(40):
+        x = step(x, -0.3 * x + 0.7 * rng.standard_normal(n))
+    rows: dict[str, list[np.ndarray]] = {name: [] for name in ("unit", "zone", "time", "x", "u")}
+    for period in range(ZONE_PERIODS):
+        u = -0.3 * x + 0.7 * rng.standard_normal(n)
+        for name, values in (
+            ("unit", np.arange(n)),
+            ("zone", np.arange(n) // ZONE_SIZE),
+            ("time", np.full(n, period)),
+            ("x", x),
+            ("u", u),
+        ):
+            rows[name].append(values)
+        x = step(x, u)
+    frame = {name: np.concatenate(values) for name, values in rows.items()}
+    return Panel.from_frame(frame, unit="unit", time="time", seed=0)
+
+
+def _zone_mean_cost(schedule: np.ndarray) -> float:
+    """The plan's cost over its steps, terminal term left out, read on each zone's mean state when
+    every unit follows ``schedule``, from the law the logger leaves the zones' means at. Every
+    unit's lever moves its zone's mean by ``0.5 + SPILL``, so the mean follows
+    ``x' = 0.8 x + 0.9 a + N(0, 0.01 / 4)``, and under the logger
+    ``x' = 0.53 x + 0.63 eta + N(0, 0.01 / 4)``, ``eta`` of variance 1/4. Checked against a
+    simulation of 500 000 zones at the schedule the plan below makes, 0.238700 (SE 0.000383)
+    against 0.238769."""
+    channel = 0.5 + SPILL
+    loop = 0.8 - 0.3 * channel
+    variance = (channel**2 * 0.49 + 0.01) / ZONE_SIZE / (1.0 - loop**2)
+    mean, total = 0.0, 0.0
+    for action in schedule:
+        total += 0.5 * ((mean - ZONE_GOAL) ** 2 + variance) + 0.5 * ZONE_PRICE * action**2
+        mean, variance = 0.8 * mean + channel * action, 0.64 * variance + 0.01 / ZONE_SIZE
+    return total
+
+
+def test_a_plan_made_on_groups_is_read_at_its_groups_mean_cost() -> None:
+    """A plan made on the zones' means is evaluated on 40 later panels of 150 zones at
+    ``min_effective=30``, where the certificate accepts the zones' windows (at the default 100 it
+    refuses every panel), and ``model_error=0``, so the interval is the bootstrap's alone. Its
+    value, less the normalised weights' first-order bias it reports, centres on the zones' mean
+    cost within three Monte Carlo standard errors, and its interval covers that cost at least
+    ``0.85 - 3 sqrt(0.85 * 0.15 / 40) = 0.68`` of the time. On 194 panels the value was 0.23404
+    (MC SE 0.00186) against 0.23877, the reported bias -0.0037 a panel, and the interval covered
+    0.861 (0.025): the bounds' false-red rates are 0.6 % at that centre and 0.4 % at a coverage of
+    0.85. Up to 1.1.0 the units were read one by one: the value was 0.145, and the interval covered
+    1 of 40."""
+    plan = prescribe(
+        _zone_panel(0),
+        levers=[Lever("u", lo=-2.0, hi=2.0, unit_cost=ZONE_PRICE)],
+        target=Target("x", value=ZONE_GOAL),
+        adjustment=CausalGraph.from_edges([("u", "x")]),
+        horizon=4,
+        dt=1.0,
+        integrator="euler",
+        clusters="zone",
+    )
+    truth = _zone_mean_cost(np.asarray(plan.schedule.magnitudes).ravel())
+    centred, covered = [], 0
+    for panel in range(ZONE_PANELS):
+        try:
+            evaluation = plan.evaluate(
+                _zone_panel(1000 + panel),
+                seed=panel,
+                model_error=0.0,
+                min_effective=30.0,
+                n_resamples=100,
+            )
+        except InfeasibleEvaluation:
+            continue
+        assert evaluation.normalisation_bias is not None
+        centred.append(evaluation.value - evaluation.normalisation_bias)
+        covered += evaluation.interval[0] <= truth <= evaluation.interval[1]
+    errors = np.asarray(centred) - truth
+    assert abs(errors.mean()) <= 3.0 * errors.std(ddof=1) / math.sqrt(errors.size)
+    assert covered / ZONE_PANELS >= 0.85 - 3.0 * math.sqrt(0.85 * 0.15 / ZONE_PANELS)
