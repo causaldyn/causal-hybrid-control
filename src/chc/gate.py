@@ -53,7 +53,8 @@ What the guarantee needs, and the gate cannot check:
   the past, is at most ``delta``: it says the candidate beat the baseline over the decisions read,
   not that it still does. A candidate +0.06 better for its first 3000 decisions and -0.06 worse for
   the next 3000, even on average, was deployed in the first half on 200 of 200 paths, and the
-  rollback e-process had caught the turn on 3 of them by the end.
+  rollback e-process had caught the turn on 3 of them by the end; started again every 250
+  decisions (below), on 185.
 
 **Plants with memory: the gate in blocks** (*experimental*). With ``GateConfig(block_length=L,
 burn_in=b)``, a zone's evidence comes from an experiment on policies, not on decisions: each block
@@ -122,6 +123,36 @@ block, given everything before the block.
   of order 1 whose candidate repays a cost of 0.2 one period on, exactly as good sustained, in
   blocks of 2, the rollback fired on at most 0.25% of 400 paths with one period burned, and on 30%
   to 100% with none: the burn-in must cover the carryover here too.
+
+**A rollback that starts again** (*experimental*). A deployed zone's rollback e-process reads every
+decision since the DEPLOY, blocks in blocks, and while the candidate is no worse each of its
+constant bets pays the margin and the increments' variance at every decision, the larger bets
+most: in blocks of one period whose read means are Bernoulli at 0.5, the baseline's blocks at
+``q = 0.2``, centred, 5000 blocks as good as the baseline left the largest bet at -965 nats on
+average, and a turn then meets bets with nothing left to win. With
+``GateConfig(rollback_restart=K)`` the rollback reads a mixture of e-processes started every
+``K`` decisions after the DEPLOY, blocks in blocks, each 1 until its start, and none discarded.
+While no decision since the DEPLOY is worse than the baseline by more than ``delta_harm`` given
+the past, each is a test supermartingale, and so is their mixture, whose weights sum to 1:
+Ville's inequality bounds a wrong ROLLBACK by ``alpha_harm`` as before, on the same null. A
+ROLLBACK then says that the baseline beat the candidate by more than ``delta_harm`` over the
+decisions since one of the starts. The starts carry the drift alarm's epoch weights, 0.9 on the
+first, so that a turn at the DEPLOY is read as before, or, with ``rollback_horizon=H``, the
+weight ``1 / ceil(H / K)`` each up to ``H``. One number a bet carries the whole mixture. A drift
+alarm still rolls a deployed zone back, and ``log_rollback`` in the gate's log records is the
+mixture's, beside the ``rollback_restart`` and ``rollback_horizon`` it was read with. On the
+plant above, read every 10 blocks, a candidate that turned 0.12 worse 0, 1000 or 5000 blocks
+after its DEPLOY was rolled back within 3000 blocks of the turn on 0.925, 0.686 and 0.070 of
+1000 paths unset; started every 250 blocks with the epoch weights, on 0.929, 0.761 and 0.340;
+with weights alike over 10 000 blocks, on 0.732, 0.790 and 0.770. Alike weights spread the first
+start's 0.9 over the horizon, so they read a turn near the DEPLOY later: on the lab's turn 40
+blocks after it, above, 0.53 of 400 paths where the epoch weights, like the rollback unset, read
+0.965. A candidate that did not turn was rolled back within 8000 blocks on 6 of 1000 paths
+unset and with the epoch weights and on 4 alike, at an ``alpha_harm`` of 0.05; on the lab's
+plant, on none of 1000 paths in each of its six cells at ``q`` 0.1, 0.2 and 0.3, plain or
+centred, started every 250 or every 10 blocks with either weighting. Per decision, the contrast
+that turns above was caught on 185 of 200 paths with the epoch weights and on 198 with weights
+alike over 10 000 decisions, against 3 unset.
 
 **Centred increments** (*experimental*). Under the experiment's mixture the difference of the two
 weights, ``D = w_new - w_base``, lies in ``[-1 / (1 - rho), 1 / rho]`` and has mean 0 given the
@@ -289,6 +320,16 @@ class GateConfig:
     blocks alone set (see :mod:`chc.gate`). Unset, a deployed zone runs the candidate in every
     block, and only a drift alarm rolls it back.
 
+    ``rollback_restart`` (*experimental*), unset by default, starts the rollback's evidence again
+    every that many decisions after the DEPLOY, blocks in blocks, and discards none: the rollback
+    e-process is a mixture of e-processes started at those times, each 1 until its start, so it
+    reads a turn after a long good period from the turn on, where unset it reads every decision
+    since the DEPLOY (see :mod:`chc.gate`). The guarantee does not change. The starts are weighted
+    as the drift alarm's epochs are, 0.9 for the first and ``0.1 / ((k - 1) k)`` for the ``k``-th,
+    or, with ``rollback_horizon`` (*experimental*), alike over the starts within that many
+    decisions or blocks of the DEPLOY, and none after it: the first start then weighs less, and a
+    turn at the DEPLOY is read later.
+
     Raises:
         ValueError: on a margin outside ``[0, 1)``, a level or ``rho`` outside ``(0, 1)``, a
             ``min_effect`` that is not positive, a ``horizon`` below 1, a ``drift_arl`` not above
@@ -296,10 +337,13 @@ class GateConfig:
             in ``[0, 1]`` can beat, a ``block_length`` below 1, a ``burn_in`` that is negative,
             leaves no period of a block to read, or is set without a ``block_length``, a
             ``check_burn_in`` or a ``rollback_baseline_share`` set without one, a
-            ``rollback_baseline_share`` outside ``(0, 1)``, or a negative ``carryover_lags``.
-        TypeError: on a ``horizon``, ``block_length``, ``burn_in`` or ``carryover_lags`` that is
-            not a whole number: a float, or a bool; or a ``check_burn_in`` or ``centred`` that is
-            not a bool.
+            ``rollback_baseline_share`` outside ``(0, 1)``, a negative ``carryover_lags``, a
+            ``rollback_restart`` or a ``rollback_horizon`` below 1, a ``rollback_horizon`` without
+            a ``rollback_restart``, or a ``rollback_restart`` in blocks without a
+            ``rollback_baseline_share``, whose rollback has no baseline block to read.
+        TypeError: on a ``horizon``, ``block_length``, ``burn_in``, ``carryover_lags``,
+            ``rollback_restart`` or ``rollback_horizon`` that is not a whole number: a float, or a
+            bool; or a ``check_burn_in`` or ``centred`` that is not a bool.
     """
 
     delta: float
@@ -317,10 +361,16 @@ class GateConfig:
     check_burn_in: bool = False
     centred: bool = False
     rollback_baseline_share: float | None = None
+    rollback_restart: int | None = None
+    rollback_horizon: int | None = None
 
     def __post_init__(self) -> None:
-        for name in ("horizon", "burn_in", "carryover_lags") + (
-            ("block_length",) if self.block_length is not None else ()
+        optional_counts = ("block_length", "rollback_restart", "rollback_horizon")
+        for name in (
+            "horizon",
+            "burn_in",
+            "carryover_lags",
+            *(n for n in optional_counts if getattr(self, n) is not None),
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int | np.integer):
@@ -357,6 +407,25 @@ class GateConfig:
             raise ValueError(f"drift_arl must exceed 1, got {self.drift_arl}")
         if self.carryover_lags < 0:
             raise ValueError(f"carryover_lags must be at least 0, got {self.carryover_lags}")
+        for name in ("rollback_restart", "rollback_horizon"):
+            value = getattr(self, name)
+            if value is not None and value < 1:
+                raise ValueError(f"{name} must be at least 1, got {value}")
+        if self.rollback_horizon is not None and self.rollback_restart is None:
+            raise ValueError(
+                "rollback_horizon without a rollback_restart: the horizon weighs the rollback's"
+                " starts, and without a rollback_restart it has one"
+            )
+        if (
+            self.rollback_restart is not None
+            and self.block_length is not None
+            and self.rollback_baseline_share is None
+        ):
+            raise ValueError(
+                "rollback_restart in blocks without a rollback_baseline_share: a deployed zone"
+                " then runs the candidate in every block, and its rollback has no evidence to"
+                " start again"
+            )
         if self.block_length is None:
             if self.burn_in != 0:
                 raise ValueError(
@@ -1475,6 +1544,53 @@ class _Evidence:
         )
 
 
+class _RestartEvidence:
+    """A deployed zone's rollback evidence started again every ``every`` increments and never
+    discarded: ``N_t = sum_k w_k E_k(t)``, ``E_k`` the mixture over constant bets started at
+    increment ``(k - 1) every``, 1 before it. Each ``E_k`` is a test supermartingale under the
+    rollback's null, and the weights sum to at most 1, so ``N_t`` is one test supermartingale, and
+    Ville's inequality bounds the chance that it ever reaches ``1 / alpha_harm`` by
+    ``alpha_harm``. Per bet the started e-processes add up to ``A_t = (A_(t-1) + w_t)(1 + lam
+    Y_t)``, ``w_t`` the weight of a start at ``t`` and 0 elsewhere, so the memory is one number a
+    bet however many starts there are.
+
+    The weights are the drift alarm's epochs', or, over a ``horizon``, ``1 / ceil(horizon /
+    every)`` for each start within it and none after it. A start not yet opened counts at its
+    initial value 1. A drift alarm retires a deployed zone, so this evidence is never started
+    again as an epoch."""
+
+    def __init__(self, every: int, horizon: int | None) -> None:
+        self.every = every
+        self.starts = None if horizon is None else -(-horizon // every)
+        self.read = 0  # increments read since the DEPLOY
+        self.opened = 0
+        self.log_wealth = np.full(_BETS.size, -np.inf)
+
+    def _weight(self, start: int) -> float:
+        return _epoch_weight(start) if self.starts is None else 1.0 / self.starts
+
+    def add(self, increments: _Array) -> None:
+        done = 0
+        while done < increments.size:
+            if self.read % self.every == 0 and (self.starts is None or self.opened < self.starts):
+                self.opened += 1
+                self.log_wealth = np.logaddexp(self.log_wealth, math.log(self._weight(self.opened)))
+            stop = min(increments.size, done + self.every - self.read % self.every)
+            terms = np.log1p(np.multiply.outer(increments[done:stop], _BETS))
+            self.log_wealth = self.log_wealth + terms.sum(axis=0)
+            self.read += stop - done
+            done = stop
+
+    @property
+    def log_value(self) -> float:
+        if self.starts is None:
+            unopened = 1.0 if self.opened == 0 else 0.1 / self.opened
+        else:
+            unopened = (self.starts - self.opened) / self.starts
+        mixture = float(functools.reduce(np.logaddexp, self.log_wealth)) - _LOG_BETS
+        return float(np.logaddexp(mixture, math.log(unopened))) if unopened > 0.0 else mixture
+
+
 class _Level:
     """The level a centred experiment reads each reward against: ``(1 - rho) m_new + rho m_base``,
     with ``m_new`` and ``m_base`` the rewards of the zone's earlier decisions in the experiment,
@@ -1682,7 +1798,7 @@ class _Zone:
     mode: GateMode = "shadow"
     improvement: _Evidence = field(default_factory=_Evidence)
     harm: _Evidence = field(default_factory=_Evidence)
-    rollback: _Evidence = field(default_factory=_Evidence)
+    rollback: _Evidence | _RestartEvidence = field(default_factory=_Evidence)
     futility: _Evidence = field(default_factory=_Evidence)
     futile: bool = False  # the futility e-value crossed in this epoch; a crossing is a rejection
     decisions: int = 0
@@ -1751,8 +1867,19 @@ class DeploymentGate:
                 return _BlockCarryover(config.rho) if config.check_burn_in else None
             return _Carryover(config.carryover_lags) if config.carryover_lags else None
 
+        def rollback() -> _Evidence | _RestartEvidence:
+            if config.rollback_restart is None:
+                return _Evidence()
+            return _RestartEvidence(config.rollback_restart, config.rollback_horizon)
+
         self._zones = {
-            name: _Zone(plan, DriftAlarm(config.drift_arl), start, carryover=carryover())
+            name: _Zone(
+                plan,
+                DriftAlarm(config.drift_arl),
+                start,
+                rollback=rollback(),
+                carryover=carryover(),
+            )
             for name, plan in plans.items()
         }
 
@@ -1845,6 +1972,8 @@ class DeploymentGate:
                         "log_harm": zone.harm.log_value,
                         "log_futility": zone.futility.log_value,
                         "log_rollback": zone.rollback.log_value,
+                        "rollback_restart": cfg.rollback_restart,
+                        "rollback_horizon": cfg.rollback_horizon,
                         "epoch": zone.improvement.epoch,
                         "decisions": zone.decisions,
                     },

@@ -213,7 +213,10 @@ documented, and what is not built yet. Every name below is importable from `chc`
   harm from, and only a drift alarm rolls it back. With `rollback_baseline_share` (*experimental*)
   each deployed block runs the baseline with that probability, and the rollback reads the blocks
   since the deploy: each wrong rollback has probability at most `alpha_harm`, and the zone gives
-  up that share of the candidate's gain. See [`chc.gate`](api/gate.md).
+  up that share of the candidate's gain. A rollback that reads every decision since the deploy is
+  slow to see a candidate that turns worse long after it; with `rollback_restart` (*experimental*)
+  its evidence also starts again every that many decisions or blocks, discarding none, and each
+  wrong rollback still has probability at most `alpha_harm`. See [`chc.gate`](api/gate.md).
 
 ## 6. Adapt: after deployment
 
