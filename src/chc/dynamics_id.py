@@ -1207,6 +1207,25 @@ def _kept(residual: Array, scale: Array) -> Array:
     return null / jnp.linalg.norm(null, axis=0)
 
 
+def _left_over(design: Array, target: Array, *, scaled: bool = False) -> Array:
+    """``target`` less its least-squares fit on ``design``, refined once; on the columns scaled by
+    :func:`chc._units.least_squares` where ``scaled``.
+
+    The first residual keeps the coefficients' rounding: an action the covariates set exactly left
+    up to 44 eps of its size on 1000 rows in float64, over 40 logs, and one held at a level left 90
+    eps on a log of 960 rows, which the cut of 64 eps (:func:`_kept`) read as a move. Fitted again
+    on that residual, the rounding lies in the design's span and goes: 0.6 eps at most, in float32
+    too, where a move of 1e-4 of the size reads the same."""
+
+    def fitted(values: Array) -> Array:
+        if scaled:
+            return design @ _units.least_squares(design, values)
+        return design @ jnp.linalg.lstsq(design, values)[0]
+
+    left = target - fitted(target)
+    return left - fitted(left)
+
+
 def _unmoved_directions(
     actions: Array,
     states: Array,
@@ -1229,7 +1248,7 @@ def _unmoved_directions(
         if sieve is None
         else sieve
     )
-    left = actions - features @ jnp.linalg.lstsq(features, actions)[0]
+    left = _left_over(features, actions)
     scale = 1.0 / _units.norms(_channel_design(actions, states, channel_degree))
     return _kept(_channel_design(left, states, channel_degree), scale)
 
@@ -1343,7 +1362,7 @@ def _split_unmoved(directions: Array, raw: Array, design: Array) -> _Unmoved:
     # in each column's own units, so the rank cutoff falls at one share of every column: on the
     # raw columns, relative to the largest singular value, it dropped a column logged in units far
     # from the others'
-    left = push - design @ _units.least_squares(design, push)
+    left = _left_over(design, push, scaled=True)
     # as in _kept: a log of fewer transitions than directions leaves the rest a zero singular value
     short = left.shape[1] - left.shape[0]
     padded = jnp.concatenate([left, jnp.zeros((short, left.shape[1]))]) if short > 0 else left
@@ -1453,7 +1472,7 @@ def _logged_relations(
     scale = 1.0 / size
 
     def kept(features: Array) -> np.ndarray:
-        left = actions - features @ jnp.linalg.lstsq(features, actions)[0]
+        left = _left_over(features, actions)
         columns = np.asarray(_kept(left, scale) * size[:, None], dtype=np.float64)
         return np.linalg.qr(columns)[0] if columns.shape[1] else columns
 

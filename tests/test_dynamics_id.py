@@ -1777,6 +1777,24 @@ def test_an_action_the_log_never_used_is_each_span_it_kept() -> None:
             np.testing.assert_allclose(basis, [[0.0], [1.0]], rtol=0.0, atol=1e-12, err_msg=span)
 
 
+@pytest.mark.parametrize("level", [0.3, 0.5, 1.7, 293.0])
+@pytest.mark.parametrize("rows", [960, 4000])
+def test_an_action_held_at_one_level_is_the_span_kept_at_one_level(rows: int, level: float) -> None:
+    """The first action held at ``level``, the second dithered. Less its least-squares fit on a
+    constant, the held action kept the fit's rounding, 90 eps of its size at 0.5 on 960 rows and
+    228 to 391 eps on 4000, past the cut of 64 eps: the log read as having moved it, and a plan
+    as having set it by a rule. Fitted once more on that residual, it keeps none."""
+    log = _policy_log(
+        rows,
+        lambda rng, x, z: np.concatenate([np.full((z.size, 1), level), _dithered(rng, x, z)], 1),
+    )
+    covariates = jnp.concatenate([log["x"], log["z"]], axis=1)
+    logged = _logged_relations(log["u"], log["x"], covariates, nuisance_degree=2)
+    for span in ("constant", "state", "covariates"):
+        basis = np.abs(np.asarray(getattr(logged, span)))
+        np.testing.assert_allclose(basis, [[1.0], [0.0]], rtol=0.0, atol=1e-12, err_msg=span)
+
+
 @pytest.mark.parametrize("units", [1e-15, 1e-12, 1e15])
 def test_where_the_moment_has_no_data_the_fit_reads_the_same_with_the_state_in_any_units(
     units: float,
