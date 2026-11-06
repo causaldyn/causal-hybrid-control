@@ -10,10 +10,18 @@ and an unstable drift, under an absolute radius and a relative one; and
 ``gamma_star = inf``, which says the barrier holds at every level, holds for a plant whose
 confounding reaches any level, or the certificate says its radius is a margin relative to the
 estimate (``radius_model``), not a bound on the channel's error.
+
+A plan held at its barrier keeps such a plant in the set whether or not the audit stops where it
+should, so each family also reads a plan the plant leaves the set under, one not held at the
+barrier or one held and then pushed to the top of the box: the audit certifies fewer steps than
+the plant takes to leave. A certificate that certified every step passed every held case and fails
+these. The audit's contract is the channel's: a plant whose drift the fit misses is outside it,
+and the last test here pins where that edge lies.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import math
 
 import equinox as eqx
@@ -74,6 +82,33 @@ def _safe(path: np.ndarray, certified: int) -> bool:
     return bool(np.all(states[:, 0] <= CEILING) and np.all(states[:, 1] <= WAIT))
 
 
+def _exit(path: np.ndarray, ceiling: float = CEILING, wait: float = WAIT) -> int:
+    """The first state of ``path`` outside the safe set, ``len(path)`` where it stays in: the
+    audit is sound on the path where it certifies fewer steps than this."""
+    out = path[:, 0] > ceiling
+    if path.shape[1] > 1:
+        out |= path[:, 1] > wait
+    return int(np.argmax(out)) if out.any() else len(path)
+
+
+def _unheld(world: World, seed: int, gamma: float, **options: object) -> tuple[np.ndarray, int]:
+    """The plan steering supply to 1, past the ceiling, not held below it, audited at ``gamma``:
+    the plant's mean path under it and the steps the audit certified."""
+    result = ask(
+        world,
+        seed,
+        constraints=(Constraint("supply", hi=CEILING), Constraint("wait", hi=WAIT)),
+        gamma=gamma,
+        **options,
+    )
+    assert result.plan is not None
+    certified = result.certificate.barrier_certified_steps
+    assert certified is not None
+    planned = np.asarray(result.plan.trajectory, dtype=float)
+    path = world.mean_path(np.asarray(result.plan.actions, dtype=float)[:, 0], planned[0])
+    return path, certified
+
+
 def test_certified_steps_keep_the_plant_safe_where_the_fit_is_right() -> None:
     """The control case at ``gamma = 1``: on four logs every step is certified, and the plant's
     path keeps 0.17 to 0.24 below the ceiling."""
@@ -81,6 +116,14 @@ def test_certified_steps_keep_the_plant_safe_where_the_fit_is_right() -> None:
         path, certified, _ = _held(World(), seed, 1.0)
         assert certified > 0
         assert _safe(path, certified), (seed, path[:, 0].max())
+
+
+def test_the_audit_stops_before_the_plant_leaves_where_the_fit_is_right() -> None:
+    """The first log, the plan not held: the plant crosses the ceiling at state 7, and the audit
+    certifies none of the steps, the first already short of the condition."""
+    path, certified = _unheld(World(), 0, 1.0)
+    assert _exit(path) < len(path)
+    assert certified < _exit(path), (certified, _exit(path))
 
 
 def test_certified_steps_keep_the_plant_safe_where_its_channel_is_in_the_set() -> None:
@@ -96,6 +139,15 @@ def test_certified_steps_keep_the_plant_safe_where_its_channel_is_in_the_set() -
         assert np.linalg.norm(TRUE_CHANNEL - channel) < radius
         assert certified > 0
         assert _safe(path, certified), (seed, path[:, 0].max())
+
+
+def test_the_audit_stops_before_a_plant_in_the_set_leaves() -> None:
+    """The unrecorded confounder at ``gamma = 20`` on the first log, the plan not held: the plant,
+    whose channel is in the set, crosses the ceiling at state 7, and the audit certifies none of
+    the steps."""
+    path, certified = _unheld(World(hidden=0.4), 0, 20.0)
+    assert _exit(path) < len(path)
+    assert certified < _exit(path), (certified, _exit(path))
 
 
 def test_the_default_absolute_radius_keeps_the_plant_safe_where_its_channel_is_in_it() -> None:
@@ -131,6 +183,15 @@ def test_the_default_absolute_radius_keeps_the_plant_safe_where_its_channel_is_i
         planned = np.asarray(result.plan.trajectory, dtype=float)
         path = World(hidden=0.4).mean_path(np.asarray(result.plan.actions)[:, 0], planned[0])
         assert _safe(path, certified), (seed, path[:, 0].max())
+
+
+def test_the_default_absolute_radius_stops_before_a_plant_in_it_leaves() -> None:
+    """The first log read by Euler at ``gamma = 2 + sqrt 2``, the plan not held: the plant, whose
+    channel the radius holds, crosses the ceiling at state 7, and the audit certifies none of the
+    steps."""
+    path, certified = _unheld(World(hidden=0.4), 0, 2.0 + math.sqrt(2.0), integrator="euler")
+    assert _exit(path) < len(path)
+    assert certified < _exit(path), (certified, _exit(path))
 
 
 def _confounded_fit(seed: int, drift: float = -1.0, dt: float = DT) -> CausalDynamicsFit:
@@ -177,9 +238,12 @@ def _held_and_audited(
     read: tuple[float, float, ChannelSensitivity | None],
     target: float,
     weight: float,
+    push_from: int | None = None,
 ) -> tuple[jnp.ndarray, SafetyCertificate]:
     """The plan held to ``x <= 1`` from 0 chasing ``target`` under the radius ``read``
-    (:func:`_read_as`), each action priced at ``weight``, and its audit by the same radius."""
+    (:func:`_read_as`), each action priced at ``weight``, and its audit by the same radius. With
+    ``push_from``, every action from that step on is moved to the top of the box, 5, before the
+    audit: the plan's path then climbs out of the set from there."""
     gamma, share, sensitivity = read
     start = jnp.zeros(1)
     cost = QuadraticCost(
@@ -187,6 +251,11 @@ def _held_and_audited(
     )
     barrier = BarrierConstraint(_unit_ceiling, gamma=gamma, cvar_gap=share, sensitivity=sensitivity)
     plan = causal_plan(model, start, cost, dt, horizon, -5.0, 5.0, barrier=barrier)
+    if push_from is not None:
+        pushed = plan.actions.at[push_from:].set(5.0)
+        plan = dataclasses.replace(
+            plan, actions=pushed, trajectory=rollout(model, start, pushed, dt)
+        )
     audit = certify_safety(
         plan,
         model,
@@ -225,6 +294,31 @@ def test_certified_steps_keep_every_plant_in_the_radius_safe(drift: str, radius:
         path = np.asarray(rollout(plant, jnp.zeros(1), actions, dt))
         worst = min(worst, float(np.min(1.0 - path[: audit.certified_steps + 1, 0])))
     assert worst >= 0.0, (drift, radius, audit.certified_steps, worst)
+
+
+@pytest.mark.parametrize("radius", ["absolute", "relative"])
+@pytest.mark.parametrize("drift", list(DRIFTS))
+def test_the_audit_stops_before_any_plant_in_the_radius_leaves(drift: str, radius: str) -> None:
+    """The same plan pushed to the top of the box from a third of the horizon on: the first plant
+    in the radius leaves the set at the step after the push, and the audit, under either radius,
+    certifies the steps before it and none after."""
+    a, dt, horizon = DRIFTS[drift]
+    delta = 0.5 if drift == "integrator" else 0.3
+    model = LinearDynamics(jnp.array([[a]]), jnp.array([[1.0]]))
+    exact = ChannelSensitivity(
+        gram=np.eye(1), channel_degree=0, sampling=delta, confounding=0.0, level=0.95
+    )
+    read = _read_as(radius, exact, 1.0, 1.0)
+    actions, audit = _held_and_audited(model, dt, horizon, read, 3.0, 1e-2, push_from=horizon // 3)
+    first = min(
+        _exit(np.asarray(rollout(plant, jnp.zeros(1), actions, dt)), ceiling=1.0)
+        for plant in (
+            LinearDynamics(jnp.array([[a]]), jnp.array([[channel]]))
+            for channel in np.linspace(1.0 - delta, 1.0 + delta, 21)
+        )
+    )
+    assert first <= horizon, (drift, radius)
+    assert audit.certified_steps < first, (drift, radius, audit.certified_steps, first)
 
 
 def _with_channel(model: HybridDynamics, channel: float) -> HybridDynamics:
@@ -267,6 +361,55 @@ def test_a_ceiling_held_under_the_channel_s_sensitivity_model_keeps_the_plant_sa
         path = np.asarray(rollout(_with_channel(model, 1.0), jnp.zeros(1), actions, dt))
         barrier = 1.0 - path[: audit.certified_steps + 1, 0]
         assert np.all(barrier >= 0.0), (seed, barrier.min())
+
+
+@pytest.mark.parametrize("radius", ["absolute", "relative"])
+@pytest.mark.parametrize("drift", list(DRIFTS))
+def test_the_audit_under_the_sensitivity_model_stops_before_the_plant_leaves(
+    drift: str, radius: str
+) -> None:
+    """The first log of each drift, its plan pushed to the top of the box from a third of the
+    horizon on: the plant with the fitted drift and the true channel, which the radius holds,
+    leaves the set after the push, and the audit stops before it does."""
+    a, dt, horizon = DRIFTS[drift]
+    fit = _confounded_fit(0, a, dt)
+    model = HybridDynamics(known=UNKNOWN, residual=fit.residual)
+    sensitivity = ChannelSensitivity.from_fit(fit)
+    fitted = float(np.asarray(fit.residual.channel).ravel()[0])
+    read = _read_as(radius, sensitivity, 1.5, abs(fitted))
+    actions, audit = _held_and_audited(model, dt, horizon, read, 2.0, 1e-4, push_from=horizon // 3)
+    path = np.asarray(rollout(_with_channel(model, 1.0), jnp.zeros(1), actions, dt))
+    left = _exit(path, ceiling=1.0)
+    assert left <= horizon, (drift, radius)
+    assert audit.certified_steps < left, (drift, radius, audit.certified_steps, left)
+
+
+def test_a_plant_whose_drift_the_fit_misses_is_outside_the_contract() -> None:
+    """The edge of what the barrier certifies. Its radius holds the channel's error, not the
+    drift's: a plant with the fitted drift and any channel in the radius stays in the set over
+    every certified step, and the true plant need not. On the unstable drift 0.5 the log of seed
+    18 fits the drift at 0.355, a miss of 1.5 times the fit's own ``drift_error`` (0.095): a
+    sampling error the tube reads and the barrier's room does not. The plan held under the fit's
+    sensitivity model at ``gamma = 1.5`` is certified on all 30 steps; the plant with the fitted
+    drift and the true channel keeps 0.57 or more below the ceiling, and the true plant crosses it
+    at state 29, to ``h = -0.09``, while the certificate stands. Of 20 such logs this is the one
+    whose true plant leaves. A change that prices the drift's error in the room turns this test
+    red, and it is then rewritten to assert that the true plant stays in."""
+    drift, dt, horizon = 0.5, 0.1, 30
+    fit = _confounded_fit(18, drift, dt)
+    model = HybridDynamics(known=UNKNOWN, residual=fit.residual)
+    sensitivity = ChannelSensitivity.from_fit(fit)
+    fitted = float(np.asarray(fit.residual.channel).ravel()[0])
+    assert abs(fitted - 1.0) <= sensitivity.radius(jnp.zeros(1), 1.5)
+    actions, audit = _held_and_audited(
+        model, dt, horizon, _read_as("absolute", sensitivity, 1.5, 1.0), 2.0, 1e-4
+    )
+    assert audit.certified_steps > 0
+    channel_only = np.asarray(rollout(_with_channel(model, 1.0), jnp.zeros(1), actions, dt))
+    assert _exit(channel_only, ceiling=1.0) > audit.certified_steps
+    truth = LinearDynamics(jnp.array([[drift]]), jnp.array([[1.0]]))
+    path = np.asarray(rollout(truth, jnp.zeros(1), actions, dt))
+    assert _exit(path, ceiling=1.0) <= audit.certified_steps, audit.certified_steps
 
 
 def test_a_relative_radius_holds_the_plants_in_its_share_and_says_so() -> None:
