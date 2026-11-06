@@ -16,6 +16,20 @@ fit `identified=False` with no `channel_error`; until 0.23.0 it read identified,
 and its error exactly zero, which the tube and the barrier read as a known channel. A fit that
 leaves any direction unmoved logs a WARNING naming the levers by their columns of `u`.
 
+Amended 2026-11-06: `Prescription.evaluate` keeps to the same log. A held lever has no spread for
+an importance weight to read, so it leaves the windows' actions, the logger's fit and the
+smoothing; the plant is linearised with it at its level, and its price at that level over the
+horizon is added to the plan's value and to the logger's. A panel that moves it, or keeps it at
+another level, is refused naming it: the plan's one level has no density against what that panel
+logged. A logger, given or fitted, that leaves a moved lever, or a combination of the moved
+levers, less spread given the state than the square root of the working precision of their size
+is refused naming the levers, by the rule `unmoved` is read by, scaled to the windows' actions.
+Until 1.1.0 the held lever entered the logger's fit, whose covariance had no spread in it, and the
+evaluation's certificate refused the plan because no smoothing in (0, 1.6e-16) kept the weights'
+variance finite, a reason that named neither the lever nor the cause. On 150 units over 20 periods with the second
+lever kept at 0.5, the evaluation now equals the plan's on the first lever alone, on the same
+windows and the same model with the second at 0.5, plus the second's price, to 1e-9.
+
 ## Context
 
 `fit_causal_residual` reads the channel off the Robinson moment, which has data only along the

@@ -91,6 +91,7 @@ from chc.evaluation import (
     _evaluate_by_unit,
     _logger_check_json,
     _policy_json,
+    fit_logger,
 )
 from chc.frames import _not_numbers, _real_numbers
 from chc.graph import AdjustmentSet, CausalGraph, EdgeProvenance
@@ -1254,6 +1255,14 @@ class Prescription:
         group-mates' logged ones, and that interval covered the group-mean cost on 1 of 40 panels
         and the units' mean cost on none.
 
+        A lever the log never moved, which the plan holds at the level the log kept it at
+        (:attr:`DecisionCertificate.unmoved_levers`), has no spread for a weight to read: it
+        leaves the windows' actions, the logger and the smoothing, and its price at that level
+        over the horizon is added to the plan's value and to the logger's. A panel that moves it,
+        or keeps it at another level, is refused naming it. So is a logger, given or fitted, that
+        leaves a lever, or a combination of the levers, less spread given the state than the
+        square root of the working precision of their size: the weights divide by its density.
+
         A window starts at its time zero, where a target trial starts each unit's follow-up: when
         the unit is eligible and is assigned a strategy (Hernán and Robins, *Causal Inference:
         What If*, section 22.4). Under ``"calendar"``, the default, the time zeros are the panel's
@@ -1336,8 +1345,10 @@ class Prescription:
                 two resamples; a ``max_refused`` outside ``[0, 1)``; a plan made against driver
                 forecasts, whose plant changes with the step; a plan with a lever that follows its
                 logged rule of the state, which no open-loop schedule carries; a plan whose levers
-                were logged on a column outside its state, or whose record does not say; or a
-                panel with fewer than two windows.
+                were logged on a column outside its state, or whose record does not say; a
+                panel with fewer than two windows; a panel that moves a lever the plan holds, or
+                keeps it at another level; or a logger that leaves a lever no spread given the
+                state.
             InfeasibleEvaluation: when the evaluation's certificate refuses, on the panel or on
                 every draw but one.
             PanelError: when a state's or a lever's column of ``panel`` does not hold real
@@ -1401,9 +1412,52 @@ class Prescription:
             horizon=len(actions),
             time_zero=time_zero,
         )
+        held = [
+            index
+            for index, name in enumerate(self.lever_names)
+            if name in self.certificate.unmoved_levers and name not in self.certificate.rule_levers
+        ]
+        moved = [index for index in range(len(self.lever_names)) if index not in held]
+        # the working precision the fit read the unmoved levers at (ADR 0054)
+        precision = float(np.sqrt(np.finfo(np.asarray(plan.actions).dtype).eps))
+        _refuse_moved_held(episodes.u, actions, held, self.lever_names, precision)
+        u = episodes.u[..., moved]
+        weighing = logger
+        if logger is not None and held:
+            weighing = AffinePolicy(
+                logger.gain[moved], logger.offset[moved], logger.covariance[np.ix_(moved, moved)]
+            )
+        _refuse_singular_logger(
+            episodes.x, u, weighing, tuple(self.lever_names[index] for index in moved), precision
+        )
         logger_check = _check_logger(read, levers=self.lever_names, columns=columns)
         model, dt = problem.model, problem.dt
-        schedule = AffineSchedule.open_loop(actions, len(columns.states))
+        cost, held_cost = problem.cost, 0.0
+        level = actions[0, held]
+        if held:
+            # _cost prices each lever on its own, so a held lever's price is a constant
+            price = np.asarray(cost.R, dtype=np.float64)[np.ix_(held, held)]
+            held_cost = 0.5 * float(
+                np.einsum("ti,ij,tj->", actions[:, held], price, actions[:, held])
+            )
+            cost = QuadraticCost(
+                Q=cost.Q, R=cost.R[np.ix_(moved, moved)], Qf=cost.Qf, x_target=cost.x_target
+            )
+
+        def plant(x: NDArray[np.float64], u: NDArray[np.float64]) -> LinearGaussianPlant:
+            if not held:
+                return _linearised(model, x, u, dt)
+            full = np.empty((*u.shape[:-1], len(self.lever_names)))
+            full[..., moved], full[..., held] = u, level
+            linear = _linearised(model, x, full, dt)
+            return LinearGaussianPlant(
+                linear.a,
+                linear.b[:, moved],
+                linear.offset + linear.b[:, held] @ level,
+                linear.noise,
+            )
+
+        schedule = AffineSchedule.open_loop(actions[:, moved], len(columns.states))
         if np.unique(episodes.units).size < 2:
             # Windows H periods apart, or further across a gap, each hold a place of their own on
             # the grid of H periods.
@@ -1419,12 +1473,12 @@ class Prescription:
             )
             evaluation = _evaluate_across_time(
                 episodes.x,
-                episodes.u,
+                u,
                 cosines,
                 schedule,
-                plant=_linearised(model, episodes.x, episodes.u, dt),
-                cost=problem.cost,
-                logger=logger,
+                plant=plant(episodes.x, u),
+                cost=cost,
+                logger=weighing,
                 smoothing=smoothing,
                 model_error=model_error,
                 min_effective=min_effective,
@@ -1432,12 +1486,12 @@ class Prescription:
         else:
             evaluation = _evaluate_by_unit(
                 episodes.x,
-                episodes.u,
+                u,
                 episodes.units,
                 schedule,
-                plant=lambda x, u: _linearised(model, x, u, dt),
-                cost=problem.cost,
-                logger=logger,
+                plant=plant,
+                cost=cost,
+                logger=weighing,
                 smoothing=smoothing,
                 model_error=model_error,
                 min_effective=min_effective,
@@ -1445,6 +1499,8 @@ class Prescription:
                 seed=seed,
                 max_refused=max_refused,
             )
+        if held:
+            evaluation = _priced(evaluation, held_cost)
         return replace(
             evaluation,
             logger_check=logger_check,
@@ -4473,6 +4529,89 @@ def _episodes(
         stack(levers)[rows[:, :-1]],
         unit_codes[rows[:, 0]],
         time_codes[rows[:, 0]],
+    )
+
+
+def _refuse_moved_held(
+    u: NDArray[np.float64],
+    actions: NDArray[np.float64],
+    held: Sequence[int],
+    names: tuple[str, ...],
+    precision: float,
+) -> None:
+    """Refuse, naming them, the levers ``held`` whose actions in the windows ``u (E, H, m)`` stray
+    from the schedule's ``actions (H, m)`` by more than ``precision`` of their size, the rule the
+    fit read them unmoved by: the weights compare the plan's one level with what the panel logged,
+    and a panel that moved the lever, or kept it at another level, holds no window of the plan's."""
+    strayed = [
+        index
+        for index in held
+        if not np.linalg.norm(u[..., index] - actions[:, index])
+        <= precision * np.linalg.norm(u[..., index])
+    ]
+    if strayed:
+        raise DecisionError(
+            "the plan holds "
+            + "; ".join(
+                f"{names[index]!r} at {actions[0, index]:.6g}, which this panel logs from "
+                f"{u[..., index].min():.6g} to {u[..., index].max():.6g}"
+                for index in strayed
+            )
+            + ": a lever the log the plan was made from never moved is held at one level, and "
+            "the weights read it only on a panel that kept it there"
+        )
+
+
+def _refuse_singular_logger(
+    x: NDArray[np.float64],
+    u: NDArray[np.float64],
+    logger: AffinePolicy | None,
+    names: tuple[str, ...],
+    precision: float,
+) -> None:
+    """Refuse, naming the levers, a logger that leaves a combination of the levers ``names`` less
+    spread given the state than ``precision`` of their size in the windows ``u (E, H, m)``: the
+    logger given, or the one :func:`~chc.evaluation.fit_logger` fits to the windows. The weights
+    divide by the logger's density, which a lever it sets from the state alone does not have; the
+    certificate would refuse the smoothing instead, naming neither the lever nor the cause."""
+    m = u.shape[-1]
+    actions = u.reshape(-1, m)
+    if logger is None:
+        logger = fit_logger(x[:, :-1].reshape(-1, x.shape[-1]), actions)
+    size = np.sqrt(np.mean(actions * actions, axis=0))
+    size = np.where(size > 0.0, size, 1.0)
+    values, vectors = np.linalg.eigh(logger.covariance / np.outer(size, size))
+    unspread = vectors[:, values <= precision * precision]
+    named = [
+        name
+        for name, share in zip(names, np.sum(unspread * unspread, axis=1), strict=True)
+        if share > precision
+    ]
+    if named:
+        raise DecisionError(
+            f"the logger leaves {named} no spread of their own given the state: the weights "
+            "divide by its density, and a lever set from the state, or from the other levers, "
+            "has none"
+        )
+
+
+def _priced(evaluation: PlanEvaluation, held_cost: float) -> PlanEvaluation:
+    """``evaluation`` with ``held_cost``, what the levers held at one level cost over the horizon,
+    added to the plan's value and to the logger's: the weights left those levers out, and every
+    window logged them at the plan's level."""
+    weighted = evaluation.value + evaluation.model_correction + held_cost
+    versus = evaluation.versus_logger
+    low, high = evaluation.interval
+    return replace(
+        evaluation,
+        value=evaluation.value + held_cost,
+        interval=(low + held_cost, high + held_cost),
+        model_share=abs(evaluation.model_correction) / abs(weighted)
+        if evaluation.model_correction != 0.0
+        else 0.0,
+        versus_logger=None
+        if versus is None
+        else replace(versus, logger_value=versus.logger_value + held_cost),
     )
 
 
