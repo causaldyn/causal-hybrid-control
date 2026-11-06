@@ -1006,7 +1006,7 @@ def test_rounds_that_stop_short_of_the_condition_are_projected_onto_it() -> None
 # ---- the rounds' budget, their stopping rule and what they refuse up front ----
 
 
-def _floor_plan(steps: int) -> CausalPlan:
+def _floor_plan(steps: int, outer: plan_module.OuterRule = "halved") -> CausalPlan:
     return causal_plan(
         OSCILLATOR,
         X0,
@@ -1017,6 +1017,7 @@ def _floor_plan(steps: int) -> CausalPlan:
         U_MAX,
         steps=steps,
         barrier=BarrierConstraint(_velocity_floor, alpha=ALPHA),
+        outer=outer,
     )
 
 
@@ -1036,6 +1037,30 @@ def test_the_rounds_share_one_budget_and_a_cut_one_grows_no_penalty() -> None:
         assert plan.safety is not None
         assert plan.safety.certified_steps == HORIZON
         assert plan.task_cost <= 1.1 * optimum.task_cost
+
+
+def test_safeguarded_rounds_keep_a_small_budget_s_plan_near_the_optimum() -> None:
+    """The safeguarded rounds grow the penalty on a round its share cut as well. Split evenly over
+    thirty rounds, a budget of 30 steps was thirty rounds of one step, the penalty grew after
+    eight of them, the round after stepped to a far point of the condition, and the plan cost 3.5
+    times the optimum. A safeguarded round is given up to 333 steps instead, so each budget here
+    is one round, and the plan stays within the ten percent the halved rounds are held to (2.2 %,
+    3.6 % and 2.1 % above the optimum)."""
+    optimum = _floor_plan(10_000, "safeguarded")
+    assert optimum.solver_status == "converged"
+    assert optimum.task_cost == pytest.approx(_floor_plan(10_000).task_cost, rel=1e-6, abs=0.0)
+    for steps in (3, 10, 30):
+        plan = _floor_plan(steps, "safeguarded")
+        assert plan.solver_iterations <= 2 * steps
+        assert plan.solver_status == "max_iterations"
+        assert plan.safety is not None
+        assert plan.safety.certified_steps == HORIZON
+        assert plan.task_cost <= 1.1 * optimum.task_cost
+
+
+def test_a_rounds_rule_the_planner_does_not_know_is_refused() -> None:
+    with pytest.raises(ValueError, match="outer='even'"):
+        _floor_plan(10, "even")  # type: ignore[arg-type]
 
 
 def test_the_rounds_compile_one_descent_for_both_of_their_tolerances(

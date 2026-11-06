@@ -28,7 +28,14 @@ from chc.control import Bound, LinearConstraint, broadcast_box, projected_gradie
 from chc.cost import QuadraticCost
 from chc.dynamics import Dynamics
 from chc.integrate import rk4_step
-from chc.plan import _TOLERANCE_DEFAULT, BarrierConstraint, CausalPlan, InnerSolve, _plan
+from chc.plan import (
+    _TOLERANCE_DEFAULT,
+    BarrierConstraint,
+    CausalPlan,
+    InnerSolve,
+    OuterRule,
+    _plan,
+)
 from chc.support import PenaltyModel, SupportModel
 
 __all__ = [
@@ -215,8 +222,8 @@ class RecedingHorizon:
     Each step is one :func:`~chc.plan.causal_plan`, so nothing outside the horizon carries over:
     ``constraints`` bind each horizon afresh -- a budget row caps every window, not the run's
     total, and a rate limit does not reach back to the action already applied -- and ``steps``
-    caps each descent, of which a held barrier runs up to ``1 + _BARRIER_ROUNDS`` a step. For the
-    same reason a per-state ``x_target`` is refused: every step would read the same window.
+    caps each descent, which a held barrier's rounds share on each set of next states they hold.
+    For the same reason a per-state ``x_target`` is refused: every step would read the same window.
 
     **A budget per period** is ``budget``, and the ledger is the caller's: :meth:`step` takes what
     the current period has spent so far, as measured. Each period the window touches gets one row
@@ -257,6 +264,7 @@ class RecedingHorizon:
     constraints: Sequence[LinearConstraint] = ()
     barrier: BarrierConstraint | None = None
     inner: InnerSolve = "diagonal"
+    outer: OuterRule = "halved"
     budget: PeriodBudget | None = None
     _warm: tuple[NDArray[np.float64], NDArray[np.float64] | None] | None = field(
         default=None, init=False, repr=False
@@ -309,6 +317,7 @@ class RecedingHorizon:
             warm_start=actions,
             multipliers=multipliers,
             inner=self.inner,
+            outer=self.outer,
         )
         self._warm = (
             _shift(np.asarray(plan.actions, dtype=np.float64)),
