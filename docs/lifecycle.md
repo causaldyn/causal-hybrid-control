@@ -123,7 +123,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   It refuses a plan whose levers were logged on a column outside its state, and one made against
   driver forecasts. It also asks the panel, as `prescribe` asks the one it fits, whether the levers
   read anything besides the state and their recorded parents, or read those through more than a
-  quadratic, and warns when they did (*experimental*): a premise failing, not a measured cost
+  quadratic, and logs it at `INFO` when they did
+  ([ADR 0136](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0136-a-floor-on-the-regret-itself-and-what-the-logger-check-cannot-see.md))
+  (*experimental*): a premise failing, not a measured cost
   ([ADR 0028](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0028-asking-the-panel-what-the-logger-read.md)).
   See [`chc.decision`](api/decision.md).
 - **An evaluation's record** (*experimental*). `to_json()` writes an evaluation, from

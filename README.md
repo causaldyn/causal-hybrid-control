@@ -15,8 +15,8 @@ Most logs were written by someone acting on what they saw: an operations team th
 more when demand spiked, a thermostat that heated harder on cold nights, a retention team that gave
 discounts to the customers most likely to leave. In such data the action moves together with
 whatever else drives the outcome. A model fitted to predict the outcome then learns the wrong
-effect, sometimes with the wrong sign, and a planner that trusts it acts on it. `chc` is a small
-JAX library for the step from those logs to a decision:
+effect, sometimes with the wrong sign, and a planner that trusts it acts on it. `chc` is a JAX
+library for the step from those logs to a decision:
 
 1. **Identify** the effect of each action from the logs, given the causal graph you state, or say
    that the logs cannot identify it.

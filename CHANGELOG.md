@@ -7,17 +7,18 @@ experimental may change in any minor release (`docs/api/index.md`).
 
 ## [1.1.0] — 2026-10-31
 
-Four opt-in readings; no default moves, each pinned to the bit against 1.0.0.
+Four opt-in readings; no default moves: the tests compare each default's numbers with 1.0.0's to
+a tolerance, 1e-9 relative or the search's own, not to the bit.
 
 ### Added
 
 - `blank_period_inference(serial="ar1", ar_error="jackknife")` (experimental) and
   `BlankPeriodInference.ar_coefficient_variance`: the AR(1) intervals widen by the coefficient's
   donor-jackknife variance through the delta method, about the plug-in's centres. On factor panels
-  at 0.95, 10 post periods, `alpha = 0.1`, 4 donors cover 0.895–0.912 where the plug-in falls to
-  0.852, at a last-period radius 13 % wider; 19 donors cover 0.903–0.916 against the plug-in's
-  0.884. It refuses fewer than three donors and costs `n_donors - 1` times the plug-in's fits
-  (ADR 0148).
+  at 0.95, 10 post periods, `alpha = 0.1`, 4 donors cover 0.895–0.912 at a last-period radius 13 %
+  wider, where the plug-in falls to 0.85–0.88 at the last post period, by the batch of seeds; 19
+  donors cover 0.903–0.916 against the plug-in's 0.884. It refuses fewer than three donors and
+  costs `n_donors - 1` times the plug-in's fits (ADR 0148).
 - `cvar_allocate(weights=)` (experimental): the worst share's mean weighs each reading, as a
   stacked posterior's draws are weighed; its boundary is a weighted quantile. Integer weights plan
   as the readings repeated, and a reading of weight 0 is left out of the share, its gain still read
@@ -53,7 +54,9 @@ naming its replacement (ADR 0147).
   `chc.research`. For example, `from chc import rollout` becomes
   `from chc.integrate import rollout`.
   The top level keeps its `__all__`, the lifecycle's names, and keeps importing every module a name
-  came from, so `import chc` then `chc.<module>.<name>` still works (ADR 0016).
+  came from outside `chc.research`, so `import chc` then `chc.<module>.<name>` still works for the
+  other 255 (ADR 0016). `import chc` loads no research module (ADR 0117): for the 166, write
+  `import chc.research.<module>` first, or `from chc.research.<module> import <name>`.
 - **The eight renamed names**, deprecated in 0.20.0 and 0.21.0:
   `DecisionCertificate.identification_radius` → `channel_error`,
   `ConfoundingRobustLQRegretCurve.regret_bounds` → `second_order_regrets`,

@@ -310,6 +310,11 @@ def delay_estimate(
     identified lag goes the other way and returns ``lo == hi``: the resampled peak never moves off
     its bin, which is the correct interval for a delay that is an exact multiple of ``dt``.
 
+    It is an interval of the peak's location, not of the delay: a delay between two samples, or
+    the refined peak's bias, puts the peak off the delay, and the interval with it. On
+    :class:`chc.research.benchmark.DelayOscillationTask`'s log, a delay of 3.33 steps, it covered
+    the true delay in 0 of 10 seeds, with ``refine`` and without (:class:`DelayEstimate`).
+
     ``refine`` is forwarded to :func:`peak_lag`; read its warning before turning it on.
 
     Whether a fitted model's plant reads its lever late at all is
