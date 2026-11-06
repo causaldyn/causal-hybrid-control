@@ -237,7 +237,9 @@ def _resolves(module: str, entry: str) -> bool:
         if not (hasattr(target, member) or member in fields):
             return False
         target = getattr(target, member, None)
-    if parsed["argument"] and parsed["argument"] not in inspect.signature(target).parameters:
+    if parsed["argument"] and (
+        target is None or parsed["argument"] not in inspect.signature(target).parameters
+    ):
         return False
     source = inspect.getsource(owner)
     return all(text is None or text in source for text in (parsed["value"], parsed["key"]))
