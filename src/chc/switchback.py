@@ -406,7 +406,7 @@ def _zero(a: float) -> float:
     return 0.0
 
 
-def _trusted(estimands, prior: PersistencePrior, periods: int, r_max: float, warnings):
+def _trusted(estimands, prior: PersistencePrior, periods: int, r_max: float, warnings):  # noqa: C901
     grid, q, kappa = prior._grid(), prior.signal_to_noise, prior.noise_ratio
     horizons = [e for e in estimands if e.periods > 1.0]
     if kappa == 0.0:
@@ -1081,7 +1081,7 @@ def _long_run(q: np.ndarray, lags: int) -> float:
     return total
 
 
-def _half_panel(u, y, estimand: Horizon, analysis: SwitchbackAnalysis, z: float):
+def _half_panel(u, y, estimand: Horizon, analysis: SwitchbackAnalysis, z: float):  # noqa: C901, PLR0915
     """The half-panel jackknife of the plug-in or the local projection, ``2 tau_T - (tau_1 +
     tau_2) / 2`` over the run and its two halves, each half fitted on its own periods, and its
     standard error from the three fits' influences on each row: twice the run's, less half of
@@ -1239,7 +1239,7 @@ def _block_difference(u, y, blocks: BlockDesign, z: float):
     return estimate, se, (estimate - z * se, estimate + z * se)
 
 
-def read_switchback(
+def read_switchback(  # noqa: C901, PLR0912
     lever: ArrayLike,
     outcome: ArrayLike,
     estimand: Horizon,

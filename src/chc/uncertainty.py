@@ -2805,7 +2805,7 @@ def benchmark_gamma(
     )
 
 
-def negative_control_gamma(
+def negative_control_gamma(  # noqa: C901, PLR0912
     outcomes: NDArray[np.float64],
     tol: float = 1e-9,
     gamma_max: float = 1e6,

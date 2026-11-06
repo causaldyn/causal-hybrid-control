@@ -671,7 +671,7 @@ def _relative_gap(model: float, measured: float) -> float:
     return abs(model / measured - 1.0)
 
 
-def design_experiment(
+def design_experiment(  # noqa: C901, PLR0912, PLR0915
     decision: ZoneDecision,
     prior: ChannelPrior,
     experiment: ZoneExperiment,

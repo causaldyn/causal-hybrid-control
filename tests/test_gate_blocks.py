@@ -803,7 +803,7 @@ def test_a_baseline_share_outside_the_contract_is_refused(
 _BEFORE_BASELINE_SHARE = Path(__file__).with_name("gate_blocks_before_baseline_share.json")
 
 
-def _without_a_share() -> tuple[list[str], list[float]]:
+def _without_a_share() -> tuple[list[str], list[float]]:  # noqa: C901, PLR0912, PLR0915
     """Three gates in blocks (plain; centred with a futility stop; with the carryover check and
     drift e-values that alarm), each of two zones over 150 reads, one zone turning worse once
     deployed, and the gate without blocks, plain and centred: each read's verdict and mode, and

@@ -136,7 +136,7 @@ def _split(doc: str) -> tuple[str, dict[str, str]]:
     return "\n".join(prose), entries
 
 
-def _marked(module: str) -> set[tuple[str, str]]:
+def _marked(module: str) -> set[tuple[str, str]]:  # noqa: C901
     """The entries of ``chc.<module>`` its docstrings and field comments mark experimental, each
     with the module it is listed under."""
     path = Path(chc.__file__).resolve().parent / f"{module}.py"

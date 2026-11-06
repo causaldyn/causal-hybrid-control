@@ -197,7 +197,7 @@ class Panel:
     provenance: Provenance
 
     @classmethod
-    def from_frame(
+    def from_frame(  # noqa: C901, PLR0912, PLR0915
         cls,
         data: ColumnData,
         *,

@@ -756,7 +756,7 @@ def dither_check(
     )
 
 
-def dither_size(
+def dither_size(  # noqa: PLR0915
     logs: dict[str, Array],
     equilibrium: FittedEquilibrium,
     *,
@@ -1215,7 +1215,7 @@ def _incentive_z(with_u: NDArray[np.float64], without_u: NDArray[np.float64]) ->
     return math.sqrt(gain.size) * float(np.mean(gain)) / spread
 
 
-def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEquilibrium:
+def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEquilibrium:  # noqa: C901
     """Estimate the congestion equilibrium the logs were generated under, by least squares.
 
     The fitted model is :class:`FittedEquilibrium`'s: per zone, an attractiveness per unit of
@@ -1414,7 +1414,7 @@ def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEqu
     )
 
 
-def pessimistic_equilibrium_allocation(
+def pessimistic_equilibrium_allocation(  # noqa: C901
     market: SharedStateMarket,
     response: ExposureResponse | None,
     *,

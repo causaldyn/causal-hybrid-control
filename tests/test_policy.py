@@ -175,7 +175,7 @@ def test_the_policy_refuses_a_step_or_a_state_it_cannot_run(
         _prescribe("state").policy().actions_at(step, state)
 
 
-def _broken(change: str) -> dict[str, Any]:
+def _broken(change: str) -> dict[str, Any]:  # noqa: C901, PLR0912
     record = json.loads(json.dumps(_prescribe("state").policy().to_json()))
     rule = record["rule"]
     match change:

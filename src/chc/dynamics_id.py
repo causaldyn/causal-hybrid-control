@@ -1607,7 +1607,7 @@ def solve_channel_moment(
     return coeffs.T.reshape(state_residual.shape[1], action_residual.shape[1], n_features)
 
 
-def fit_causal_residual(
+def fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
     known: Dynamics,
     data: dict[str, Array],
     dt: float,
@@ -2257,7 +2257,7 @@ def fit_causal_residual(
         gain = jnp.concatenate([gain, jnp.zeros((x.shape[1], pushes.shape[1]))], axis=1)
         return (x_next - predicted(fit.residual, gain)) / dt
 
-    def rk4_fixed_point(
+    def rk4_fixed_point(  # noqa: PLR0915
         start: Array,
     ) -> tuple[CausalDynamicsFit, Array, Callable[[Array], Array] | None, Array]:
         """The fit that is its own ``rk4`` reading of the log, by Newton's method from the fit to
@@ -2825,7 +2825,7 @@ class OmittedConfounderBound:
     robustness_value_ci: float
 
 
-def omitted_confounder_bound(
+def omitted_confounder_bound(  # noqa: C901, PLR0915
     fit: CausalDynamicsFit,
     functional: Array,
     *,
@@ -3178,7 +3178,7 @@ def _whitened(square: np.ndarray, root: np.ndarray) -> np.ndarray:
     return np.linalg.solve(root, half.T)
 
 
-def channel_region(
+def channel_region(  # noqa: C901
     fit: CausalDynamicsFit,
     level: float = 0.95,
     *,
@@ -3666,7 +3666,7 @@ class LagCheck:
     groups: int  # ``G``: the groups among them
 
 
-def lag_check(
+def lag_check(  # noqa: PLR0915
     fit: CausalDynamicsFit,
     data: dict[str, Array],
     units: ArrayLike,

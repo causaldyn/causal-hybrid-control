@@ -124,7 +124,7 @@ class GcmTest:
     clusters: int  # how many blocks the randomisation flipped
 
 
-def gcm_test(
+def gcm_test(  # noqa: PLR0915
     x: ArrayLike,
     y: ArrayLike,
     z: ArrayLike | None = None,

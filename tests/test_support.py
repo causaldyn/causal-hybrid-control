@@ -96,7 +96,7 @@ def _floor(
     return floor
 
 
-def _naive_pessimistic(
+def _naive_pessimistic(  # noqa: C901, PLR0915
     model: object,
     x0: jnp.ndarray,
     us0: jnp.ndarray,

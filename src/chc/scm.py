@@ -381,7 +381,7 @@ class BlankPeriodInference:
     ar_coefficient_variance: float | None = None
 
 
-def blank_period_inference(
+def blank_period_inference(  # noqa: PLR0915
     outcomes: Outcomes,
     treated_unit: int,
     n_pre: int,

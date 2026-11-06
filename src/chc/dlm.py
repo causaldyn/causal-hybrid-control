@@ -799,7 +799,7 @@ class DLMFit:
         return self.y - self.one_step_mean
 
 
-def forward_filter(
+def forward_filter(  # noqa: PLR0915
     model: DynamicLinearModel,
     y: ArrayLike,
     x: ArrayLike | None = None,
@@ -1493,7 +1493,7 @@ def _reflected_orbit(
     return a, bounces
 
 
-def constrained_sample(
+def constrained_sample(  # noqa: C901, PLR0912, PLR0915
     fit: DLMFit,
     signs: Mapping[int, Sign],
     draws: int,
@@ -2068,7 +2068,7 @@ class GeoDLMFit:
         return self.y - self.one_step_mean
 
 
-def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None) -> GeoDLMFit:
+def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None) -> GeoDLMFit:  # noqa: PLR0915
     """Filter ``y``, ``(T, geos)``, through ``model``, with ``x``, ``(T, geos, model.regressors)``,
     each geo's columns for the regression blocks. A missing observation is ``NaN``.
 
@@ -2340,7 +2340,7 @@ def _vaguest(model: GeoDLM, pooled: Sequence[int]) -> tuple[tuple[int, ...], _Ar
     return coordinates, first.copy()
 
 
-def fit_geo_spread(
+def fit_geo_spread(  # noqa: C901, PLR0915
     model: GeoDLM,
     y: ArrayLike,
     x: ArrayLike | None,

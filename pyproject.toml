@@ -166,7 +166,13 @@ src = ["src", "tests"]
 extend-exclude = ["notebooks"]  # notebook sources carry cell magics / non-import layout
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "C4", "PERF", "PIE", "PT", "PTH", "RET", "FURB"]
+# C901, PLR0912 and PLR0915 are a ratchet: every function past their limits on 2026-11-06 carries
+# a `# noqa` for the ones it breaks, so a new function past them fails the lint, and RUF100 fails
+# the `# noqa` of one brought back under them
+select = [
+    "E", "F", "I", "B", "UP", "SIM", "RUF", "C4", "PERF", "PIE", "PT", "PTH", "RET", "FURB",
+    "C90", "PLR0912", "PLR0915",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

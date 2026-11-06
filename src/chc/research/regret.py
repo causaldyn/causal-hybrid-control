@@ -695,7 +695,7 @@ def _action_sensitivity(
     return columns
 
 
-def multivariate_action_floor(
+def multivariate_action_floor(  # noqa: C901
     *,
     effect: Matrix,
     state_weight: Matrix,
@@ -928,7 +928,7 @@ def _weighted_matrix_floor(
     return float("nan")
 
 
-def multivariate_van_trees_certificate(
+def multivariate_van_trees_certificate(  # noqa: PLR0915
     *,
     rr: float = 0.5,
     gains: tuple[float, float] = (1.0, 0.4),
@@ -2147,7 +2147,7 @@ class ClusterFoldLeakageCurve:
     annihilated_bias_predicted: float  # -b_s, the exact prediction
 
 
-def cluster_fold_leakage_certificate(
+def cluster_fold_leakage_certificate(  # noqa: C901, PLR0915
     *,
     n_clusters: int = 60,
     cluster_size: int = 8,
@@ -2527,7 +2527,7 @@ def _rotate_min(word: tuple[int, ...]) -> tuple[int, ...]:
 
 
 @cache
-def _sandwich_plan(q: int) -> dict[str, object]:
+def _sandwich_plan(q: int) -> dict[str, object]:  # noqa: C901
     """Node-independent index tables for ``E[adj(M) N adj(M)]`` entrywise, ``q`` channels.
 
     ``adj(M)`` has degree ``q - 1``, so each entry of the sandwich is a signed sum of products of
@@ -2683,7 +2683,7 @@ def _matrix_gamma(q: int, s: float) -> float:
     )
 
 
-def exact_matrix_ratio_moment(
+def exact_matrix_ratio_moment(  # noqa: C901, PLR0912, PLR0915
     numerator: NDArray[np.float64],
     denominator: NDArray[np.float64],
     regressor_cov: NDArray[np.float64],
@@ -3241,7 +3241,7 @@ def _circulant_band(
     return row[: band + 1].copy(), band
 
 
-def _exact_banded_bisection(
+def _exact_banded_bisection(  # noqa: C901
     profile: NDArray[np.float64], band: int, m: int
 ) -> tuple[float, NDArray[np.int_]]:
     """Global minimum same-fold mass over balanced bisections of a BANDED CIRCULANT, by DP.
@@ -3353,7 +3353,7 @@ class FoldDesign:
     route: Literal["enumeration", "banded-dp", "spectral-swap"] = "spectral-swap"
 
 
-def optimal_fold_partition(
+def optimal_fold_partition(  # noqa: C901, PLR0912, PLR0915
     shells: Sequence[NDArray[np.float64]],
     gammas: Sequence[float],
     phi: float,
@@ -3614,7 +3614,7 @@ class FoldExactnessCurve:
     ok: bool
 
 
-def fold_exactness_certificate(
+def fold_exactness_certificate(  # noqa: PLR0915
     sizes: Sequence[int] = (24, 60, 120),
     decays: Sequence[float] = (0.01, 0.3, 0.9),
     dmax: int = 2,
@@ -3878,7 +3878,7 @@ def fold_heuristic_certificate(
     )
 
 
-def delayed_network_certificate(
+def delayed_network_certificate(  # noqa: C901, PLR0915
     *,
     cluster_size: int = 6,
     n_times: int = 5,
@@ -4094,7 +4094,7 @@ class CeExplicitConstantCurve:
     conservatism: float
 
 
-def ce_explicit_constant_certificate(
+def ce_explicit_constant_certificate(  # noqa: PLR0915
     *,
     a_mat: Matrix | None = None,
     b_mat: Matrix | None = None,
@@ -4272,7 +4272,7 @@ class ConjugateTimeCurve:
     )
 
 
-def conjugate_time_certificate(
+def conjugate_time_certificate(  # noqa: C901
     *,
     a: float = 0.3,
     b: float = 1.0,
@@ -6010,7 +6010,7 @@ def _panel_objective(sigma: NDArray[np.float64], fold: NDArray[np.int_]) -> floa
     return float(sigma[fold[:, None] == fold[None, :]].sum())
 
 
-def space_time_fold_certificate(
+def space_time_fold_certificate(  # noqa: PLR0915
     m: int = 8,
     n_times: int = 4,
     gammas: Sequence[float] = (1.0, 0.7, 0.4),

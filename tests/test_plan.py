@@ -615,7 +615,7 @@ def test_a_plan_says_whether_its_own_solve_finished() -> None:
     assert truncated.certificate_status == finished.certificate_status == "not_evaluated"
 
 
-def test_a_boxed_plan_certifies_its_own_optimality_gap_where_the_pl_bound_charges_regret() -> None:
+def test_a_boxed_plan_certifies_its_own_optimality_gap_where_the_pl_bound_charges_regret() -> None:  # noqa: PLR0915
     # validation/constrained_plan_regret.mac, proofs/constrained_plan_regret.v.
     # PL's |grad J|^2/(2 mu) needs no optimum, which is what makes it a certificate -- and it
     # does not survive a box: at a lever the gradient holds against its own bound grad J is nonzero

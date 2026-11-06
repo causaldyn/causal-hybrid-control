@@ -1199,7 +1199,7 @@ def _check_policies(plant: LinearGaussianPlant, **policies: AffinePolicy | Affin
             raise ValueError(f"the {name}'s gain has shape {gain}, the plant's loop needs {shape}")
 
 
-def certify_evaluation(
+def certify_evaluation(  # noqa: C901
     plant: LinearGaussianPlant,
     logger: AffinePolicy,
     plan: AffinePolicy | AffineSchedule,
@@ -1263,7 +1263,7 @@ def certify_evaluation(
     )
 
 
-def _certify_stationary(
+def _certify_stationary(  # noqa: C901
     plant: LinearGaussianPlant,
     logger: AffinePolicy,
     plan: AffinePolicy,
@@ -1401,7 +1401,7 @@ def _certify_stationary(
     )
 
 
-def _certify_episodes(
+def _certify_episodes(  # noqa: C901
     plant: LinearGaussianPlant,
     logger: AffinePolicy,
     plan: AffineSchedule,

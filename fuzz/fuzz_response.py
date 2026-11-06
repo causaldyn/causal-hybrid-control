@@ -70,7 +70,7 @@ def _parameter(provider: atheris.FuzzedDataProvider) -> float:
     return provider.ConsumeFloatInRange(-1.0, 3.0)
 
 
-def check(data: bytes) -> None:
+def check(data: bytes) -> None:  # noqa: C901, PLR0912
     provider = atheris.FuzzedDataProvider(data)
     family = ORDER[provider.ConsumeIntInRange(0, len(ORDER) - 1)]
     values = {name: _parameter(provider) for name in FAMILIES[family]}

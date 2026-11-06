@@ -257,7 +257,7 @@ def _bonferroni(calibration: np.ndarray, delta: float) -> np.ndarray | None:
     return np.sort(norms, axis=0)[rank - 1]
 
 
-def run(plant: Plant, logs: int, out: str) -> None:
+def run(plant: Plant, logs: int, out: str) -> None:  # noqa: PLR0915
     rows = []
     for seed in range(logs):
         began = time.time()

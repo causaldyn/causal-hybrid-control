@@ -211,7 +211,7 @@ def _chi_square_mixture_quantile(level: float, weights: Vector) -> float:
     return largest * float(brentq(excess, low, high, xtol=1e-14 * high, rtol=1e-12))
 
 
-def ce_regret_law(
+def ce_regret_law(  # noqa: C901, PLR0915
     a: Matrix,
     b: Matrix,
     q: Matrix,
@@ -683,7 +683,7 @@ def _greedy_fill(caps: NDArray[np.float64], budget: float | None) -> NDArray[np.
     return np.diff(np.concatenate([[0.0], np.minimum(np.cumsum(caps), budget)]))
 
 
-def capped_exploration_policy(
+def capped_exploration_policy(  # noqa: C901, PLR0912, PLR0915
     *,
     horizon: int,
     cap: float | Sequence[float],
@@ -1050,7 +1050,7 @@ class MinimaxAction:
     binding: MinimaxBranch
 
 
-def minimax_action(
+def minimax_action(  # noqa: C901
     target: float,
     b_lo: float,
     b_hi: float,
@@ -1135,7 +1135,7 @@ def minimax_action(
     return MinimaxAction(action=action, worst_case=worst(action), binding=binding)
 
 
-def _minimax_regret_action(
+def _minimax_regret_action(  # noqa: C901
     target: float, b_lo: float, b_hi: float, effort: float, curvature: float
 ) -> MinimaxAction:
     """``minimax_action(..., criterion="regret")``; see there for the two cases."""

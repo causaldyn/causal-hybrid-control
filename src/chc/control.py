@@ -307,7 +307,7 @@ def _side(value: Array, low: Array, high: Array) -> Array:
     return jnp.where(value > high, 1, jnp.where(value < low, -1, 0)).astype(jnp.int8)
 
 
-def _polish(
+def _polish(  # noqa: PLR0915
     y: Array,
     lo: Array,
     hi: Array,
@@ -933,7 +933,7 @@ def _actions_of(vs: Array, sigma: Array, u_lo: Array, u_hi: Array) -> Array:
     return jnp.where(vs <= lo, u_lo, jnp.where(vs >= hi, u_hi, jnp.clip(vs / sigma, u_lo, u_hi)))
 
 
-def _descend(
+def _descend(  # noqa: C901, PLR0915
     value_of: Callable[[Array], Array],
     gradient_of: Callable[[Array], Array],
     record_of: Callable[[Array, Array], Array],

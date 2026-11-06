@@ -318,7 +318,7 @@ class GateConfig:
     centred: bool = False
     rollback_baseline_share: float | None = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: C901, PLR0912
         for name in ("horizon", "burn_in", "carryover_lags") + (
             ("block_length",) if self.block_length is not None else ()
         ):
@@ -1759,7 +1759,7 @@ class DeploymentGate:
     def mode(self, zone: str) -> GateMode:
         return self._zones[zone].mode
 
-    def update(self, batches: Mapping[str, ZoneBatch | BlockBatch]) -> dict[str, Verdict]:
+    def update(self, batches: Mapping[str, ZoneBatch | BlockBatch]) -> dict[str, Verdict]:  # noqa: C901, PLR0912
         """Add each zone's batch to its evidence and return every zone's verdict.
 
         A zone without a batch keeps its evidence and still gets a verdict, since e-BH reads every
