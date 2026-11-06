@@ -322,8 +322,9 @@ def test_ar1_refuses_what_it_cannot_read() -> None:
 # releases that pinned them by digest gave them: written from 1.1.0 on x86-64 under the lockfile's
 # numpy 2.5.4 and scipy 1.18.1, where they still hash, to ten digits, to those digests. Read to
 # rtol 1e-9, with atol 1e-12 for a zero: not to the bit, since a digest of ten digits hashed a last
-# bit wherever a value sat at a rounding boundary: a perturbation of every value by 1e-12 of itself
-# moved the exchangeable reading's digest in 28 % of draws and the plug-in reading's in 83 %.
+# bit wherever a value sat at a rounding boundary. Two of the exchangeable reading's values and
+# three of the plug-in's sit within 1e-12 of themselves of one, so a perturbation of every value by
+# 1e-12 of itself, its sign drawn per value, moved those digests in 74 % and 88 % of draws.
 _PINNED = {
     "exchangeable": [
         0.7103174603174603,
