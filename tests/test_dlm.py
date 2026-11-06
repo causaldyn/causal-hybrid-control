@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import warnings
 
 import numpy as np
 import pytest
-from scipy import integrate, special, stats
+from scipy import integrate, linalg, special, stats
 
 from chc.dlm import (
     DiscountForm,
+    DLMFit,
     DynamicLinearModel,
     GeoDLM,
     Polynomial,
@@ -250,6 +252,121 @@ def test_the_default_form_covers_beside_a_regressor_that_moves_little(kind: str)
         cover.append(np.mean((u[52:] > 0.05) & (u[52:] < 0.95)))
     error = np.std(cover, ddof=1) / math.sqrt(len(cover))
     assert abs(np.mean(cover) - 0.90) < 4.0 * error + 0.01
+
+
+def _close(actual: np.ndarray, expected: np.ndarray, tolerance: float = 1e-10) -> None:
+    """Equal to ``tolerance`` of each entry, or of the largest where an entry is near zero."""
+    scale = float(np.abs(expected).max())
+    np.testing.assert_allclose(actual, expected, rtol=tolerance, atol=tolerance * scale)
+
+
+@functools.cache
+def _in_units(form: DiscountForm, kind: str, exponent: int) -> DLMFit:
+    """A level at 0.95 beside spend at 0.9, the spend in units of ``10^exponent`` and its
+    coefficient's prior variance rescaled by ``10^(-2 exponent)``."""
+    rng = np.random.default_rng(3)
+    x = _held_regressor(kind, rng)
+    y = (
+        2.0
+        + np.cumsum(0.02 * rng.standard_normal(_HORIZON))
+        + 0.5 * x
+        + 0.3 * rng.standard_normal(_HORIZON)
+    )
+    units = 10.0**exponent
+    prior = Prior(np.zeros(2), np.diag([10.0, 10.0 / units**2]), 0.1, 3.0)
+    model = DynamicLinearModel((Polynomial(1, 0.95), Regression(1, 0.9)), prior, form)
+    return forward_filter(model, y, units * x)
+
+
+@pytest.mark.parametrize("form", ["directional", "additive", "multiplicative"])
+@pytest.mark.parametrize("kind", ["lognormal", "price steps"])
+@pytest.mark.parametrize("exponent", [k for k in range(-8, 9) if k])
+def test_every_form_is_equivariant_to_the_units_of_a_regressor(
+    form: DiscountForm, kind: str, exponent: int
+):
+    """Spend in units of ``10^k``, ``k`` from -8 to 8: the one-step forecasts, their scales and
+    the variance estimate do not move, and the coefficient's mean and covariance move by the
+    units. Prices held 26 steps leave a direction unread for most of a window, lognormal spend
+    none. The directional form's floor once compared every coordinate with the largest variance:
+    from ``k = 5`` the coefficient's group fell under it, from ``k = -6`` the level's, and that
+    block was never discounted; at ``10^6`` ``Q_t`` moved 30% and ``S_T`` 14%."""
+    base = _in_units(form, kind, 0)
+    fit = _in_units(form, kind, exponent)
+    _close(fit.one_step_mean, base.one_step_mean)
+    _close(fit.one_step_scale, base.one_step_scale)
+    _close(fit.scale, base.scale)
+    units = np.array([1.0, 10.0**exponent])
+    _close(fit.mean * units, base.mean)
+    _close(fit.covariance * np.outer(units, units), base.covariance)
+
+
+@pytest.mark.parametrize("form", ["directional", "additive", "multiplicative"])
+def test_every_form_is_equivariant_to_a_change_of_coordinates_within_each_block(
+    form: DiscountForm,
+):
+    """``x M``, ``M`` block-diagonal over the regression blocks: one block's two columns mixed and
+    in units of ``10^6``, the other's column in units of ``10^-4``. With ``theta`` moved by
+    ``A = blockdiag(I, M^-1)``, its prior with it, the forecasts are the same and the states
+    move by ``A``. Every form discounts a block as a whole, so a change of coordinates inside
+    each block is all it is equivariant to; a shear between blocks with different discounts,
+    as centring a column against the level is, moves every form."""
+    rng = np.random.default_rng(5)
+    horizon = 104
+    x = rng.gamma(2.0, 1.0, (horizon, 3))
+    season = 0.3 * np.sin(2.0 * np.pi * np.arange(horizon) / 52.0)
+    y = 2.0 + season + x @ np.array([0.5, 0.3, 0.2]) + 0.3 * rng.standard_normal(horizon)
+    blocks = (
+        Polynomial(1, 0.95),
+        Seasonal(52.0, (1,), 0.98),
+        Regression(2, 0.9),
+        Regression(1, 0.8),
+    )
+    m = linalg.block_diag(1e6 * np.array([[1.0, 0.4], [-0.3, 2.0]]), 1e-4)
+    a = linalg.block_diag(np.eye(3), np.linalg.inv(m))
+    prior = Prior(np.linspace(-0.5, 0.5, 6), 10.0 * np.eye(6), 0.1, 3.0)
+    moved = Prior(a @ prior.mean, a @ prior.covariance @ a.T, 0.1, 3.0)
+    base = forward_filter(DynamicLinearModel(blocks, prior, form), y, x)
+    fit = forward_filter(DynamicLinearModel(blocks, moved, form), y, x @ m)
+    _close(fit.one_step_mean, base.one_step_mean)
+    _close(fit.one_step_scale, base.one_step_scale)
+    _close(fit.scale, base.scale)
+    back = np.linalg.inv(a)
+    _close(fit.mean @ back.T, base.mean)
+    _close(np.einsum("ij,tjk,lk->til", back, fit.covariance, back), base.covariance)
+
+
+def test_a_coefficient_on_spend_in_currency_covers_as_one_in_units_of_one():
+    """A coefficient that drifts, a random walk of sd 0.03 from 0.5, on lognormal spend (CV 0.35)
+    beside a level at 0.95 and the coefficient at 0.9; 60 series of 156 steps, each fit with the
+    spend in units of 1 and of ``10^6``, the prior rescaled. In currency the default form's floor
+    dropped the coefficient's group, which froze: over 100 series its 90% intervals covered 0.60
+    of steps 52-155 against 0.87 in units of 1, with a median ``S_T`` 3.0 times ``V`` against
+    1.36. Each series now covers alike in either unit, and the coverage clears 0.8: in units of 1
+    it reads 0.874 (standard error 0.010 over 100 series), short of 0.90 by the discount's misfit
+    to that drift, so 0.8 is more than five of this run's standard errors below it and a false
+    failure is negligible."""
+    rng = np.random.default_rng(11)
+    horizon, variance, series = 156, 0.09, 60
+    spread = math.sqrt(math.log(1.0 + 0.35**2))
+    cover = {1.0: [], 1e6: []}
+    middle = {1.0: [], 1e6: []}
+    for _ in range(series):
+        x = 3.0 * np.exp(spread * rng.standard_normal(horizon) - spread**2 / 2.0)
+        beta = 0.5 + np.cumsum(0.03 * rng.standard_normal(horizon))
+        level = 2.0 + np.cumsum(0.02 * rng.standard_normal(horizon))
+        y = level + beta * x + math.sqrt(variance) * rng.standard_normal(horizon)
+        for units in cover:
+            prior = Prior(np.zeros(2), np.diag([10.0, 10.0 / units**2]), 0.1, 3.0)
+            model = DynamicLinearModel((Polynomial(1, 0.95), Regression(1, 0.9)), prior)
+            fit = forward_filter(model, y, units * x)
+            z = (beta - units * fit.mean[:, 1]) / (units * np.sqrt(fit.covariance[:, 1, 1]))
+            u = stats.t.cdf(z, fit.dof)
+            cover[units].append(np.mean((u[52:] > 0.05) & (u[52:] < 0.95)))
+            middle[units].append(fit.scale[-1] / variance)
+    paired = np.array(cover[1e6]) - np.array(cover[1.0])
+    assert abs(paired.mean()) <= 4.0 * paired.std(ddof=1) / math.sqrt(series) + 1e-3
+    assert np.mean(cover[1e6]) > 0.8
+    assert np.median(middle[1e6]) == pytest.approx(np.median(middle[1.0]), rel=1e-6, abs=0.0)
 
 
 def test_a_filter_over_geos_logs_blocks_seen_only_through_their_sum(caplog):

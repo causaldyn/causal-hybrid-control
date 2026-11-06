@@ -1,7 +1,8 @@
 # ADR 0121 — The DLM discounts only what the data read
 
 **Status:** accepted, 2026-10-21. Revises ADR 0022's choice of `form="additive"` as the default
-and its "no third form"; ADR 0046's filter over geos takes the same default.
+and its "no third form"; ADR 0046's filter over geos takes the same default. Amended 2026-11-06:
+the nested core's floor is read in correlation units, so no form depends on a regressor's units.
 
 ## Context
 
@@ -43,6 +44,16 @@ The multiplicative form covered 0.88-0.90 on the same grid. It has two defects o
   - the coordinates are grouped by their block's rate `r = (1 - delta) / delta`, slowest first;
   - `E_g` is the part of `P_r` that group `g` explains beyond the slower groups, a Schur
     complement step.
+- **The floor is unit-free (amended 2026-11-06).** `E_g` drops a group's directions whose
+  eigenvalue is below `1e-13` in correlation units, each coordinate against its own variance.
+  Up to 1.1.0 the floor was `1e-13` of the largest variance in the read part, which compares a
+  level's units with a coefficient's. With spend in currency the coefficient's variance fell
+  under it, its group was skipped, and the coefficient was never discounted: at units of
+  `10^6`, a drifting coefficient's 90% intervals covered 0.60 against 0.87 in units of 1, and
+  `S_T / V` read 3.0 against 1.36 (100 series). In exact arithmetic the core follows any
+  rescaling of the coordinates, so the floor was the only breach. Every form now follows a
+  change of coordinates inside each block, units included, to `1e-10` over `10^-8` to `10^8`
+  (`tests/test_dlm.py`); fits at unit scale moved by at most `8e-12`.
 - **What the core guarantees** (`validation/directional_dlm.mac`; tests in
   `tests/test_formal_estimation.py`):
   - the parts add up to `P_r`, so `W = R - P` is a variance and a row's inflation is an average

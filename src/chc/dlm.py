@@ -28,7 +28,11 @@ the prior covariance is
   of losing ``1 - delta`` of it a step (``validation/directional_dlm.mac``). With one discount for
   every block it is Kulhavy and Karny's (1984) directional forgetting,
   ``R_t^-1 = P_t^-1 - (1 - delta) A' (A P_t A')^-1 A``, and ``P_t / delta`` where the rows read
-  every direction;
+  every direction. As the other two forms do, it follows a change of coordinates inside each
+  block, the units of a regressor among them: the forecasts do not move and the states move by
+  the change, to ``1e-10`` over units from ``10^-8`` to ``10^8`` in this module's tests. A shear
+  between blocks with different discounts, as centring a column against the level is, moves
+  every form;
 * ``form="additive"`` (West and Harrison's component discounting, formerly the default):
   ``R_t = P_t + blockdiag_i(P_t,ii (1 - delta_i) / delta_i)``, which inflates each block's own
   covariance and leaves the covariance between blocks as it was;
@@ -734,10 +738,18 @@ def _nested(covariance: _Array, rates: _Array) -> _Array:
     """``sum_g r_g E_g``: the coordinates grouped by their rate, slowest first, and ``E_g`` the
     part of ``covariance`` group ``g`` explains beyond the slower groups. The parts add up to
     ``covariance``, so one rate gives ``r covariance``, a group at rate 0 keeps its rows, and a
-    row of ``F`` has its variance inflated by an average of the rates."""
+    row of ``F`` has its variance inflated by an average of the rates.
+
+    The floor below which a group's direction is dropped is read in correlation units, each
+    coordinate against its own variance, so the parts follow any rescaling of the coordinates.
+    Against the largest variance of the whole matrix, a coefficient on spend in currency, whose
+    variance is ``1e-12`` of a level's, fell under it and was never discounted."""
+    root = np.sqrt(np.clip(np.diag(covariance), 0.0, None))
+    root = np.where(root > 0.0, root, 1.0)
+    units = np.outer(root, root)
     out = np.zeros_like(covariance)
-    left = covariance.copy()
-    floor = 1e-13 * float(np.max(np.abs(np.diag(covariance)), initial=0.0))
+    left = covariance / units
+    floor = 1e-13 * float(np.max(np.abs(np.diag(left)), initial=0.0))
     for rate in np.unique(rates):
         group = np.flatnonzero(rates == rate)
         values, vectors = np.linalg.eigh(left[np.ix_(group, group)])
@@ -746,7 +758,7 @@ def _nested(covariance: _Array, rates: _Array) -> _Array:
         part = _sym((lift / values[keep]) @ lift.T)
         out += rate * part
         left = _sym(left - part)
-    return out
+    return out * units
 
 
 def _log_t(e: float, dof: float, q: float) -> float:
