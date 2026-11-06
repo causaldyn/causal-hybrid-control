@@ -9,6 +9,8 @@ shows it is the sequential one and its density the product of the sequential one
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 import math
 
 import numpy as np
@@ -23,6 +25,11 @@ from chc.dlm import (
     Prior,
     Regression,
     Seasonal,
+    _geo_design,
+    _slide,
+    _structure,
+    _twins,
+    _unread,
     backward_sample,
     forward_filter,
     forward_filter_geos,
@@ -240,6 +247,157 @@ def test_a_regressor_held_while_idle_is_live_where_any_geo_that_reads_it_moves()
     fit = forward_filter_geos(model, y, x)
     grown = np.diag(fit.prior_covariance[10]) / np.diag(fit.covariance[9])
     np.testing.assert_allclose(grown, [1.0 / delta, 1.0, 1.0 / delta], rtol=1e-12)
+
+
+def _twin_levels(form: DiscountForm, horizon: int = 1500):
+    """A national level beside three geos' levels, every one at 0.95; a common random walk."""
+    rng = np.random.default_rng(0)
+    geos = 3
+    walk = np.cumsum(0.02 * rng.standard_normal((horizon, 1)), axis=0)
+    y = 5.0 + 0.3 * rng.standard_normal((horizon, geos)) + walk
+    national = Prior(np.zeros(1), 10.0 * np.eye(1), 0.1, 3.0)
+    prior = stacked_prior(national, Prior(np.zeros(1), np.eye(1), 0.1, 3.0), geos)
+    return GeoDLM((Polynomial(1, 0.95),), (Polynomial(1, 0.95),), geos, prior, form), y
+
+
+def _information(fit, twins: np.ndarray) -> np.ndarray:
+    """What the filter knows on the directions ``twins``: the eigenvalues of
+    ``D' (C_t / S_t)^-1 D`` at each step, the prior's in its first row."""
+    prior = fit.model.prior
+    covariances = [prior.covariance / prior.scale, *(fit.covariance / fit.scale[:, None, None])]
+    return np.array([np.linalg.eigvalsh(twins.T @ np.linalg.solve(c, twins)) for c in covariances])
+
+
+def test_a_national_level_beside_each_geo_s_level_is_held_for_1500_steps(caplog):
+    """A geo reads the national level and its own only through their sum, so the national level
+    minus the sum of the regional ones is read by no row, whatever the data. The directional
+    form found unread directions only among the regression columns, so it discounted this one
+    every step as if read: the filter failed at step 448 of 1500, its variance grown as
+    ``0.95^-t``, with a message that it was held at its prior variance and nothing logged
+    before. It is found from the blocks now and held: what the filter knows on it stays the
+    prior's at every step, and the stack is logged when the filter starts."""
+    model, y = _twin_levels("directional")
+    with caplog.at_level(logging.WARNING, logger="chc.dlm"):
+        fit = forward_filter_geos(model, y)
+    records = [r for r in caplog.records if r.name == "chc.dlm"]
+    assert [r.chc_event for r in records] == ["dlm_geo_unread"]
+    assert records[0].coordinates == [0]
+    information = _information(fit, np.array([[1.0, -1.0, -1.0, -1.0]]).T)
+    np.testing.assert_allclose(information[1:, 0], information[0, 0], rtol=1e-10, atol=0.0)
+    assert np.all(np.isfinite(fit.log_scores))
+
+
+def test_a_national_level_and_harmonic_beside_each_geo_s_twins_are_held():
+    """The national level and the first harmonic of 52 beside each geo's level, first two
+    harmonics of 52 and spend: three directions no row reads, the level's and the harmonic's
+    two, which rotate into each other, so what the filter knows on them keeps its eigenvalues.
+    Discounted, as before, it would fall by ``0.95^300``."""
+    rng = np.random.default_rng(1)
+    geos, horizon = 3, 300
+    x = rng.gamma(4.0, 0.75, (horizon, geos, 1))
+    season = 0.3 * np.sin(2.0 * np.pi * np.arange(horizon) / 52.0)[:, None]
+    y = 5.0 + season + 0.5 * x[..., 0] + 0.3 * rng.standard_normal((horizon, geos))
+    national = (Polynomial(1, 0.95), Seasonal(52.0, (1,), 0.98))
+    regional = (Polynomial(1, 0.98), Seasonal(52.0, (1, 2), 0.98), Regression(1, 0.9))
+    prior = stacked_prior(
+        Prior(np.zeros(3), 10.0 * np.eye(3), 0.1, 3.0),
+        Prior(np.zeros(6), np.eye(6), 0.1, 3.0),
+        geos,
+    )
+    fit = forward_filter_geos(GeoDLM(national, regional, geos, prior), y, x)
+    twins = np.zeros((3 + 6 * geos, 3))
+    for i in range(3):
+        twins[i, i] = 1.0
+        twins[3 + i :: 6, i] = -1.0
+    information = _information(fit, twins)
+    for row in information[1:]:
+        np.testing.assert_allclose(row, information[0], rtol=1e-10, atol=0.0)
+
+
+def test_the_other_forms_grow_a_national_level_beside_its_twins_as_any_unread_direction(caplog):
+    """The additive and the multiplicative form grow every direction the data do not read by
+    ``1 / delta`` a step, a stack's as a single model's; the stack is logged as such, the
+    additive form's leak is logged, and the multiplicative form is refused naming the direction
+    and what grew it."""
+    model, y = _twin_levels("additive")
+    with caplog.at_level(logging.WARNING, logger="chc.dlm"):
+        fit = forward_filter_geos(model, y)
+    events = [r.chc_event for r in caplog.records if r.name == "chc.dlm"]
+    assert events == ["dlm_geo_unread", "dlm_windup"]
+    information = _information(fit, np.array([[1.0, -1.0, -1.0, -1.0]]).T)
+    assert information[-1, 0] < 1e-6 * information[0, 0]
+    caplog.clear()
+    model, y = _twin_levels("multiplicative")
+    with (
+        caplog.at_level(logging.WARNING, logger="chc.dlm"),
+        pytest.raises(
+            FloatingPointError,
+            match=r"widest direction \[ ?-?0\.5 +-?0\.5 +-?0\.5 +-?0\.5\] is a direction the"
+            r" data do not resolve.*grown under a discount below 1",
+        ),
+    ):
+        forward_filter_geos(model, y)
+    assert [r.chc_event for r in caplog.records if r.name == "chc.dlm"] == ["dlm_geo_unread"]
+
+
+@pytest.mark.parametrize(
+    ("national", "regional", "twins"),
+    [
+        ((Polynomial(2, 0.95),), (Polynomial(1, 0.98),), [0]),
+        ((Polynomial(1, 0.95),), (Polynomial(2, 0.98),), [0]),
+        ((Polynomial(2, 0.95),), (Polynomial(2, 0.98),), [0, 1]),
+        (
+            (Polynomial(1, 0.95), Seasonal(52.0, (1,), 0.98)),
+            (Polynomial(1, 0.98), Seasonal(52.0, (1,), 0.98), Regression(1, 0.9)),
+            [0, 1, 2],
+        ),
+        (
+            (Seasonal(12.0, (1, 6), 0.98),),
+            (Polynomial(1, 0.98), Seasonal(12.0, (1, 2, 6), 0.98)),
+            [0, 1, 2],
+        ),
+        ((Polynomial(1, 0.95), Regression(1, 0.95)), (Regression(1, 0.95),), []),
+        ((Seasonal(52.0, (1,), 0.98),), (Polynomial(1, 0.98), Seasonal(52.18, (1,), 0.98)), []),
+        (NATIONAL, REGIONAL, []),
+    ],
+)
+def test_the_directions_found_from_the_blocks_are_what_the_window_does_not_read(
+    national, regional, twins
+):
+    """A level beside a level and a slope reads its level only; a slope beside a slope its slope
+    too; a harmonic its two coordinates, at the Nyquist frequency one; a regression is read off
+    its columns; a harmonic of another period is no twin. With the regression's directions, the
+    found ones span the null space of the stacked window, the rows of every geo over the steps
+    the filter reads, which no singular value cut can be trusted to find: over that window a slow
+    seasonal is close to a polynomial."""
+    geos, horizon = 3, 160
+    model = GeoDLM(
+        national,
+        regional,
+        geos,
+        stacked_prior(
+            _prior(sum(b.size for b in national)), _prior(sum(b.size for b in regional)), geos
+        ),
+    )
+    directions, coordinates = _twins(model)
+    assert coordinates == twins
+    s = dataclasses.replace(_structure(model.stacked), unread=directions)
+    width = model.regressors
+    x = np.random.default_rng(2).gamma(2.0, 1.0, (horizon, geos, width)) if width else None
+    design = _geo_design(model, s, x, horizon)
+    window = np.zeros((0, model.stacked.size))
+    for t in range(horizon):
+        window = _slide(window, design[t], s, sum(b.size for b in national + regional))
+    values = np.linalg.svd(window, compute_uv=False)
+    unread = _unread(s, window)
+    assert unread.shape[1] == np.sum(values < 1e-12 * values[0])
+    assert np.max(np.abs(window @ unread), initial=0.0) <= 1e-14 * np.abs(window).max()
+
+
+def test_a_single_model_has_no_directions_unread_by_construction():
+    """Only a stack over geos repeats a block in two places; one model's blocks are each read."""
+    model = DynamicLinearModel(NATIONAL + REGIONAL, _prior(10))
+    assert _structure(model).unread.shape == (10, 0)
 
 
 def test_a_stacked_prior_repeats_the_regional_one_for_each_geo():
