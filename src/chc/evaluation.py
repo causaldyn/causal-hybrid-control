@@ -409,11 +409,16 @@ class PlanEvaluation:
         :meth:`chc.decision.Prescription.evaluate`, and their keywords, ``smoothing`` None where
         the certificate chose it, ``logger`` None where it was fitted to the logs and otherwise
         the policy given; and what it was read from: ``panel_sha256``, the evaluated panel's
-        ``data_sha256``, from :meth:`~chc.decision.Prescription.evaluate`, and ``logs_sha256``, a
-        sha256 over the logs' ``"x"`` and ``"u"`` as float64, their names and shapes, from
-        :func:`evaluate_plan`. ``logger_check`` is the logger check's verdict, a nan partial
-        correlation or an infinite detectable one None. There is no reader: a record is for
-        audit, and the evaluation is made again from the panel and the plan.
+        ``data_sha256`` as handed in, and ``clusters``, the column a plan made on groups had it
+        grouped by, None for one that was not, from :meth:`~chc.decision.Prescription.evaluate`,
+        and ``logs_sha256``, a sha256 over the logs' ``"x"`` and ``"u"`` as float64, their names
+        and shapes, from :func:`evaluate_plan`. ``plan_sha256`` names the plan: a sha256 over the
+        decision record's ``schema_version``, ``schedule`` and ``inputs``
+        (:meth:`chc.decision.Prescription.to_json`) as JSON with its keys sorted and no spaces,
+        and None from :func:`evaluate_plan`, whose plan is no decision's. ``logger_check`` is the
+        logger check's verdict, a nan partial correlation or an infinite detectable one None.
+        There is no reader: a record is for audit, and the evaluation is made again from the panel
+        and the plan.
         """
         certificate = self.certificate
         versus, bootstrap = self.versus_logger, self.bootstrap
@@ -1882,6 +1887,7 @@ def evaluate_plan(
             "min_effective": float(min_effective),
             "logger": _policy_json(logger),
             "logs_sha256": _logs_sha256(logs),
+            "plan_sha256": None,
         },
     )
 

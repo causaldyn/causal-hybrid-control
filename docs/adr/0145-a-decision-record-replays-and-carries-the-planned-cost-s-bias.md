@@ -11,6 +11,15 @@ with `inputs.<key>`, or `inputs` where the refusal names no argument; and `PlanE
 `settings` name the data: `panel_sha256` from `Prescription.evaluate`, `logs_sha256` (the float64
 bytes and shapes of `"x"` and `"u"`) from `evaluate_plan`, with `schema_version` still 1.
 
+Amended 2026-11-06: an evaluation names the decision it read. `settings.plan_sha256` is a sha256
+over the decision record's `schema_version`, `schedule` and `inputs`, written as JSON with its keys
+sorted and no spaces (`json.dumps(..., sort_keys=True, separators=(",", ":"))`), from
+`Prescription.evaluate`; it is null from `evaluate_plan`, whose plan is no decision's. A reader
+recomputes it from the record beside the evaluation. `settings.clusters` names the column a plan
+made on groups had the panel grouped by (ADR 0155), null otherwise, and `settings.panel_sha256`
+stays the panel's as handed in, as `inputs.panel_sha256` is. Both keys are new, so
+`EVALUATION_SCHEMA_VERSION` stays 1.
+
 ## Context
 
 `Prescription.to_json` records the schedule, both certificate axes, the greedy selection, the

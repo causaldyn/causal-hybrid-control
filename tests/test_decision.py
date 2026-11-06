@@ -64,8 +64,10 @@ from chc.dynamics import (
     Dynamics,
     HybridDynamics,
     LinearDynamics,
+    _EulerStep,
 )
 from chc.dynamics_id import CausalDynamicsFit, fit_causal_residual, persistence_check
+from chc.evaluation import AffinePolicy
 from chc.graph import AdjustmentSet, CausalGraph, CyclicGraphError
 from chc.integrate import rollout
 from chc.mpc import PeriodBudget
@@ -416,6 +418,136 @@ def test_a_plan_whose_levers_were_logged_on_a_column_outside_its_state_is_not_ev
         dataclasses.replace(chased, drivers=(Driver("demand", np.zeros(16)),)).evaluate(panel)
     with pytest.raises(NotIdentifiedError, match="no plan to evaluate"):
         _prescribe(panel, CausalGraph.from_edges(EDGES, latent=("demand",))).evaluate(panel)
+
+
+def _held_logs(seed: int, *, v: float | None = 0.5, set_u: bool = False) -> Panel:
+    """150 units over 20 periods of ``x' = 0.8 x + 0.5 u + 0.2 v + N(0, 0.1^2)``: ``u`` drawn from
+    the state, ``-0.3 x + N(0, 0.7^2)``, or set from it alone, ``-0.3 x``, with ``set_u``; ``v``
+    kept at ``v`` throughout, or drawn as ``N(0, 0.7^2)`` where ``v`` is None."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(0.0, 0.3, 150)
+    rows: dict[str, list[np.ndarray]] = {name: [] for name in ("unit", "time", "x", "u", "v")}
+    for period in range(20):
+        u = -0.3 * x + (0.0 if set_u else rng.normal(0.0, 0.7, 150))
+        held = np.full(150, v) if v is not None else rng.normal(0.0, 0.7, 150)
+        for name, values in zip(
+            rows, (np.arange(150), np.full(150, period), x, u, held), strict=True
+        ):
+            rows[name].append(values)
+        x = 0.8 * x + 0.5 * u + 0.2 * held + 0.1 * rng.standard_normal(150)
+    frame = {name: np.concatenate(values) for name, values in rows.items()}
+    return Panel.from_frame(frame, unit="unit", time="time", seed=0)
+
+
+def _prescribe_held(panel: Panel) -> Prescription:
+    return prescribe(
+        panel,
+        levers=[
+            Lever("u", lo=-2.0, hi=2.0, unit_cost=0.5),
+            Lever("v", lo=-2.0, hi=2.0, unit_cost=0.5),
+        ],
+        target=Target("x", value=0.3),
+        adjustment=CausalGraph.from_edges([("u", "x"), ("v", "x")]),
+        horizon=4,
+        dt=1.0,
+        integrator="euler",
+    )
+
+
+class _HeldAt(eqx.Module):
+    """``field`` with its last levers set at ``level``: a model over the levers before them."""
+
+    field: Dynamics
+    level: jax.Array
+
+    def __call__(self, t: float | jax.Array, x: jax.Array, u: jax.Array) -> jax.Array:
+        return self.field(t, x, jnp.concatenate([u, self.level]))
+
+
+def test_a_lever_the_log_never_moved_leaves_the_weights_and_keeps_its_price() -> None:
+    """``v`` was logged at 0.5 throughout, and the plan holds it there: the evaluation is the
+    plan's on ``u`` alone, read on the same windows on the plan's model with ``v`` at 0.5, plus
+    ``v``'s price at that level over the four steps; and so with the logger given, whose ``v`` has
+    no spread. Up to 1.1.0 ``v`` entered the logger's fit, whose covariance had no spread in it,
+    and the certificate refused the evaluation: no smoothing in (0, 1.6e-16) kept the weights'
+    variance finite."""
+    made = _prescribe_held(_held_logs(0))
+    assert made.certificate.unmoved_levers == ("v",)
+    plan = made.plan
+    assert plan is not None
+    problem = plan._problem
+    assert problem is not None
+    assert isinstance(problem.model, _EulerStep)
+    level = plan.actions[0, 1:]
+    assert float(level[0]) == pytest.approx(0.5, rel=1e-12, abs=0.0)
+    cost = problem.cost
+    alone = dataclasses.replace(
+        made,
+        levers=made.levers[:1],
+        certificate=dataclasses.replace(made.certificate, unmoved_levers=()),
+        plan=dataclasses.replace(
+            plan,
+            actions=plan.actions[:, :1],
+            _problem=dataclasses.replace(
+                problem,
+                model=_EulerStep(_HeldAt(problem.model.field, level)),
+                cost=QuadraticCost(Q=cost.Q, R=cost.R[:1, :1], Qf=cost.Qf, x_target=cost.x_target),
+            ),
+        ),
+    )
+    price = 4 * 0.5 * 0.5 * float(level[0]) ** 2
+    later = _held_logs(1)
+    given = AffinePolicy(np.array([[-0.3], [0.0]]), np.array([0.0, 0.5]), np.diag([0.49, 0.0]))
+    alone_given = AffinePolicy(np.array([[-0.3]]), np.array([0.0]), np.array([[0.49]]))
+    for logger, alone_logger in ((None, None), (given, alone_given)):
+        evaluation = made.evaluate(later, logger=logger, n_resamples=50)
+        reference = alone.evaluate(later, logger=alone_logger, n_resamples=50)
+        assert evaluation.value == pytest.approx(reference.value + price, rel=1e-9, abs=0.0)
+        assert evaluation.interval == pytest.approx(
+            (reference.interval[0] + price, reference.interval[1] + price), rel=1e-9, abs=0.0
+        )
+        assert evaluation.certificate.smoothing == pytest.approx(
+            reference.certificate.smoothing, rel=1e-9, abs=0.0
+        )
+        assert evaluation.effective_samples == pytest.approx(
+            reference.effective_samples, rel=1e-9, abs=0.0
+        )
+        versus, alone_versus = evaluation.versus_logger, reference.versus_logger
+        assert versus is not None
+        assert alone_versus is not None
+        assert versus.logger_value == pytest.approx(
+            alone_versus.logger_value + price, rel=1e-9, abs=0.0
+        )
+        assert versus.difference == pytest.approx(alone_versus.difference, rel=1e-9, abs=0.0)
+    assert evaluation.to_json()["settings"]["logger"]["covariance"] == [[0.49, 0.0], [0.0, 0.0]]
+
+
+@pytest.mark.parametrize(
+    ("v", "logged"),
+    [(None, r"from -\d"), (0.7, "from 0.7 to 0.7")],
+    ids=["moved", "kept at another level"],
+)
+def test_a_panel_that_moved_a_lever_the_plan_holds_is_refused_naming_it(
+    v: float | None, logged: str
+) -> None:
+    """The plan holds ``v`` at the 0.5 the log kept it at, and the panel moves it, or keeps it at
+    0.7: its weights would set the plan's one level against what the panel logged. Up to 1.1.0 a
+    panel that moved it was weighed as though the plan drew ``v`` from the panel's logger."""
+    made = _prescribe_held(_held_logs(0))
+    with pytest.raises(
+        DecisionError, match=rf"the plan holds 'v' at 0\.5, which this panel logs {logged}"
+    ):
+        made.evaluate(_held_logs(1, v=v), n_resamples=10)
+
+
+def test_a_logger_that_sets_a_lever_from_the_state_is_refused_naming_it() -> None:
+    """The plan was made on a log that drew both levers, and this panel sets ``u`` from the state
+    alone: the logger's covariance has no spread in ``u``, and the weights no density to divide
+    by. Up to 1.1.0 the certificate refused the smoothing instead, naming neither."""
+    made = _prescribe_held(_held_logs(0, v=None))
+    assert made.certificate.unmoved_levers == ()
+    with pytest.raises(DecisionError, match=r"the logger leaves \['u'\] no spread"):
+        made.evaluate(_held_logs(1, v=None, set_u=True), n_resamples=10)
 
 
 def test_the_episodes_are_windows_cut_back_from_each_units_latest_period() -> None:
