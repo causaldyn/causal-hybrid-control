@@ -6,6 +6,7 @@ matmuls run in float32 rather than TF32, whose 10-bit mantissa no tolerance here
 
 import gc
 import os
+from pathlib import Path
 
 import pytest
 from scipy.optimize import OptimizeResult
@@ -20,6 +21,17 @@ jax.config.update("jax_default_matmul_precision", "highest")
 # jax 0.5.0 made this the default, and a key draws other numbers without it: the leg on the
 # dependency floors would otherwise test other data than every leg on the lockfile does
 jax.config.update("jax_threefry_partitionable", True)
+
+MISSPECIFICATION = Path(__file__).resolve().parent / "misspecification"
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Mark every test under ``tests/misspecification/`` by its path, before ``-m`` deselects: a
+    file there without its own ``pytestmark`` ran on every leg of the matrix, not in its own job."""
+    for item in items:
+        if item.path.resolve().is_relative_to(MISSPECIFICATION):
+            item.add_marker(pytest.mark.misspecification)
 
 
 @pytest.fixture(autouse=True, scope="module")
