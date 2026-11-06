@@ -3535,7 +3535,9 @@ def test_a_plan_that_acts_outside_the_lever_s_logged_range_says_so(caplog) -> No
     step, its box allowing 5: the plant left the planned path by 2.1 there, in a tube of 0.32 that
     certified three steps, and nothing said the channel was read where the log never went. The
     tube's error is read at the log's actions, so the certified horizon ends at the first step
-    out of range, here the first, and the certificate, its record and the report say where."""
+    out of range, here the first, and the certificate, its record and the report say where. A
+    barrier held on the plan is read about the same channel: the plan's own audit clears all four
+    steps on the fitted model, and the certificate's barrier ends at that step as the tube does."""
     rng = np.random.default_rng(0)
     rows: dict[str, list[float]] = {name: [] for name in ("unit", "time", "x", "u", "w")}
     for unit in range(40):
@@ -3550,17 +3552,17 @@ def test_a_plan_that_acts_outside_the_lever_s_logged_range_says_so(caplog) -> No
         {name: np.asarray(values) for name, values in rows.items()}, unit="unit", time="time"
     )
     caplog.set_level(logging.WARNING, logger="chc.decision")
-    result = prescribe(
-        panel,
-        levers=[Lever("u", lo=-5.0, hi=5.0)],
-        target=Target("x", value=3.0),
-        adjustment=CausalGraph.from_edges([("w", "u"), ("w", "x"), ("u", "x")]),
-        horizon=4,
-        dt=0.5,
-        tolerance=0.5,
-        x0=jnp.zeros(1),
-        integrator="rk4",
-    )
+    decision = {
+        "levers": [Lever("u", lo=-5.0, hi=5.0)],
+        "target": Target("x", value=3.0),
+        "adjustment": CausalGraph.from_edges([("w", "u"), ("w", "x"), ("u", "x")]),
+        "horizon": 4,
+        "dt": 0.5,
+        "tolerance": 0.5,
+        "x0": jnp.zeros(1),
+        "integrator": "rk4",
+    }
+    result = prescribe(panel, **decision)
     assert result.plan is not None
     [record] = [r for r in caplog.records if getattr(r, "chc_event", "") == "lever_range"]
     assert record.lever == "u"  # type: ignore[attr-defined]
@@ -3577,6 +3579,20 @@ def test_a_plan_that_acts_outside_the_lever_s_logged_range_says_so(caplog) -> No
     assert "from step 0 the plan sets a lever outside the range the panel logged" in (
         result.report()
     )
+
+    held = prescribe(
+        panel, **decision, constraints=[Constraint("x", hi=1.0)], hold_constraints=True
+    )
+    assert held.plan is not None
+    assert held.plan.safety is not None
+    assert held.plan.safety.certified_steps == 4
+    assert held.certificate.lever_range_step == 0
+    assert held.certificate.barrier_certified_steps == held.certificate.trustworthy_steps == 0
+    written = json.loads(json.dumps(held.to_json(), allow_nan=False))["certificate"]
+    assert (written["lever_range_step"], written["barrier_certified_steps"]) == (0, 0)
+    report = held.report()
+    assert "the certified horizon and the barrier's certified steps end there" in report
+    assert "not read past step 0 (the lever leaves the logged range)" in report
 
 
 def test_a_noisy_log_whose_units_never_step_twice_leaves_the_tube_unevaluated(caplog) -> None:

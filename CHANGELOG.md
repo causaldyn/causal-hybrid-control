@@ -5,19 +5,79 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
 experimental may change in any minor release (`docs/api/index.md`).
 
+## [1.1.1] — 2026-11-07
+
+A patch: no feature, and no signature moves. A decision record replays on another machine's
+dependencies, as ADR 0145 promised, and one certificate field moves, in one corner, to the
+guarantee it states.
+
+### Fixed
+
+- **A decision record replays on another machine's dependencies and device.**
+  `Prescription.from_json` compared the whole replayed record with the stored one, so
+  `run.versions` (jax, jaxlib, numpy, scipy), `run.backend` and `run.device_kind`, which a replay
+  reads off the machine it runs on, refused every record after a patch upgrade of numpy, scipy or
+  jax, or on another device, where ADR 0145's rule is that they are not asked. They are no longer
+  compared. The library's own version and `run.x64` are still checked before the replay; a number
+  that moves is still refused, naming the field and the versions that differ; and the replay
+  returned holds this machine's versions and device.
+- **A barrier's certified steps end where the certified horizon does, at the first step a lever
+  leaves its logged range.** `prescribe` cut `certified_horizon` at `lever_range_step` and copied
+  the barrier audit's count as it was, though the audit reads the fitted channel past the logged
+  range, where its error is not priced: on a cubic plant logged within ±0.2 and planned at 0.4
+  from the first step, the certificate read "barrier: certified steps 40 at gamma 1.5" while the
+  true plant crossed the bound (least h −0.121 on one of three logs). `barrier_certified_steps` and
+  its JSON now read 0 there; `plan.safety.certified_steps` keeps the audit's count; the report's
+  barrier line says "not read past step k (the lever leaves the logged range)", and `gamma_star`
+  keeps its number. `trustworthy_steps` does not move: the horizon already ended there.
+
+### Documentation
+
+- 1.0.0's migration note: `import chc` then `chc.<module>.<name>` reaches the 255 moved names
+  outside `chc.research`; `import chc` loads no research module (ADR 0117), so the 166 inside it
+  need `import chc.research.<module>` first.
+- 1.1.0's notes: its defaults are compared with 1.0.0's to a tolerance (1e-9 relative, or the
+  search's own), not pinned to the bit; with 4 donors the AR(1) plug-in's coverage falls to
+  0.85–0.88 at the last post period by the batch of seeds, not to 0.852 alone.
+- `chc.response` says what a bare curve returns below zero spend, where it had said "several
+  return nan": `nan` from `BetaCDF` and `GammaCDF`, 0 from `LogNormalCDF`; from the families that
+  raise spend to a shape (`Hill`, `Weibull`, `BurrXII`, `Kumaraswamy`, `ChapmanRichards`) `nan` at
+  a shape that is not whole and a positive number at an even one (Kumaraswamy's `nan` past
+  `-K`); `-inf` at `-K` from `MichaelisMenten`, and from `Hill` and `BurrXII` at an odd shape, and
+  a positive number (BurrXII `nan`) past it; elsewhere a negative number, which can overflow far
+  below zero. An adstock kernel, a `Channel` and the readings of the return refuse a negative
+  spend, as before.
+- `delay_estimate` states that its interval covered the true delay in 0 of 10 seeds on
+  `DelayOscillationTask`'s log: it is an interval of the peak's location, not of the delay.
+- `docs/lifecycle.md`: an evaluation's logger check logs at `INFO` (ADR 0136); it does not warn.
+  The README and the site no longer call the library small. The quickstart says a replay gives the
+  record back with the machine's dependencies and device aside. Notebook 09 reads the barrier's
+  count from the plan's own audit and says why the certificate's is 0.
+
+### Notes
+
+- The misspecification job collects every test under `tests/misspecification/` by its path: the
+  lagged-lever check's 10 tests carried no marker, so the job ran 55 of 65 and every leg of the
+  matrix ran those 10.
+- The gate's e-values and the blank-period readings are compared with stored values to 1e-9
+  relative (1e-12 absolute for an exact zero) instead of a ten-digit digest, which hashed rounding
+  noise: a fresh epoch's log e-value is 0 exactly and reads −3.6e-16 in floats, and a perturbation
+  of every value by 1e-12 of itself moved the gate's digest every time.
+
 ## [1.1.0] — 2026-10-31
 
-Four opt-in readings; no default moves, each pinned to the bit against 1.0.0.
+Four opt-in readings; no default moves: the tests compare each default's numbers with 1.0.0's to
+a tolerance, 1e-9 relative or the search's own, not to the bit.
 
 ### Added
 
 - `blank_period_inference(serial="ar1", ar_error="jackknife")` (experimental) and
   `BlankPeriodInference.ar_coefficient_variance`: the AR(1) intervals widen by the coefficient's
   donor-jackknife variance through the delta method, about the plug-in's centres. On factor panels
-  at 0.95, 10 post periods, `alpha = 0.1`, 4 donors cover 0.895–0.912 where the plug-in falls to
-  0.852, at a last-period radius 13 % wider; 19 donors cover 0.903–0.916 against the plug-in's
-  0.884. It refuses fewer than three donors and costs `n_donors - 1` times the plug-in's fits
-  (ADR 0148).
+  at 0.95, 10 post periods, `alpha = 0.1`, 4 donors cover 0.895–0.912 at a last-period radius 13 %
+  wider, where the plug-in falls to 0.85–0.88 at the last post period, by the batch of seeds; 19
+  donors cover 0.903–0.916 against the plug-in's 0.884. It refuses fewer than three donors and
+  costs `n_donors - 1` times the plug-in's fits (ADR 0148).
 - `cvar_allocate(weights=)` (experimental): the worst share's mean weighs each reading, as a
   stacked posterior's draws are weighed; its boundary is a weighted quantile. Integer weights plan
   as the readings repeated, and a reading of weight 0 is left out of the share, its gain still read
@@ -53,7 +113,9 @@ naming its replacement (ADR 0147).
   `chc.research`. For example, `from chc import rollout` becomes
   `from chc.integrate import rollout`.
   The top level keeps its `__all__`, the lifecycle's names, and keeps importing every module a name
-  came from, so `import chc` then `chc.<module>.<name>` still works (ADR 0016).
+  came from outside `chc.research`, so `import chc` then `chc.<module>.<name>` still works for the
+  other 255 (ADR 0016). `import chc` loads no research module (ADR 0117): for the 166, write
+  `import chc.research.<module>` first, or `from chc.research.<module> import <name>`.
 - **The eight renamed names**, deprecated in 0.20.0 and 0.21.0:
   `DecisionCertificate.identification_radius` → `channel_error`,
   `ConfoundingRobustLQRegretCurve.regret_bounds` → `second_order_regrets`,
@@ -8052,6 +8114,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[1.1.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.1.1
 [1.1.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.1.0
 [1.0.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.0.0
 [0.24.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v0.24.1

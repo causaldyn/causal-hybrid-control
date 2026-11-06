@@ -18,6 +18,8 @@ from _misspec_world import DT, World
 from chc.dynamics import LinearDynamics
 from chc.dynamics_id import fit_causal_residual, lag_check
 
+pytestmark = pytest.mark.misspecification
+
 KNOWN = LinearDynamics(jnp.zeros((2, 2)), jnp.zeros((2, 1)))
 UNITS, STEPS = 200, 12
 

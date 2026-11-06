@@ -670,7 +670,10 @@ class DecisionCertificate:
     # quantile (:data:`TubeMode`); and before ``lever_range_step``, past which the channel's error
     # is not read
     certified_horizon: int | None
-    barrier_certified_steps: int | None  # leading prefix clearing the barrier; None if no bound
+    # the leading prefix clearing the barrier, cut at ``lever_range_step`` as ``certified_horizon``
+    # is: the barrier's radius prices the channel's error at the log's actions, not past them;
+    # None if no bound
+    barrier_certified_steps: int | None
     # The weakest step's confounding ceiling; None if unconstrained. With several bounds a step's
     # is the weakest bound's ceiling, an upper bound on the joint one: each bound's is reached by
     # its own best action, and no one action need reach them all. It asks whether some admissible
@@ -806,8 +809,8 @@ class DecisionCertificate:
     radius_model: Literal["relative", "absolute"] | None = None
     # The first step at which the plan sets a lever outside the range the panel logged it in,
     # counted from 0; None where it never does. The fitted channel is extrapolated from there, and
-    # its error, read at the log's actions, does not price that, so ``certified_horizon`` ends
-    # there.
+    # its error, read at the log's actions, does not price that, so ``certified_horizon`` and
+    # ``barrier_certified_steps`` end there; the plan's own ``safety`` keeps the barrier's count.
     lever_range_step: int | None = None
     # The planned cost, its bias against what the plan pays the plant in expectation over the
     # fit's error, with its sign, and the cost corrected for it, to second order
@@ -1861,14 +1864,16 @@ class Prescription:
         ``cluster``, which moves the channel's error and is not part of the digest, must be the
         ones the record names. ``model`` is the known model the decision was made with, where it
         was made with one: the record holds its digest alone, and refuses a model of another. The
-        replay reproduces the record, every number to the bit, on the versions and the precision
+        replay reproduces the decision, every number to the bit, on the release and the precision
         that wrote it (ADR 0145).
 
         The rule: a record replays on the release of the library that wrote it, under the same
         ``jax_enable_x64``, with ``schema_version`` 3 and ``inputs``, which no record before 1.0
         holds: 0.24.0 wrote version 2, and 0.23.0 and before no ``inputs``. Its other versions
-        (``run.versions``: jax, jaxlib, numpy, scipy) and its device are not asked first; where
-        one differs and moves a number, the check below names it.
+        (``run.versions``: jax, jaxlib, numpy, scipy), its backend and its device kind
+        (``run.backend``, ``run.device_kind``) name the machine, not the decision: they are not
+        compared, and the replay returned holds this machine's. Where one differs and moves a
+        number, the check below names the number and the versions that differ.
 
         Raises:
             DecisionError: naming the field, on a record of another ``schema_version``, without
@@ -1921,7 +1926,9 @@ class Prescription:
             raise DecisionError(
                 f"{_refused_input(message)}: prescribe refuses the record's inputs: {message}"
             ) from refusal
-        difference = _first_difference(replayed.to_json(), dict(record))
+        difference = _first_difference(
+            _without_environment(replayed.to_json()), _without_environment(record)
+        )
         if difference is not None:
             moved = sorted(
                 name
@@ -1951,10 +1958,15 @@ class Prescription:
         step = self.certificate.lever_range_step
         if step is None:
             return []
+        ends = (
+            "certified horizon ends"
+            if self.certificate.barrier_certified_steps is None
+            else "certified horizon and the barrier's certified steps end"
+        )
         return [
             f"- logged range: from step {step} the plan sets a lever outside the range the panel "
             "logged it in, where the fitted channel is extrapolated and its error not read; the "
-            "certified horizon ends there"
+            f"{ends} there"
         ]
 
     def _barrier_lines(self) -> list[str]:
@@ -1971,7 +1983,12 @@ class Prescription:
                 " (a relative margin on a share of the fitted channel, not a level of confounding)"
             )
         steps = certificate.barrier_certified_steps
-        if (
+        if steps is not None and steps == certificate.lever_range_step:
+            line += (
+                f"; not read past step {steps} (the lever leaves the logged range), where gamma* "
+                "reads the fitted channel extrapolated"
+            )
+        elif (
             certificate.gamma_star is not None
             and math.isinf(certificate.gamma_star)
             and steps is not None
@@ -3333,6 +3350,9 @@ def prescribe(
         )
     else:
         safety = None
+    barrier_steps = None if safety is None else safety.certified_steps
+    if barrier_steps is not None and lever_range_step is not None:
+        barrier_steps = min(barrier_steps, lever_range_step)
     gap = regret(plan)
     # refitted with its influence, not fitted so once: keeping the influence compiles another
     # program, whose rounding moved the channel's error by an ulp on jax 0.4.30
@@ -3444,7 +3464,7 @@ def prescribe(
         overlap=fit.action_residual_variance,
         certificate_status=plan.certificate_status,
         certified_horizon=plan.certified_horizon,
-        barrier_certified_steps=None if safety is None else safety.certified_steps,
+        barrier_certified_steps=barrier_steps,
         gamma_star=None if safety is None else safety.gamma_star,
         solver_status=plan.solver_status,
         solver_iterations=plan.solver_iterations,
@@ -6336,6 +6356,17 @@ def _read_neighbours(
         return label_of.get(label, label)
 
     return {read(unit): [read(other) for other in others] for unit, others in written}
+
+
+_ENVIRONMENT = ("versions", "backend", "device_kind")
+
+
+def _without_environment(record: Mapping[str, Any]) -> dict[str, Any]:
+    """``record`` less the machine its ``run`` names (:data:`_ENVIRONMENT`), which a replay reads
+    off its own: a replay compares the decision, and the library's own version is checked before
+    it runs (ADR 0145)."""
+    run = record["run"]
+    return {**record, "run": {key: value for key, value in run.items() if key not in _ENVIRONMENT}}
 
 
 def _first_difference(ours: Any, theirs: Any, path: str = "") -> str | None:

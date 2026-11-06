@@ -12,7 +12,7 @@ u* = argmin_u  J_task(u) + λ_unc·U(x,u) + λ_supp·D((x,u), 𝒟)   # pessimis
 
 Most data science stops at prediction. The value is in *decisions* — and a decision changes the
 future, so it must be evaluated as an **intervention**, not a correlation, and chosen by **optimal
-control**, not by argmax over a predictive score. `chc` is a small JAX library for that step.
+control**, not by argmax over a predictive score. `chc` is a JAX library for that step.
 
 ## Install
 

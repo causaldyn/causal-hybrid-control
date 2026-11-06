@@ -71,7 +71,17 @@ HONEST SCOPE:
   compiles, and its parameters are leaves a fit can move. So does every kernel.
 * :class:`BetaCDF` has no derivative in its shapes ``a`` and ``b``, since JAX's ``betainc`` has
   none; asking for one raises. :class:`Kumaraswamy` is its closed-form counterpart.
-* Spend is nonnegative. Below zero a family's value is not defined, and several return ``nan``.
+* Spend is nonnegative. Below zero a family's value is not defined, and a curve, a pure function
+  that traces, does not check: an adstock kernel, a :class:`Channel` through it, and the readings
+  of the return refuse a negative spend. A bare curve called below zero returns ``nan`` from
+  :class:`BetaCDF` and :class:`GammaCDF` and 0 from :class:`LogNormalCDF`. The families that raise
+  spend to a shape (:class:`Hill`, :class:`Weibull`, :class:`BurrXII`, :class:`Kumaraswamy`,
+  :class:`ChapmanRichards`) return ``nan`` at a shape that is not whole and a positive number at
+  an even one, the sign lost (``Hill(1, 2)(-1)`` is 0.5), Kumaraswamy's ``nan`` past ``-K``.
+  :class:`MichaelisMenten`, and Hill and BurrXII at an odd shape, fall to ``-inf`` at ``-K`` and
+  return a positive number past it (BurrXII ``nan``). Every other family, and every other shape,
+  returns a negative number, which far enough below zero can overflow to ``-inf`` or ``nan``
+  (:class:`Exponential`, :class:`Weibull`, :class:`Gompertz`).
 * A curve that rises from zero spend like ``z^m`` has its slopes of order above ``m`` infinite
   there unless ``m`` is whole: the slope itself below shape 1 (:class:`Hill`, :class:`Weibull`,
   :class:`ChapmanRichards`, :class:`BurrXII`, :class:`Kumaraswamy`, :class:`GammaCDF`,

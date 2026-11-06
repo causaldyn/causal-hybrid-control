@@ -20,7 +20,9 @@ from test_discovery import _simulate_var
 
 
 def _digest(values: list) -> str:
-    """Rounded to ten digits, so that a last bit a BLAS or a CPU moves does not move it."""
+    """The sha256 of the values' text. The graphs' values are parents, lags and edges, with no
+    float, so the text is exact; a float would be written to ten digits, which a last bit still
+    moves at a rounding boundary and about a zero, and is compared to a tolerance instead."""
     text = repr([f"{v:.10g}" if isinstance(v, float) else v for v in values])
     return hashlib.sha256(text.encode()).hexdigest()
 

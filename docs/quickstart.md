@@ -88,7 +88,8 @@ confounding the decision can tolerate — [the sensitivity level Γ](concepts/ga
 
 `out.to_json()` carries the same schedule, both axes and the provenance as plain JSON values,
 and what the call was asked: `Prescription.from_json(record, panel)` makes the decision again
-from the same panel and gives the record back to the bit, or names the field that stops it.
+from the same panel and gives the record back to the bit, the machine's dependencies and device
+aside, or names the field that stops it.
 
 ## The expert path
 

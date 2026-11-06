@@ -17,10 +17,11 @@ seed see the same draws in every zone until their verdicts part.
 
 from __future__ import annotations
 
-import hashlib
+import json
 import logging
 import math
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -886,17 +887,20 @@ def test_a_baseline_share_outside_the_contract_is_refused(
         GateConfig(delta=0.0, delta_harm=0.0, min_effect=0.1, horizon=10, **changes)
 
 
-def _digest(values: list) -> str:
-    """Rounded to ten digits, so that a last bit a CPU's log kernel moves does not move it."""
-    text = repr([f"{v:.10g}" if isinstance(v, float) else v for v in values])
-    return hashlib.sha256(text.encode()).hexdigest()
+# Every verdict and mode, and every log e-value, ``_without_a_share`` reads, in its loops' order,
+# as the gate gave them before ``rollback_baseline_share`` existed: written from 1.1.0 on x86-64
+# under the lockfile's numpy 2.5.4, where they still hash, to ten digits, to the digest the test
+# held before.
+_BEFORE_BASELINE_SHARE = Path(__file__).with_name("gate_blocks_before_baseline_share.json")
 
 
-def test_without_a_baseline_share_every_e_value_and_verdict_is_what_it_was() -> None:
+def _without_a_share() -> tuple[list[str], list[float]]:
     """Three gates in blocks (plain; centred with a futility stop; with the carryover check and
     drift e-values that alarm), each of two zones over 150 reads, one zone turning worse once
-    deployed, and the gate without blocks, plain and centred: every verdict, mode and e-value,
-    digested as the previous release produced them."""
+    deployed, and the gate without blocks, plain and centred: each read's verdict and mode, and
+    its four e-processes' log values."""
+    labels: list[str] = []
+    values: list[float] = []
     plan = ZonePlan(chi2=0.2, tv=0.15)
     settings = {"delta": 0.0, "delta_harm": 0.02, "min_effect": 0.05, "horizon": 10**6}
     configs = [
@@ -904,7 +908,6 @@ def test_without_a_baseline_share_every_e_value_and_verdict_is_what_it_was() -> 
         GateConfig(**settings, block_length=3, burn_in=1, centred=True, alpha_futility=0.1),  # type: ignore[arg-type]
         GateConfig(**settings, block_length=2, burn_in=1, check_burn_in=True, drift_arl=50.0),  # type: ignore[arg-type]
     ]
-    out: list = []
     for k, config in enumerate(configs):
         assert config.block_length is not None
         rng = np.random.default_rng(20261027 + k)
@@ -934,8 +937,9 @@ def test_without_a_baseline_share_every_e_value_and_verdict_is_what_it_was() -> 
             verdicts = gate.update(batches)
             for z in ("a", "b"):
                 zone = gate._zones[z]
-                out += [verdicts[z], zone.mode, zone.improvement.log_value, zone.harm.log_value]
-                out += [zone.rollback.log_value, zone.futility.log_value]
+                labels += [verdicts[z], zone.mode]
+                values += [zone.improvement.log_value, zone.harm.log_value]
+                values += [zone.rollback.log_value, zone.futility.log_value]
             if k == 0 and gate.mode("a") == "deployed":
                 gains["a"] = -0.3
     for centred in (False, True):
@@ -964,6 +968,20 @@ def test_without_a_baseline_share_every_e_value_and_verdict_is_what_it_was() -> 
             reward = (rng.random(48) < 0.3 + 0.3 * np.exp(-((u - 1) ** 2) / 2)).astype(float)
             verdict = gate.update({"a": ZoneBatch(reward, cand, base, logged)})["a"]
             zone = gate._zones["a"]
-            out += [verdict, zone.mode, zone.improvement.log_value, zone.harm.log_value]
-            out += [zone.rollback.log_value, zone.futility.log_value]
-    assert _digest(out) == "45196edb7e3bf081f6a3702e35a66d5a1e6fbbc4df5ed6962b31176e95690303"
+            labels += [verdict, zone.mode]
+            values += [zone.improvement.log_value, zone.harm.log_value]
+            values += [zone.rollback.log_value, zone.futility.log_value]
+    return labels, values
+
+
+def test_without_a_baseline_share_every_e_value_and_verdict_is_what_it_was() -> None:
+    """Every verdict and mode of ``_without_a_share``'s gates as the previous release gave them,
+    and every log e-value to rtol 1e-9. Not to the bit: a digest of the values to ten digits hashed
+    rounding noise, since an e-process at a fresh epoch has the log value 0 exactly, which floats
+    read near -3.6e-16 (1223 of the 4560 values), and a perturbation of every value by 1e-12 of
+    itself moved the digest. The atol of 1e-12 holds those zeros; e-values 1 % off fail the test,
+    and so do bets 1 % larger."""
+    labels, values = _without_a_share()
+    stored = json.loads(_BEFORE_BASELINE_SHARE.read_text(encoding="utf-8"))
+    assert labels == stored["labels"]
+    np.testing.assert_allclose(values, stored["values"], rtol=1e-9, atol=1e-12)

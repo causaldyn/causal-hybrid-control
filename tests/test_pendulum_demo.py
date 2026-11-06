@@ -69,9 +69,10 @@ def test_a_latent_wind_leaves_no_schedule_to_run(case: PendulumCase) -> None:
 def test_only_the_adjusted_schedule_is_trusted_and_only_for_its_tube(case: PendulumCase) -> None:
     """The tube, not the barrier, would set the adjusted prefix, but the plan's torque leaves the
     range the log moved it in, about +-0.3, at its first step, where the channel is extrapolated
-    and its error is not read: the certificate trusts no step. The asserted fit has no channel
-    error, so it has no tube, and its barrier clearing any number of steps must not read as
-    trust."""
+    and its error is not read: the certificate trusts no step, and its barrier, which the plan's
+    own audit clears at every step on the fitted model, ends there too. The asserted fit has no
+    channel error, so it has no tube, and its barrier clearing any number of steps must not read
+    as trust."""
     reading = case.reading("adjusted").prescription
     adjusted = reading.certificate
     assert reading.plan is not None
@@ -79,8 +80,9 @@ def test_only_the_adjusted_schedule_is_trusted_and_only_for_its_tube(case: Pendu
     assert reading.plan.tolerance is not None
     radii = np.asarray(reading.plan.uncertainty_tube)[1:]
     assert radii[0] <= reading.plan.tolerance  # the tube alone would trust a step at least
-    assert adjusted.barrier_certified_steps == demo.HORIZON
-    assert adjusted.lever_range_step == 0
+    assert reading.plan.safety is not None
+    assert reading.plan.safety.certified_steps == demo.HORIZON
+    assert adjusted.lever_range_step == adjusted.barrier_certified_steps == 0
     assert adjusted.certificate_status == "uncertified"
     assert adjusted.certified_horizon == adjusted.trustworthy_steps == 0
 
