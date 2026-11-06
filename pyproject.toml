@@ -178,9 +178,17 @@ select = [
 testpaths = ["tests"]
 # tests/misspecification/ runs in its own CI job (`just misspecification`): its Monte Carlo is too
 # slow to repeat on every leg of the matrix
-addopts = "-q -m 'not misspecification'"
+addopts = "-q -m 'not misspecification' --strict-markers"
 markers = [
     "misspecification: a certificate read on a plant its model gets wrong; holds, or says so",
+]
+# A warning fails the test it is raised in, unless the test expects it or it is listed below with
+# the reason it is not a defect
+filterwarnings = [
+    "error",
+    # free-threaded legs: CPython re-enables the GIL to import an extension module that has not
+    # declared it safe without it, and warns once; that leg then tests with the GIL on
+    "ignore:The global interpreter lock:RuntimeWarning",
 ]
 
 [tool.ty.environment]

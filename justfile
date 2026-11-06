@@ -57,6 +57,30 @@ test-cpu workers="4":
 misspecification workers="2":
     JAX_PLATFORMS=cpu uv run pytest -m misspecification -n {{workers}} --dist loadfile tests/misspecification
 
+# The commit `just wheel` builds; `just rev=v0.24.0 wheel` builds that tag.
+rev := "HEAD"
+
+# release.yml's `wheel` job, here: the wheel and sdist `uv build` makes of a commit, the wheel
+# installed beside the locked test dependencies in a copy of that commit whose src/ is removed, and
+# the suite run against it. A module or a file the build leaves out passes every run from the
+# checkout and fails here, as on 0.24.0's tag. The copy and its environment, a few GB, go under
+# TMPDIR, /var/tmp when that is unset: on a tmpfs /tmp they would sit in memory.
+# Builds the commit `rev`, not the working tree, and hands its arguments to pytest.
+[positional-arguments]
+wheel *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    unset UV_PROJECT_ENVIRONMENT VIRTUAL_ENV
+    work=$(mktemp -d "${TMPDIR:-/var/tmp}/chc-wheel.XXXXXX"); trap 'rm -rf "$work"' EXIT
+    git archive "{{rev}}" | tar -x -C "$work"
+    cd "$work"
+    uv build --python 3.11
+    uv sync --frozen --python 3.14 --group dev --no-install-project
+    uv pip install --no-deps dist/*.whl
+    uv pip check
+    rm -r src
+    uv run --no-sync pytest "$@"
+
 fix:
     uv run ruff check --fix .
     uv run ruff format .

@@ -461,7 +461,9 @@ def test_the_fractions_are_counts_over_the_grid_in_double_precision() -> None:
         "u_max": 1.0,
         "radius": 0.0,
     }
-    barrier = lambda x: 1.0 - x[0]  # noqa: E731, x[0] <= 1 holds 121 of the 161 grid columns
+    # x[0] <= 1.0125 holds 121 of the 161 grid columns, and its edge lies halfway between two:
+    # at x[0] <= 1, on a node, the count read the last bit of a jitted linspace's node there
+    barrier = lambda x: 1.0125 - x[0]  # noqa: E731
     tube = backward_reachable_tube(barrier, _double_integrator, DI_B, **common)
     assert tube.safe_fraction(0) == 121 / 161
     gap = barrier_reachability_gap(barrier, _double_integrator, DI_B, **common)
