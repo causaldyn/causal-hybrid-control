@@ -3,6 +3,7 @@
 import jax
 import numpy as np
 import pytest
+from scipy.stats import t as student_t
 
 from chc.network_causal import (
     DelayedNetworkPanel,
@@ -89,8 +90,8 @@ def test_clustering_inflates_the_spillover_se_and_leaves_the_direct_one_alone() 
     The sandwich meat's cross terms are ``E[x_i x_j eps_i eps_j]``. The panel's ``eta`` is i.i.d.
     across units, so the DIRECT regressor is white and its cross terms vanish however correlated
     the disturbance is; the EXPOSURE is a shell sum and is spatially smooth, so its cross terms
-    survive. Measured over eight seeds: clustered / HC is ``0.93`` for direct against ``1.87`` for
-    spillover -- reporting one i.i.d. SE for both would understate exactly the coefficient
+    survive. Measured over seeds 0 to 7: clustered / HC is ``0.99`` for direct against ``1.95``
+    for spillover -- reporting one i.i.d. SE for both would understate exactly the coefficient
     interference is about.
     """
     panel = DelayedNetworkPanel(n_clusters=16, cluster_size=8, n_times=16, disturbance_scale=2.0)
@@ -109,8 +110,9 @@ def test_the_intervals_cover_the_truth_across_seeds() -> None:
     seeds = 12
     for seed in range(seeds):
         out = estimate_network_effects(panel.sample(jax.random.key(seed)), folds=2)
+        quantile = student_t.ppf(0.975, out["df"])
         for name, truth in (("direct", panel.b_direct), ("spillover", panel.b_spillover)):
-            hits[name] += abs(out[name] - truth) <= 1.96 * out[name + "_se"]
+            hits[name] += abs(out[name] - truth) <= quantile * out[name + "_se"]
     assert hits["direct"] >= seeds - 3
     assert hits["spillover"] >= seeds - 3
 
