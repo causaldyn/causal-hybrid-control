@@ -28,8 +28,12 @@ lag-aligned design, so the p-value belongs to the time-homogeneous edge, not to 
 *nominal*: the parents were chosen by these same data, and a p-value read after a data-driven
 selection is not uniform under the null. It is not a selective p-value, valid given the selection
 (Berk, Brown, Buja, Zhang and Zhao, "Valid post-selection inference", Annals of Statistics 2013),
-and it is not corrected for the multiplicity above. On a long series it reads 0.0 where ``erfc``
-underflows, and two such edges are no longer ranked by it.
+and it is not corrected for the multiplicity above. On a long series it reads 0.0 where the
+``t``'s tail underflows, and two such edges are no longer ranked by it.
+
+Each test is the partial correlation's exact ``t`` with ``n - k - 2`` degrees of freedom, ``n`` the
+lag-aligned rows and ``k`` the parents conditioned on, so a target keeps at most ``n - 2``
+parents: the selection stops growing where one more would leave a test no degree of freedom.
 
 Deliberately minimal: lag-capped, next-state targets only, no contemporaneous-link search. The heavy
 algorithms (PCMCI+/LPCMCI) stay a lazy, opt-in tigramite adapter; the point here is to feed
@@ -251,7 +255,9 @@ def _select_parents(
     """
     selected: list[int] = []
     remaining = list(range(candidates.shape[1]))
-    while remaining and len(selected) < max_parents:
+    # a test given k parents has n - k - 2 degrees of freedom, and needs one
+    cap = min(max_parents, candidates.shape[0] - 2)
+    while remaining and len(selected) < cap:
         best_p, _, best_c = min(_scored(target, candidates, remaining, selected))
         if not best_p < alpha:
             break  # nothing left is a significant parent given what we already have
@@ -282,13 +288,22 @@ def discover_lagged_parents(
 
     Each edge's p-value is the shrink's last test of it, given the target's other kept parents
     (``state_p_values``, ``control_p_values``); no test runs for it beyond the selection's own. It
-    is nominal, not selective, and 0.0 where ``erfc`` underflows (see the module docstring).
+    is nominal, not selective, and 0.0 where the ``t``'s tail underflows (see the module
+    docstring). A target keeps at most ``T - max_lag - 2`` parents, each test's degrees of
+    freedom at least 1. Up to 1.1.0 the p-values were Fisher's z, which differ from the exact
+    ``t``'s at every ``T``, and by most where ``T - max_lag`` is small; where a test had no degree
+    of freedom left, its z was floored at one and read the collinear residuals' correlation of 1
+    as a parent.
 
     ``alpha`` is each test's level, not the graph's: a candidate that is not a parent enters at
     about that rate, so a graph of many candidates holds a false edge far more often; on three
     states and one control over three lags, 31 of whose 36 candidate edges are not parents, about
     1 % of those 31 entered at ``alpha=0.01``, and 26 % of 500 graphs of 300 steps and 27 % of 500
     of 1000 steps held at least one false edge.
+
+    Raises:
+        ValueError: where ``series`` is not ``(T, d_state)``, a value is not finite, or
+            ``T - max_lag`` is below 3, which leaves a test of one candidate no degree of freedom.
     """
     series = np.asarray(_real_numbers(series, "series"), dtype=float)
     if series.ndim != 2:
@@ -299,6 +314,11 @@ def discover_lagged_parents(
     # a nan reads a nan p-value, which no test rejects and the selection's minimum may still pick
     if not (np.isfinite(series).all() and (controls is None or np.isfinite(controls).all())):
         raise ValueError("series and controls must be finite")
+    if series.shape[0] - max_lag < 3:
+        raise ValueError(
+            f"a series of {series.shape[0]} steps leaves {series.shape[0] - max_lag} rows at "
+            f"max_lag={max_lag}; a test of one candidate needs 3, one degree of freedom"
+        )
     d_state = series.shape[1]
     d_control = 0 if controls is None else controls.shape[1]
     design, tags = _lagged_design(series, controls, max_lag)

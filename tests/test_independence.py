@@ -29,6 +29,54 @@ def test_partial_corr_test_removes_a_confounded_path() -> None:
     assert float(p_conditional) > 0.05
 
 
+@pytest.mark.parametrize(
+    ("n", "k", "closed_form"),
+    [
+        (3, 0, lambda r: 1.0 - 2.0 * math.asin(abs(r)) / math.pi),
+        (5, 2, lambda r: 1.0 - 2.0 * math.asin(abs(r)) / math.pi),
+        (4, 0, lambda r: 1.0 - abs(r)),
+        (6, 2, lambda r: 1.0 - abs(r)),
+    ],
+    ids=["df 1", "df 1 given two", "df 2", "df 2 given two"],
+)
+def test_the_p_value_is_the_partial_correlation_s_exact_t(n, k, closed_form) -> None:
+    """At ``n - k - 2`` degrees of freedom: one, the t is Cauchy's and the two-sided p-value of a
+    partial correlation ``r`` is ``1 - 2 asin|r| / pi``; two, it is ``1 - |r|``
+    (``validation/partial_corr_t.mac``). Fisher's z, its degrees of freedom floored at one, read
+    other p-values at every ``n``."""
+    rng = np.random.default_rng(n + 10 * k)
+    for _ in range(20):
+        x, y = rng.standard_normal(n), rng.standard_normal(n)
+        z = rng.standard_normal((n, k)) if k else None
+        rho, p_value = partial_corr_test(x, y, z)
+        assert p_value == pytest.approx(closed_form(rho), rel=1e-12, abs=1e-15)
+
+
+@pytest.mark.parametrize(("n", "k"), [(3, 0), (4, 1), (5, 2), (6, 2)])
+def test_partial_corr_test_holds_its_level_at_one_or_two_degrees_of_freedom(n, k) -> None:
+    """On independent Gaussian columns at 5 %: Fisher's z rejected 17 % to 18 % at one degree of
+    freedom. 4000 draws: the rate's Monte Carlo error is 0.0034, and the bound, 0.0175 off 0.05,
+    is five of them, a false failure about once in two million runs."""
+    rng = np.random.default_rng(100 + 10 * n + k)
+    draws = 4000
+    rejected = 0
+    for _ in range(draws):
+        x, y = rng.standard_normal(n), rng.standard_normal(n)
+        z = rng.standard_normal((n, k)) if k else None
+        rejected += partial_corr_test(x, y, z)[1] < 0.05
+    assert abs(rejected / draws - 0.05) < 0.0175
+
+
+@pytest.mark.parametrize(("n", "k"), [(2, 0), (3, 1), (4, 2), (5, 4)])
+def test_partial_corr_test_refuses_fewer_than_one_degree_of_freedom(n, k) -> None:
+    """With ``n - k - 1`` at one the two residuals lie on one line: their correlation is 1 or -1
+    whatever the data, and Fisher's z, floored at one degree of freedom, rejected every time."""
+    rng = np.random.default_rng(0)
+    z = rng.standard_normal((n, k)) if k else None
+    with pytest.raises(ValueError, match=rf"leave {n - k - 2} degrees of freedom"):
+        partial_corr_test(rng.standard_normal(n), rng.standard_normal(n), z)
+
+
 def test_partial_corr_test_is_calibrated_under_autocorrelation() -> None:
     phi, n, trials, alpha = 0.8, 250, 200, 0.05
     naive_rejections = mci_rejections = 0

@@ -1,12 +1,13 @@
 """Autocorrelation-robust conditional-independence testing (the MCI idea, borrowed from tigramite).
 
 A linear partial-correlation (ParCorr) test of ``x ⊥ y | z``: residualise ``x`` and ``y`` on the
-conditioning set ``z``, then Fisher-z test the residual correlation. In serially correlated data a
-naive ``corr(x, y)`` is badly miscalibrated -- autocorrelation inflates the effective variance of
-the estimator, so unrelated series look linked. Conditioning on the lagged parents (tigramite's
-*momentary conditional independence*) whitens the residuals and restores calibration. This is the CI
-primitive ``chc.discovery`` screens lagged parents with. The method (partial
-correlation) is standard; only the autocorrelation-aware *usage* is borrowed -- no tigramite code.
+conditioning set ``z``, then test the residual correlation by its exact ``t``. In serially
+correlated data a naive ``corr(x, y)`` is badly miscalibrated -- autocorrelation inflates the
+effective variance of the estimator, so unrelated series look linked. Conditioning on the lagged
+parents (tigramite's *momentary conditional independence*) whitens the residuals and restores
+calibration. This is the CI primitive ``chc.discovery`` screens lagged parents with. The method
+(partial correlation) is standard; only the autocorrelation-aware *usage* is borrowed -- no
+tigramite code.
 
 :func:`gcm_test` is the nonlinear, many-pair form: Shah and Peters' generalised covariance measure,
 with a polynomial regression on ``z`` and a sign-change randomisation over clusters of rows.
@@ -24,6 +25,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
+from scipy.stats import t as student_t
 
 from chc import _units
 from chc.frames import _real_numbers
@@ -61,9 +63,9 @@ def _residualize(target: ArrayLike, conditioning: ArrayLike | None) -> tuple[np.
     so the residual is in ``target``'s, a power of two times the one in the units given. A
     ``target`` whose spread is rounding (:mod:`chc._units`) has a residual of zeros: what is left of
     it is the regression's rounding, at the scale of its level. ``k`` is the number of conditioning
-    columns (0 when ``conditioning`` is ``None``) -- the degrees-of-freedom correction for the
-    Fisher-z statistic. A ``(n,)`` or ``(n, k)`` conditioning set is accepted; a ``(k, n)`` one is
-    transposed to rows-are-samples.
+    columns (0 when ``conditioning`` is ``None``), which the test's degrees of freedom count. A
+    ``(n,)`` or ``(n, k)`` conditioning set is accepted; a ``(k, n)`` one is transposed to
+    rows-are-samples.
     """
     target = _own_units(np.asarray(target, dtype=np.float64).ravel()[:, None])[:, 0]
     if _units.spread_and_rounding_np(target[:, None])[1][0]:
@@ -81,25 +83,41 @@ def _residualize(target: ArrayLike, conditioning: ArrayLike | None) -> tuple[np.
 def partial_corr_test(
     x: ArrayLike, y: ArrayLike, z: ArrayLike | None = None
 ) -> tuple[float, float]:
-    """Test ``x ⊥ y | z`` by partial correlation + Fisher-z; returns ``(partial_corr, p_value)``.
+    """Test ``x ⊥ y | z`` by partial correlation; returns ``(partial_corr, p_value)``.
 
     With ``z=None`` this is the plain marginal-correlation test -- the miscalibrated one under
     autocorrelation. Pass the lagged parents as ``z`` for the calibrated MCI variant. ``z`` may be a
     single covariate ``(n,)`` or several stacked as ``(n, k)``. The p-value is two-sided, and the
     same in whatever units each column is logged. A column that moved by rounding alone, such as
     one logged at a single value, reads a correlation of 0 and a p-value of 1.
+
+    The statistic is the partial correlation's exact ``t``, ``r sqrt((n - k - 2) / (1 - r^2))``
+    against ``t(n - k - 2)``, of ``n`` rows and ``k`` columns of ``z``: under Gaussian noise its
+    level holds at every ``n``. Fisher's z with ``n - k - 3`` degrees of freedom, floored at 1,
+    which this read up to 1.1.0, rejected a true null at 0.05 in 17 % to 18 % of 2000 draws where
+    ``n - k - 2`` is 1, and in every draw where it is 0; the ``t`` rejected 3.5 % to 4.5 % at one
+    degree of freedom, and 4.9 % to 5.6 % from two.
+
+    Raises:
+        ValueError: where ``n - k - 2`` is below 1: the two residuals then lie on one line, and
+            their correlation is 1 or -1 whatever the data.
     """
     x, y = _real_numbers(x, "x"), _real_numbers(y, "y")
     z = None if z is None else _real_numbers(z, "z")
     residual_x, k = _residualize(x, z)
     residual_y, _ = _residualize(y, z)
     n = residual_x.shape[0]
+    dof = n - k - 2
+    if dof < 1:
+        raise ValueError(
+            f"{n} rows less {k} columns of z and a constant leave {dof} degrees of freedom for "
+            "the partial correlation's t, which needs 1 at least: give more rows or fewer columns"
+        )
     denom = math.sqrt(float(np.sum(residual_x**2)) * float(np.sum(residual_y**2))) + _EPS
     rho = float(np.sum(residual_x * residual_y)) / denom
     rho = min(max(rho, -1.0 + _EPS), 1.0 - _EPS)
-    dof = max(n - k - 3, 1)  # Fisher-z uses sqrt(n - |z| - 3)
-    stat = math.atanh(rho) * math.sqrt(dof)
-    p_value = math.erfc(abs(stat) / math.sqrt(2.0))  # = 2 * (1 - Phi(|stat|)), two-sided
+    stat = rho * math.sqrt(dof / (1.0 - rho * rho))
+    p_value = float(2.0 * student_t.sf(abs(stat), dof))
     return rho, p_value
 
 

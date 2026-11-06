@@ -1,0 +1,27 @@
+/* The partial correlation's exact t at one and two degrees of freedom
+   (chc.independence.partial_corr_test).
+
+   P1  At df = 1 the t is Cauchy's: the two-sided p-value of a partial correlation r, read at
+       t = r sqrt(df / (1 - r^2)), is 1 - 2 asin(|r|)/pi.
+   P2  At df = 2 it is 1 - |r|.
+   tests/test_independence.py reads the library's p-values against both. Maxima is the source of
+   truth. */
+display2d : false$
+ratprint : false$
+assume(r > 0, r < 1, s > 0)$
+tdens(x, nu) := gamma((nu + 1)/2)/(sqrt(nu*%pi)*gamma(nu/2))*(1 + x^2/nu)^(-(nu + 1)/2)$
+tail(nu, s) := 2*integrate(tdens(x, nu), x, s, inf)$
+p1 : subst(s = r*sqrt(1/(1 - r^2)), tail(1, s))$
+p2 : subst(s = r*sqrt(2/(1 - r^2)), tail(2, s))$
+
+/* ---------- P1 ---------- */
+/* atan(r/sqrt(1 - r^2)) and asin(r) on (0, 1): equal derivatives, and both p-values are 1 at r = 0 */
+d1 : ratsimp(radcan(diff(p1 - (1 - 2*asin(r)/%pi), r)))$
+at0 : ratsimp(limit(p1, r, 0, plus))$
+print("P1 the p-value at df = 1:", p1)$
+print("P1 its derivative less that of 1 - 2 asin(r)/pi:", d1, if d1 = 0 then "(PASS)" else "(FAIL)")$
+print("P1 at r = 0:", at0, if at0 = 1 then "(PASS: 1, as 1 - 2 asin(0)/pi)" else "(FAIL)")$
+
+/* ---------- P2 ---------- */
+d2 : ratsimp(radcan(p2 - (1 - r)))$
+print("P2 the p-value at df = 2 less 1 - r:", d2, if d2 = 0 then "(PASS)" else "(FAIL)")$
