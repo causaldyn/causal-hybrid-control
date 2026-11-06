@@ -630,6 +630,18 @@ def test_a_model_s_digest_reads_its_arrays_and_its_class() -> None:
     assert decision._model_digest(swapped) != decision._model_digest(KNOWN)
 
 
+def test_two_functions_digest_apart_by_their_code() -> None:
+    """A function is a model a caller may know, and every lambda's text reads ``<lambda>``: up to
+    1.1 two lambdas that compute apart read one digest, and a replay took either."""
+    first = lambda t, x, u: -0.5 * x  # noqa: E731
+    second = lambda t, x, u: -0.3 * x  # noqa: E731
+    sine = lambda t, x, u: jnp.sin(x)  # noqa: E731
+    cosine = lambda t, x, u: jnp.cos(x)  # noqa: E731
+    digests = [decision._model_digest(f) for f in (first, second, sine, cosine)]
+    assert len(set(digests)) == 4
+    assert decision._model_digest(lambda t, x, u: -0.5 * x) == digests[0]
+
+
 def test_a_replay_that_does_not_give_the_record_back_names_the_field(
     quickstart: Prescription,
 ) -> None:
@@ -888,6 +900,48 @@ def test_on_one_scalar_step_the_bias_is_maxima_s_closed_form() -> None:
     assert (
         found.bias != made.certificate.planned_cost_bias.bias
     )  # the drift's error is the plan's too
+
+
+def _scalar(**options: Any) -> Prescription:
+    return prescribe(
+        _scalar_logs(),
+        levers=[Lever("u", lo=-50.0, hi=50.0, unit_cost=0.1)],
+        target=Target("x", value=0.3, weight=2.0),
+        adjustment=CausalGraph.from_edges([("z", "u"), ("z", "x"), ("u", "x")]),
+        horizon=1,
+        dt=DT,
+        x0=[1.0],
+        **options,
+    )
+
+
+class _Falsy(LinearDynamics):
+    """A known model whose truth value is False, as a container's is when it is empty."""
+
+    def __bool__(self) -> bool:
+        return False
+
+
+def test_a_known_model_is_read_whatever_its_truth_value() -> None:
+    """Up to 1.1 ``prescribe`` read ``known or`` a zero model, so a known model that tests false
+    was dropped, and the fit took its part into the residual."""
+    rate = jnp.array([[-0.5]])
+    plain = _scalar(known=LinearDynamics(rate, jnp.zeros((1, 1))))
+    falsy = _scalar(known=_Falsy(rate, jnp.zeros((1, 1))))
+    assert np.array_equal(
+        np.asarray(falsy.model_fit.residual.drift), np.asarray(plain.model_fit.residual.drift)
+    )
+    assert np.array_equal(
+        np.asarray(falsy.schedule.magnitudes), np.asarray(plain.schedule.magnitudes)
+    )
+
+
+def test_a_numpy_integer_is_a_count_of_knots() -> None:
+    """``seed`` and ``folds`` take NumPy's integers, and up to 1.1 ``nuisance_knots`` refused one;
+    the record holds it as JSON's integer."""
+    record = _text(_scalar(nuisance_knots=np.int64(4)).to_json())
+    assert type(record["inputs"]["nuisance_knots"]) is int
+    assert record == _text(_scalar(nuisance_knots=4).to_json())
 
 
 # ---- the evaluation's record ----

@@ -36,6 +36,7 @@ import logging
 import math
 import re
 import time
+import types
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from importlib import metadata
@@ -2544,6 +2545,8 @@ def prescribe(
         neighbours = {unit: tuple(others) for unit, others in neighbours.items()}
     if dither is not None and not isinstance(dither, str):
         dither = tuple(dither)
+    if isinstance(nuisance_knots, np.integer):
+        nuisance_knots = int(nuisance_knots)  # as the record holds it, JSON's integer
     if not levers:
         raise DecisionError(
             "prescribe needs at least one lever; there is nothing to decide otherwise"
@@ -2760,7 +2763,11 @@ def prescribe(
     two_way = groups > 1 and periods > 1
     n_states, n_levers = len(states), len(lever_names)
 
-    base = known or LinearDynamics(jnp.zeros((n_states, n_states)), jnp.zeros((n_states, n_levers)))
+    base = (
+        LinearDynamics(jnp.zeros((n_states, n_states)), jnp.zeros((n_states, n_levers)))
+        if known is None
+        else known
+    )
     started = time.perf_counter()
     fit_options: dict[str, Any] = {
         "adjust_for": resolved.covariates,
@@ -5876,12 +5883,14 @@ def _floats(values: ArrayLike) -> Any:
 
 
 def _model_digest(model: Dynamics) -> str:
-    """A sha256 over a model's structure and its arrays' dtypes, shapes and bytes.
+    """A sha256 over a model's structure, its arrays' dtypes, shapes and bytes, and its functions'
+    code.
 
     A model is any pytree of arrays and code, which JSON does not carry; the digest names it. An
     address in its structure's text, a function's or an object's, is dropped, and a leaf that is not
     a number is read by its type and its text, its addresses dropped too, so that one model reads
-    one digest in every process."""
+    one digest in every process; a function is read by its code as well (:func:`_code_bytes`),
+    where its text names it alone, as every lambda's reads ``<lambda>``."""
     leaves, structure = jax.tree_util.tree_flatten(model)
     digest = hashlib.sha256(_ADDRESS.sub("", str(structure)).encode())
     for leaf in leaves:
@@ -5892,10 +5901,29 @@ def _model_digest(model: Dynamics) -> str:
         else:
             digest.update(type(leaf).__qualname__.encode())
             digest.update(_ADDRESS.sub("", repr(leaf)).encode())
+            code = getattr(leaf, "__code__", None)
+            if isinstance(code, types.CodeType):
+                digest.update(_code_bytes(code))
     return digest.hexdigest()
 
 
 _ADDRESS = re.compile(r" at 0x[0-9a-fA-F]+")
+
+
+def _code_bytes(value: Any) -> bytes:
+    """A function's code as :func:`_model_digest` reads it: its bytecode, the names it reads and
+    its constants, a nested function's code read alike and a set's members in sorted order, as
+    their text's order moves with the process's string hashing. Two lambdas read one text, and
+    their code apart; bytecode is the interpreter's, so another Python minor reads another."""
+    if isinstance(value, types.CodeType):
+        parts = [value.co_code, repr(value.co_names).encode(), *map(_code_bytes, value.co_consts)]
+    elif isinstance(value, tuple | frozenset):
+        parts = [type(value).__name__.encode(), *map(_code_bytes, value)]
+        if isinstance(value, frozenset):
+            parts[1:] = sorted(parts[1:])
+    else:
+        parts = [repr(value).encode()]
+    return b"".join(len(part).to_bytes(8, "little") + part for part in parts)
 
 
 def _inputs_record(

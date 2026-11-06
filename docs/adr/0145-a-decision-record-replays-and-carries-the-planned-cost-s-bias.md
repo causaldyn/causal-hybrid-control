@@ -21,6 +21,19 @@ in, and are not compared after the replay; the replay returned holds the panel's
 the same bit for bit whatever the order: shuffled, the rows had moved the schedule by 8e-17 and the
 channel's error by an ulp. `SCHEMA_VERSION` stays 3: a key is added and none changes meaning.
 
+Amended 2026-11-06 too: a replay's refusals name what differs. The panel's `seed` and `frequency`,
+labels the record's `provenance` holds, are compared before the replay and refused naming
+`provenance.seed` or `provenance.frequency`, as `inputs.panel_cluster` is: another seed had run the
+whole replay and been refused as one that does not give the record back, and another frequency as
+other data. A `schema_version` equal to 3 that is not JSON's integer 3 (`3.0`) is refused.
+A column the panel does not have is refused under the input that names it (`inputs.levers`,
+`inputs.dither`, ...), where it was refused under `inputs`, and a refusal that names its own field
+(`inputs.adjustment.kind`) keeps it, where it was prefixed a second time. A known model's function
+is digested by its code too, its bytecode, the names it reads and its constants, so two lambdas
+digest apart where both read `<lambda>`; bytecode is the interpreter's, so a record made with a
+function replays on the Python minor that wrote it. The values a function's closure holds are still
+not read.
+
 ## Context
 
 `Prescription.to_json` records the schedule, both certificate axes, the greedy selection, the
