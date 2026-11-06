@@ -406,6 +406,13 @@ def _zero(a: float) -> float:
     return 0.0
 
 
+def _near_unit_root(a: float, se: float) -> float:
+    """One zone's standard error on the persistence over its distance from the unit root,
+    ``se / (1 - a)``: past ``_NEAR_UNIT_ROOT`` its O(1/T) bias is not in the reading's interval.
+    Infinite at or past the unit root, where there is no distance left."""
+    return se / (1.0 - a) if a < 1.0 else math.inf
+
+
 def _trusted(estimands, prior: PersistencePrior, periods: int, r_max: float, warnings):
     grid, q, kappa = prior._grid(), prior.signal_to_noise, prior.noise_ratio
     horizons = [e for e in estimands if e.periods > 1.0]
@@ -492,7 +499,7 @@ def _trusted(estimands, prior: PersistencePrior, periods: int, r_max: float, war
                 return 1.0 / _information(_a1_markov(r, a), a, q)
             return float(_iv_covariance(r, a, q, kappa)[0, 0])
 
-        near, at = max((math.sqrt(persistence(a) / periods) / (1.0 - a), a) for a in grid)
+        near, at = max((_near_unit_root(a, math.sqrt(persistence(a) / periods)), a) for a in grid)
         if near > _NEAR_UNIT_ROOT:
             warnings.append(
                 f"one zone's persistence estimate has a standard error {100 * near:.0f}% of 1 - a "
@@ -759,7 +766,13 @@ class SwitchbackReading:
     ``interval`` is the ``1 - alpha`` confidence interval: normal about ``estimate`` with ``se``,
     except for the steady state read through the plant, where it is Fieller's for ``b / (1 - a)``.
     Fieller's is ``(-inf, inf)`` when the data cannot rule out a unit root, which the delta
-    method's ``se`` does not show.
+    method's ``se`` does not show, and the reading then logs a warning, ``switchback_unbounded``.
+    On ``x' = a x + u + eps`` with fair coins at ``a = 0.9``, over 1000 runs, the jackknife's
+    interval was the whole line on 13.9 % of one zone's runs of 200 periods, 0.3 % of 400, and
+    none on 4 zones; the uncorrected reading's on 0.1 %, none and none. At ``a = 0.95`` over 200
+    periods, 48.7 % and 7.8 %. The near-unit-root warning, ``switchback_near_unit_root``, fired on
+    every one of those runs at ``a = 0.9`` over 200 periods: it says that the interval is
+    optimistic, and ``switchback_unbounded`` which of them bound nothing.
     """
 
     estimand: Horizon
@@ -794,10 +807,24 @@ def _fit(target, regressors, instruments, lags: int) -> tuple[np.ndarray, np.nda
 
 
 def _fieller(a: float, b: float, cov: np.ndarray, z: float) -> tuple[float, float]:
-    """The ``tau`` whose ``b - tau (1 - a) = 0`` a level-``z`` test does not reject."""
+    """The ``tau`` whose ``b - tau (1 - a) = 0`` a level-``z`` test does not reject: the whole
+    line, with a ``switchback_unbounded`` warning, where ``(1 - a)^2 <= z^2 var(a)``, the
+    level-``z`` test of a unit root not rejecting it."""
     d = 1.0 - a
     curvature = d * d - z * z * cov[0, 0]
     if curvature <= 0.0:
+        t = d / math.sqrt(cov[0, 0])
+        _log.warning(
+            "the steady state's interval, Fieller's, is the whole line: 1 - a_hat = %.4f is %.2f "
+            "standard errors from 0, within the interval's %.2f, so the data do not rule out a "
+            "unit root and bound the steady state nowhere. On one zone over 200 periods at a = "
+            "0.9 it was so on 13.9%% of runs read by the jackknife and 0.1%% read without it; "
+            "read a finite horizon, or a longer run or more zones",
+            d,
+            t,
+            z,
+            extra={"chc_event": "switchback_unbounded", "a_hat": a, "t": t, "z": z},
+        )
         return (-math.inf, math.inf)
     half = b * d + z * z * cov[0, 1]
     spread = math.sqrt(max(half * half - curvature * (b * b - z * z * cov[1, 1]), 0.0))
@@ -890,7 +917,7 @@ def _plant(u, y, estimand: Horizon, analysis: SwitchbackAnalysis, z: float):
     h = estimand.periods
     if h > 1.0:
         # one zone's, as in the design: the O(1/T) bias of a_hat does not shrink with more zones
-        near = math.sqrt(cov[0, 0] * u.shape[0]) / (1.0 - a) if a < 1.0 else math.inf
+        near = _near_unit_root(a, math.sqrt(cov[0, 0] * u.shape[0]))
         if near > _NEAR_UNIT_ROOT:
             _log.warning(
                 "a_hat = %.4f, and one zone's standard error on it is %.0f%% of 1 - a_hat: its "
@@ -1141,29 +1168,28 @@ def _half_panel(u, y, estimand: Horizon, analysis: SwitchbackAnalysis, z: float)
     se = math.sqrt(variance)
     if projection:
         return estimate, se, (estimate - z * se, estimate + z * se)
-    a = float(parameters[0][0])
-    near = math.sqrt(float((influences[0][1] ** 2).sum()) * u.shape[0]) / (1.0 - a)
+    jack = 2.0 * parameters[0] - 0.5 * (parameters[1] + parameters[2])
+    a_jack, b_jack = float(jack[0]), float(jack[1])
+    cov = np.einsum("izt,jzt->ij", q[1:], q[1:])
+    near = _near_unit_root(a_jack, math.sqrt(float(cov[0, 0]) * u.shape[0]))
     if h > 1.0 and near > _NEAR_UNIT_ROOT:
         _log.warning(
-            "a_hat = %.4f, and one zone's standard error on it is %.0f%% of 1 - a_hat: each half "
-            "reads a_hat on half the periods, closer still to the unit root, and the jackknife "
-            "spreads further (its steady state's interquartile range 1.9 to 2.0 times the "
-            "uncorrected reading's at a = 0.95 over 200 periods)",
-            a,
+            "the jackknifed a_hat = %.4f, and one zone's standard error on it is %.0f%% of 1 - "
+            "a_hat: each half reads a_hat on half the periods, closer still to the unit root, and "
+            "the jackknife spreads further (its steady state's interquartile range 1.9 to 2.0 "
+            "times the uncorrected reading's at a = 0.95 over 200 periods)",
+            a_jack,
             100.0 * near,
-            extra={"chc_event": "switchback_near_unit_root", "a_hat": a, "ratio": near},
+            extra={"chc_event": "switchback_near_unit_root", "a_hat": a_jack, "ratio": near},
         )
     if math.isinf(h):
         # the steady state at the jackknifed (a, b), where Fieller's statistic is zero, so it lies
         # in its own interval: 2 tau_T - (tau_1 + tau_2) / 2 fell outside it on 6 runs of 3000
-        jack = 2.0 * parameters[0] - 0.5 * (parameters[1] + parameters[2])
-        a_jack, b_jack = float(jack[0]), float(jack[1])
         if a_jack >= 1.0:
             raise ValueError(
                 f"the jackknifed persistence 2 a_T - (a_1 + a_2) / 2 = {a_jack:.4f} is at or past "
                 "1: the jackknife has no steady state to read"
             )
-        cov = np.einsum("izt,jzt->ij", q[1:], q[1:])
         gradient = np.array([b_jack, 1.0 - a_jack]) / (1.0 - a_jack) ** 2
         se = math.sqrt(float(gradient @ cov @ gradient))
         return b_jack / (1.0 - a_jack), se, _fieller(a_jack, b_jack, cov, z)
@@ -1339,8 +1365,10 @@ def read_switchback(
     over 1.349 on one zone and 0.91 to 0.97 on 16 at ``a = 0.9``, 0.82 to 0.85 at ``a = 0.95``;
     Fieller's interval carries the level. On a short run near the unit root each half reads
     ``a_hat`` closer still to it: at ``a = 0.95`` over 200 periods the jackknife's interquartile
-    range was 1.9 to 2.0 times the uncorrected reading's, and it warns where the run's own
-    reading does.
+    range was 1.9 to 2.0 times the uncorrected reading's. Its near-unit-root warning reads the
+    jackknifed ``a_J`` and its own standard error, and warns at or past 1 as the uncorrected one
+    does: on a random walk over 200 periods read at ``Horizon(10)`` both warned on all 400 runs,
+    among them the 156 whose ``a_hat`` was at or past 1.
 
     Raises:
         ValueError: when the shapes disagree, the lever is not 0 or 1 or never switches, the

@@ -23,6 +23,46 @@ the true coefficient gives 0.904-0.912 and 0.886-0.898. A donor jackknife or boo
 coefficient, added to the forecast's variance, brought 4 donors to 0.888-0.905 and moved 19 by at
 most 0.4 points, but cannot move 2, whose gaps are one series and its negative; the intervals stay
 as built, and the docstring states the table.
+Amended 2026-11-06: **a rollback that starts again on a grid**, opt-in, for blocks and per
+decision. The rollback reads every decision since the DEPLOY in one e-process, and while the
+candidate is no worse each constant bet pays the margin and the increments' variance at every
+decision: on blocks of one period at a mean of 0.5, `q = 0.2`, centred, 5000 equal blocks left the
+largest bet at -965 nats on average, and a turn 0.12 worse 5000 blocks after the DEPLOY was rolled
+back within 3000 blocks on 0.070 of 1000 paths, against 0.925 at the DEPLOY. Per decision the
+module's own example, +0.06 for 3000 decisions and -0.06 after, was caught on 3 of 200.
+`GateConfig(rollback_restart=K)` reads instead `N_t = sum_k w_k E_k(t)`, `E_k` the mixture over
+the constant bets started `(k - 1) K` decisions (blocks) after the DEPLOY and 1 before it, a
+start not yet opened counted at its weight. Per bet the started e-processes add up to
+`A_t = (A_(t-1) + w_t)(1 + lam Y_t)`, one number a bet. The weights are the drift alarm's epochs',
+0.9 and then `0.1 / ((k - 1) k)`, or, with `rollback_horizon=H`, `1 / ceil(H / K)` for each start
+within `H`. This is not the restart the alternatives below set aside: that one discards the
+evidence at each read and states a new claim each time. Here nothing is discarded; each `E_k` is a
+test supermartingale under the rollback's own null, every decision since the DEPLOY within
+`delta_harm` given the past, and so is their convex mixture, so Ville's inequality bounds a wrong
+ROLLBACK by `alpha_harm` at every read, as before. What a ROLLBACK says narrows to the decisions
+since one of the starts. A drift alarm still rolls a deployed zone back and retires it, so the
+grid is never started again on an alarm; `log_rollback` in the gate's records is the e-value the
+rule reads, the mixture's when the restart is set, and the records carry `rollback_restart` and
+`rollback_horizon`. Unset, every e-value and verdict is what it was (the suite's digest).
+Measured through the gate, read every 10 blocks, rolled back within 3000 blocks of the turn, 1000
+paths:
+
+| turn after the DEPLOY | unset | every 250, epoch weights | every 250, alike over 10 000 |
+|---|---|---|---|
+| 0 blocks | 0.925 | 0.929 | 0.732 |
+| 1000 | 0.686 | 0.761 | 0.790 |
+| 5000 | 0.070 | 0.340 | 0.770 |
+
+At least 0.8 within 3000 blocks of a turn 5000 blocks in is out of the epoch weights' reach: the
+21st start carries `0.1 / 420`, 8.2 nats below the first's 0.9, some 2500 blocks of evidence at
+this contrast. Alike weights reach the late turn and pay at the
+DEPLOY: on the lab turn above, 40 blocks after the DEPLOY, 0.53 of 400 paths against 0.965 unset
+and with the epoch weights. Per decision, the example was caught on 185 of 200 paths with the epoch
+weights every 250 decisions and on 198 alike over 10 000. Wrong rollbacks: a candidate that did
+not turn, within 8000 blocks, 6 of 1000 paths unset and with the epoch weights, 4 alike, at an
+`alpha_harm` of 0.05; the six lab cells above, 1000 paths each, none at `K` 250 or 10 with either
+weighting. The default stays unset: which weights a default would carry, a turn at the DEPLOY or
+one long after it, is a separate decision.
 
 ## Context
 

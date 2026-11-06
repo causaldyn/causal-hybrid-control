@@ -25,15 +25,16 @@ equilibrium :func:`fit_equilibrium` estimates from the logs, passed as ``equilib
 never through the simulator's own base demand, attractiveness and equilibrium map, which no log
 supplies: through those, a response of zero planned as close to the oracle as the adjusted
 one, so the comparison measured knowing the equilibrium. The SUTVA baselines get no such
-structure. The plan's value is the fitted equilibrium's: on 30 markets the adjusted
-response's tilt moved the share of the best plan's lift by -0.022 +- 0.012 on 400 blocks against
-a response of zero (mean +- standard error; -0.17 to +0.12), and by -0.057 +- 0.025 on 50 (-0.41
-to +0.21), the best plan being the exact oracle's (:meth:`SharedStateMarket.oracle_allocation`).
+structure. The plan's value is the fitted equilibrium's: on 30 markets in float64 the adjusted
+response's tilt moved the share of the best plan's lift by -0.002 +- 0.003 on 400 blocks against
+a response of zero (mean +- standard error; -0.08 to +0.03), and by -0.044 +- 0.019 on 50 (-0.41
+to +0.12), the best plan being the exact oracle's (:meth:`SharedStateMarket.oracle_allocation`).
 Where the market lies outside the fitted class, its attractiveness fixed while the demand moves,
-the tilt cost share too: 0.73 of the lift against 0.79 with a response of zero, over 100 logs of
-400 blocks (ADR 0134; through a fit that stopped early it had read 0.72 against 0.40). The fit
-warns on such a market, and the planner refuses a fit whose drivers do not tell an incentive from
-none (ADR 0123).
+the tilt cost share too: 0.76 of the lift against 0.83 with a response of zero, over 100 logs of
+400 blocks. Up to 1.1.0, whose tilted plan was ascended from the even split alone, these read
+-0.022 +- 0.012, -0.057 +- 0.025, and 0.73 against 0.79 (ADR 0134; through a fit that stopped
+early, 0.72 against 0.40). The fit warns on such a market, and the planner refuses a fit whose
+drivers do not tell an incentive from none (ADR 0123).
 
 Everything is differentiable and reuses the equilibrium solver in :mod:`chc.games`.
 """
@@ -1421,7 +1422,7 @@ def pessimistic_equilibrium_allocation(
     radius: float = 1.0,
     steps: int = 600,
     equilibrium: FittedEquilibrium,
-    objective: PlanObjective = "tilted",
+    objective: PlanObjective | None = None,
 ) -> Array:
     """CHC allocation: plan the budget *through* the congestion equilibrium (``chc.games``) so the
     driver-conservation (cannibalisation) channel the SUTVA baselines assume away is structural. The
@@ -1440,26 +1441,34 @@ def pessimistic_equilibrium_allocation(
     supplies, and the planner does not read them. ``response`` enters only through the tilt.
 
     ``objective`` chooses what the plan maximises. ``"tilted"``, the default, is the fit's
-    completions plus the response's tilt, ascended ``steps`` times from the even split.
-    ``"expected"``, opt-in, is the fit's expected completions under its own uncertainty,
-    ``S(u) = sum_i E[min(D_i, X_i(u))]``, ``X_i - D_i`` normal about the fit's drivers less the
-    planning demand, of variance ``g_i' C g_i + h_i' C_d h_i``: ``C`` the fit's sandwich
-    (:attr:`FittedEquilibrium.covariance`) over the zones it identifies and the market's
-    parameters, ``C_d`` the planning demand's (:attr:`FittedEquilibrium.demand_covariance`),
-    ``g_i`` and ``h_i`` the drivers' Jacobians in them, in closed form. Each term is the normal loss
-    function (``validation/marketplace_expected_completions.mac``). A plug-in plan sits on each
-    zone's kink at its demand, where an error in either direction costs (Liyanage and Shanthikumar
-    2005); the expectation hedges it. It is ascended ``steps`` times from the even split and from
-    the fitted game's exact optimum (:func:`chc.games.exact_congestion_allocation`), and the plan
-    better on ``S`` is kept. The response is not read and may be None. On markets 0-29, logs of 400
-    blocks, it won 0.971 of the exact oracle's lift on average in float64, where the tilted plan won
-    0.900 (more on 27 markets, less on 1, by 0.006), and 0.984 in float32 against 0.907 (more on
-    28, less on 2, by 0.0007 at most), never less than the naive plan. On float32 market 18 the
-    tilted ascent stops short, its surrogate 9.83 where 10.67 is reachable, and wins 0.735, below
-    the naive plan's 0.805; the expected plan wins 0.978. Nearly all of the hedge is the demand's
-    error: at the plan the parameters' SD per zone is 0.07 to 0.18 of the demand's (markets 0-9).
-    What it assumes: the drivers' error is normal, the fit's parameters and its planning demand are
-    uncorrelated though read from the same logs, and a plan is scored at the planning demand.
+    completions plus the response's tilt. Not given, it is ``"tilted"``, and a ``FutureWarning``
+    says that from 1.3.0 the default is ``"expected"`` and ``response`` a keyword that may be left
+    out: pass ``objective="tilted"`` to keep these plans. ``"expected"`` is the fit's expected
+    completions under its own uncertainty, ``S(u) = sum_i E[min(D_i, X_i(u))]``, ``X_i - D_i``
+    normal about the fit's drivers less the planning demand, of variance
+    ``g_i' C g_i + h_i' C_d h_i``: ``C`` the fit's sandwich (:attr:`FittedEquilibrium.covariance`)
+    over the zones it identifies and the market's parameters, ``C_d`` the planning demand's
+    (:attr:`FittedEquilibrium.demand_covariance`), ``g_i`` and ``h_i`` the drivers' Jacobians in
+    them, in closed form. Each term is the normal loss function
+    (``validation/marketplace_expected_completions.mac``). A plug-in plan sits on each zone's kink
+    at its demand, where an error in either direction costs (Liyanage and Shanthikumar 2005); the
+    expectation hedges it. The response is not read and may be None. Nearly all of the hedge is the
+    demand's error: at the plan the parameters' SD per zone is 0.07 to 0.18 of the demand's
+    (markets 0-9). What it assumes: the drivers' error is normal, the fit's parameters and its
+    planning demand are uncorrelated though read from the same logs, and a plan is scored at the
+    planning demand.
+
+    Either objective is ascended ``steps`` times from the even split and from the fitted game's
+    exact optimum (:func:`chc.games.exact_congestion_allocation`), and the plan better on it is
+    kept: one ascent alone stops on a kink short of what is reachable. On markets 0-29, logs of 400
+    blocks, the expected plan won 0.971 of the exact oracle's lift on average in float64, where the
+    tilted plan won 0.948 (more on 14 markets, less on 1, by 0.018), and 0.984 in float32 against
+    0.941 (more on 20, less on 1, by 0.015), neither less than the naive plan on any. Up to 1.1.0
+    the tilted objective was ascended from the even split alone and won 0.900 and 0.907; on float32
+    market 18 its surrogate stopped at 9.83 where 10.67 is reachable, and it won 0.735, below the
+    naive plan's 0.805, where it now wins 0.978. In float64 the second start raised the tilted
+    plan's share on 17 markets and lowered it on 3, by up to 0.079, its surrogate higher on each of
+    them: the surrogate is the fit's, not the market's.
 
     Raises:
         ValueError: on a market that pays per driver, whose budget is not a sum of rates; on a
@@ -1474,6 +1483,17 @@ def pessimistic_equilibrium_allocation(
     """
     _lump_sum(market, "pessimistic_equilibrium_allocation")
     _radius(radius)
+    if objective is None:
+        warnings.warn(
+            "pessimistic_equilibrium_allocation plans on the 'tilted' objective when none is"
+            " given; from 1.3.0 the default is 'expected', the fit's expected completions under"
+            " its own uncertainty, which reads no response, and response becomes a keyword that"
+            " may be left out. Pass objective='tilted' to keep these plans, or"
+            " objective='expected' to plan on the expectation now.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        objective = "tilted"
     if objective not in ("tilted", "expected"):
         raise ValueError(f"objective is {objective!r}; it is 'tilted' or 'expected'")
     if response is None and objective == "tilted":
@@ -1521,8 +1541,37 @@ def pessimistic_equilibrium_allocation(
         u = zero.at[free].set(v)
         return completions(u) + jnp.dot(tilt, u)
 
-    planned = stackelberg_allocation(surrogate, free.size, market.budget, steps=steps)
-    return zero.at[free].set(planned)
+    return zero.at[free].set(_ascend(surrogate, market, equilibrium, free, steps))
+
+
+def _ascend(
+    objective: Callable[[Array], Array],
+    market: SharedStateMarket,
+    equilibrium: FittedEquilibrium,
+    free: NDArray[np.intp],
+    steps: int,
+) -> Array:
+    """The incentive over the zones ``free`` that maximises ``objective``, the better on it of two
+    ascents of ``steps``: from the even split, and from the exact optimum of the fitted game
+    (:func:`chc.games.exact_congestion_allocation`), its held zones' share of the budget spread
+    over the rest by the projection onto the budget simplex. Either ascent alone stops where it
+    stops on the ``min(demand, drivers)`` kinks."""
+    beta, congestion, mass = (float(part) for part in equilibrium._parameters())
+    exact = exact_congestion_allocation(
+        np.asarray(equilibrium.attract * equilibrium.demand, np.float64),
+        np.asarray(equilibrium.demand, np.float64),
+        beta,
+        congestion,
+        mass,
+        market.budget,
+    )
+    starts = (None, jnp.asarray(exact.allocation[free], equilibrium.attract.dtype))
+    plans = [
+        stackelberg_allocation(objective, free.size, market.budget, steps=steps, start=start)
+        for start in starts
+    ]
+    scores = [float(objective(plan)) for plan in plans]
+    return plans[int(np.argmax(scores))]
 
 
 def _driver_jacobians(
@@ -1575,10 +1624,8 @@ def _expected_completions(drivers: Array, demand: Array, variance: Array) -> Arr
 def _expected_plan(
     market: SharedStateMarket, equilibrium: FittedEquilibrium, free: NDArray[np.intp], steps: int
 ) -> Array:
-    """The incentive over the zones ``free`` that maximises the fit's expected completions, the
-    better on that objective of two ascents: from the even split, and from the exact optimum of the
-    fitted game (:func:`chc.games.exact_congestion_allocation`), its held zones' share of the
-    budget spread over the rest."""
+    """The incentive over the zones ``free`` that maximises the fit's expected completions, by
+    :func:`_ascend`."""
     covariance, demand_covariance = equilibrium.covariance, equilibrium.demand_covariance
     if covariance is None or demand_covariance is None:
         raise ValueError(
@@ -1613,22 +1660,7 @@ def _expected_plan(
         )
         return _expected_completions(drivers, demand, variance)
 
-    beta, congestion, mass = (float(part) for part in parameters)
-    exact = exact_congestion_allocation(
-        np.asarray(attract * demand, np.float64),
-        np.asarray(demand, np.float64),
-        beta,
-        congestion,
-        mass,
-        market.budget,
-    )
-    starts = (None, jnp.asarray(exact.allocation[free], dtype))
-    plans = [
-        stackelberg_allocation(expected, free.size, market.budget, steps=steps, start=start)
-        for start in starts
-    ]
-    scores = [float(expected(plan)) for plan in plans]
-    return plans[int(np.argmax(scores))]
+    return _ascend(expected, market, equilibrium, free, steps)
 
 
 def interference_bias(

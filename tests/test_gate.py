@@ -23,6 +23,7 @@ from hypothesis import strategies as st
 from scipy import integrate, optimize, signal, stats
 
 from chc.gate import (
+    _BETS,
     DecisionLog,
     DeploymentGate,
     DriftAlarm,
@@ -30,6 +31,8 @@ from chc.gate import (
     GateMode,
     ZoneBatch,
     ZonePlan,
+    _epoch_weight,
+    _RestartEvidence,
     channel_drift_evalues,
 )
 
@@ -337,6 +340,133 @@ def test_a_contrast_that_turns_is_deployed_on_its_first_half() -> None:
             if gate.update({"z": logged})["z"] == "deploy":
                 break
         assert gate.mode("z") == "deployed"  # before the contrast turns to -0.06
+
+
+def _turning_contrast(config: GateConfig, path: int) -> tuple[bool, int]:
+    """The documented contrast that turns, on path ``path``'s own stream, read every 50 decisions:
+    whether the candidate was deployed before the turn, and the decision at whose read the
+    rollback fired, -1 where it did not by the end."""
+    pb, pc, batch = 0.5, 0.8, 50
+    plan = ZonePlan(chi2=pc**2 / pb + (1 - pc) ** 2 / (1 - pb) - 1.0, tv=pc - pb)
+    rng = np.random.default_rng(path)
+    gate = DeploymentGate({"z": plan}, config)
+    deployed = False
+    for k in range(6000 // batch):
+        mode = gate.mode("z")
+        if mode == "retired":
+            break
+        p = {"shadow": pb, "deployed": pc, "experiment": (1 - config.rho) * pb + config.rho * pc}
+        a = rng.random(batch) < p[mode]
+        good = np.where(a, 0.6, 0.4)
+        mean = np.where(k * batch + np.arange(batch) < 3000, good, 1.0 - good)
+        r = (rng.random(batch) < mean).astype(float)
+        logged = ZoneBatch(
+            r, np.where(a, pc, 1 - pc), np.where(a, pb, 1 - pb), np.where(a, p[mode], 1 - p[mode])
+        )
+        verdict = gate.update({"z": logged})["z"]
+        deployed |= verdict == "deploy" and (k + 1) * batch <= 3000
+        if verdict == "rollback":
+            return deployed, (k + 1) * batch
+    return deployed, -1
+
+
+def test_a_restarted_rollback_catches_a_contrast_that_turns_after_its_deploy() -> None:
+    """The documented premise, +0.06 for 3000 decisions and then -0.06, deployed before the turn on
+    each of 60 paths. The rollback e-process reads every decision since the DEPLOY, and caught the
+    turn by the end on 1 of them (3 of 200); started again every 250 decisions with the drift
+    alarm's epoch weights, on 53 (185 of 200), and with weights alike over 10 000 decisions on 59
+    (198 of 200). Each bound is three binomial standard errors from the count on this stream, and
+    no rollback came before the turn."""
+    settings = {"delta": 0.0, "delta_harm": 0.0, "min_effect": 0.03, "horizon": 6000}
+    for restart, (least, most) in {
+        (): (0, 4),
+        (250, None): (45, 60),
+        (250, 10_000): (56, 60),
+    }.items():
+        changes = dict(zip(("rollback_restart", "rollback_horizon"), restart, strict=False))
+        config = GateConfig(**settings | changes)  # type: ignore[arg-type]
+        paths = [_turning_contrast(config, path) for path in range(60)]
+        assert all(deployed for deployed, _ in paths)
+        assert not any(0 <= at <= 3000 for _, at in paths)
+        assert least <= sum(at > 3000 for _, at in paths) <= most
+
+
+@pytest.mark.parametrize("horizon", [None, 1, 7, 60, 10_000])
+def test_a_restarted_rollback_is_the_mixture_of_e_processes_started_on_its_grid(
+    horizon: int | None,
+) -> None:
+    """``N_t = sum_k w_k E_k(t)``: an e-process over the constant bets started every 5 increments,
+    1 until its start, weighted as the drift alarm's epochs are or ``1 / ceil(horizon / 5)`` for
+    each start within the horizon, and every start not yet opened at its weight. However the
+    batches split the increments, the recursion per bet is that sum to rounding."""
+    rng = np.random.default_rng(1106)
+    every = 5
+    for size in (0, 1, 4, 5, 6, 37, 200):
+        increments = np.maximum(rng.uniform(-1.0, 1.5, size) * rng.uniform(0.0, 1.0), -1.0)
+        evidence = _RestartEvidence(every, horizon)
+        cuts = np.sort(rng.choice(np.arange(1, max(size, 2)), min(size // 3, 6), replace=False))
+        for part in np.split(increments, cuts):
+            evidence.add(part)
+        starts = list(range(0, size, every))
+        if horizon is None:
+            weights = [_epoch_weight(k + 1) for k in range(len(starts))]
+            unopened = 0.1 / len(starts) if starts else 1.0
+        else:
+            count = -(-horizon // every)
+            starts = starts[:count]
+            weights = [1.0 / count] * len(starts)
+            unopened = (count - len(starts)) / count
+        mixture = unopened + math.fsum(
+            w * float(np.mean(np.prod(1.0 + np.outer(increments[s:], _BETS), axis=0)))
+            for w, s in zip(weights, starts, strict=True)
+        )
+        assert evidence.log_value == pytest.approx(math.log(mixture), rel=1e-12, abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("changes", "error", "match"),
+    [
+        ({"rollback_restart": 0}, ValueError, "rollback_restart must be at least 1"),
+        ({"rollback_restart": 2.5}, TypeError, "rollback_restart must be a whole number"),
+        ({"rollback_restart": True}, TypeError, "rollback_restart must be a whole number"),
+        ({"rollback_restart": 9, "rollback_horizon": 0}, ValueError, "at least 1"),
+        ({"rollback_restart": 9, "rollback_horizon": 9.0}, TypeError, "whole number"),
+        ({"rollback_horizon": 100}, ValueError, "rollback_horizon without a rollback_restart"),
+        ({"rollback_restart": 9, "block_length": 2}, ValueError, "no evidence to start again"),
+    ],
+)
+def test_a_rollback_restart_outside_the_contract_is_refused(
+    changes: dict, error: type, match: str
+) -> None:
+    with pytest.raises(error, match=match):
+        GateConfig(delta=0.0, delta_harm=0.0, min_effect=0.1, horizon=10, **changes)
+
+
+def test_a_record_says_how_the_rollback_e_value_was_restarted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``log_rollback`` is the e-value the rule reads, on the scale of the restart the record names:
+    unset, the e-process since the DEPLOY; set, the mixture over the starts."""
+    for restart, horizon in ((None, None), (250, None), (250, 10_000)):
+        config = GateConfig(
+            delta=0.02,
+            delta_harm=0.02,
+            min_effect=0.02,
+            horizon=10_000,
+            rollback_restart=restart,
+            rollback_horizon=horizon,
+        )
+        gate = DeploymentGate({"z": ZonePlan(0.1, 0.1)}, config)
+        assert gate.update({"z": STRONG}) == {"z": "shadow"}
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="chc.gate"):
+            assert gate.update({"z": STRONG}) == {"z": "deploy"}
+        (record,) = [
+            r for r in caplog.records if getattr(r, "chc_event", None) == "deployment_gate"
+        ]
+        assert record.rollback_restart == restart  # type: ignore[attr-defined]
+        assert record.rollback_horizon == horizon  # type: ignore[attr-defined]
+        assert record.log_rollback == pytest.approx(0.0, abs=1e-12)  # type: ignore[attr-defined]
 
 
 def _late_cost_path(

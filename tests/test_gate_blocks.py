@@ -759,6 +759,97 @@ def test_in_blocks_a_candidate_that_turns_worse_after_a_deploy_is_rolled_back() 
     assert (rolled >= 0).mean() >= 0.965 - 3.0 * math.sqrt(0.965 * 0.035 / 400)
 
 
+def _rolled_back_at(
+    config: GateConfig, *, paths: int, blocks: int, turn: int, loss: float, seed: int
+) -> np.ndarray:
+    """Blocks of one period, read every 50, whose read means are Bernoulli at 0.5, the candidate
+    as good as the baseline for ``turn`` blocks after its DEPLOY and ``loss`` worse from then on.
+    Twenty blocks the candidate wins deploy the zone. The block after the DEPLOY at whose read each
+    path's gate rolled back, -1 where it did not within ``blocks``. Each path draws from its own
+    stream, so every config reads the same blocks until it rolls back."""
+    share = config.rollback_baseline_share
+    assert share is not None
+    ran = np.arange(20) % 2 == 0
+    win = BlockBatch(ran[:, None].astype(float), ran, np.full(20, 0.5))
+    rolled = np.full(paths, -1)
+    for i in range(paths):
+        rng = np.random.default_rng([seed, i])
+        gate = DeploymentGate({"z": PLAN}, config)
+        assert gate.update({"z": win}) == {"z": "deploy"}
+        for start in range(0, blocks, 50):
+            candidate = rng.random(50) >= share
+            worse = candidate & (np.arange(start, start + 50) >= turn)
+            reward = (rng.random(50) < np.where(worse, 0.5 - loss, 0.5)).astype(float)
+            batch = BlockBatch(reward[:, None], candidate, np.where(candidate, 1 - share, share))
+            if gate.update({"z": batch}) == {"z": "rollback"}:
+                rolled[i] = start + 50
+                break
+    return rolled
+
+
+ONE_PERIOD_ROLLBACK = {
+    "delta": 0.02,
+    "delta_harm": 0.02,
+    "min_effect": 0.02,
+    "horizon": 10**6,
+    "block_length": 1,
+    "centred": True,
+    "rollback_baseline_share": 0.2,
+}
+
+
+def test_a_restarted_rollback_reads_a_turn_long_after_the_deploy() -> None:
+    """A candidate as good as the baseline for 5000 blocks after its DEPLOY, then 0.12 worse. The
+    rollback reads every block since the DEPLOY, and the 5000 equal ones drained its larger bets
+    (the largest by -965 nats on average), so it caught the turn within 3000 blocks on 15 of these
+    150 paths. Started again every 250 blocks with the drift alarm's epoch weights it caught it on
+    60, and with weights alike over a horizon of 10 000 blocks on 115. Each bound is three binomial
+    standard errors from the count on this stream. Before the turn, where the candidate is inside
+    ``delta_harm``, each rolled back on at most ``alpha_harm`` of the paths plus three standard
+    errors (on 1, 1 and 0)."""
+    bounds = {
+        (): (0.0, 0.10 + 3.0 * math.sqrt(0.10 * 0.90 / 150)),
+        (250, None): (0.40 - 3.0 * math.sqrt(0.40 * 0.60 / 150), 1.0),
+        (250, 10_000): (115 / 150 - 3.0 * math.sqrt(115 * 35 / 150**3), 1.0),
+    }
+    for restart, (least, most) in bounds.items():
+        changes = dict(zip(("rollback_restart", "rollback_horizon"), restart, strict=False))
+        config = GateConfig(**ONE_PERIOD_ROLLBACK | changes)  # type: ignore[arg-type]
+        rolled = _rolled_back_at(config, paths=150, blocks=8000, turn=5000, loss=0.12, seed=1106)
+        assert ((rolled >= 0) & (rolled <= 5000)).mean() <= _slack(150)
+        assert least <= (rolled > 5000).mean() <= most
+
+
+@pytest.mark.parametrize("horizon", [None, 400])
+def test_in_blocks_a_restarted_rollback_keeps_the_lab_candidate_at_most_alpha_harm(
+    horizon: int | None,
+) -> None:
+    """The lab's candidate, deployed, 0.0096 worse in the long run and so inside ``delta_harm``,
+    in blocks of 50 with 40 burned, read every 5 blocks over 400, centred, the baseline's blocks at
+    probability 0.2: its rollback started again every 10 blocks, 40 starts, is one test
+    supermartingale under the null, and rolls back on at most ``alpha_harm`` of 300 paths (on none
+    of 1000 in each of the six cells of shares 0.1 to 0.3, plain or centred, with either
+    weighting)."""
+    config = _config(
+        40,
+        50,
+        rollback_baseline_share=0.2,
+        centred=True,
+        rollback_restart=10,
+        rollback_horizon=horizon,  # type: ignore[arg-type]
+    )
+    rolled = _deployed(
+        _lab,
+        config,
+        paths=300,
+        blocks=400,
+        per_read=5,
+        seed=20261106,
+        start=lambda rng, n: rng.normal(0.4, 0.51, n),
+    )
+    assert (rolled >= 0).mean() <= config.alpha_harm
+
+
 def test_in_blocks_a_deployed_zone_with_a_baseline_share_logs_both_policies_blocks() -> None:
     """Deployed with ``rollback_baseline_share = 0.25``, a zone logs the baseline's blocks at
     0.25 and the candidate's at 0.75, and refuses blocks logged as before, at 1; the experiment

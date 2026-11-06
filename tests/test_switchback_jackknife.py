@@ -334,3 +334,60 @@ def test_a_jackknife_reading_is_logged(caplog):
     (record,) = [r for r in caplog.records if r.chc_event == "switchback_reading"]
     assert record.estimate == reading.estimate
     assert record.jackknife is True
+
+
+def _events(caplog, read) -> list[str]:
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="chc.switchback"):
+        read()
+    return [r.chc_event for r in caplog.records]
+
+
+def test_on_a_random_walk_both_readings_warn_of_the_unit_root(caplog):
+    """A random walk over 200 periods read at ``Horizon(10)``: the uncorrected reading guards
+    ``a_hat >= 1`` with an infinite ratio, and the jackknife, which divided by ``1 - a_hat``
+    unguarded, read a negative ratio past 1 and warned on none of the 156 runs of 400 whose
+    ``a_hat`` was at or past 1. Both read the one check now, the jackknife at its own ``a_J``,
+    and warn on every run whose ``a_hat`` is: 48 of these 100."""
+    rng = np.random.default_rng(11)
+    past = 0
+    for _ in range(100):
+        u = (rng.random((1, 200)) < 0.5).astype(np.float64)
+        x = np.zeros((1, 201))
+        for t in range(200):
+            x[:, t + 1] = x[:, t] + u[:, t] + rng.standard_normal(1)
+        a_hat = float(_plant_fit(u, x, "state_aware")[0][0])
+        for jackknife in (False, True):
+            events = _events(
+                caplog,
+                lambda u=u, x=x, j=jackknife: read_switchback(
+                    u, x, Horizon(10), "state_aware", jackknife=j
+                ),
+            )
+            assert a_hat < 1.0 or "switchback_near_unit_root" in events
+        past += a_hat >= 1.0
+    assert past >= 20
+
+
+def test_an_unbounded_steady_state_is_said(caplog):
+    """One zone over 200 periods at ``a = 0.9``: the jackknife's Fieller interval is the whole line
+    where the data do not reject a unit root (13.9 % of 1000 runs), and ``switchback_unbounded``
+    is logged on exactly those runs, on 35 of these 300. The near-unit-root warning, by contrast,
+    fires on every run."""
+    rng = np.random.default_rng(1106)
+    unbounded = said = 0
+    for _ in range(300):
+        u, y = _plant(rng, 1, 200, 0.9)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="chc.switchback"):
+            reading = read_switchback(u, y, STEADY_STATE, "state_aware", jackknife=True)
+        events = [r.chc_event for r in caplog.records]
+        low, high = reading.interval
+        whole = math.isinf(low) and math.isinf(high)
+        assert ("switchback_unbounded" in events) == whole
+        assert "switchback_near_unit_root" in events
+        unbounded += whole
+        said += "switchback_unbounded" in events
+    assert said == unbounded
+    assert 0.139 - 3.0 * math.sqrt(0.139 * 0.861 / 300) <= unbounded / 300
+    assert unbounded / 300 <= 0.139 + 3.0 * math.sqrt(0.139 * 0.861 / 300)
