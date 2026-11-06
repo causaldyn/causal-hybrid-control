@@ -18,7 +18,10 @@ leaves any direction unmoved logs a WARNING naming the levers by their columns o
 sixth time, 2026-11-06: a direction is unmoved where the actions keep at most 64 eps of their raw
 size, the library's rounding (`chc._units.ROUNDING`); until 1.1.0 the cut was the square root of
 the working precision, 3.5e-4 in float32, under which a lever logged at 293 of its units with a
-spread of 0.05 read as never moved.
+spread of 0.05 read as never moved. The residual the cut reads is refined by a second
+least-squares fit: the first keeps its coefficients' rounding, up to 391 eps of a lever held at
+one level on 4000 rows, which read as a move; refined, a lever held or set exactly keeps under
+1 eps.
 
 ## Context
 
