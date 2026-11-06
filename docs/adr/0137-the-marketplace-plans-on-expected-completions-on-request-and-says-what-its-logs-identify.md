@@ -7,6 +7,34 @@ polished fit, the held zones). Moves no default. Amended 2026-10-27: both planne
 the even split and made the SUTVA plan nan; a negative one turned the shrink into a bonus), and
 `pessimistic_equilibrium_allocation`'s `equilibrium` is a keyword with no default, as it was
 already required.
+Amended 2026-11-06: **the tilted objective starts from the fitted game's exact optimum too, and
+the default's plans move.** One helper ascends either objective from the even split and from the
+fitted game's exact optimum (`chc.games.exact_congestion_allocation`) and keeps the plan better on
+that objective, as the expected objective already did. One ascent stops on a `min(demand,
+drivers)` kink short of what is reachable. Markets 0-29, logs of 400 blocks, each plan's share of
+the exact oracle's lift:
+
+| precision | tilted, one start (to 1.1.0) | tilted, two starts | expected | expected against two starts, more / less |
+|---|---|---|---|---|
+| float64 | 0.900 (least 0.754) | 0.948 (least 0.805) | 0.971 | 14 / 1, by 0.018 |
+| float32 | 0.907 (least 0.694) | 0.941 (least 0.694) | 0.984 | 20 / 1, by 0.015 |
+
+In float64 the tilted surrogate rose on 21 markets and fell on none; the share rose on 17 and fell
+on 3, by up to 0.079 (market 5, 0.884 to 0.805), each of the 3 with a higher surrogate: the
+surrogate is the fit's, not the market's. Float32 market 18 below now wins 0.978, and no tilted
+plan wins less than the naive one. On logs of 50 blocks the tilted plan moved from 0.789 to 0.815
+(expected 0.914); outside the fitted class, over 100 logs of 400 blocks with the attractiveness
+fixed while the demand moves, from 0.733 to 0.762, and with a response of zero from 0.789 to
+0.825. The alternative below rejected the second start as the opt-in mode; as a start of the
+default it costs one exact allocation of the fitted game and a second ascent.
+Also amended 2026-11-06: called without `objective`, the planner emits a `FutureWarning`: from
+1.3.0 the default is `"expected"`, and `response` a keyword that may be left out. Passing
+`objective="tilted"` keeps today's plans and silences it. Why `"expected"`: against the tilted
+plan with both starts it won more on 14 of 30 markets in float64 (less on 1, by 0.018), 20 of 30
+in float32 (less on 1, by 0.015) and 24 of 30 on 50 blocks (less on 2, by 0.031), never less than
+the naive plan, with no radius to choose and no response read. Its cost: it needs the fit's
+covariance, so a hand-built `FittedEquilibrium` with none, or a singular sandwich, is refused
+under it. The flip waits one minor release so that callers see the warning first.
 
 ## Context
 

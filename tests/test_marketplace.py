@@ -14,6 +14,7 @@ import functools
 import importlib
 import inspect
 import math
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -142,7 +143,9 @@ def test_sutva_planners_capture_almost_none_of_the_oracle_lift(env: dict) -> Non
 def test_chc_recovers_the_oracle_where_baselines_do_not(env: dict) -> None:
     market, oracle = env["market"], env["oracle"]
     shared = calibrate_shared_state(env["logs"])
-    chc = pessimistic_equilibrium_allocation(market, shared, radius=1.0, equilibrium=env["fitted"])
+    chc = pessimistic_equilibrium_allocation(
+        market, shared, radius=1.0, equilibrium=env["fitted"], objective="tilted"
+    )
     naive = sutva_allocation(market, calibrate_naive_causal(env["logs"]), radius=1.0)
     pred = sutva_allocation(market, calibrate_predictive(env["logs"]), radius=1.0)
     # the least regret of the three, as on every one of markets 0-29 in float64
@@ -346,7 +349,7 @@ def test_the_planner_holds_a_zone_the_logs_do_not_identify_at_zero() -> None:
     assert np.isinf(se[10])
     assert np.all(np.isfinite(se[[0, 1, 2, 3, 4, 5, 6, 7, 9, 11]]))
     plan = pessimistic_equilibrium_allocation(
-        market, calibrate_shared_state(logs), radius=1.0, equilibrium=fitted
+        market, calibrate_shared_state(logs), radius=1.0, equilibrium=fitted, objective="tilted"
     )
     assert float(plan[8]) == 0.0
     assert float(plan[10]) == 0.0
@@ -369,8 +372,12 @@ def test_a_fit_on_logs_that_carry_no_response_is_refused_by_the_planner(env: dic
     assert scrambled.beta < 0.1
     assert scrambled.incentive_z < 1.645 < env["fitted"].incentive_z
     with pytest.raises(ValueError, match="do not tell an incentive from none"):
-        pessimistic_equilibrium_allocation(market, shared, equilibrium=scrambled)
-    plan = pessimistic_equilibrium_allocation(market, shared, equilibrium=env["fitted"])
+        pessimistic_equilibrium_allocation(
+            market, shared, equilibrium=scrambled, objective="tilted"
+        )
+    plan = pessimistic_equilibrium_allocation(
+        market, shared, equilibrium=env["fitted"], objective="tilted"
+    )
     assert market.value(plan) - base > 0.8 * (oracle - base)
 
 
@@ -435,10 +442,12 @@ def test_the_planner_refuses_zones_that_are_not_the_market_s(env: dict) -> None:
     six = SharedStateMarket(n_zones=6, seed=0)
     small = fit_equilibrium(six.generate_logs(60, jax.random.key(4)))
     with pytest.raises(ValueError, match="the equilibrium has 6 zones and the market 12"):
-        pessimistic_equilibrium_allocation(market, shared, equilibrium=small)
+        pessimistic_equilibrium_allocation(market, shared, equilibrium=small, objective="tilted")
     short = ExposureResponse(marginal=shared.marginal[:6], se=shared.se[:6])
     with pytest.raises(ValueError, match=r"response.marginal has shape \(6,\)"):
-        pessimistic_equilibrium_allocation(market, short, equilibrium=env["fitted"])
+        pessimistic_equilibrium_allocation(
+            market, short, equilibrium=env["fitted"], objective="tilted"
+        )
 
 
 def test_naive_over_predicts_while_chc_delivers_more(env: dict) -> None:
@@ -446,7 +455,11 @@ def test_naive_over_predicts_while_chc_delivers_more(env: dict) -> None:
     naive_resp = calibrate_naive_causal(env["logs"])
     naive_alloc = sutva_allocation(market, naive_resp, radius=1.0)
     chc_alloc = pessimistic_equilibrium_allocation(
-        market, calibrate_shared_state(env["logs"]), radius=1.0, equilibrium=env["fitted"]
+        market,
+        calibrate_shared_state(env["logs"]),
+        radius=1.0,
+        equilibrium=env["fitted"],
+        objective="tilted",
     )
     # the naive per-zone (additive) model predicts a lift the equilibrium never realises...
     assert interference_bias(market, naive_resp, naive_alloc) > 1.0
@@ -465,9 +478,11 @@ def test_a_negative_response_earns_its_zone_no_bonus(env: dict) -> None:
     negative = ExposureResponse(marginal=zero.at[0].set(-0.5), se=zero)
     fitted = env["fitted"]
     one = pessimistic_equilibrium_allocation(
-        market, ExposureResponse(marginal=zero, se=zero), equilibrium=fitted
+        market, ExposureResponse(marginal=zero, se=zero), equilibrium=fitted, objective="tilted"
     )
-    other = pessimistic_equilibrium_allocation(market, negative, equilibrium=fitted)
+    other = pessimistic_equilibrium_allocation(
+        market, negative, equilibrium=fitted, objective="tilted"
+    )
     _assert_close(other, one, 1e-6)
 
 
@@ -879,10 +894,11 @@ def test_the_expected_completions_are_the_normal_loss_function() -> None:
 
 
 def test_the_expected_objective_plans_market_18_where_the_tilted_ascent_stops_short() -> None:
-    """Float32 market 18, logs of 400 blocks: the tilted plan's 600-step ascent from the even split
-    ended short on the fitted equilibrium, and the naive plan won more of the oracle's lift. The
-    expected objective hedges each zone's kink at its demand under the fit's own uncertainty, and
-    starts a second ascent from the fitted game's exact optimum: it wins most of the lift."""
+    """Float32 market 18, logs of 400 blocks: up to 1.1.0 the tilted plan's 600-step ascent from the
+    even split ended short on the fitted equilibrium, and the naive plan won more of the oracle's
+    lift. The expected objective hedges each zone's kink at its demand under the fit's own
+    uncertainty, and starts a second ascent from the fitted game's exact optimum, as the tilted one
+    now does: it wins most of the lift."""
     with enable_x64(False):
         market = SharedStateMarket(seed=18)
         logs = market.generate_logs(400, jax.random.key(19))
@@ -904,7 +920,7 @@ def test_the_expected_objective_wins_more_than_the_tilted_one(env: dict) -> None
     all of it, holding no zone and spending the budget."""
     market, base, oracle = env["market"], env["base"], env["oracle"]
     tilted = pessimistic_equilibrium_allocation(
-        market, calibrate_shared_state(env["logs"]), equilibrium=env["fitted"]
+        market, calibrate_shared_state(env["logs"]), equilibrium=env["fitted"], objective="tilted"
     )
     expected = pessimistic_equilibrium_allocation(
         market, None, equilibrium=env["fitted"], objective="expected"
@@ -912,6 +928,39 @@ def test_the_expected_objective_wins_more_than_the_tilted_one(env: dict) -> None
     assert float(jnp.sum(expected)) == pytest.approx(market.budget, rel=1e-12, abs=0.0)
     assert market.value(expected) - base > 0.99 * (oracle - base)
     assert market.value(expected) > market.value(tilted)
+
+
+def test_the_tilted_plan_ascends_from_the_fitted_game_s_optimum_too() -> None:
+    """Market 1 in float64, logs of 400 blocks: the tilted surrogate's ascent from the even split
+    stops at 10.24 and wins 0.783 of the exact oracle's lift. Ascended from the fitted game's exact
+    optimum too, as the expected objective is, the better of the two reads 10.72 and wins 0.991."""
+    with enable_x64(True):
+        market = SharedStateMarket(seed=1)
+        logs = market.generate_logs(400, jax.random.key(2))
+        fitted = fit_equilibrium(logs)
+        plan = pessimistic_equilibrium_allocation(
+            market, calibrate_shared_state(logs), equilibrium=fitted, objective="tilted"
+        )
+        base = market.value(jnp.zeros(market.n_zones))
+        lift = market.value(market.oracle_allocation()) - base
+        assert float(jnp.sum(plan)) == pytest.approx(market.budget, rel=1e-12, abs=0.0)
+        assert market.value(plan) - base > 0.95 * lift
+
+
+def test_the_planner_warns_that_its_default_objective_becomes_expected(env: dict) -> None:
+    """Not given, the objective is ``"tilted"``, and a ``FutureWarning`` says that from 1.3.0 it is
+    ``"expected"`` and ``response`` a keyword that may be left out. Given, nothing warns, and the
+    default's plan is the tilted one."""
+    market, fitted = env["market"], env["fitted"]
+    shared = calibrate_shared_state(env["logs"])
+    with pytest.warns(FutureWarning, match=r"from 1\.3\.0 the default is 'expected'.*response"):
+        default = pessimistic_equilibrium_allocation(market, shared, equilibrium=fitted, steps=5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        tilted = pessimistic_equilibrium_allocation(
+            market, shared, equilibrium=fitted, steps=5, objective="tilted"
+        )
+    assert bool(jnp.array_equal(default, tilted))
 
 
 def test_the_expected_objective_holds_a_zone_the_logs_do_not_identify() -> None:
@@ -955,7 +1004,9 @@ def test_the_planner_s_objective_is_one_it_knows_and_the_tilt_needs_a_response(e
             env["market"], None, equilibrium=env["fitted"], objective="robust"
         )
     with pytest.raises(TypeError, match="pass a response"):
-        pessimistic_equilibrium_allocation(env["market"], None, equilibrium=env["fitted"])
+        pessimistic_equilibrium_allocation(
+            env["market"], None, equilibrium=env["fitted"], objective="tilted"
+        )
 
 
 def test_the_budget_scale_s_slope_is_read_and_the_fit_matches_it(env: dict) -> None:
