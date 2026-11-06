@@ -12,6 +12,22 @@ at -9.1 where the truth is 2. A jackknifed `a_J >= 1` is refused. The steady sta
 the jackknifed parameters leave (`validation/half_panel_jackknife.mac`, STEP 6). The -0.68 to
 -0.12 below was a sample mean of a law that has none; the mean-bias claims for `tau_H` and the
 local projection stand.
+Amended 2026-11-06: an unbounded steady state is said, and the jackknife's near-unit-root check
+reads its own persistence. Fieller's interval is the whole line where `(1 - a)^2 <= z^2 var(a)`,
+the data not rejecting a unit root at the interval's level; it now logs `switchback_unbounded`
+there and only there. On `x' = 0.9 x + u + eps`, 1000 runs a cell, that was 13.9 % of the
+jackknife's readings on one zone over 200 periods (5 refused), 0.3 % over 400, none on 4 zones,
+and 0.1 %, none and none uncorrected; at `a = 0.95`, 48.7 % and 7.8 %. The near-unit-root warning
+fired on every run of the first cell on both paths, so it could not tell an unbounded reading
+from a bounded one. The check `sd(a_hat) / (1 - a_hat) > 0.1` had three copies, in the design's
+grid, the plug-in and the jackknife, and the jackknife's divided by `1 - a_hat` with no guard: past
+1 the ratio went negative, and on a random walk over 200 periods read at `Horizon(10)` it warned
+on none of the 156 runs of 400 whose `a_hat` was at or past 1. One helper, infinite at or past 1,
+serves all three, and the jackknife reads it at its jackknifed `a_J` with that estimate's own
+standard error, where its steady state is read: both paths now warn on all 400 runs, the 156
+among them. A planning formula for the unbounded share, `Phi(z - (1 - a) sqrt(T) / sqrt(1 -
+a^2))`, read 0.10 at `a = 0.9` over 200 periods against 0.139 jackknifed and 0.001 uncorrected,
+and is not shipped.
 
 ## Context
 

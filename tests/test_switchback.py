@@ -690,21 +690,33 @@ def test_near_a_unit_root_the_steady_state_interval_is_fiellers(caplog):
     assert events.count("switchback_near_unit_root") == reps
 
 
-def test_fiellers_interval_is_where_the_ratio_test_does_not_reject():
+def test_fiellers_interval_is_where_the_ratio_test_does_not_reject(caplog):
+    """The interval is the whole line exactly where its curvature ``(1 - a)^2 - z^2 var(a)`` is not
+    positive, and a ``switchback_unbounded`` warning is logged exactly there."""
     z = 1.959964
     rng = np.random.default_rng(8)
+    unbounded = 0
     for _ in range(200):
         a, b = rng.uniform(0.3, 0.97), rng.uniform(0.5, 3.0)
         root = rng.normal(size=(2, 2)) * rng.uniform(0.001, 0.05)
         cov = root @ root.T + 1e-6 * np.eye(2)
-        lo, hi = _fieller(a, b, cov, z)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="chc.switchback"):
+            lo, hi = _fieller(a, b, cov, z)
+        said = [r for r in caplog.records if r.chc_event == "switchback_unbounded"]
         if (1 - a) ** 2 <= z * z * cov[0, 0]:
             assert (lo, hi) == (-math.inf, math.inf)
+            (record,) = said
+            assert record.t == pytest.approx((1 - a) / math.sqrt(cov[0, 0]), rel=1e-12, abs=0.0)
+            assert record.t <= z
+            unbounded += 1
             continue
+        assert not said
         for tau in (lo, hi):
             variance = cov[1, 1] + 2 * tau * cov[0, 1] + tau * tau * cov[0, 0]
             assert (b - tau * (1 - a)) ** 2 == pytest.approx(z * z * variance, rel=1e-8, abs=0.0)
         assert lo < b / (1 - a) < hi
+    assert unbounded > 10
 
 
 def test_the_readings_are_the_labs_estimators_on_one_zone():
