@@ -18,6 +18,7 @@ cannot move the learned dynamics much.
 
 from __future__ import annotations
 
+import itertools
 import math
 import operator
 from collections.abc import Callable, Sequence
@@ -1887,7 +1888,10 @@ def _chi_square_mixture_survival(q: float, weights: NDArray[np.float64]) -> floa
     with one or two terms a plain rule on ``[0, inf)`` misses the tail badly (0.0036 against 0.00053
     for one term at ``q = 30`` times its weight). Past ``u = 20 / omega``, ``omega = q / 2``, the
     phase is ``sum arctan(w u) / 2 - omega u``: a slowly moving amplitude times a pure oscillation,
-    which QUADPACK's Fourier rule integrates to the end.
+    which QUADPACK's Fourier rule integrates to the end. Before it, the head is integrated a decade
+    at a time past ``1000 / w_max``: where ``q`` is far below the largest weight, ``20 / omega`` is
+    decades past the integrand's mass near 0, and one rule over the whole head missed that mass and
+    read the survival 0.5 low (0.4992 for 0.9992 at ``q = 1e-6`` times a single weight).
     """
     largest = float(np.max(weights, initial=0.0))
     if largest <= 0.0:
@@ -1904,13 +1908,21 @@ def _chi_square_mixture_survival(q: float, weights: NDArray[np.float64]) -> floa
         return 0.5 * float(np.sum(np.arctan(weights * u)))
 
     cut = 20.0 / omega
-    head, _ = integrate.quad(
-        lambda u: math.sin(phase(u) - omega * u) * amplitude(u),
-        0.0,
-        cut,
-        limit=2000,
-        epsabs=1e-13,
-        epsrel=1e-12,
+    edges, edge = [0.0], 1000.0 / largest
+    while edge < cut:
+        edges.append(edge)
+        edge *= 10.0
+    edges.append(cut)
+    head = sum(
+        integrate.quad(
+            lambda u: math.sin(phase(u) - omega * u) * amplitude(u),
+            low,
+            high,
+            limit=2000,
+            epsabs=1e-13,
+            epsrel=1e-12,
+        )[0]
+        for low, high in itertools.pairwise(edges)
     )
     cosine, _ = integrate.quad(
         lambda u: math.sin(phase(u)) * amplitude(u),
