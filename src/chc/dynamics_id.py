@@ -114,6 +114,12 @@ six steps up to ``|A|dt = 1.2``, so reaching the cap means there is no fixed poi
 _NUISANCE_SHIFT_WARN = 3.0
 """How far, in the errors of the move, a spline refit may move a fit with the polynomial
 nuisances alone before :func:`fit_causal_residual` warns that they miss the log's."""
+_CLOCK_PROBE = 1000.0 * math.sqrt(2.0)
+"""The time :func:`fit_causal_residual` reads ``known`` at beside ``t = 0``, given no ``times``, to
+tell whether it reads the time. Irrational, so that a ``known`` periodic in a period that divides
+it, the one it cannot tell, has an irrational period."""
+_CLOCK_PROBE_ROWS = 8
+"""The transitions, the log's first, that ``known`` is read on at both times."""
 
 _log = logging.getLogger(__name__)
 
@@ -1940,7 +1946,9 @@ def fit_causal_residual(
             nothing else: a seasonal known push read at ``t = 0`` throughout leaves the season in
             the rate, and a logging policy that follows the season then confounds the channel with
             it: on a log of 3000 Euler steps the channel came back 1.35 where it is 1.0, 37 of
-            its errors off.
+            its errors off. So ``None`` is refused where ``known`` reads the time: where its rate
+            on the log's first 8 transitions moves by more than rounding between ``t = 0`` and
+            ``t = 1000 sqrt(2)``, irrational so that no rational period hides the move.
 
     Returns:
         A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``. A log that moves
@@ -1963,8 +1971,8 @@ def fit_causal_residual(
             covariate or a driver, at the step's start or its end. Each would read a column the fit
             reads in another role: adjusted for the action, the channel came back as the
             confounded regression's. On ``unconfounded=True`` with an instrument. On ``times``
-            that are not one finite number a transition. On ``clusters`` that hold a missing or a
-            masked label.
+            that are not one finite number a transition, and on ``times=None`` where ``known``
+            reads the time. On ``clusters`` that hold a missing or a masked label.
     """
     if integrator not in ("euler", "rk4"):
         raise ValueError(f"integrator={integrator!r} is neither 'euler' nor 'rk4'")
@@ -2002,6 +2010,8 @@ def fit_causal_residual(
         )
     codes = None if clusters is None else _cluster_codes(clusters, x.shape[0])
     steps = None if periods is None else _period_codes(periods, x.shape[0])
+    if times is None:
+        _refuse_a_clock(known, x, u)
     starts = jnp.zeros(x.shape[0], dtype=x.dtype) if times is None else _start_times(times, x)
     known_rate = jax.vmap(known)(starts, x, u)
 
@@ -2720,6 +2730,36 @@ def _spline_shift(
     error = _channel_errors(spreads, channel.shape, phi_c)[0]
     at_rows = jnp.einsum("jkl,il->ijk", move.reshape(channel.shape), phi_c)
     return float(jnp.sqrt(jnp.mean(at_rows**2))), max(error, floor)
+
+
+def _refuse_a_clock(known: Dynamics, x: Array, u: Array) -> None:
+    """Refuse a ``known`` that reads the time, where no ``times`` say when each transition starts:
+    its rates on the log's first :data:`_CLOCK_PROBE_ROWS` transitions, read at ``t = 0`` and at
+    :data:`_CLOCK_PROBE`, differ by more than ``chc._units.ROUNDING`` eps of the larger. Read at
+    ``t = 0`` throughout, such a ``known`` leaves its push at the transitions' own times in the
+    rate the residual explains."""
+    rows = min(int(x.shape[0]), _CLOCK_PROBE_ROWS)
+    if rows == 0:
+        return
+    states, actions = x[:rows], u[:rows]
+
+    def rate(time: float) -> Array:
+        return jax.vmap(known)(jnp.full(rows, time, dtype=x.dtype), states, actions)
+
+    start, later = rate(0.0), rate(_CLOCK_PROBE)
+    apart = jnp.abs(later - start)
+    rounding = (
+        _units.ROUNDING * jnp.finfo(apart.dtype).eps * jnp.maximum(jnp.abs(start), jnp.abs(later))
+    )
+    same = (start == later) | (jnp.isnan(start) & jnp.isnan(later)) | (apart <= rounding)
+    if not bool(jnp.all(same)):
+        raise ValueError(
+            f"known reads the time: on the log's first {rows} transitions its rate at t = 0 and at "
+            f"t = {_CLOCK_PROBE:.6g} differs by up to {float(jnp.nanmax(apart)):.3g}, and with "
+            "times=None every transition starts at t = 0, which leaves its push at the "
+            "transitions' own times in the rate the residual explains; give each transition's "
+            "start time as times="
+        )
 
 
 def _start_times(times: ArrayLike, x: Array) -> Array:

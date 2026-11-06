@@ -3685,21 +3685,57 @@ def _seasonal_known(t, x, u):
 @pytest.mark.parametrize("integrator", ["euler", "rk4"])
 def test_the_known_physics_is_read_at_each_transition_s_start(integrator: str) -> None:
     """Read at ``t = 0`` throughout, the season stays in the rate the residual explains, and the
-    policy that follows it confounds the channel: 1.35 where it is 1.0, 1.37 where RK4 reads 1.03.
-    Read at each transition's start, the channel lands within its error, of the Euler map the log
-    was stepped by or of its RK4 reading."""
+    policy that follows it confounds the channel: 1.35 where it is 1.0, 1.37 where RK4 reads 1.03,
+    and the fit, given no times, is refused. Read at each transition's start, the channel lands
+    within its error, of the Euler map the log was stepped by or of its RK4 reading."""
     data, times = _seasonal_log()
     options = {"adjust_for": ("z",), "channel_degree": 0, "integrator": integrator}
     fit = fit_causal_residual(_seasonal_known, data, 0.1, times=times, **options)
-    clockless = fit_causal_residual(_seasonal_known, data, 0.1, **options)
     assert fit.channel_error is not None
     # RK4's reading of an Euler log: the decay h whose growth factor is 0.95, and the channel
     # over RK4's input gain 1 + h/2 + h^2/6 + h^3/24 there, both solved in Maxima
     truth = 1.0 if integrator == "euler" else 1.0258659
     assert abs(float(np.asarray(fit.residual.channel).ravel()[0]) - truth) < 4 * fit.channel_error
-    assert abs(float(np.asarray(clockless.residual.channel).ravel()[0]) - truth) > 0.25
+    with pytest.raises(ValueError, match="known reads the time"):
+        fit_causal_residual(_seasonal_known, data, 0.1, **options)
     with pytest.raises(ValueError, match="times gives each"):
         fit_causal_residual(_seasonal_known, data, 0.1, times=times[1:], **options)
+
+
+@pytest.mark.parametrize(
+    "known",
+    [
+        lambda t, x, u: jnp.sin(0.3 * t) * jnp.ones_like(x),
+        lambda t, x, u: jnp.cos(2.0 * jnp.pi * t) * jnp.ones_like(x),
+        lambda t, x, u: -0.5 * x + 1e-4 * t,
+        lambda t, x, u: -0.5 * x * jnp.exp(t),
+    ],
+    ids=["a season", "a cycle of one unit of time", "a slow trend", "an overflow at the probe"],
+)
+def test_a_known_that_reads_the_time_refuses_no_times(known) -> None:
+    """Every transition read at ``t = 0`` leaves the push at its own time in the rate. A known
+    periodic in one unit of time reads the same rate at every whole time, and at the probe's
+    irrational one moves; a known that overflows there is read as one that moves."""
+    data, _ = _seasonal_log(200)
+    with pytest.raises(ValueError, match=r"known reads the time.*give each transition's start"):
+        fit_causal_residual(known, data, 0.1, adjust_for=("z",), channel_degree=0)
+
+
+def test_a_known_that_does_not_read_the_time_fits_as_it_did_without_times() -> None:
+    """The probe reads ``known`` on eight rows at two times and changes nothing else: a
+    time-free known fits bit for bit as with every start at ``t = 0`` given as ``times``."""
+    data, _ = _seasonal_log(400)
+    options = {"adjust_for": ("z",), "channel_degree": 0}
+    clockless = fit_causal_residual(_known_free_of_time, data, 0.1, **options)
+    at_zero = fit_causal_residual(_known_free_of_time, data, 0.1, times=np.zeros(400), **options)
+    np.testing.assert_array_equal(
+        np.asarray(clockless.residual.channel), np.asarray(at_zero.residual.channel)
+    )
+    assert clockless.channel_error == at_zero.channel_error
+
+
+def _known_free_of_time(t, x, u):
+    return -0.5 * x
 
 
 def test_the_rk4_fit_converges_where_the_known_physics_leaves_the_residual_nothing() -> None:
