@@ -1,0 +1,119 @@
+/* THE MISSPECIFICATION TESTS' COUNTS: the floors the exact binomial sets, and the defects they see.
+
+   A test in tests/misspecification/ that counts logs reads n = 200 of them and holds the count of
+   a rate p0 to a floor, or a ceiling, that a count of Binomial(n, p0) crosses with probability at
+   most alpha = 1/1000 (tests/misspecification/_misspec_counts.py):
+
+       floor(p0)   = the largest c with P(X <  c) <= alpha,
+       ceiling(p0) = the least   c with P(X >  c) <= alpha,     X ~ Binomial(n, p0).
+
+     STEP 1  the floors and ceilings, in exact rationals, against the values the tests use, and
+             the chance of each that a block at exactly p0 fails it
+     STEP 2  an interval whose standard error is k times its own covers a normal estimate with
+             probability erf(1.96 k / sqrt 2): 0.883 at k = 0.8. The floor at p0 = 0.95 fails it
+             with the probability it reads below; the smallest defect it fails with probability
+             0.8, its minimal detectable defect, by bisection
+     STEP 3  the same standard error read by sum z^2 over the logs, chi-square with n degrees
+             where the error is right and z normal: the bound is its 1 - alpha/10 quantile, past
+             1 - alpha because the measured z's tails are heavier than normal's, which widens the
+             sum's spread; k scales the sum by 1/k^2, so the bound fails with probability
+             P(chi2_n > k^2 q)
+     STEP 4  a valid p-value times k rejects at a level a on the logs whose p-value is at most
+             a / k: with p-values uniform, the rate a / k against the ceiling at a
+     STEP 5  each count's rate measured over the blocks of logs read (1000 logs, five blocks,
+             where all five were read), clean (k = 1) and under the defect its test's docstring
+             names, and the probability that its bound fails a block at that rate: the false red
+             at the clean rate, which passes below 0.01, and the power at the other
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/misspec_power.mac */
+
+linel : 200$
+display2d : false$
+fpprec : 30$
+load(distrib)$
+
+verdict(ok) := if ok then "(PASS)" else "(FAIL)"$
+n : 200$
+alpha : 1/1000$
+mass(k, p) := binomial(n, k)*p^k*(1 - p)^(n - k)$
+below(c, p) := sum(mass(k, p), k, 0, c - 1)$            /* P(X < c) */
+above(c, p) := sum(mass(k, p), k, c + 1, n)$            /* P(X > c) */
+floor_at(p) := block([c : 0, tail : 0],
+   while c < n and tail + mass(c, p) <= alpha do (tail : tail + mass(c, p), c : c + 1), c)$
+ceiling_at(p) := block([c : n, tail : 0],
+   while c > 0 and tail + mass(c, p) <= alpha do (tail : tail + mass(c, p), c : c - 1), c)$
+
+print("=== STEP 1: the floors and ceilings ===")$
+/* [p0, the bound the tests use, floor or ceiling, the logs counted]; n is bound for the row, and
+   mass, below and above read it */
+for row in [[95/100, 179, floor, 200], [92/100, 171, floor, 200], [80/100, 10, floor, 20],
+            [5/100, 21, ceiling, 200], [6/100, 24, ceiling, 200], [20/100, 58, ceiling, 200],
+            [25/100, 70, ceiling, 200]]
+  do block([p : row[1], c : row[2], n : row[4], f],
+    f : if row[3] = floor then floor_at(p) else ceiling_at(p),
+    print("STEP 1", row[3], "at p0 =", float(p), ":", f, "of", n,
+          "; a block at p0 fails it with probability",
+          float(if row[3] = floor then below(f, p) else above(f, p)), verdict(f = c)))$
+
+print("=== STEP 2: the coverage floor against a standard error k times its own ===")$
+cover(k) := erf(1.96b0*k/sqrt(2b0))$
+fc : floor_at(95/100)$
+power_floor(k) := bfloat(below(fc, rationalize(cover(k))))$
+print("STEP 2a coverage at k = 0.8:", float(cover(0.8b0)), verdict(abs(cover(0.8b0) - 0.8832b0) < 1b-4))$
+print("STEP 2b the floor's power at k = 0.8:", float(power_floor(0.8b0)))$
+detectable(power, lo, hi) := block([mid],
+   for i : 1 thru 40 do (mid : (lo + hi)/2, if power(mid) >= 0.8b0 then lo : mid else hi : mid), lo)$
+kf : detectable(power_floor, 0.5b0, 1b0)$
+print("STEP 2c the floor's minimal detectable defect: k =", float(kf), verdict(kf > 0.76b0 and kf < 0.79b0))$
+
+print("=== STEP 3: sum z^2 against its 0.9999 quantile ===")$
+q : quantile_chi2(1 - 0.0001b0, n)$
+print("STEP 3a the bound, chi2_200's 0.9999 quantile:", float(q), verdict(abs(q - 283.06b0) < 0.01b0))$
+power_chi(k) := 1 - cdf_chi2(k^2*q, n)$
+print("STEP 3b its power at k = 0.8:", float(power_chi(0.8b0)))$
+kc : detectable(power_chi, 0.5b0, 1b0)$
+print("STEP 3c its minimal detectable defect: k =", float(kc), verdict(kc > 0.80b0 and kc < 0.81b0))$
+
+print("=== STEP 4: a ceiling on rejections against a p-value k times its own ===")$
+power_ceiling(a, k) := bfloat(above(ceiling_at(a), rationalize(min(1, a/k))))$
+for a in [5/100, 20/100] do
+  print("STEP 4 level", float(a), ": power at k = 0.33,", float(power_ceiling(a, 0.33b0)),
+        "; minimal detectable defect k =",
+        float(detectable(lambda([k], power_ceiling(a, k)), 0.1b0, 1b0)))$
+
+print("=== STEP 5: each count's measured rate, and how often its bound fails a block there ===")$
+/* [count, logs counted, logs read, the bound, floor or ceiling, k]: k = 1 is the clean count, the
+   other the count under the defect the test names (an error or interval k times its own, a
+   p-value k times its own); tests/misspecification/ reads them on the logs of each block */
+measured : [
+    ["channel control covered", 940, 1000, 179, floor, 1],
+    ["channel hetero covered", 946, 1000, 179, floor, 1],
+    ["channel curved_auto covered", 950, 1000, 179, floor, 1],
+    ["ope dr_wrong covered or refused", 949, 1000, 179, floor, 1],
+    ["ope fqe_wrong covered or refused", 935, 1000, 171, floor, 1],
+    ["ope mis_wrong covered or refused", 974, 1000, 179, floor, 1],
+    ["ope mis_1 covered or refused", 949, 1000, 179, floor, 1],
+    ["ope dr_1 covered or refused", 936, 1000, 171, floor, 1],
+    ["ope fqe_1 covered or refused", 927, 1000, 171, floor, 1],
+    ["channel control covered", 888, 1000, 179, floor, 0.8],
+    ["channel hetero covered", 890, 1000, 179, floor, 0.8],
+    ["channel curved_auto covered", 892, 1000, 179, floor, 0.8],
+    ["ope dr_wrong covered or refused", 883, 1000, 179, floor, 0.8],
+    ["ope fqe_wrong covered or refused", 863, 1000, 171, floor, 0.8],
+    ["ope mis_wrong covered or refused", 932, 1000, 179, floor, 0.8],
+    ["ope mis_1 covered or refused", 886, 1000, 179, floor, 0.8],
+    ["ope dr_1 covered or refused", 867, 1000, 171, floor, 0.8],
+    ["ope fqe_1 covered or refused", 865, 1000, 171, floor, 0.8],
+    ["dither0 rejected at 0.05", 23, 1000, 21, ceiling, 1],
+    ["dither0 rejected at 0.2", 157, 1000, 58, ceiling, 1],
+    ["lag0 rejected at 0.05", 56, 1000, 24, ceiling, 1],
+    ["lag0 rejected at 0.2", 214, 1000, 70, ceiling, 1],
+    ["dither0 rejected at 0.05", 110, 1000, 21, ceiling, 0.33],
+    ["dither0 rejected at 0.2", 553, 1000, 58, ceiling, 0.33],
+    ["lag0 rejected at 0.05", 161, 1000, 24, ceiling, 0.33],
+    ["lag0 rejected at 0.2", 547, 1000, 70, ceiling, 0.33]]$
+for row in measured do block([rate : row[2]/row[3], fails],
+  fails : float(if row[5] = floor then below(row[4], rate) else above(row[4], rate)),
+  print("STEP 5", row[1], "at k =", row[6], ":", row[2], "of", row[3], "=", float(rate),
+        "; the bound", row[4], "fails a block with probability", fails,
+        if row[6] = 1 then verdict(fails < 0.01) else ""))$

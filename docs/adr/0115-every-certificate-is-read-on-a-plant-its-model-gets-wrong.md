@@ -2,6 +2,26 @@
 
 **Status:** accepted, 2026-10-19.
 
+Amended 2026-11-06: the floors were sized for a false red, not for power. Three Monte Carlo
+standard deviations on 40 logs let an interval 20 % too narrow, which covers 0.883, clear the floor
+of 0.847 with probability 0.82, and a wrong certificate planted in the library passed every test of
+its file: the channel's error or an off-policy interval 0.8 times its own, the dither or the
+lagged-lever check's p-value a third of its own; an audit that certified every step passed 15 of
+the 16 barrier tests. The tests of those four certificates now read 200 logs from a block of
+seeds, `CHC_MISSPEC_BLOCK` (0 in CI), and hold each count to the bound a binomial count at the rate
+the test states crosses with probability 1/1000 (`tests/misspecification/_misspec_counts.py`,
+reproduced in `validation/misspec_power.mac`). A sum of `z^2` held below a chi-square quantile
+reads an error where `z` is near normal, and a check's rejections are held at 0.2 as well as at
+0.05. Outcomes are counted apart: where a premise fails, "holds or says so" stays the contract;
+where the premises hold, the logs refused, warned or rejected on are false alarms, held to the
+ceiling of a rate of 0.05, so a certificate that says so on every log fails. Each test's docstring
+states its rate, its rate under the defect it names, and the smallest defect it catches with
+probability 0.8. Each barrier family also reads a plan its plant leaves the set under, so a count
+that runs past the exit fails. `just mutants` plants the wrong certificates of `tests/mutants/` one
+at a time over five blocks: each of the four above fails its file on all five, the barrier's fails
+16 of its 32 tests, and no file fails clean on any block. The job's tests take about twice their
+time before, about 3500 s on one process, where they took about 1800 s.
+
 ## Context
 
 The library's certificates were tested where their premises hold: independent noise, an open-loop

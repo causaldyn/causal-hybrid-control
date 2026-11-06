@@ -33,6 +33,8 @@ The plain `pytest` deselects `tests/misspecification/` (ADR 0115): each test the
 certificate on a plant its model gets wrong, by Monte Carlo, and asserts that the certificate holds
 at its level or says so. A case that does neither is marked `xfail(strict=True)` with the numbers
 measured, so a change that makes it hold fails the job until the mark is removed.
+`CHC_MISSPEC_BLOCK=<n>` reads another block of seeds than CI's, block 0, and `just mutants` plants
+the wrong certificates of `tests/mutants/` one at a time, to show which of them the suite catches.
 
 Complexity is ratcheted: ruff's C901, PLR0912 and PLR0915 hold, and the functions past their limits
 on 2026-11-06 carry a `# noqa` for them. A function that grows past a limit is split rather than
