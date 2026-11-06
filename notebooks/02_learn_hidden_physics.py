@@ -115,7 +115,11 @@ plt.show()
 # step's error. Here every measured state carries noise with standard deviation 0.02. The one-step fit
 # takes each noisy state as exact, and over a long rollout its errors compound.
 # `fit_residual_multistep` fits whole rollouts instead, each from its first measured state. The last
-# printed line shows the one-step fit on the same trajectories without noise.
+# printed line shows the one-step fit on the same trajectories without noise, and it depends on the
+# machine: without noise the 1500 Adam steps end at a slightly different minimum on each CPU's
+# floating-point kernels, and the 60-step rollout magnifies the difference. On the x86-64 Linux
+# machine that made these outputs it reads 6.0e-06; on an arm64 Mac it has read 3.1e-04, above the
+# multi-step line. The two noisy lines move by about 5% between the two, and keep their order.
 
 # %%
 horizon, n_traj = 15, 300
