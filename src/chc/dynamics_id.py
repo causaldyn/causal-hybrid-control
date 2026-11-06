@@ -364,8 +364,9 @@ class CausalDynamicsFit:
     # so its residual is the noise where the push is linear.
     influence: Array | None = None
     # (p, r), in ``influence``'s order: the directions the log's actions never move. Each moves one
-    # state's channel where the action residuals, scaled to the raw actions' size, fall below the
-    # square root of the working precision, with the drift regression's response to it on this log.
+    # state's channel where the action residuals, scaled to the raw actions' size, keep at most
+    # ``chc._units.ROUNDING`` eps of the working precision, rounding, with the drift regression's
+    # response to it on this log.
     # The moment has no data there. Where the drift's features take up a direction's push on the
     # log, no rate of the log tells it apart, and the channel is held at zero along it, in the
     # actions' scaled units; where they cannot, the log's rates rule out all but one value, and the

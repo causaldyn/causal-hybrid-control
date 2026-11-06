@@ -5,7 +5,8 @@ both fits hold the channel at zero, or read it off the log's rates where the dri
 up its push, rather than leave the ridge's value. Amended 2026-10-08: `unseen` weighs the unmoved
 directions, and `p_value` reads the mixture's weights, with each parameter at its scale on the
 log; until 0.15.1 both read raw parameter units, and moved with the units of the state and of the
-levers.
+levers. Amended 2026-11-06 by ADR 0054: `unmoved` holds the directions along which the actions
+keep at most 64 eps of their raw size, rounding; until 1.1.0, less than `sqrt(eps)`.
 
 ## Context
 
