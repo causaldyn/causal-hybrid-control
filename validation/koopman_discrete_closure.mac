@@ -1,0 +1,71 @@
+/* What a polynomial Koopman lift of an EXACTLY LINEAR plant closes on one-step data (ADR 0093).
+
+   Setting (chc.research.koopman.KoopmanModel). One state, one action:
+
+       x' = a x + b u,   u ~ N(0, 1) independent of x,   x ~ N(0, s^2),
+
+   s^2 = b^2/(1 - a^2) the stationary variance. The lift of degree d is (x, x^2, ..., x^d, 1); the
+   library lifts the state less its centre, and with the constant in the lift the span of the
+   monomials of x - c is that of x for every c, so the residuals below do not depend on c. The
+   linear form regresses each feature at the next state on (phi(x), u); the bilinear form also on
+   u x, ..., u x^d (u times every feature but the constant, whose product is u itself). A feature's
+   closure residual is the root mean square of its population residual over the feature's
+   standard deviation at the next state, the library's held-out ratio as the sample grows.
+
+   In continuous time a control-affine plant moves each feature by the action times a function of
+   the state, which the bilinear form carries. In discrete time the k-th feature at the next state,
+   (a x + b u)^k, holds u^2, ..., u^k, which no form spans. */
+display2d : false$
+
+gm(k) := if oddp(k) then 0 else product(2*i - 1, i, 1, k/2)$
+/* E over x ~ N(0, s^2) and u ~ N(0, 1) of a polynomial in x and u */
+gexp(e, v, sd) := block([p : expand(e)], sum(ratcoef(p, v, k)*gm(k)*sd^k, k, 0, hipow(p, v)))$
+E(e) := gexp(gexp(e, x, s), u, 1)$
+/* the population least-squares residual of target on the columns */
+proj(target, cols) := block([n : length(cols), G, c, coef],
+  G : genmatrix(lambda([i, j], E(cols[i]*cols[j])), n, n),
+  c : transpose(matrix(makelist(E(cols[i]*target), i, 1, n))),
+  coef : invert(G) . c,
+  ratsimp(target - sum(coef[i, 1]*cols[i], i, 1, n)))$
+stationary : [s = b/sqrt(1 - a^2)]$
+lin(d) := append(makelist(x^k, k, 1, d), [1, u])$
+bil(d) := append(lin(d), makelist(u*x^k, k, 1, d))$
+xp : a*x + b*u$
+rho2(k, cols) := block([t : expand(xp^k), r],
+  r : proj(t, cols),
+  ratsimp(subst(stationary, E(r^2)/(E(t^2) - E(t)^2))))$
+
+/* (1) The state itself, feature 1, is in the span of both forms at every degree: its residual is
+   zero, and the decoded one-step prediction exact. */
+print("(1) the state's residual, linear and bilinear, degrees 1-3:",
+      makelist([proj(xp, lin(d)), proj(xp, bil(d))], d, 1, 3), "  (all 0)")$
+
+/* (2) The x^2 feature, at degree 2 and at degree 3: under the linear form its residual is
+   2 a b x u + b^2 (u^2 - 1), and rho^2 = 1 - a^4; the bilinear form holds x u, and leaves
+   b^2 (u^2 - 1), rho^2 = (1 - a^2)^2. */
+print("(2) x^2's residual, linear, degree 2:", proj(expand(xp^2), lin(2)))$
+print("    x^2's residual, bilinear, degree 2:", proj(expand(xp^2), bil(2)))$
+r2 : makelist([rho2(2, lin(d)), rho2(2, bil(d))], d, 2, 3)$
+print("    rho^2, [linear, bilinear], degrees 2 and 3:", r2)$
+print("    less (1 - a^4, (1 - a^2)^2):",
+      makelist(ratsimp(r2[i] - [1 - a^4, (1 - a^2)^2]), i, 1, 2), "  (all 0)")$
+
+/* (3) The x^3 feature at degree 3: rho^2 = 2 (1 - a^6)/5 under the linear form, and
+   2 (1 - a^2)^2 (1 + 2 a^2)/5 under the bilinear form, which holds x^2 u but not x u^2 or u^3. */
+r3 : [rho2(3, lin(3)), rho2(3, bil(3))]$
+print("(3) x^3's rho^2, [linear, bilinear]:", factor(r3))$
+print("    less (2 (1 - a^6)/5, 2 (1 - a^2)^2 (1 + 2 a^2)/5):",
+      ratsimp(r3 - [2*(1 - a^6)/5, 2*(1 - a^2)^2*(1 + 2*a^2)/5]), "  (=[0,0])")$
+
+/* (4) Numbers. The gate of 0.5 on the WHOLE lift refuses the linear form of degree 2 or more
+   wherever 1 - a^4 > 1/4, |a| < (3/4)^(1/4) = 0.931, and the bilinear form wherever
+   1 - a^2 > 1/2, |a| < 1/sqrt(2) = 0.707: a richer lift, or a bilinear one, cannot close an
+   exactly linear plant whose next state it predicts exactly. Read on the state, (1), the
+   residual is 0 at every a. */
+for av in [9/10, 1/2, 0] do
+  print("(4) a =", float(av), ": x^2 linear", float(sqrt(subst(a = av, r2[2][1]))),
+        " bilinear", float(sqrt(subst(a = av, r2[2][2]))),
+        "; x^3 linear", float(sqrt(subst(a = av, r3[1]))),
+        " bilinear", float(sqrt(subst(a = av, r3[2]))))$
+print("    |a| below which x^2 refuses at 0.5: linear", float((3/4)^(1/4)),
+      " bilinear", float(1/sqrt(2)))$

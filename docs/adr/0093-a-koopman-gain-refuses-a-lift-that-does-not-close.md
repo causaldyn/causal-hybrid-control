@@ -4,6 +4,8 @@
 Amended by ADR 0103, 2026-10-19: each feature's residual is read against its spread about its mean.
 Amended by ADR 0124, 2026-10-21: the lift is of the centred state and ends in a constant, and the
 controller is refused where its re-lifted loop leaves the target.
+Amended 2026-11-06: the gain reads the state's closure residuals, and the other features' are a
+diagnostic (see the last section).
 
 ## Context
 
@@ -98,3 +100,73 @@ round-off under both forms.
   are (ADR 0057).
 - **`u^2` columns, or a gain schedule for the bilinear model.** Each is a larger change than a
   form that matches the plant's control-affine structure, and neither is needed for the refusal.
+
+## Amended 2026-11-06: the gate reads the state
+
+### Context
+
+The bilinear form's motivation above is a continuous-time fact: a control-affine plant moves each
+feature by the action times a function of the state. `fit` reads one-step data, where a degree-`k`
+feature at the next state, `(f(x) + g(x) u)^k`, holds `u^2` to `u^k`, which neither form spans.
+On `x' = a x + b u` with an action of unit variance, the `x^2` feature's closure residual is
+`sqrt(1 - a^4)` under the linear form and `1 - a^2` under the bilinear one, while the state's is
+zero (`validation/koopman_discrete_closure.mac`). So the gate refused an exactly linear plant: the
+default degree-3 lift of `x' = 0.9 x + 0.5 u`, noise-free, read 0.607 on `x^2` and was refused,
+though it predicted the next state to round-off and its gain was the plant's LQR, 0.624220, with
+its other entries at most 7e-10. The refusal's remedies could not help: a richer lift holds higher
+powers of `u`, and the bilinear form's `1 - a^2` exceeds 0.5 wherever `|a| < 0.707`. No test had
+fit a lift of degree 2 or more to an exactly linear plant.
+
+### Decision
+
+- **`koopman_lqr_gain` reads the first `state_dim` closure residuals.** `closure_residuals` keeps
+  every feature's, as a diagnostic of what the lift does not carry; `max_residual` keeps its
+  meaning and its default of 0.5, now on the state.
+- **The refusal names remedies that can close the state:** a higher degree, where the next state
+  is a polynomial of the state; `form='bilinear'`, where the action's gain moves with the state; or
+  a larger `max_residual`.
+- **`KoopmanModel`'s docstring says what the bilinear form carries in one step**: the action's
+  products with the lift, which close the state of a plant bilinear in the state and the action.
+
+The controller lifts the measured state afresh at every step (ADR 0124), so the loop it closes
+moves by the state's one-step prediction, which the state's residual reads; the other features'
+predictions are never iterated in that loop. This reverses the alternative rejected above, "gate on
+the decoded state alone". Its reason still holds of the gain: the LQR runs on the whole lifted
+`A`, and a feature that does not close enters it. What reads that is ADR 0124's check on the
+controller's loop, which came after this ADR.
+
+### Consequences
+
+- Lifts refused before are granted. On `x' = 0.9 x + 0.5 u` and `x' = 0.5 x + 0.5 u`, every
+  degree from 1 to 3 in both forms is granted, the gain within 1e-8 of the plant's LQR.
+- On ADR 0103's plant `x' = 2x - x^3 + u/10` the degree-1 lift is still refused (its lift is the
+  state; 0.68 on the tests' log). At degree 3 the state closes (2e-8) and the gain is granted, but
+  it reads `x^2` and `x^3`, which do not close (1.00 and 0.33), and `koopman_controller` refuses
+  its loop at a spectral radius of 1.14 (2.86 under the bilinear form), at every level of the
+  state. The refusal moved from the gain to the controller: a caller who builds a law of their own
+  from the gain does not get that check.
+- The bilinear test plant keeps its verdicts at degree 1, where the lift is the state and the
+  constant, whose residual is zero: the linear form is refused at `sqrt(10/19) = 0.73`, the
+  bilinear form granted. The tests' oscillator is granted, as before.
+- Neither gate makes the gain the plant's LQR on a nonlinear plant.
+
+### Alternatives
+
+- **A multi-step decoded-state error.** `rollout` re-lifts the decoded state at every step, so its
+  error compounds the one-step state error, and it separates the same cases; its horizon would be
+  a new parameter.
+- **`u^k` columns in the design.** A plant is not polynomial in its action in general, and the
+  design would grow with the degree.
+- **A larger `max_residual`.** The bilinear form's residual on a linear plant tends to 1 as `a`
+  tends to 0, so no threshold below 1 grants every linear plant, and one at 1 grants every lift.
+- **Each feature's residual weighted by its entry in the gain.** Closer to what the loop reads,
+  but a new statistic with no calibration; the loop check reads the same thing directly.
+
+### Verification
+
+`validation/koopman_discrete_closure.mac` derives (1) the state's zero residual under both forms
+at degrees 1 to 3, (2) the `x^2` feature's `sqrt(1 - a^4)` and `1 - a^2` at degrees 2 and 3, and
+(3) the square of the `x^3` feature's, `2 (1 - a^6)/5` and `2 (1 - a^2)^2 (1 + 2 a^2)/5`. The
+tests read (1) and (2) to 1e-10 on a design that crosses every state with every action, whose
+moments up to the fourth are the normal's, one replicate per fold; and the gain on a logged
+trajectory against the plant's LQR to 1e-7.

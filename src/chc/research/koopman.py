@@ -87,11 +87,17 @@ class KoopmanModel:
     the fit reads the same in any units of the state and the action. Added as a constant, it
     outweighed an action logged in millionths of its units and set ``B`` near zero.
 
-    ``form="bilinear"`` fits ``phi(x') ~ A phi(x) + B u + sum_j u_j H_j phi(x)``. A control-affine
-    plant moves each nonlinear feature of the lift by a term that is the action times a function of
-    the state, so its linear lift is misspecified however rich the dictionary; the bilinear one
-    carries that term (Strässer et al., Annual Reviews in Control 61, 2026). The default
-    ``form="linear"`` fits as before, bit for bit.
+    ``form="bilinear"`` fits ``phi(x') ~ A phi(x) + B u + sum_j u_j H_j phi(x)``. In continuous
+    time a control-affine plant moves each feature of the lift by the action times a function of
+    the state, which the bilinear form carries (Strässer et al., Annual Reviews in Control 61,
+    2026). A fit reads one step, and there that property does not hold: a degree-``k`` feature at
+    the next state, ``(f(x) + g(x) u)^k``, holds ``u^2`` to ``u^k``, which neither form spans. On
+    ``x' = a x + b u`` with an action of unit variance, the ``x^2`` feature's closure residual is
+    ``sqrt(1 - a^4)`` under the linear form and ``1 - a^2`` under the bilinear one
+    (``validation/koopman_discrete_closure.mac``), though both predict the next state exactly. In
+    one step the bilinear form carries the action's products with the lift, so it closes the state
+    of a plant bilinear in the state and the action, as ``x' = A x + b u + c x1 u``, where the
+    linear form cannot. The default ``form="linear"`` fits as before, bit for bit.
 
     ``fit`` reports ``closure_residuals``: for each feature of the lift, the root mean square of
     its one-step error on transitions held out of the fit, over the feature's spread about its
@@ -103,7 +109,9 @@ class KoopmanModel:
     any units of the state and the action. Over the feature's root mean square instead, a level far
     from zero would pass for prediction: a state read 273.15 higher, as in kelvin, takes the
     degree-one lift of ``x' = 2x - x^3 + u/10`` from 0.71, refused, to 0.0024, accepted. A feature
-    the log never moves has no spread, and is read over its root mean square.
+    the log never moves has no spread, and is read over its root mean square. The first
+    ``state_dim`` residuals are the state's, which :func:`koopman_lqr_gain` reads; the others say
+    which features the lift does not carry.
 
     The lift is of the state less its centre, the midpoint of the logged states, and it holds a
     constant. Without them a level was read as dynamics: the monomials of ``x + c`` span a
@@ -225,12 +233,19 @@ def koopman_lqr_gain(
 ) -> np.ndarray:
     """Infinite-horizon discrete-LQR gain in the lifted space (state cost via the decode slice).
 
-    The gain is the lifted model's, and it is refused where the lift does not close: where a
-    feature's held-out closure residual exceeds ``max_residual``, or was not read. The default of
-    0.5 refuses a lift that predicts less than three quarters of some feature's variance on
-    transitions it was not fit on. A bilinear model's channel depends on the state: its gain is
-    the LQR of the model linearised at ``x_target``, which it then requires. A linear model's gain
-    does not depend on ``x_target``.
+    The gain is the lifted model's, and it is refused where the lift does not close on the state:
+    where a state's held-out closure residual, among the first ``state_dim`` of
+    ``closure_residuals``, exceeds ``max_residual``, or was not read. The default of 0.5 refuses a
+    lift that predicts less than three quarters of some state's variance on transitions it was not
+    fit on. The other features' residuals are not read: in one step a lift of degree 2 or more
+    does not close even on an exactly linear plant, whose next state it predicts exactly (see
+    :class:`KoopmanModel`), and the controller lifts the measured state afresh at every step, so
+    the loop it closes moves by the state's one-step prediction. A feature that does not close
+    still enters the gain, which is solved on the whole lifted model: on a nonlinear plant the
+    gain is that model's LQR, not the plant's, and :func:`koopman_controller` checks the loop the
+    controller closes. A bilinear model's channel depends on the state: its gain is the LQR of the
+    model linearised at ``x_target``, which it then requires. A linear model's gain does not depend
+    on ``x_target``.
 
     The lift's constant moves with no action and costs nothing, so the LQR is solved on the other
     features and the constant's column of the gain is zero: the controller reads the lift's
@@ -238,17 +253,20 @@ def koopman_lqr_gain(
 
     Raises:
         RuntimeError: before the model is fit.
-        ValueError: where the lift does not close, or a bilinear model is given no ``x_target``.
+        ValueError: where the lift does not close on the state, or a bilinear model is given no
+            ``x_target``.
     """
     a, b, residuals = model._a, model._b, model.closure_residuals
     if a is None or b is None or residuals is None:
         raise RuntimeError("fit the model before computing an LQR gain")
-    worst = int(np.argmax(np.nan_to_num(residuals, nan=np.inf)))
-    if not residuals[worst] <= max_residual:
+    state = residuals[: model.state_dim]
+    worst = int(np.argmax(np.nan_to_num(state, nan=np.inf)))
+    if not state[worst] <= max_residual:
         raise ValueError(
-            f"the lift does not close: feature {worst}'s held-out closure residual is "
-            f"{residuals[worst]:.3g}, not within max_residual={max_residual}; enrich the lift, fit "
-            "form='bilinear', or pass a larger max_residual"
+            f"the lift does not close on the state: state {worst}'s held-out closure residual is "
+            f"{state[worst]:.3g}, not within max_residual={max_residual}; fit a higher degree "
+            "where the next state is a polynomial of the state, form='bilinear' where the "
+            "action's gain moves with the state, or pass a larger max_residual"
         )
     if model.form == "bilinear":
         if x_target is None:
