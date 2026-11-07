@@ -32,12 +32,12 @@ and 0.914 on 50 (0.802 to 1.000), the best plan being the exact oracle's
 response, and its tilt moved the share by -0.002 +- 0.003 on 400 blocks against a response of
 zero (mean +- standard error; -0.08 to +0.03), and by -0.044 +- 0.019 on 50 (-0.41 to +0.12).
 Where the market lies outside the fitted class, its attractiveness fixed while the demand moves,
-the default plan won 0.79 of the lift on average over 100 logs of 400 blocks (median 0.85, tenth
-percentile 0.77), and on one of them lost 8.4 times the lift: the fit read an attractiveness of
--1.5e12 for a zone it does not identify, and the expectation's variance through that zone's
-demand reached 1e5 rides a zone. The tilted plan won 0.76 (median 0.84, tenth percentile 0.61, at
-worst -1.19), and the tilt cost share: 0.83 with a response of zero. Up to 1.1.0, whose tilted
-plan was ascended from
+the default plan won 0.88 of the lift on average over 100 logs of 400 blocks (median 0.85, at
+worst 0.71), the tilted plan 0.76 (median 0.84, at worst -1.19), and the tilt cost share: 0.83 with
+a response of zero. Up to 1.2.0 the expected plan lost 8.4 times the lift on one of those logs,
+where the fit read an attractiveness of -1.5e12 for a zone it does not identify and the solve's
+leftover drivers there swamped the expectation's variance. Up to 1.1.0, whose tilted plan was
+ascended from
 the even split alone, these read -0.022 +- 0.012, -0.057 +- 0.025, and 0.73 against 0.79
 (ADR 0134; through a fit that stopped early, 0.72 against 0.40). The fit warns on such a market,
 and the planner refuses a fit whose drivers do not tell an incentive from none (ADR 0123).
@@ -1465,10 +1465,11 @@ def pessimistic_equilibrium_allocation(  # noqa: C901
     assumes: the drivers' error is normal, the fit's parameters and its planning demand are
     uncorrelated though read from the same logs, and a plan is scored at the planning demand. A fit
     outside its class, which warns, can read an absurd attractiveness for a zone it does not
-    identify, and the variance follows it: on one of 100 such logs the plan lost 8.4 times the
-    lift (the module's note). ``"tilted"``, the default up to 1.2.0, is the fit's completions plus
-    the response's tilt, and needs a response: pass ``objective="tilted"`` with one to keep those
-    plans.
+    identify, -1.5e12 on one of 100 such logs; held at zero incentive, such a zone's share is 0 and
+    adds nothing to the variance, where up to 1.2.0 the solve's leftover drivers there did and the
+    plan lost 8.4 times the lift. ``"tilted"``, the default up to 1.2.0, is the fit's completions
+    plus the response's tilt, and needs a response: pass ``objective="tilted"`` with one to keep
+    those plans.
 
     Either objective is ascended ``steps`` times from the even split and from the fitted game's
     exact optimum (:func:`chc.games.exact_congestion_allocation`), and the plan better on it is
@@ -1494,6 +1495,11 @@ def pessimistic_equilibrium_allocation(  # noqa: C901
             ``objective`` that is neither.
         TypeError: when ``equilibrium`` is not given (Python's own), or ``response`` is None
             under ``"tilted"``.
+
+    Warns:
+        UserWarning: where the fit's :attr:`FittedEquilibrium.lack_of_fit` is below 0.01, as
+            :func:`fit_equilibrium` warned, naming the zones held at zero incentive and the
+            attractiveness the fit read for each.
     """
     _lump_sum(market, "pessimistic_equilibrium_allocation")
     _radius(radius)
@@ -1531,6 +1537,7 @@ def pessimistic_equilibrium_allocation(  # noqa: C901
             "the fitted equilibrium identifies no zone's attractiveness: every attract_se is"
             " infinite or above the attractiveness's size, so no zone's incentive is read"
         )
+    _warn_outside_class(equilibrium, free)
     zero = jnp.zeros(market.n_zones, dtype=equilibrium.attract.dtype)
     if objective == "expected":
         return zero.at[free].set(_expected_plan(market, equilibrium, free, steps))
@@ -1550,6 +1557,24 @@ def pessimistic_equilibrium_allocation(  # noqa: C901
         return completions(u) + jnp.dot(tilt, u)
 
     return zero.at[free].set(_ascend(surrogate, market, equilibrium, free, steps))
+
+
+def _warn_outside_class(equilibrium: FittedEquilibrium, free: NDArray[np.intp]) -> None:
+    """Warn where the plan goes through a fit whose residuals say the logs lie outside its class,
+    naming the zones held at zero incentive and the attractiveness the fit read for each."""
+    if not equilibrium.lack_of_fit < _LACK_OF_FIT:
+        return
+    attract = np.asarray(equilibrium.attract, np.float64)
+    held = [zone for zone in range(attract.size) if zone not in set(free.tolist())]
+    named = ", ".join(f"zone {zone} at {attract[zone]:.3g}" for zone in held) or "none"
+    warnings.warn(
+        f"pessimistic_equilibrium_allocation: the fit's residuals still follow the zones' demand"
+        f" and incentive (lack_of_fit = {equilibrium.lack_of_fit:.2g}), so the plan is made on the"
+        " nearest market of the fitted class, and the attractiveness of a zone the fit does not"
+        f" identify can read anything; held at zero incentive: {named}",
+        UserWarning,
+        stacklevel=3,
+    )
 
 
 def _ascend(
@@ -1593,24 +1618,41 @@ def _driver_jacobians(
     ``(attract, log beta, log congestion, log mass)``, ``(n, n + 3)``, and in the planning demand,
     ``(n, n)``.
 
-    With ``s = drivers / mass``, ``q = s / (1 + beta*congestion*s)`` and ``w = attract*demand + u -
-    congestion*s``, Berry's (1994) inversion ``log(s)/beta + congestion*s - value = const`` gives
+    With ``w = attract*demand + u - congestion*drivers/mass``, the best response's shares
+    ``s = softmax(beta*w)`` and ``q = s / (1 + beta*congestion*s)``, Berry's (1994) inversion
+    ``log(s)/beta + congestion*s - value = const`` gives
     ``ds/dvalue = beta*(diag(q) - q q'/sum(q))``, ``ds_i/dlog(beta) = beta*q_i*(w_i - w_q)`` and
-    ``ds_i/dlog(congestion) = -beta*congestion*q_i*(s_i - s_q)``, ``w_q`` and ``s_q`` the
-    ``q``-weighted means; the shares do not move with the mass, so ``dx/dlog(mass) = x``. The value
-    is ``attract*demand``, so the demand moves the drivers as the attractiveness does, weighted by
-    the attractiveness. ``validation/marketplace_expected_completions.mac`` derives them.
+    ``ds_i/dlog(congestion) = -beta*congestion*q_i*(drivers_i/mass - s_q)``, ``w_q`` and ``s_q``
+    the ``q``-weighted means of ``w`` and ``drivers/mass``; the shares do not move with the mass, so
+    ``dx/dlog(mass) = mass*s``. The value is ``attract*demand``, so the demand moves the drivers as
+    the attractiveness does, weighted by the attractiveness.
+    ``validation/marketplace_expected_completions.mac`` derives them.
+
+    The shares are the best response's at ``drivers``, as the solve's implicit derivative reads
+    them, not ``drivers / mass``: the two agree at the fixed point, but the solve stops at its
+    tolerance, and a zone whose share underflows to 0 keeps drivers of that order. Read from
+    ``drivers / mass``, that residue entered ``w_q`` and the demand's column multiplied by the
+    zone's value: on a fit outside its class, a zone the fit does not identify read an
+    attractiveness of -1.5e12 and kept 3.1e-6 drivers, and the drivers' standard deviation in the
+    expected objective reached 1e5 rides. From the best response its share is exactly 0, and so is
+    every term it enters.
     """
     beta, congestion, mass = parameters
     shares = drivers / mass
-    q = shares / (1.0 + beta * congestion * shares)
+    worth = attract * demand + u - congestion * shares
+    best = jax.nn.softmax(beta * worth)
+    q = best / (1.0 + beta * congestion * best)
     total = jnp.sum(q)
     by_value = mass * beta * (jnp.diag(q) - jnp.outer(q, q) / total)
-    worth = attract * demand + u - congestion * shares
     by_beta = mass * beta * q * (worth - jnp.dot(q, worth) / total)
     by_congestion = -mass * beta * congestion * q * (shares - jnp.dot(q, shares) / total)
     by_parameters = jnp.concatenate(
-        [by_value * demand[None, :], by_beta[:, None], by_congestion[:, None], drivers[:, None]],
+        [
+            by_value * demand[None, :],
+            by_beta[:, None],
+            by_congestion[:, None],
+            (mass * best)[:, None],
+        ],
         axis=1,
     )
     return by_parameters, by_value * attract[None, :]

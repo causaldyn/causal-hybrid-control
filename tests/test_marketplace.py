@@ -869,6 +869,77 @@ def test_the_driver_jacobians_are_the_solve_s_in_closed_form(env: dict) -> None:
     )
 
 
+def _underflowing_fit() -> FittedEquilibrium:
+    """Four zones built by hand, the last read at an attractiveness of -1e12 and not identified,
+    as a fit outside its class read one; every other parameter's error 0.01, the demand's too."""
+    n = 4
+    covariance = np.diag(np.full(n + 3, 1e-4))
+    covariance[3, :] = covariance[:, 3] = np.nan
+    return FittedEquilibrium(
+        demand=jnp.array([1.0, 0.8, 1.2, 0.5]),
+        attract=jnp.array([1.0, 0.6, 0.9, -1e12]),
+        attract_se=jnp.array([0.05, 0.05, 0.05, jnp.inf]),
+        beta=2.5,
+        congestion=2.0,
+        mass=4.0,
+        rmse=0.02,
+        converged=True,
+        lack_of_fit=0.5,
+        incentive_z=10.0,
+        covariance=jnp.asarray(covariance),
+        demand_covariance=jnp.asarray(np.diag(np.full(n, 1e-4))),
+    )
+
+
+def test_a_zone_whose_share_underflows_enters_no_driver_jacobian() -> None:
+    """On one of 100 logs outside the fitted class the fit read a zone's attractiveness at -1.5e12.
+    The planner held it at zero incentive, the solve, stopped at its tolerance, left it 3.1e-6
+    drivers, and the Jacobians read those as its share and multiplied them by its value: the
+    drivers' standard deviation in the expected objective reached 1e5 rides, and the plan completed
+    2.1 rides where no incentive completes 10.9. Read from the best response, as the solve's own
+    derivative reads it, the zone's share is 0, and so is every term it enters. Here the old
+    reading missed the solve's Jacobians by 3e6 and planned 1.84 completions where no incentive
+    completes 3; the solve's tolerance, 1e-6 of the drivers, bounds what separates the two now."""
+    with enable_x64(True):
+        fitted = _underflowing_fit()
+        n = 4
+        zero = jnp.zeros(n)
+        drivers = fitted.drivers(zero)
+        assert 0.0 < float(drivers[3]) < 1e-4  # the solve's residue, where the share is 0
+        by_parameters, by_demand = _driver_jacobians(
+            drivers, zero, fitted.attract, fitted.demand, fitted._parameters()
+        )
+        assert np.all(np.asarray(by_demand)[:, 3] == 0.0)
+        assert np.all(np.asarray(by_parameters)[3] == 0.0)
+        q0 = jnp.concatenate([fitted.attract, jnp.log(jnp.array([2.5, 2.0, 4.0]))])
+
+        def solved(q: jax.Array, demand: jax.Array) -> jax.Array:
+            params = (q[:n] * demand, zero, jnp.exp(q[n]), jnp.exp(q[n + 1]), jnp.exp(q[n + 2]))
+            return fixed_point(_fitted_step, params, jnp.full(n, jnp.exp(q[n + 2]) / n)).x
+
+        np.testing.assert_allclose(
+            by_parameters, jax.jacrev(solved)(q0, fitted.demand), rtol=0.0, atol=1e-5
+        )
+        np.testing.assert_allclose(
+            by_demand, jax.jacrev(solved, argnums=1)(q0, fitted.demand), rtol=0.0, atol=1e-5
+        )
+        market = SharedStateMarket(n_zones=n, mass=4.0, budget=2.0, seed=0)
+        plan = pessimistic_equilibrium_allocation(market, equilibrium=fitted)
+        assert float(plan[3]) == 0.0
+        assert float(fitted.completions(plan)) > float(fitted.completions(zero)) - 1e-9
+
+
+def test_the_planner_warns_on_a_fit_outside_its_class_naming_the_zones_it_holds() -> None:
+    """The fit warns where its residuals follow the zones' demand and incentive; a plan made on it
+    later said nothing, though such a fit can read any attractiveness for a zone it does not
+    identify (-1.5e12 on one log)."""
+    with enable_x64(True):
+        fitted = dataclasses.replace(_underflowing_fit(), lack_of_fit=1e-3)
+        market = SharedStateMarket(n_zones=4, mass=4.0, budget=2.0, seed=0)
+        with pytest.warns(UserWarning, match=r"lack_of_fit = 0\.001.*zone 3 at -1e\+12"):
+            pessimistic_equilibrium_allocation(market, equilibrium=fitted, steps=5)
+
+
 def test_the_expected_completions_are_the_normal_loss_function() -> None:
     """``E[min(d, X)]``, X normal, against quadrature zone by zone, and ``min(d, x)`` where the
     variance is zero."""
