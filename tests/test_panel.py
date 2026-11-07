@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 from chc.did import callaway_santanna
-from chc.panel import Panel, PanelError, _fingerprint
+from chc.panel import Panel, PanelError, _fingerprint, _sorted_fingerprint
 
 pd = pytest.importorskip("pandas")
 pl = pytest.importorskip("polars")
@@ -723,6 +723,37 @@ def test_the_rows_of_one_declared_period_share_its_earliest_stamp() -> None:
     assert not observed.is_balanced
     with pytest.raises(PanelError, match="frequency"):
         Panel.from_frame(frame, unit="home", time="month")
+
+
+def test_the_sorted_digest_reads_one_panel_s_rows_in_any_order() -> None:
+    """``data_sha256`` reads the rows in the order they were handed in; the digest a decision
+    record checks reads them sorted by unit and period, so one panel's rows in another order hash
+    alike, and a changed value, a changed dtype or another declared calendar still hash apart."""
+    frame = _dated(
+        ["2024-01-31", "2024-02-29", "2024-01-15", "2024-02-15"], homes=["a", "a", "b", "b"]
+    )
+    panel = Panel.from_frame(frame, unit="home", time="month", frequency="M")
+    # its rows are sorted already, so the two digests read the same bytes
+    assert _sorted_fingerprint(panel) == panel.provenance.data_sha256
+    for order in ([3, 2, 1, 0], [2, 0, 3, 1], [0, 2, 1, 3]):
+        moved = Panel.from_frame(
+            {name: column[order] for name, column in frame.items()},
+            unit="home",
+            time="month",
+            frequency="M",
+        )
+        assert moved.provenance.data_sha256 != panel.provenance.data_sha256
+        assert _sorted_fingerprint(moved) == _sorted_fingerprint(panel)
+    for other in (
+        Panel.from_frame(
+            frame | {"y": np.nextafter(frame["y"], 9.0)}, unit="home", time="month", frequency="M"
+        ),
+        Panel.from_frame(
+            frame | {"y": frame["y"].astype(np.float32)}, unit="home", time="month", frequency="M"
+        ),
+        Panel.from_frame(frame, unit="home", time="month", frequency="D"),
+    ):
+        assert _sorted_fingerprint(other) != _sorted_fingerprint(panel)
 
 
 @pytest.mark.parametrize(

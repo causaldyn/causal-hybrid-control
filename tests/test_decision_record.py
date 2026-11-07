@@ -32,6 +32,7 @@ from chc.decision import (
     Lever,
     Prescription,
     Target,
+    _plan_sha256,
     prescribe,
 )
 from chc.dynamics import LinearDynamics
@@ -42,9 +43,9 @@ from chc.evaluation import (
     evaluate_plan,
 )
 from chc.graph import CausalGraph, EdgeProvenance
-from chc.misspecification import _clustered_squares, planned_cost_bias
+from chc.misspecification import _clustered_squares, _parameter_cost, planned_cost_bias
 from chc.panel import Panel
-from chc.plan import PlannedCostBias
+from chc.plan import PlannedCostBias, _bias_terms
 from chc.residual import ControlAffineResidual
 
 DT = 0.1
@@ -419,6 +420,10 @@ def test_a_record_of_another_schema_or_without_inputs_is_refused(quickstart: Pre
     record = _text(quickstart.to_json())
     with pytest.raises(DecisionError, match=r"^schema_version: this release replays 3, not 4"):
         Prescription.from_json({**record, "schema_version": 4}, QUICKSTART)
+    # a number equal to 3 that is not JSON's integer 3
+    for other in (3.0, True):
+        with pytest.raises(DecisionError, match=rf"^schema_version: .* not {other}$"):
+            Prescription.from_json({**record, "schema_version": other}, QUICKSTART)
     without = {key: value for key, value in record.items() if key != "inputs"}
     with pytest.raises(DecisionError, match=r"^inputs: the record holds no inputs"):
         Prescription.from_json(without, QUICKSTART)
@@ -426,7 +431,9 @@ def test_a_record_of_another_schema_or_without_inputs_is_refused(quickstart: Pre
         Prescription.from_json([record], QUICKSTART)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("key", ["gamma", "seed", "dither", "panel_sha256", "planned_cost_bias"])
+@pytest.mark.parametrize(
+    "key", ["gamma", "seed", "dither", "panel_sha256", "panel_sorted_sha256", "planned_cost_bias"]
+)
 def test_a_record_missing_a_setting_is_refused_naming_it(
     quickstart: Prescription, key: str
 ) -> None:
@@ -497,8 +504,110 @@ def test_a_moved_number_is_refused_naming_the_versions_that_differ(
 
 def test_a_record_replayed_on_other_data_is_refused(quickstart: Prescription) -> None:
     record = _text(quickstart.to_json())
-    with pytest.raises(DecisionError, match=r"^inputs\.panel_sha256: the record was made from"):
-        Prescription.from_json(record, TWO)
+    other = Panel.from_frame(_quickstart_logs(seed=1), unit="region", time="week", seed=0)
+    with pytest.raises(
+        DecisionError, match=r"^inputs\.panel_sorted_sha256: the record was made from data whose"
+    ):
+        Prescription.from_json(record, other)
+
+
+# ---- the panel's rows, in whatever order they were handed in ----
+
+_ORDERS = {
+    "shuffled": lambda units, times: np.random.default_rng(1).permutation(units.size),
+    "units reversed": lambda units, times: np.lexsort((times, -units)),
+    "time-major": lambda units, times: np.lexsort((units, times)),
+}
+
+
+def _reordered(logs: dict[str, np.ndarray], order: str) -> Panel:
+    """``logs`` as a panel, its rows in ``order``."""
+    rows = _ORDERS[order](logs["region"], logs["week"])
+    return Panel.from_frame(
+        {name: column[rows] for name, column in logs.items()}, unit="region", time="week", seed=0
+    )
+
+
+def _rows_apart(record: dict[str, Any]) -> dict[str, Any]:
+    """``record`` less the two digests of the panel's rows in the order they were handed in."""
+    kept = copy.deepcopy(record)
+    del kept["inputs"]["panel_sha256"]
+    del kept["provenance"]["data_sha256"]
+    return kept
+
+
+@pytest.fixture(scope="module")
+def zoned() -> tuple[dict[str, np.ndarray], Prescription]:
+    """The quickstart's pool in zones of five regions, and a decision on the zones' means."""
+    logs = _quickstart_logs(regions=60, weeks=8)
+    logs["zone"] = np.asarray([f"z{region // 5}" for region in logs["region"]], dtype=object)
+    made = prescribe(
+        Panel.from_frame(logs, unit="region", time="week", seed=0),
+        adjustment=CausalGraph.from_edges(QUICKSTART_EDGES),
+        levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+        target=Target("supply", value=1.0),
+        horizon=4,
+        dt=DT,
+        tolerance=0.5,
+        integrator="euler",
+        clusters="zone",
+    )
+    return logs, made
+
+
+@pytest.mark.parametrize("order", list(_ORDERS))
+def test_a_record_replays_on_its_rows_in_another_order(
+    quickstart: Prescription, order: str
+) -> None:
+    """A panel is its rows, not the order they were handed in: up to 1.1 a replay compared the
+    digest of the rows as handed in and refused the same rows reordered as other data, though
+    they make the same decision to the bit. The replay holds the reordered panel's own digests."""
+    panel = _reordered(_quickstart_logs(), order)
+    assert panel.provenance.data_sha256 != QUICKSTART.provenance.data_sha256
+    record = _text(quickstart.to_json())
+    replayed = _text(Prescription.from_json(record, panel).to_json())
+    assert replayed["inputs"]["panel_sha256"] == panel.provenance.data_sha256
+    assert replayed["provenance"]["data_sha256"] == panel.provenance.data_sha256
+    assert _rows_apart(replayed) == _rows_apart(record)
+
+
+@pytest.mark.parametrize("order", list(_ORDERS))
+def test_a_grouped_record_replays_on_its_rows_in_another_order(
+    zoned: tuple[dict[str, np.ndarray], Prescription], order: str
+) -> None:
+    """Under ``clusters`` each group's mean summed its rows in the order handed in, and a sum's
+    rounding moves with their order: shuffled, the rows moved the schedule by an ulp. Summed
+    sorted by unit and period, they give the grouped panel bit for bit, its digest too."""
+    logs, made = zoned
+    record = _text(made.to_json())
+    assert record["inputs"]["clusters"] == "zone"
+    replayed = _text(Prescription.from_json(record, _reordered(logs, order)).to_json())
+    assert replayed["provenance"]["data_sha256"] == record["provenance"]["data_sha256"]
+    assert _rows_apart(replayed) == _rows_apart(record)
+
+
+def test_a_grouped_panel_is_the_same_whatever_the_order_of_its_rows(
+    zoned: tuple[dict[str, np.ndarray], Prescription],
+) -> None:
+    logs, _ = zoned
+    numbers = ("supply", "wait", "incentive", "demand")
+    grouped = [
+        decision._cluster_panel(_reordered(logs, order), "zone", numbers) for order in _ORDERS
+    ]
+    first = grouped[0]
+    for other in grouped[1:]:
+        assert other.provenance.data_sha256 == first.provenance.data_sha256
+        for name in first.names:
+            assert np.asarray(other[name]).tobytes() == np.asarray(first[name]).tobytes()
+
+
+def test_a_record_replayed_on_one_changed_value_is_refused(quickstart: Prescription) -> None:
+    logs = _quickstart_logs()
+    logs["supply"][17] = np.nextafter(logs["supply"][17], np.inf)
+    with pytest.raises(
+        DecisionError, match=r"^inputs\.panel_sorted_sha256: the record was made from data whose"
+    ):
+        Prescription.from_json(_text(quickstart.to_json()), _reordered(logs, "shuffled"))
 
 
 def test_a_known_model_must_be_passed_again_and_be_the_same(
@@ -521,6 +630,18 @@ def test_a_model_s_digest_reads_its_arrays_and_its_class() -> None:
     assert decision._model_digest(single) != decision._model_digest(KNOWN)
     swapped = LinearDynamics(KNOWN.b_matrix, KNOWN.a_matrix)
     assert decision._model_digest(swapped) != decision._model_digest(KNOWN)
+
+
+def test_two_functions_digest_apart_by_their_code() -> None:
+    """A function is a model a caller may know, and every lambda's text reads ``<lambda>``: up to
+    1.1 two lambdas that compute apart read one digest, and a replay took either."""
+    first = lambda t, x, u: -0.5 * x  # noqa: E731
+    second = lambda t, x, u: -0.3 * x  # noqa: E731
+    sine = lambda t, x, u: jnp.sin(x)  # noqa: E731
+    cosine = lambda t, x, u: jnp.cos(x)  # noqa: E731
+    digests = [decision._model_digest(f) for f in (first, second, sine, cosine)]
+    assert len(set(digests)) == 4
+    assert decision._model_digest(lambda t, x, u: -0.5 * x) == digests[0]
 
 
 def test_a_replay_that_does_not_give_the_record_back_names_the_field(
@@ -582,6 +703,14 @@ def test_the_certificate_s_bias_is_the_fit_s_at_the_quickstart(
     assert made.certificate.planned_cost_bias_reason is None
     assert bias is not None
     assert bias.planned_cost == made.plan.task_cost
+    # the fit is clustered two ways, and the bias reads the two ways' covariance, which here is
+    # also the read of the largest tr(W S) the bias took up to 1.1: its number does not move
+    reads = _reads(plan, fit)
+    assert len(reads) == 3
+    assert (bias.optimism, bias.curvature) == (reads[0].optimism, reads[0].curvature)
+    assert max(reads, key=lambda read: read.optimism) == reads[0]
+    assert bias.bias == pytest.approx(2.8435e-05, rel=1e-3, abs=0.0)
+    assert bias.bias_upper == max(read.bias for read in reads)
     written = made.to_json()["certificate"]["planned_cost_bias"]
     assert written == {
         "planned_cost": bias.planned_cost,
@@ -589,6 +718,7 @@ def test_the_certificate_s_bias_is_the_fit_s_at_the_quickstart(
         "curvature": bias.curvature,
         "first_order": 0.0,
         "bias": bias.bias,
+        "bias_upper": bias.bias_upper,
         "direction": bias.direction,
         "corrected_cost": bias.corrected_cost,
         "unseen": bias.unseen,
@@ -596,6 +726,71 @@ def test_the_certificate_s_bias_is_the_fit_s_at_the_quickstart(
         "residual": bias.residual,
     }
     assert "planned cost's bias, to second order" in made.report()
+
+
+def _reads(plan: Any, fit: Any) -> list[PlannedCostBias]:
+    """The bias at each read of the fit's covariance: two ways, then each dimension alone."""
+    problem, cost, count = _parameter_cost(plan, fit.residual, "the fit")
+    terms = _bias_terms(problem, plan.actions, cost, count, None)
+    squares = _clustered_squares(np.asarray(fit.influence), fit.clusters, fit.periods)
+    return [terms.bias(square, None) for square in squares]
+
+
+def _short_logs(seed: int, units: int = 20, periods: int = 4) -> Panel:
+    """``x' = 0.7 x + 0.6 u + 0.3 e``, the lever drawn afresh each period: a log short in both
+    dimensions, on which the reads of the error's covariance part by noise."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(0.0, 0.5, units)
+    rows: dict[str, list[np.ndarray]] = {"unit": [], "t": [], "x": [], "u": []}
+    for t in range(periods):
+        u = rng.normal(0.0, 1.0, units)
+        for name, value in zip(
+            rows, (np.arange(units), np.full(units, t), x.copy(), u), strict=True
+        ):
+            rows[name].append(value)
+        x = 0.7 * x + 0.6 * u + 0.3 * rng.standard_normal(units)
+    frame = {name: np.concatenate(values) for name, values in rows.items()}
+    return Panel.from_frame(frame, unit="unit", time="t")
+
+
+def test_the_bias_reads_the_fit_s_own_dependence_and_its_largest_read_apart() -> None:
+    """``prescribe`` fits a log of 20 units over 4 periods clustered two ways, and the bias reads
+    the two ways' covariance; ``bias_upper`` is the largest bias over that read and each
+    dimension's alone. Up to 1.1 the bias was the read of the largest ``tr(W S)``, another read
+    than the two ways' on most of these logs: the largest of three noisy reads sits above each
+    read's own mean, 55 % above the bias the parameters' covariance across 600 such logs gives."""
+    seen: list[tuple[Any, Any]] = []
+    real = decision._fit_cost_bias
+
+    def spy(plan: Any, fit: Any) -> PlannedCostBias:
+        seen.append((plan, fit))
+        return real(plan, fit)
+
+    moved = 0
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(decision, "_fit_cost_bias", spy)
+        for seed in range(4):
+            made = prescribe(
+                _short_logs(seed),
+                adjustment=CausalGraph.from_edges([("u", "x")]),
+                levers=[Lever("u", lo=-10.0, hi=10.0, unit_cost=0.2)],
+                target=Target("x", value=1.0),
+                horizon=3,
+                dt=1.0,
+                integrator="euler",
+                x0=[0.0],
+                planned_cost_bias=True,
+            )
+            plan, fit = seen[-1]
+            bias = made.certificate.planned_cost_bias
+            assert bias is not None
+            assert np.ndim(fit.clusters) == 2
+            reads = _reads(plan, fit)
+            assert (bias.optimism, bias.curvature) == (reads[0].optimism, reads[0].curvature)
+            assert bias.bias_upper == max(read.bias for read in reads)
+            assert bias.bias_upper >= bias.bias
+            moved += max(reads, key=lambda read: read.optimism) != reads[0]
+    assert moved >= 2
 
 
 def test_the_bias_moves_nothing_else_and_is_off_by_default(quickstart: Prescription) -> None:
@@ -709,6 +904,48 @@ def test_on_one_scalar_step_the_bias_is_maxima_s_closed_form() -> None:
     )  # the drift's error is the plan's too
 
 
+def _scalar(**options: Any) -> Prescription:
+    return prescribe(
+        _scalar_logs(),
+        levers=[Lever("u", lo=-50.0, hi=50.0, unit_cost=0.1)],
+        target=Target("x", value=0.3, weight=2.0),
+        adjustment=CausalGraph.from_edges([("z", "u"), ("z", "x"), ("u", "x")]),
+        horizon=1,
+        dt=DT,
+        x0=[1.0],
+        **options,
+    )
+
+
+class _Falsy(LinearDynamics):
+    """A known model whose truth value is False, as a container's is when it is empty."""
+
+    def __bool__(self) -> bool:
+        return False
+
+
+def test_a_known_model_is_read_whatever_its_truth_value() -> None:
+    """Up to 1.1 ``prescribe`` read ``known or`` a zero model, so a known model that tests false
+    was dropped, and the fit took its part into the residual."""
+    rate = jnp.array([[-0.5]])
+    plain = _scalar(known=LinearDynamics(rate, jnp.zeros((1, 1))))
+    falsy = _scalar(known=_Falsy(rate, jnp.zeros((1, 1))))
+    assert np.array_equal(
+        np.asarray(falsy.model_fit.residual.drift), np.asarray(plain.model_fit.residual.drift)
+    )
+    assert np.array_equal(
+        np.asarray(falsy.schedule.magnitudes), np.asarray(plain.schedule.magnitudes)
+    )
+
+
+def test_a_numpy_integer_is_a_count_of_knots() -> None:
+    """``seed`` and ``folds`` take NumPy's integers, and up to 1.1 ``nuisance_knots`` refused one;
+    the record holds it as JSON's integer."""
+    record = _text(_scalar(nuisance_knots=np.int64(4)).to_json())
+    assert type(record["inputs"]["nuisance_knots"]) is int
+    assert record == _text(_scalar(nuisance_knots=4).to_json())
+
+
 # ---- the evaluation's record ----
 
 
@@ -780,10 +1017,30 @@ def _plan_digest(record: dict[str, Any]) -> str:
     named = {
         "schema_version": record["schema_version"],
         "schedule": record["schedule"],
-        "inputs": record["inputs"],
+        "inputs": {k: v for k, v in record["inputs"].items() if k != "panel_sha256"},
     }
     text = json.dumps(named, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_the_plan_digest_reads_the_rows_not_the_order_they_came_in() -> None:
+    """The same rows handed in shuffled make the same decision, so the digest an evaluation names
+    the plan by is the same; the record's ``inputs.panel_sha256``, the rows as handed in, is not."""
+    shuffled = _reordered(_quickstart_logs(), "shuffled")
+    again = prescribe(
+        shuffled,
+        adjustment=CausalGraph.from_edges(QUICKSTART_EDGES),
+        levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)],
+        target=Target("supply", value=1.0),
+        constraints=[Constraint("wait", hi=0.5)],
+        horizon=15,
+        dt=DT,
+        tolerance=0.5,
+        integrator="euler",
+    )
+    made, moved = _quickstart().to_json(), again.to_json()
+    assert made["inputs"]["panel_sha256"] != moved["inputs"]["panel_sha256"]
+    assert _plan_sha256(made) == _plan_sha256(moved) == _plan_digest(moved)
 
 
 def test_an_evaluation_names_the_plan_it_read() -> None:
@@ -968,7 +1225,10 @@ _APPEND = object()
         (("gamma",), 0.5, "inputs.gamma"),
         (("radius",), "wide", "inputs.radius"),
         (("tube_actions",), "vertex", "inputs.tube_actions"),
-        (("levers", 0, "name"), "bonus", "inputs"),
+        (("adjustment", "kind"), "guessed", "inputs.adjustment.kind"),
+        (("levers", 0, "name"), "bonus", "inputs.levers"),
+        (("target", "name"), "bonus", "inputs.target"),
+        (("constraints", 0, "state"), "bonus", "inputs.constraints"),
     ],
     ids=[
         "horizon text",
@@ -980,7 +1240,10 @@ _APPEND = object()
         "gamma below 1",
         "a radius",
         "a tube form",
-        "a column not in the panel",
+        "an adjustment of no kind",
+        "a lever's column not in the panel",
+        "a target's column not in the panel",
+        "a constraint's column not in the panel",
     ],
 )
 def test_a_record_prescribe_refuses_is_refused_naming_its_input(
@@ -989,10 +1252,52 @@ def test_a_record_prescribe_refuses_is_refused_naming_its_input(
     """Each refusal is a ``DecisionError`` that opens with the ``inputs`` key it reads, or with
     ``inputs`` where the refusal names none; up to 0.24.0 four of them were a bare ``ValueError``,
     a ``CyclicGraphError`` or prescribe's message with no path, and a negative weight replayed to
-    a schedule the record does not hold."""
+    a schedule the record does not hold. Up to 1.1 a column the panel does not have was refused
+    under ``inputs`` alone, and an adjustment of no kind under its path twice."""
     record = _tampered(_text(quickstart.to_json()), path, value)
     with pytest.raises(DecisionError, match=rf"^{named.replace('.', chr(92) + '.')}: "):
         Prescription.from_json(record, QUICKSTART)
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "named"),
+    [
+        (("dither",), ["eta1", "bonus"], "inputs.dither"),
+        (("adjustment", "covariates"), ["bonus"], "inputs.adjustment"),
+    ],
+    ids=["a draw's column", "an asserted covariate"],
+)
+def test_a_column_the_panel_does_not_have_is_refused_naming_the_input_that_names_it(
+    two_levers: Prescription, path: tuple[Any, ...], value: Any, named: str
+) -> None:
+    record = _tampered(_text(two_levers.to_json()), path, value)
+    with pytest.raises(DecisionError, match=rf"^{named.replace('.', chr(92) + '.')}: "):
+        Prescription.from_json(record, TWO)
+
+
+@pytest.mark.parametrize(
+    ("label", "options", "named"),
+    [
+        ("seed", {"seed": 1}, r"seed is 0, and this panel's is 1$"),
+        (
+            "frequency",
+            {"seed": 0, "frequency": 1.0},
+            r"frequency is None, and this panel's is 1\.0$",
+        ),
+    ],
+)
+def test_a_panel_of_other_labels_is_refused_before_the_replay_naming_them(
+    quickstart: Prescription, label: str, options: dict[str, Any], named: str
+) -> None:
+    """The panel's seed is a caller's label outside the data's digest, and its declared frequency
+    is inside it: up to 1.1 a replay on another seed ran whole and was refused as one that does
+    not give the record back, and one on another frequency as a panel of other data."""
+    panel = Panel.from_frame(_quickstart_logs(), unit="region", time="week", **options)
+    with pytest.raises(
+        DecisionError,
+        match=rf"^provenance\.{label}: the record was made from a panel whose {named}",
+    ):
+        Prescription.from_json(_text(quickstart.to_json()), panel)
 
 
 # ---- the graph's edges ----

@@ -540,6 +540,7 @@ class _BiasTerms:
         covariance: NDArray[np.float64],
         mean: NDArray[np.float64] | None,
         unseen: int | None = None,
+        upper: float | None = None,
     ) -> PlannedCostBias:
         return PlannedCostBias(
             planned_cost=self.planned_cost,
@@ -549,6 +550,7 @@ class _BiasTerms:
             free=self.free,
             residual=self.residual,
             unseen=unseen,
+            bias_upper=upper,
         )
 
 
@@ -881,6 +883,10 @@ class PlannedCostBias:
     # read off a fit (:func:`chc.misspecification.planned_cost_bias`): the fit's covariance holds no
     # error along them, so the bias leaves them out. None where no fit was read.
     unseen: int | None = None
+    # the largest bias over the reads of the fit's covariance, where the error was read off a fit
+    # clustered two ways: the two ways' read, which ``bias`` is, and each dimension's alone; the
+    # bias itself where the fit has one read. Never below ``bias``. None where no fit was read.
+    bias_upper: float | None = None
 
     @property
     def bias(self) -> float:

@@ -37,6 +37,7 @@ import logging
 import math
 import re
 import time
+import types
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from importlib import metadata
@@ -102,7 +103,15 @@ from chc.lqr import linearize_continuous, linearize_discrete
 from chc.misspecification import MisspecificationCost, _contrast
 from chc.misspecification import planned_cost_bias as _fit_cost_bias
 from chc.mpc import PeriodBudget, _period_rows
-from chc.panel import Panel, PanelError, Provenance, _grid_steps, _ordinals, _x64_enabled
+from chc.panel import (
+    Panel,
+    PanelError,
+    Provenance,
+    _grid_steps,
+    _ordinals,
+    _sorted_fingerprint,
+    _x64_enabled,
+)
 from chc.plan import (
     BarrierConstraint,
     CausalPlan,
@@ -1722,16 +1731,17 @@ class Prescription:
         moves (ADR 0145):
 
         * the certificate's ``planned_cost_bias``, the planned cost, its bias's three terms, the
-          bias, its ``direction`` and the corrected cost, or None, and
-          ``planned_cost_bias_reason``, why it is None;
+          bias, the largest over the reads of its covariance (``bias_upper``), its ``direction``
+          and the corrected cost, or None, and ``planned_cost_bias_reason``, why it is None;
         * ``logger_check``, the logger check's verdict (:class:`~chc.evaluation.LoggerCheck`): its
           statistic, p-value, each pair's partial correlation and the one it could detect, a nan
           correlation or an infinite detectable one None; None where it was not run;
         * ``dither_check``, the dither check's (:class:`DitherCheck`), None where none was asked;
         * ``inputs``, every argument of :func:`prescribe` that moves the result, the panel's
-          ``data_sha256`` and its declared ``cluster`` (``panel_cluster``) as handed in, and the
-          graph with each edge's provenance (:class:`~chc.graph.EdgeProvenance`); a known model
-          is recorded by a digest of its arrays and structure alone. In ``inputs`` an infinite
+          ``data_sha256`` and its declared ``cluster`` (``panel_cluster``) as handed in, the same
+          digest over its rows sorted by unit and period (``panel_sorted_sha256``), and the graph
+          with each edge's provenance (:class:`~chc.graph.EdgeProvenance`); a known model is
+          recorded by a digest of its arrays and structure alone. In ``inputs`` an infinite
           number is the text ``"inf"`` or ``"-inf"``, so that it stays apart from None, which
           there means not given. None on a prescription :func:`prescribe` did not build.
         """
@@ -1854,18 +1864,21 @@ class Prescription:
         return _strict(record)
 
     @classmethod
-    def from_json(
+    def from_json(  # noqa: C901
         cls, record: Mapping[str, Any], panel: Panel, *, model: Dynamics | None = None
     ) -> Prescription:
         """The decision ``record`` holds, made again: :func:`prescribe` on ``panel`` with the
         record's ``inputs``, checked to give the record back. *Experimental.*
 
-        ``panel`` is the panel the decision was made from: its ``data_sha256`` and its declared
+        ``panel`` is the panel the decision was made from: its rows in any order, which
+        ``inputs.panel_sorted_sha256`` digests sorted by unit and period, and its declared
         ``cluster``, which moves the channel's error and is not part of the digest, must be the
         ones the record names. ``model`` is the known model the decision was made with, where it
         was made with one: the record holds its digest alone, and refuses a model of another. The
         replay reproduces the decision, every number to the bit, on the release and the precision
-        that wrote it (ADR 0145).
+        that wrote it (ADR 0145). The digests of the rows in the order they were handed in,
+        ``inputs.panel_sha256`` and ``provenance.data_sha256``, are not compared: the replay
+        returned holds this panel's.
 
         The rule: a record replays on the release of the library that wrote it, under the same
         ``jax_enable_x64``, with ``schema_version`` 3 and ``inputs``, which no record before 1.0
@@ -1876,24 +1889,27 @@ class Prescription:
         number, the check below names the number and the versions that differ.
 
         Raises:
-            DecisionError: naming the field, on a record of another ``schema_version``, without
-                ``inputs`` or a field the replay needs, written by another release of the library
-                (``run.versions``) or under another precision (``run.x64``), on a panel of other
-                data (``inputs.panel_sha256``) or of another declared cluster
+            DecisionError: naming the field, on a record of another ``schema_version``, or one
+                that is not JSON's integer, without ``inputs`` or a field the replay needs,
+                written by another release of the library (``run.versions``) or under another
+                precision (``run.x64``), on a panel of another seed or frequency
+                (``provenance.seed``, ``provenance.frequency``), of other data
+                (``inputs.panel_sorted_sha256``) or of another declared cluster
                 (``inputs.panel_cluster``), without the known model the record names, or with
                 one of another digest or where the record names none (``inputs.known``); on an
                 input that does not read as :func:`prescribe`'s argument, or that it refuses,
-                naming ``inputs.<key>`` where the refusal names the argument and ``inputs`` where
-                it does not, with the refusal's own words; and where
+                naming ``inputs.<key>`` where the refusal names the argument or a column the
+                argument names, and ``inputs`` where it names neither, with the refusal's own
+                words; and where
                 the replay does not give the record back, naming the first field that differs and
                 the versions that differ from the record's.
         """
         if not isinstance(record, Mapping):
             raise DecisionError(f"a decision record is a mapping, not {type(record).__name__}")
-        if record.get("schema_version") != SCHEMA_VERSION:
+        version = record.get("schema_version")
+        if isinstance(version, bool) or not isinstance(version, int) or version != SCHEMA_VERSION:
             raise DecisionError(
-                f"schema_version: this release replays {SCHEMA_VERSION}, not "
-                f"{record.get('schema_version')!r}"
+                f"schema_version: this release replays {SCHEMA_VERSION}, not {version!r}"
             )
         inputs = record.get("inputs")
         if not isinstance(inputs, Mapping):
@@ -1918,16 +1934,30 @@ class Prescription:
                 f"run.x64: the record was made with jax_enable_x64 {run.get('x64')!r}, and this "
                 f"process runs with {_x64_enabled()}"
             )
+        labels = record.get("provenance")
+        labels = labels if isinstance(labels, Mapping) else {}
+        # a caller's labels of the data, which the record's provenance holds beside its digest
+        for name, held in (
+            ("seed", panel.provenance.seed),
+            ("frequency", panel.provenance.frequency),
+        ):
+            if labels.get(name) != held:
+                raise DecisionError(
+                    f"provenance.{name}: the record was made from a panel whose {name} is "
+                    f"{labels.get(name)!r}, and this panel's is {held!r}"
+                )
         arguments = _replay_arguments(inputs, panel, model)
         try:
             replayed = prescribe(panel, **arguments)
         except (KeyError, TypeError, ValueError) as refusal:  # the record's inputs, refused
             message = _refusal(refusal)
             raise DecisionError(
-                f"{_refused_input(message)}: prescribe refuses the record's inputs: {message}"
+                f"{_refused_input(message, inputs)}: prescribe refuses the record's inputs: "
+                f"{message}"
             ) from refusal
         difference = _first_difference(
-            _without_environment(replayed.to_json()), _without_environment(record)
+            _without_environment(_without_row_order(replayed.to_json())),
+            _without_environment(_without_row_order(record)),
         )
         if difference is not None:
             moved = sorted(
@@ -1945,9 +1975,12 @@ class Prescription:
         certificate = self.certificate
         bias = certificate.planned_cost_bias
         if bias is not None:
+            upper = bias.bias_upper
+            above = "" if upper is None or not upper > bias.bias else f"; up to {upper:+.4g}"
             return [
-                f"- planned cost's bias, to second order: {bias.bias:+.4g}, {bias.direction} "
-                f"(planned {bias.planned_cost:.6g}, corrected {bias.corrected_cost:.6g})"
+                f"- planned cost's bias, to second order, its first-order term not read: "
+                f"{bias.bias:+.4g}, {bias.direction} (planned {bias.planned_cost:.6g}, corrected "
+                f"{bias.corrected_cost:.6g}{above})"
             ]
         reason = certificate.planned_cost_bias_reason
         if reason is None or reason == _BIAS_NOT_ASKED:
@@ -2596,6 +2629,8 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
         neighbours = {unit: tuple(others) for unit, others in neighbours.items()}
     if dither is not None and not isinstance(dither, str):
         dither = tuple(dither)
+    if isinstance(nuisance_knots, np.integer):
+        nuisance_knots = int(nuisance_knots)  # as the record holds it, JSON's integer
     if not levers:
         raise DecisionError(
             "prescribe needs at least one lever; there is nothing to decide otherwise"
@@ -2812,7 +2847,11 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
     two_way = groups > 1 and periods > 1
     n_states, n_levers = len(states), len(lever_names)
 
-    base = known or LinearDynamics(jnp.zeros((n_states, n_states)), jnp.zeros((n_states, n_levers)))
+    base = (
+        LinearDynamics(jnp.zeros((n_states, n_states)), jnp.zeros((n_states, n_levers)))
+        if known is None
+        else known
+    )
     started = time.perf_counter()
     fit_options: dict[str, Any] = {
         "adjust_for": resolved.covariates,
@@ -4220,18 +4259,22 @@ def _cluster_panel(
     the group's rows logged that period; ``numbers`` are read as numbers or refused, and
     ``labels`` are carried as they are, refused where a group's rows hold two values.
 
-    The group's label is the unit, and the period label of the group's first row the time, which
-    the panel's ``frequency`` reads to the same period. The declared ``cluster`` is kept where it
-    holds one value over each group's rows."""
+    The group's label is the unit, and the period label of its first unit's row that period the
+    time, which the panel's ``frequency`` reads to the same period. The declared ``cluster`` is
+    kept where it holds one value over each group's rows. The rows are read sorted by unit and
+    period, so the same rows handed in any order give the same panel, bit for bit."""
     groups = _group_of_each_unit(panel, column)
-    _, periods = panel.codes()
-    key = groups * (int(periods.max()) + 1) + periods
+    units, periods = panel.codes()
+    # a group's mean sums its rows in turn, and the sum's rounding moves with their order
+    order = np.lexsort((periods, units))
+    key = (groups * (int(periods.max()) + 1) + periods)[order]
     _, first, inverse = np.unique(key, return_index=True, return_inverse=True)
     inverse = inverse.reshape(-1)
+    rows = order[first]
     counts = np.bincount(inverse)
     data: dict[str, NDArray[Any]] = {
-        column: np.asarray(panel[column])[first],
-        panel.time: np.asarray(panel[panel.time])[first],
+        column: np.asarray(panel[column])[rows],
+        panel.time: np.asarray(panel[panel.time])[rows],
     }
     for name in labels:
         if name in data:
@@ -4241,17 +4284,17 @@ def _cluster_panel(
                 f"a group of {column!r} is in more than one group of {name!r}; a group's rows "
                 "are one unit, which is in one group throughout"
             )
-        data[name] = np.asarray(panel[name])[first]
+        data[name] = np.asarray(panel[name])[rows]
     declared = panel.cluster if panel.cluster not in (None, column, *labels) else None
     if declared is not None and _one_value_per_group(panel, declared, groups):
-        data[declared] = np.asarray(panel[declared])[first]
+        data[declared] = np.asarray(panel[declared])[rows]
     else:
         declared = panel.cluster if panel.cluster in labels else None
     for name in panel.names:
         if name in data or name in (panel.unit, panel.cluster):
             continue
         if name in numbers or _number_column(panel, name):
-            data[name] = np.bincount(inverse, weights=panel._numbers(name)) / counts
+            data[name] = np.bincount(inverse, weights=panel._numbers(name)[order]) / counts
     return Panel.from_frame(
         data,
         unit=column,
@@ -4640,8 +4683,10 @@ def _priced(evaluation: PlanEvaluation, held_cost: float) -> PlanEvaluation:
 def _plan_sha256(record: Mapping[str, Any]) -> str:
     """The sha256 of a decision ``record``'s ``schema_version``, ``schedule`` and ``inputs`` as
     canonical JSON (keys sorted, no spaces): the plan an evaluation read, and what it was made
-    from."""
+    from. ``inputs.panel_sha256``, the rows in the order they were handed in, is left out: the same
+    rows in another order make the same decision, and ``inputs.panel_sorted_sha256`` names them."""
     named = {key: record[key] for key in ("schema_version", "schedule", "inputs")}
+    named["inputs"] = {k: v for k, v in named["inputs"].items() if k != "panel_sha256"}
     text = json.dumps(named, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -5959,6 +6004,7 @@ def _bias_json(bias: PlannedCostBias | None) -> dict[str, Any] | None:
         "curvature": bias.curvature,
         "first_order": bias.first_order,
         "bias": bias.bias,
+        "bias_upper": bias.bias_upper,
         "direction": bias.direction,
         "corrected_cost": bias.corrected_cost,
         "unseen": bias.unseen,
@@ -6015,12 +6061,14 @@ def _floats(values: ArrayLike) -> Any:
 
 
 def _model_digest(model: Dynamics) -> str:
-    """A sha256 over a model's structure and its arrays' dtypes, shapes and bytes.
+    """A sha256 over a model's structure, its arrays' dtypes, shapes and bytes, and its functions'
+    code.
 
     A model is any pytree of arrays and code, which JSON does not carry; the digest names it. An
     address in its structure's text, a function's or an object's, is dropped, and a leaf that is not
     a number is read by its type and its text, its addresses dropped too, so that one model reads
-    one digest in every process."""
+    one digest in every process; a function is read by its code as well (:func:`_code_bytes`),
+    where its text names it alone, as every lambda's reads ``<lambda>``."""
     leaves, structure = jax.tree_util.tree_flatten(model)
     digest = hashlib.sha256(_ADDRESS.sub("", str(structure)).encode())
     for leaf in leaves:
@@ -6031,10 +6079,29 @@ def _model_digest(model: Dynamics) -> str:
         else:
             digest.update(type(leaf).__qualname__.encode())
             digest.update(_ADDRESS.sub("", repr(leaf)).encode())
+            code = getattr(leaf, "__code__", None)
+            if isinstance(code, types.CodeType):
+                digest.update(_code_bytes(code))
     return digest.hexdigest()
 
 
 _ADDRESS = re.compile(r" at 0x[0-9a-fA-F]+")
+
+
+def _code_bytes(value: Any) -> bytes:
+    """A function's code as :func:`_model_digest` reads it: its bytecode, the names it reads and
+    its constants, a nested function's code read alike and a set's members in sorted order, as
+    their text's order moves with the process's string hashing. Two lambdas read one text, and
+    their code apart; bytecode is the interpreter's, so another Python minor reads another."""
+    if isinstance(value, types.CodeType):
+        parts = [value.co_code, repr(value.co_names).encode(), *map(_code_bytes, value.co_consts)]
+    elif isinstance(value, tuple | frozenset):
+        parts = [type(value).__name__.encode(), *map(_code_bytes, value)]
+        if isinstance(value, frozenset):
+            parts[1:] = sorted(parts[1:])
+    else:
+        parts = [repr(value).encode()]
+    return b"".join(len(part).to_bytes(8, "little") + part for part in parts)
 
 
 def _inputs_record(
@@ -6090,6 +6157,7 @@ def _inputs_record(
     value = np.asarray(target.value, dtype=np.float64)
     return {
         "panel_sha256": panel.provenance.data_sha256,
+        "panel_sorted_sha256": _sorted_fingerprint(panel),
         "panel_cluster": panel.cluster,
         "levers": [
             {
@@ -6154,6 +6222,7 @@ def _inputs_record(
 
 _INPUT_KEYS = (
     "panel_sha256",
+    "panel_sorted_sha256",
     "panel_cluster",
     "levers",
     "target",
@@ -6182,7 +6251,7 @@ _INPUT_KEYS = (
 )
 
 
-def _replay_arguments(
+def _replay_arguments(  # noqa: C901
     inputs: Mapping[str, Any], panel: Panel, model: Dynamics | None
 ) -> dict[str, Any]:
     """:func:`prescribe`'s keywords from a record's ``inputs``, checked against ``panel`` and the
@@ -6192,10 +6261,12 @@ def _replay_arguments(
         raise DecisionError(
             f"inputs.{missing[0]}: the record does not hold it, and a replay needs it"
         )
-    if inputs["panel_sha256"] != panel.provenance.data_sha256:
+    # the rows sorted, so that one panel's rows handed in another order are the same data
+    rows = _sorted_fingerprint(panel)
+    if inputs["panel_sorted_sha256"] != rows:
         raise DecisionError(
-            f"inputs.panel_sha256: the record was made from data {inputs['panel_sha256']!r}, and "
-            f"this panel holds {panel.provenance.data_sha256!r}"
+            f"inputs.panel_sorted_sha256: the record was made from data whose rows, sorted by unit "
+            f"and period, read {inputs['panel_sorted_sha256']!r}, and this panel's read {rows!r}"
         )
     # the declared cluster groups the channel's error and is not part of the data's digest
     if inputs["panel_cluster"] != panel.cluster:
@@ -6287,6 +6358,8 @@ def _replay_arguments(
         try:
             arguments[key] = read()
         except (KeyError, TypeError, ValueError) as error:  # a record's own shape, at its boundary
+            if isinstance(error, DecisionError) and str(error).startswith(f"inputs.{key}."):
+                raise  # it names the field already
             raise DecisionError(
                 f"inputs.{key}: the record's value does not read as prescribe's: {_refusal(error)}"
             ) from error
@@ -6305,17 +6378,43 @@ def _refusal(error: Exception) -> str:
     return str(error.args[0]) if isinstance(error, KeyError) and error.args else str(error)
 
 
-def _refused_input(message: str) -> str:
-    """The record's ``inputs.<key>`` that :func:`prescribe`'s refusal ``message`` names, as its
-    messages open with the argument they refuse (``gamma=0.5 is ...``, ``lever 'u' has ...``), or
-    ``inputs`` where it opens with none."""
+def _refused_input(message: str, inputs: Mapping[str, Any]) -> str:
+    """The record's ``inputs.<key>`` that :func:`prescribe`'s refusal ``message`` names: the key
+    that names the column, where it refuses a column the panel does not have; else the argument
+    its messages open with (``gamma=0.5 is ...``, ``lever 'u' has ...``), or ``inputs`` where
+    they open with none."""
+    for key, names in _columns_named(inputs).items():
+        if any(message.startswith(f"column {name!r} is not in the panel") for name in names):
+            return f"inputs.{key}"
     match = re.match(r"[a-z_0-9]+", message)
     word = "" if match is None else match.group()
     key = _REFUSED_BY.get(word, word)
     return f"inputs.{key}" if key in _INPUT_KEYS else "inputs"
 
 
-_REFUSED_BY = {"lever": "levers", "constraint": "constraints", "driver": "drivers"}
+_REFUSED_BY = {
+    "lever": "levers",
+    "constraint": "constraints",
+    "driver": "drivers",
+    "asserted": "adjustment",
+}
+
+
+def _columns_named(inputs: Mapping[str, Any]) -> dict[str, list[Any]]:
+    """The columns each of a record's ``inputs`` names, in the order :func:`prescribe` looks them
+    up in the panel."""
+    neighbours, dither = inputs["neighbours"], inputs["dither"]
+    return {
+        "target": [inputs["target"]["name"]],
+        "constraints": [constraint["state"] for constraint in inputs["constraints"]],
+        "levers": [lever["name"] for lever in inputs["levers"]],
+        "drivers": [driver["name"] for driver in inputs["drivers"]],
+        "clusters": [] if inputs["clusters"] is None else [inputs["clusters"]],
+        "neighbours": [neighbours["column"]]
+        if isinstance(neighbours, Mapping) and "column" in neighbours
+        else [],
+        "dither": [] if dither is None else [dither] if isinstance(dither, str) else list(dither),
+    }
 
 
 def _read_adjustment(written: Mapping[str, Any]) -> CausalGraph | list[str]:
@@ -6367,6 +6466,21 @@ def _without_environment(record: Mapping[str, Any]) -> dict[str, Any]:
     it runs (ADR 0145)."""
     run = record["run"]
     return {**record, "run": {key: value for key, value in run.items() if key not in _ENVIRONMENT}}
+
+
+_ROW_ORDER = (("inputs", "panel_sha256"), ("provenance", "data_sha256"))
+
+
+def _without_row_order(record: Mapping[str, Any]) -> dict[str, Any]:
+    """``record`` less the digests that read the panel's rows in the order they were handed in
+    (:data:`_ROW_ORDER`): a replay checks the rows sorted (``inputs.panel_sorted_sha256``) before
+    it runs, and the same rows in another order make the same decision."""
+    out = dict(record)
+    for section, key in _ROW_ORDER:
+        held = out.get(section)
+        if isinstance(held, Mapping):
+            out[section] = {name: value for name, value in held.items() if name != key}
+    return out
 
 
 def _first_difference(ours: Any, theirs: Any, path: str = "") -> str | None:

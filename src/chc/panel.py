@@ -120,10 +120,17 @@ class Provenance:
         }
 
 
-def _fingerprint(columns: Mapping[str, NDArray[Any]], frequency: str | float | None = None) -> str:
+def _fingerprint(
+    columns: Mapping[str, NDArray[Any]],
+    frequency: str | float | None = None,
+    order: NDArray[np.intp] | None = None,
+) -> str:
+    """A sha256 over each column's name, dtype, shape and bytes or values, in sorted name order,
+    and the frequency where one is declared; its rows in ``order`` where one is given, else as
+    held."""
     digest = hashlib.sha256()
     for name in sorted(columns):
-        array = np.ascontiguousarray(columns[name])
+        array = np.ascontiguousarray(columns[name] if order is None else columns[name][order])
         digest.update(name.encode())
         digest.update(str(array.dtype).encode())
         digest.update(str(array.shape).encode())
@@ -131,6 +138,14 @@ def _fingerprint(columns: Mapping[str, NDArray[Any]], frequency: str | float | N
     if frequency is not None:
         digest.update(f"frequency {frequency!r}".encode())
     return digest.hexdigest()
+
+
+def _sorted_fingerprint(panel: Panel) -> str:
+    """:func:`_fingerprint` over ``panel``'s rows sorted by unit and period, the codes of
+    :meth:`Panel.codes`, which no two rows share: one digest for one panel's rows in whatever
+    order they were handed in, where ``data_sha256`` reads them in that order."""
+    units, periods = panel.codes()
+    return _fingerprint(panel.columns, panel.provenance.frequency, np.lexsort((periods, units)))
 
 
 def _finite(number: Any) -> bool:

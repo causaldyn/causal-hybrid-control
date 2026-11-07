@@ -3,6 +3,18 @@
 **Status:** accepted, 2026-10-12. Experimental.
 Amended by ADR 0145, 2026-10-27: `prescribe(planned_cost_bias=True)` reads the bias into the
 certificate's `planned_cost_bias`, opt-in, refitting the channel with its influence.
+Amended 2026-11-06: the fit-based bias reads `S` as the fit's own dependence declares it, two ways
+for a fit clustered two ways (as `prescribe` fits a panel of more than one unit over more than one
+period), else its clusters, its rows or its periods' cosines, and no longer the read of the three
+with the largest `tr(W S)`. Taking the largest read is MacKinnon, Nielsen and Webb's rule for a
+standard error, and the expectation of the largest of three noisy reads sits above each read's: on
+600 logs of 20 units over 4 periods of `x' = 0.7 x + 0.6 u + 0.3 e` the largest read's bias
+averaged +0.0105 (SE 0.0005), the two ways' +0.0079 (0.0005), against +0.0068 (0.0001) with `S`
+the parameters' covariance across the logs; the two ways' read is still 2.4 paired standard errors
+above it. The largest bias over the reads is kept beside it, as `PlannedCostBias.bias_upper`
+(+0.0110 there). The quickstart's bias, +2.84e-5, does not move: its two ways' read is the one of
+the largest `tr(W S)`. The first-order term is still not read; on those logs it was -0.0047, and
+the gaps the plant paid averaged +0.0024 (SE 0.0020).
 
 ## Context
 

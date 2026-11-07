@@ -414,8 +414,9 @@ class PlanEvaluation:
         and ``logs_sha256``, a sha256 over the logs' ``"x"`` and ``"u"`` as float64, their names
         and shapes, from :func:`evaluate_plan`. ``plan_sha256`` names the plan: a sha256 over the
         decision record's ``schema_version``, ``schedule`` and ``inputs``
-        (:meth:`chc.decision.Prescription.to_json`) as JSON with its keys sorted and no spaces,
-        and None from :func:`evaluate_plan`, whose plan is no decision's. ``logger_check`` is the
+        (:meth:`chc.decision.Prescription.to_json`), its inputs' ``panel_sha256`` left out since
+        the rows' order makes no other decision, as JSON with its keys sorted and no spaces, and
+        None from :func:`evaluate_plan`, whose plan is no decision's. ``logger_check`` is the
         logger check's verdict, a nan partial correlation or an infinite detectable one None.
         There is no reader: a record is for audit, and the evaluation is made again from the panel
         and the plan.

@@ -52,6 +52,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import math
+import numbers
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -703,11 +704,11 @@ def _knot_count(knots: int | Literal["auto"], rows: int) -> int:
     spline's error at a smooth nuisance shrinks faster than the moment's ``N^(-1/2)``."""
     if knots == "auto":
         return max(3, math.ceil(rows ** (1.0 / 3.0) - 1e-9))
-    if isinstance(knots, bool) or not isinstance(knots, int) or knots < 3:
+    if isinstance(knots, bool) or not isinstance(knots, numbers.Integral) or knots < 3:
         raise ValueError(
             f"nuisance_knots must be an integer of at least 3 or 'auto'; got {knots!r}"
         )
-    return knots
+    return int(knots)
 
 
 def _ridge_parts(design: Array, ridge: float) -> tuple[Array, Array, Array, Array]:

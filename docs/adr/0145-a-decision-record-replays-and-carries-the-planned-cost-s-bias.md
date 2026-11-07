@@ -12,13 +12,36 @@ with `inputs.<key>`, or `inputs` where the refusal names no argument; and `PlanE
 bytes and shapes of `"x"` and `"u"`) from `evaluate_plan`, with `schema_version` still 1.
 
 Amended 2026-11-06: an evaluation names the decision it read. `settings.plan_sha256` is a sha256
-over the decision record's `schema_version`, `schedule` and `inputs`, written as JSON with its keys
-sorted and no spaces (`json.dumps(..., sort_keys=True, separators=(",", ":"))`), from
-`Prescription.evaluate`; it is null from `evaluate_plan`, whose plan is no decision's. A reader
+over the decision record's `schema_version`, `schedule` and `inputs`, the inputs' `panel_sha256` left
+out since the rows' order makes no other decision, written as JSON with its keys sorted and no
+spaces (`json.dumps(..., sort_keys=True, separators=(",", ":"))`), from `Prescription.evaluate`; it is null from `evaluate_plan`, whose plan is no decision's. A reader
 recomputes it from the record beside the evaluation. `settings.clusters` names the column a plan
 made on groups had the panel grouped by (ADR 0155), null otherwise, and `settings.panel_sha256`
 stays the panel's as handed in, as `inputs.panel_sha256` is. Both keys are new, so
 `EVALUATION_SCHEMA_VERSION` stays 1.
+
+Amended 2026-11-06: a panel is its rows, not the order they were handed in. `inputs` also holds
+`panel_sorted_sha256`, the same digest over the rows sorted by unit and period, and the replay
+checks it in place of `panel_sha256`: the same rows in another order, as a reload by SQL without
+`ORDER BY` hands them, made the same decision to the bit and were refused as a panel of other
+data. `inputs.panel_sha256` and `provenance.data_sha256` keep their meaning, the rows as handed
+in, and are not compared after the replay; the replay returned holds the panel's own.
+`prescribe(clusters=)` sums each group's rows sorted by unit and period, so the grouped panel is
+the same bit for bit whatever the order: shuffled, the rows had moved the schedule by 8e-17 and the
+channel's error by an ulp. `SCHEMA_VERSION` stays 3: a key is added and none changes meaning.
+
+Amended 2026-11-06 too: a replay's refusals name what differs. The panel's `seed` and `frequency`,
+labels the record's `provenance` holds, are compared before the replay and refused naming
+`provenance.seed` or `provenance.frequency`, as `inputs.panel_cluster` is: another seed had run the
+whole replay and been refused as one that does not give the record back, and another frequency as
+other data. A `schema_version` equal to 3 that is not JSON's integer 3 (`3.0`) is refused.
+A column the panel does not have is refused under the input that names it (`inputs.levers`,
+`inputs.dither`, ...), where it was refused under `inputs`, and a refusal that names its own field
+(`inputs.adjustment.kind`) keeps it, where it was prefixed a second time. A known model's function
+is digested by its code too, its bytecode, the names it reads and its constants, so two lambdas
+digest apart where both read `<lambda>`; bytecode is the interpreter's, so a record made with a
+function replays on the Python minor that wrote it. The values a function's closure holds are still
+not read.
 
 ## Context
 

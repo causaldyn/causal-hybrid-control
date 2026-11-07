@@ -252,15 +252,26 @@ def planned_cost_bias(
     ``plan``, made on ``fit``'s model, reads its cost from what it pays the plant, in expectation
     over the fit's error, and the cost corrected for it. *Experimental.*
 
-    The error is over every parameter the fit holds, the channel's and the drift's, in the order of
+    To second order in the fit's error ``e``, ``E[J_true - J_model] = tr(W S) - tr(J_ee S) / 2 -
+    J_e . E[e]``, ``S = E[e e']`` (:meth:`chc.plan.CausalPlan.planned_cost_bias`). The error is over
+    every parameter the fit holds, the channel's and the drift's, in the order of
     :attr:`chc.dynamics_id.CausalDynamicsFit.influence`: the drift is fitted on what the channel
     leaves of the rate, so it carries the channel's error, and the plan pays for both. ``W``,
     ``J_ee`` and ``J_e`` are read with the model moved by a residual of the fit's class inside its
-    field, rolled out by the step the plan is (:func:`misspecification_cost`'s envelope). ``S`` sums
-    the influence's outer products row by row and state by state, within each cluster for a fit
-    given ``clusters``, two-way the read of the three with the largest ``tr(W S)``, and across the
-    periods' cosines for one given ``periods``, as the channel's error is read. The fit's own
-    first-order bias is not known, so ``first_order`` is 0.
+    field, rolled out by the step the plan is (:func:`misspecification_cost`'s envelope).
+
+    ``S`` is read as the fit's own dependence declares it: the influence's outer products summed
+    row by row and state by state, within each cluster for a fit given ``clusters``, two ways for
+    one given two (the two dimensions' sums less their intersection's), and across the periods'
+    cosines for one given ``periods``. ``bias_upper`` is the largest bias over the reads a fit
+    clustered two ways also gives, each dimension's alone, which the channel's error takes the
+    largest of; ``bias`` where the fit has one read. Up to 1.1 ``bias`` was the read with the
+    largest ``tr(W S)``, and the expectation of the largest of three noisy reads sits above each
+    read's: on 600 logs of 20 units over 4 periods it read +0.0105, the two ways' read +0.0079,
+    against +0.0068 with ``S`` the parameters' covariance across the logs.
+
+    The first-order term is not read: the fit's own bias ``E[e]`` is not known to the fit, so
+    ``first_order`` is 0. It is of the order of ``S``: on those logs it was -0.0047.
 
     ``S`` holds no error along a direction of the channel the log's actions never moved
     (:attr:`chc.dynamics_id.CausalDynamicsFit.unmoved`): the fit holds the channel there, it does
@@ -296,13 +307,11 @@ def planned_cost_bias(
         )
     problem, cost, count = _parameter_cost(plan, fit.residual, "the fit")
     terms = _bias_terms(problem, plan.actions, cost, count, tolerance)
-    covariance = max(
-        _clustered_squares(np.asarray(fit.influence), fit.clusters, fit.periods),
-        key=terms.optimism,
-    )
+    reads = _clustered_squares(np.asarray(fit.influence), fit.clusters, fit.periods)
     size = np.asarray(fit._parameter_size, dtype=np.float64)
     unmoved = np.asarray(fit.unmoved, dtype=np.float64)
-    return terms.bias(covariance, None, _unseen(terms.weight, unmoved, size))
+    upper = max(terms.bias(square, None).bias for square in reads)
+    return terms.bias(reads[0], None, _unseen(terms.weight, unmoved, size), upper)
 
 
 def _unseen(
