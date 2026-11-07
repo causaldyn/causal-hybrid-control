@@ -98,7 +98,7 @@ jobs:
       - name: Sync dependencies
         run: uv sync --group dev
       - name: Misspecification tests
-        run: uv run --no-sync pytest -m misspecification -n 2 --dist loadfile tests/misspecification
+        run: uv run --no-sync pytest -m misspecification -n 4 --dist loadfile tests/misspecification
 
   # The floors in pyproject.toml are published: an installer pairs chc with any version they admit,
   # where every leg above runs the lockfile's. This one resolves each direct dependency to its
