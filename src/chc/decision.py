@@ -828,6 +828,12 @@ class DecisionCertificate:
     # *Experimental.*
     planned_cost_bias: PlannedCostBias | None = None
     planned_cost_bias_reason: str | None = None
+    # The bound on the drift's error the barrier's room read beside the channel's radius, in the
+    # rate's units, the Euclidean norm over the states, where :func:`prescribe` was asked for it
+    # (``barrier_drift_error=True``): a certified step then holds the plant whose drift is within
+    # it of the fitted one. None where the room read the channel's error alone, or no bound was
+    # audited. *Experimental.*
+    barrier_drift_error: float | None = None
 
     @property
     def stationarity_status(self) -> DiagnosticStatus | None:
@@ -1822,6 +1828,7 @@ class Prescription:
                 "rule_levers": list(certificate.rule_levers),
                 "planned_cost_bias": _bias_json(certificate.planned_cost_bias),
                 "planned_cost_bias_reason": certificate.planned_cost_bias_reason,
+                "barrier_drift_error": certificate.barrier_drift_error,
             },
             "selection": None
             if self.selection is None
@@ -2013,6 +2020,11 @@ class Prescription:
         else:
             line += (
                 " (a relative margin on a share of the fitted channel, not a level of confounding)"
+            )
+        if certificate.barrier_drift_error is not None:
+            line += (
+                f"; its room reads the drift's error too, {certificate.barrier_drift_error:.4g} "
+                "in the rate's units"
             )
         steps = certificate.barrier_certified_steps
         if steps is not None and steps == certificate.lever_range_step:
@@ -2307,6 +2319,7 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
     tube_actions: TubeActions = "box",
     dither: str | Sequence[str] | None = None,
     planned_cost_bias: bool = False,
+    barrier_drift_error: bool = False,
 ) -> Prescription:
     """Fit the causal control channel from ``panel`` and plan a certified schedule on it.
 
@@ -2541,6 +2554,22 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
             ``planned_cost_bias_reason`` holds the refusal. It moves nothing else: the plan, its
             fit and every other field are those without it, bit for bit. Off by default, since the
             second fit keeps ``N n p`` floats of influence. *Experimental.*
+        barrier_drift_error: read the fit's drift error into the barrier's room, *experimental*.
+            The deviation a certified step's room is read less then carries, beside the channel's
+            radius, ``t sqrt(n) drift_error``: the fit's ``drift_error``, the standard error of the
+            drift's fitted value at the log's rows, times the root of the number of states, as the
+            tube reads it, at Student's ``t`` of 0.975 at the degrees of freedom the tube reads it
+            with. It is passed to :func:`chc.plan.certify_safety`, and under ``hold_constraints``
+            to :class:`chc.plan.BarrierConstraint`, as ``drift_error``, and
+            :attr:`DecisionCertificate.barrier_drift_error` holds it. A certified step then holds
+            a plant whose drift is within it of the fitted one, as well as one with the fitted
+            drift; the condition and ``gamma_star`` read the fitted drift either way. The price is
+            the certified steps where the drift is unstable: on the 20 logs
+            :func:`chc.plan.certify_safety` reads, held at ``gamma = 1.5``, they fell from 29.95 to
+            24.85 on average, and the true plant, which left the set on 1 log without it, left it
+            on none. Off by default, so the room reads the channel's error alone, as up to 1.2,
+            and nothing moves. With no constraint, or on a fit that gives no drift error, the
+            observational one, it raises.
 
     Returns:
         A :class:`Prescription`. Read :attr:`DecisionCertificate.identification` before
@@ -2561,7 +2590,9 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
             neither ``"rk4"`` nor ``"euler"``, a ``tolerance`` that is
             negative or nan, a ``gamma`` below 1 or not finite, which is not a sensitivity level,
             a ``radius`` other than ``"auto"``, ``"absolute"`` and
-            ``"relative"``, or ``"absolute"`` on a fit that gives no absolute radius, a panel with
+            ``"relative"``, or ``"absolute"`` on a fit that gives no absolute radius,
+            ``barrier_drift_error`` with no constraint or on a fit that gives no drift error, a
+            panel with
             no consecutive pair of periods to fit a transition on, a ``cap_per_step``
             on a lever that follows its logged rule or a budget that prices one,
             ``max_levers`` where the log kept a combination of the levers away from zero, an
@@ -2636,6 +2667,10 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
         )
     if hold_constraints and not constraints:
         raise DecisionError("hold_constraints was set, but no constraint was given to hold")
+    if barrier_drift_error and not constraints:
+        raise DecisionError(
+            "barrier_drift_error was set, but no constraint was given to read a barrier at"
+        )
     if not 0.0 < dt < math.inf:
         raise DecisionError(f"dt={dt} is not a step, which is finite and positive")
     integrator_asked = integrator
@@ -2782,6 +2817,7 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
         tube_actions=tube_actions,
         dither=dither,
         planned_cost_bias=planned_cost_bias,
+        barrier_drift_error=barrier_drift_error,
     )
     if clusters is not None:
         numbers = (*states, *lever_names, *driver_names, *draws)
@@ -3151,6 +3187,7 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
     sensitivity = (
         _sensitivity(fit, radius == "absolute") if margins and radius != "relative" else None
     )
+    drift_room = _drift_room(fit) if margins and barrier_drift_error else None
     held = (
         BarrierConstraint(
             margins,
@@ -3159,6 +3196,7 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
             u_box=(tuple(np.asarray(u_lo).tolist()), tuple(np.asarray(u_hi).tolist())),
             sensitivity=sensitivity,
             centre=tuple(mean_action.tolist()),
+            drift_error=drift_room,
         )
         if hold_constraints
         else None
@@ -3386,7 +3424,18 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
         safety = plan.safety  # solve() already audited it at the whole box's largest actions
     elif margins:
         safety = _audit(
-            plan, model, margins, dt, 1.0, gamma, 1.0, reach, (u_lo, u_hi), sensitivity, mean_action
+            plan,
+            model,
+            margins,
+            dt,
+            1.0,
+            gamma,
+            1.0,
+            reach,
+            (u_lo, u_hi),
+            sensitivity,
+            mean_action,
+            drift_error=drift_room,
         )
     else:
         safety = None
@@ -3558,6 +3607,7 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
         lever_range_step=lever_range_step,
         planned_cost_bias=cost_bias,
         planned_cost_bias_reason=cost_bias_reason,
+        barrier_drift_error=None if safety is None else safety.drift_error,
     )
     _log.info(
         "decision certified",
@@ -5022,6 +5072,26 @@ def _sensitivity(fit: CausalDynamicsFit, required: bool) -> ChannelSensitivity |
     return sensitivity
 
 
+def _drift_room(fit: CausalDynamicsFit) -> float:
+    """The bound on the drift's error the barrier's room reads under ``barrier_drift_error``:
+    ``t sqrt(n) drift_error``, the drift's part of the field's error as the tube reads it, the
+    Euclidean norm over the ``n`` states (:func:`_field_error`) at Student's ``t`` of 0.975 at the
+    degrees of freedom the tube reads it with (:func:`_field_scale`).
+
+    Raises:
+        DecisionError: where the fit gives no drift error, as the observational fit does.
+    """
+    if fit.drift_error is None:
+        raise DecisionError(
+            "barrier_drift_error=True, but the fit gives no drift error: its channel is not "
+            "identified, and its drift is read conditional on it"
+        )
+    assert fit.defect is not None  # every fit keeps its defect
+    degrees = _degrees_of_freedom(int(np.asarray(fit.defect).shape[0]), fit.clusters, fit.periods)
+    level = float(student_t.ppf(0.5 + _TUBE_COVERAGE / 2.0, degrees))
+    return level * math.sqrt(fit.residual.channel.shape[0]) * fit.drift_error
+
+
 def _margins(states: tuple[str, ...], constraints: Sequence[Constraint]) -> tuple[_Margin, ...]:
     """An affine margin per finite bound, ``x - lo`` then ``hi - x``, in constraint order."""
     index = {name: position for position, name in enumerate(states)}
@@ -6132,6 +6202,7 @@ def _inputs_record(
     tube_actions: str,
     dither: str | Sequence[str] | None,
     planned_cost_bias: bool,
+    barrier_drift_error: bool,
 ) -> dict[str, Any]:
     """Every argument of :func:`prescribe` that moves its result, as plain JSON values."""
     if isinstance(adjustment, CausalGraph):
@@ -6218,6 +6289,7 @@ def _inputs_record(
         "tube_actions": tube_actions,
         "dither": dither if dither is None or isinstance(dither, str) else list(dither),
         "planned_cost_bias": bool(planned_cost_bias),
+        "barrier_drift_error": bool(barrier_drift_error),
     }
 
 
@@ -6249,6 +6321,7 @@ _INPUT_KEYS = (
     "tube_actions",
     "dither",
     "planned_cost_bias",
+    "barrier_drift_error",
 )
 
 
@@ -6353,6 +6426,7 @@ def _replay_arguments(  # noqa: C901
         "tube_actions": lambda: inputs["tube_actions"],
         "dither": lambda: inputs["dither"],
         "planned_cost_bias": lambda: inputs["planned_cost_bias"],
+        "barrier_drift_error": lambda: inputs["barrier_drift_error"],
     }
     arguments: dict[str, Any] = {"known": model}
     for key, read in readers.items():

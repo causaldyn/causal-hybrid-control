@@ -66,7 +66,7 @@ on the zone plant, for the response curves `response` in the plans they warm-sta
 the geo world `geo_world` in the geo models scored on it. They may change or be withdrawn in
 any minor release. Pin an exact version if you depend on one.
 
-97 entries in modules of other tiers are experimental on the same terms, for the same
+99 entries in modules of other tiers are experimental on the same terms, for the same
 reason. An entry is a name, `Class.member` for a field or a method, `function(argument=)` for an
 argument, or a value or key in quotes:
 
@@ -81,10 +81,11 @@ argument, or a value or key in quotes:
   `msm_worst_case_mean(covariate_form=)`, `confounding_robust_radius(covariate_form=)`,
   `negative_control_gamma(covariate_form=)`;
 - `chc.decision`: `prescribe(tube_actions=)`, `prescribe(dither=)`, `prescribe(neighbours=)`,
-  `prescribe(planned_cost_bias=)`, `DecisionCertificate.noise_persistence`,
-  `DecisionCertificate.noise_persistence_p`, `DecisionCertificate.tube_per_log_spread`,
-  `DecisionCertificate.tube_actions`, `DecisionCertificate.planned_cost_bias`,
-  `DecisionCertificate.planned_cost_bias_reason`, `TubeActions`, `DitherCheck`, `DitherStatus`,
+  `prescribe(planned_cost_bias=)`, `prescribe(barrier_drift_error=)`,
+  `DecisionCertificate.noise_persistence`, `DecisionCertificate.noise_persistence_p`,
+  `DecisionCertificate.tube_per_log_spread`, `DecisionCertificate.tube_actions`,
+  `DecisionCertificate.planned_cost_bias`, `DecisionCertificate.planned_cost_bias_reason`,
+  `DecisionCertificate.barrier_drift_error`, `TubeActions`, `DitherCheck`, `DitherStatus`,
   `PrescribedPolicy`, `Prescription.logger_check`, `Prescription.interference`,
   `Prescription.dither_check`, `Prescription.from_json`;
 - `chc.did`: `callaway_santanna_inference`, `EventStudyInference`;

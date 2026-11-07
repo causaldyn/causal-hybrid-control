@@ -28,6 +28,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy.stats import chi2
+from scipy.stats import t as student_t
 
 from chc.cost import QuadraticCost
 from chc.decision import (
@@ -66,7 +67,12 @@ from chc.dynamics import (
     LinearDynamics,
     _EulerStep,
 )
-from chc.dynamics_id import CausalDynamicsFit, fit_causal_residual, persistence_check
+from chc.dynamics_id import (
+    CausalDynamicsFit,
+    _degrees_of_freedom,
+    fit_causal_residual,
+    persistence_check,
+)
 from chc.evaluation import AffinePolicy
 from chc.graph import AdjustmentSet, CausalGraph, CyclicGraphError
 from chc.integrate import rollout
@@ -1876,6 +1882,51 @@ def test_the_barrier_s_radius_model_is_in_the_certificate_its_record_and_the_rep
         audited, certificate=dataclasses.replace(audited.certificate, radius_model="absolute")
     )
     assert "(a level of the channel's sensitivity model)" in absolute.report()
+
+
+def test_the_barrier_s_room_reads_the_drift_s_error_where_asked_and_nothing_moves_where_not() -> (
+    None
+):
+    """``barrier_drift_error=True`` reads ``t sqrt(n) drift_error`` into the barrier's room, ``t``
+    Student's at 0.975 at the degrees of freedom the tube reads the fit's error with: the
+    certificate, its record and its report hold it, the plan is the one made without it, and the
+    audit certifies no more steps than without it. Off, the field is None, its key null and the
+    report says nothing of it. Held, the solve reads the same bound. With no constraint, or on the
+    observational fit, which gives no drift error, it is refused."""
+    plain = _small()
+    asked = _small(barrier_drift_error=True)
+    fit = asked.model_fit
+    assert fit.drift_error is not None
+    degrees = _degrees_of_freedom(int(np.asarray(fit.defect).shape[0]), fit.clusters, fit.periods)
+    bound = float(student_t.ppf(0.975, degrees)) * math.sqrt(2.0) * fit.drift_error
+    assert asked.certificate.barrier_drift_error == pytest.approx(bound, rel=1e-12, abs=0.0)
+    assert plain.certificate.barrier_drift_error is None
+    assert np.array_equal(np.asarray(asked.plan.actions), np.asarray(plain.plan.actions))
+    steps, before = (
+        asked.certificate.barrier_certified_steps,
+        plain.certificate.barrier_certified_steps,
+    )
+    assert steps is not None
+    assert before is not None
+    assert steps <= before
+    written = json.loads(json.dumps(asked.to_json(), allow_nan=False))
+    assert written["certificate"]["barrier_drift_error"] == asked.certificate.barrier_drift_error
+    assert written["inputs"]["barrier_drift_error"] is True
+    unread = json.loads(json.dumps(plain.to_json(), allow_nan=False))
+    assert unread["certificate"]["barrier_drift_error"] is None
+    assert unread["inputs"]["barrier_drift_error"] is False
+    clause = "its room reads the drift's error too"
+    assert clause in asked.report()
+    assert clause not in plain.report()
+    held = _small(barrier_drift_error=True, hold_constraints=True)
+    assert held.plan is not None
+    assert held.plan.safety is not None
+    assert held.plan.safety.drift_error == held.certificate.barrier_drift_error
+    assert held.certificate.barrier_drift_error == pytest.approx(bound, rel=1e-12, abs=0.0)
+    with pytest.raises(DecisionError, match="barrier_drift_error was set, but no constraint"):
+        _small(constraints=[], barrier_drift_error=True)
+    with pytest.raises(DecisionError, match="the fit gives no drift error"):
+        _small(adjustment=[], barrier_drift_error=True)
 
 
 def test_an_infinite_ceiling_beside_uncertified_steps_is_explained() -> None:
