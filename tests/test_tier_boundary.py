@@ -34,6 +34,7 @@ INDEX = ROOT / "docs" / "api" / "index.md"
 # the page writes one: `module: entry`. Where the source module is experimental, that entry must be
 # one of the page's experimental entries.
 CROSSINGS: dict[tuple[str, str, str], str] = {
+    ("decision", "_robust_cov", "robust_cov"): "decision: prescribe",
     ("decision", "causal", "_polynomial_features"): "decision: prescribe",
     ("decision", "evaluation", "_evaluate_across_time"): "decision: Prescription.evaluate",
     ("decision", "evaluation", "_evaluate_by_unit"): "decision: Prescription.evaluate",
@@ -66,6 +67,15 @@ CROSSINGS: dict[tuple[str, str, str], str] = {
         "uncertainty",
         "_studentised",
     ): "decision: DecisionCertificate.tube_per_log_spread",
+    ("dynamics_id", "_robust_cov", "_cluster_count"): "dynamics_id: fit_causal_residual",
+    ("dynamics_id", "_robust_cov", "_cluster_factor"): "dynamics_id: persistence_check",
+    ("dynamics_id", "_robust_cov", "_clustered_squares"): "dynamics_id: omitted_confounder_bound",
+    ("dynamics_id", "_robust_cov", "_cosines"): "dynamics_id: persistence_check",
+    ("dynamics_id", "_robust_cov", "_degrees_of_freedom"): "dynamics_id: fit_causal_residual",
+    ("dynamics_id", "_robust_cov", "_period_cosines"): "dynamics_id: fit_causal_residual",
+    ("dynamics_id", "_robust_cov", "_small_sample"): "dynamics_id: fit_causal_residual",
+    ("dynamics_id", "_robust_cov", "robust_cov"): "dynamics_id: fit_causal_residual",
+    ("dynamics_id", "_robust_cov", "sandwich"): "dynamics_id: lag_check",
     ("dynamics_id", "causal", "_ACTION_AND_OUTCOME"): "dynamics_id: fit_causal_residual",
     ("dynamics_id", "causal", "_TRANSITION"): "dynamics_id: fit_causal_residual",
     ("dynamics_id", "causal", "_polynomial_features"): "dynamics_id: fit_causal_residual",
