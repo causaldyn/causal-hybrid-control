@@ -371,7 +371,9 @@ def _slsqp_on_the_held_columns(seed: int) -> float:
         ],
         options={"ftol": 1e-14, "maxiter": 2000},
     )
-    assert float(np.min(np.asarray(margin(jnp.asarray(found.x))))) > -1e-8
+    # SciPy's SLSQP before 1.16, in Fortran, ends seed 0 on a failed line search 6.7e-8 outside a
+    # column (SciPy 1.13), at a cost 4.8e-8 above the one SciPy 1.18 reaches inside it
+    assert float(np.min(np.asarray(margin(jnp.asarray(found.x))))) > -1e-7
     return float(found.fun)
 
 
