@@ -5,6 +5,183 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
 experimental may change in any minor release (`docs/api/index.md`).
 
+## [1.3.0] — 2026-11-07
+
+Two opt-in settings, the directional DLM form under sign constraints, the marketplace default
+1.2.0 announced, and fixes. The barrier's room may read a bound on the drift's error, and a held
+barrier's rounds may rest a one-lever action on the radius norm's kink; both are off by default,
+every number to the bit as in 1.2.0. Numbers that move, each with its size below: the default
+marketplace plan (`pessimistic_equilibrium_allocation` plans on `objective="expected"`, and refuses
+a `response` there), `planned_cost_bias`'s bias (the two ways' sums read whole), the clustered
+`t` and p-values of `interference_check` and `lag_check` and `estimate_network_effects`' clustered
+errors at rounding (one private module reads every robust covariance), and the DLM on a model that
+repeats a term. No name is removed or renamed.
+
+### Added
+
+- **`constrained_sample` takes the directional form, and the multiplicative one where its
+  evolution variance is a variance** (`chc.dlm`, experimental). Up to 1.2.0 it refused every form
+  but `"additive"`, the one that leaks, because its Gibbs blocks assumed an evolution that keeps
+  the blocks apart, so holding a channel to a sign forced that form. `W_t` depends on the design,
+  not on `y`, under every form, so the three blocks stay; the other states' draw given the
+  constrained paths now conditions their innovation on the constrained ones: their evolution adds
+  `K_t (c_t - c_(t-1))`, `K_t = W_uc W_cc^-1`, and its variance is `W_uu - K_t W_cu`
+  (`validation/dlm_constrained_conditioning.mac`). On a level beside a drifting coefficient held
+  while idle and a static one, eight steps with the variance learned, the directional form's
+  draws match rejection from 1.5 million `backward_sample` draws within 1.6 Monte Carlo standard
+  errors in every mean and 0.8% in every standard deviation, over five seeds; drawn without the
+  coupling, the level's means missed by 5.6-6.4. With every discount 1 the directional draws
+  equal the additive ones to `1e-12`, and the additive draws are unchanged to the bit. A
+  multiplicative step whose `W_t` has a negative eigenvalue (blocks whose discounts differ, once
+  they correlate) is refused naming the form, and so is a step whose `W_t` moves two constrained
+  coefficients only together, as the directional form's does for two columns held constant, or at
+  zero, beside a level alone (ADRs 0121, 0042).
+- `certify_safety(drift_error=)`, `BarrierConstraint.drift_error` and `SafetyCertificate.drift_error`
+  (experimental): the barrier's room may read a bound on the drift's error. The deviation tube
+  carries it beside the channel's radius, a constant added to the field at every stage as the
+  channel's error is, `e_{k+1} = ||dF/dx|| e_k + ||dF/dc|| (Delta_k ||D^+ (u_k - c)|| + drift_error)`,
+  so a certified step also holds a plant whose drift is within it of the model's: exactly where the
+  model is affine in the state and the error does not move with it (`validation/barrier_deviation_tube.mac`
+  (5) to (7), RK4 and Euler), to first order in the tube's width where it does. The condition, and
+  `gamma_star` with it, still read the model's drift. None reads the channel's error alone, every
+  number to the bit as in 1.2.0; a negative or non-finite bound is refused (ADR 0119 amended, ADR
+  0111 amended).
+- `prescribe(barrier_drift_error=True)` (experimental), `DecisionCertificate.barrier_drift_error`,
+  its record key `certificate.barrier_drift_error` and `inputs.barrier_drift_error`: the held
+  barrier and the audit read the fit's `drift_error` times `t sqrt(n)`, `t` Student's at 0.975 on
+  the channel's degrees of freedom and `n` the states, a bound read at the log's rows, not at the
+  plan's states. The report says so in the barrier's line. Off by default; refused without a
+  constraint and on a fit that gives no drift error. `SCHEMA_VERSION` stays 3: keys are added and
+  none changes meaning. A record replays on the release that wrote it (ADR 0145): one written before
+  the key is refused by `Prescription.from_json`, which names `inputs.barrier_drift_error`. On 20
+  logs of an unstable drift (`xdot = 0.5 x + u`, a hidden confounder at `Gamma = 1.5`, RK4, each
+  plan held under the fit's own sensitivity and a bound of 0.185 to 0.192), the true plant stayed in
+  the set over the certified steps on all 20, least `h` +0.72, where without the bound it left on 1,
+  least `h` -0.09. The price is the certified steps on that drift: 24.85 of 30 on average, where
+  they were 29.95; by log 28, 25, 19, 22, 22, 20, 28, 26, 25, 26, 23, 22, 26, 24, 29, 28, 25, 21, 30
+  and 28, where they were 30 but on one log 29; the cost 5.7 % higher on average (1.4 % to 11.5 %),
+  and 5 of the 20 plans end `infeasible` where all ended `max_iterations`. On a stable drift (-1)
+  every plan was certified on all 30 steps either way, at a cost 0.43 % higher on average (0.01 % to
+  1.30 %). A plan held without the bound and only audited with it keeps about half its steps: 15.90
+  on average on the unstable drift (14 to 17), 18.90 on the stable one (14 to 27).
+- `causal_plan(inner="orthant")`, `RecedingHorizon(inner="orthant")` (experimental) and the value
+  `"orthant"` of `InnerSolve`: a held barrier's rounds step by projected Newton with the radius
+  norm's kink at the barrier's centre taken by its sides. Under a radius, a step's condition and the
+  deviation tube both read `||D^+ (u - c)||`, which has a kink at `c`; the rollout's derivative
+  reads no slope there and Newton's model no curvature, so a plan whose optimum rests actions on
+  `c` stalled under both the default descent and `inner="newton"`. On a step with one lever, the
+  orthant rounds cut each action's box at `c` on its side, let an action on `c` leave only toward a
+  side where the round falls, and read the plan's first-order check there by the norm's
+  subdifferential (`CausalPlan.stationarity` is the smaller of that reading and the masked one).
+  On an unstable drift held under the fit's own `ChannelSensitivity` (three logs, 30 steps), the
+  plans end `converged` 6.3e-8, 8.0e-8 and 4.2e-8 above SLSQP's cost, certified on all 30 steps,
+  in 91, 2 814 and 1 880 descent steps, with 27, 27 and 29 actions on zero as SLSQP's; the default
+  rounds end `max_iterations` 0.17 %, 1.54 % and 0.32 % above it, Newton's 0.69 %, 0.21 % and
+  0.52 %. At 100 000 steps they return the same plans. With several levers a step, or no radius,
+  the rounds are `inner="newton"`'s, bit for bit. It ships opt-in: of 227 plans the planning tests
+  hold at a barrier it left 36 within 1e-9, made 90 cheaper at the same certified steps (up to
+  81 %), certified 6 on more leading steps and none on fewer, and ended 67 `converged` that ended
+  `max_iterations`, but made 95 costlier at the same certified steps, 93 that end `converged` by at
+  most 7.5e-7 and two oscillator plans at a budget of 10 steps by 5.4 %. The default stays
+  `"diagonal"`, every number to the bit as in 1.2.0 (ADR 0144 amended).
+- `pessimistic_equilibrium_allocation` warns (`UserWarning`) where it plans through a fit whose
+  `lack_of_fit` is below 0.01, as `fit_equilibrium` warned, and names the zones it holds at zero
+  incentive with the attractiveness the fit read for each: on one log outside the fitted class the
+  fit read −1.5e12 for such a zone, and its own warning names no zone.
+
+### Changed
+
+- **One robust covariance.** The small-sample factors, the clusters' sums (one way, two ways
+  less their intersection, less any part below nothing), the periods' cosines and the degrees of
+  freedom of the `t` read off them were stated in six places; one private module now reads them
+  and returns each covariance with its kind, its number of independent terms `G`, its factor and
+  its `df` (ADR 0053 and ADR 0062 amended). Each reader keeps its factor: CR1's
+  `G / (G - 1) (N - 1) / (N - k)` for the channel's error and `estimate_network_effects`,
+  `G / (G - 1)` alone for `interference_check`, `lag_check`, `persistence_check` and the tube's
+  noise mean, `N / (N - 1)` over each arm of `shadow_price_effect`'s contrast. The channel's error,
+  its influence, the tube's noise read, `persistence_check` and every HC3 error read to the bit what
+  1.2.0 read. Where a copy took the factor at another point of the product, numbers move at
+  rounding: `interference_check`'s and `lag_check`'s `t` and p-values and `shadow_price_effect`'s
+  contrast covariance by at most 6 float64 eps; `estimate_network_effects`' clustered errors by 4
+  float64 eps, and by up to 4e-7 of themselves in float32, where each cluster's scores are now
+  summed in another order.
+- **`chc.misspecification.planned_cost_bias`, and with it `prescribe(planned_cost_bias=True)`,
+  read the two ways' sums whole** (experimental). A fit clustered two ways, as `prescribe` fits a
+  panel of more than one unit over more than one period, gave the bias the two ways' covariance
+  with its part below nothing taken away, as the channel's error reads it. Taking that part away
+  adds a covariance to `S`, and the bias is linear in `S`: on 600 logs of 20 units over 4 periods
+  the bias averaged +0.0079, 1.169 times the +0.0068 that `S` the parameters' covariance across the
+  logs gives, 2.44 paired standard errors above it, and each dimension at its own small-sample
+  factor read the same +0.0079. Read whole it averages +0.0071, 1.041 times, 0.58 standard errors
+  above; it moved on 546 of the 600 logs. The quickstart's bias moves from +2.8435e-5 to
+  +2.9763e-5. `bias_upper` keeps the clipped reads and is now the largest of them and the bias,
+  never below it: the whole sums' bias was above every clipped read's on 37 of the 600 logs. Its
+  quickstart value, +3.263e-5, does not move (ADR 0088 amended).
+- **`pessimistic_equilibrium_allocation` plans on `objective="expected"` by default**, the flip
+  1.2.0's warning announced. Called without `objective` it maximises the completions the fitted
+  equilibrium expects under its own uncertainty, which reads no response. `response` defaults to
+  None and may be left out; under `"expected"` a response given is refused with a `ValueError`
+  naming it, so a call written for 1.2.0's default, a response and no `objective`, stops rather
+  than return a plan that ignored the response. `objective="tilted"` with a response plans as
+  1.2.0's default did, by the same code. Why: against the tilted plan the expected plan won more
+  of the exact oracle's lift on markets 0-29, logs of 400 blocks: 0.971 against 0.948 in float64
+  (more on 14 markets, less on 1, by 0.018) and 0.984 against 0.941 in float32 (more on 20, less
+  on 1, by 0.015); on logs of 50 blocks 0.914 against 0.815 (more on 24, less on 2, by 0.031);
+  never less than the naive plan, with no radius to choose. Outside the fitted class, where the
+  fit warns, over 100 logs of 400 blocks with the attractiveness fixed while the demand moves, it
+  won 0.88 on average against 0.76, at worst 0.71 against −1.19 (more on 46 logs, less on 8, by
+  0.059 at most), with the fix below. It needs the fit's covariance: a hand-built
+  `FittedEquilibrium` without one, or a fit whose sandwich is singular, is refused under the
+  default where the tilted objective planned through it; pass `objective="tilted"` there
+  (ADR 0137 amended).
+
+### Removed
+
+- The `FutureWarning` `pessimistic_equilibrium_allocation` emitted when called without
+  `objective` (1.2.0): the default it announced is in place.
+
+### Fixed
+
+- **A term in two blocks of a single DLM is held, and logged** (`chc.dlm`, experimental). Two
+  level blocks, a level beside a trend's, or one harmonic of a period in two seasonal blocks are
+  read by every row only through their sum, so one copy minus another is read by no row. 1.2.0
+  searched only a `GeoDLM` stack's national terms beside the geos' copies, so the directional
+  form discounted these as if read: two levels at 0.95 failed with `FloatingPointError` at step
+  421 of 1500, and a one-geo stack with a national level and harmonic beside its own differed from
+  `forward_filter` on the same blocks by 0.87 of the largest covariance entry. `forward_filter`
+  now finds them from the blocks, and `forward_filter_geos` finds them within the national blocks
+  and within each geo's regional ones too; both log them as a warning (`chc_event="dlm_unread"`;
+  `dlm_geo_unread` keeps its 1.2.0 meaning, a national term beside the geos' copies). The
+  directional form holds them: the two levels run 1500 steps with what the filter knows on their
+  difference at the prior's to `1e-10`, and a one-geo stack equals `forward_filter` on the same
+  blocks to `1e-14` under every form. The additive and the multiplicative form grow them by
+  `1 / delta` a step and refuse the step where the posterior's correlation eigenvalues span
+  `1e13`, as before (the multiplicative form's refusal on 1.2.0's twin geo stack at step 448
+  stays). Models with no repeated term filter as before, to the bit (ADR 0046).
+- **The expected objective no longer reads a zone whose share underflows as holding drivers.**
+  The drivers' closed-form Jacobians read each zone's share as `drivers / mass`, but the
+  equilibrium solve stops at its tolerance, so a zone whose logit share is 0 kept drivers of
+  that order, and the Jacobians multiplied them by the zone's value. On one of 100 logs outside
+  the fitted class the fit read −1.5e12 for a zone it does not identify; the zone kept 3.1e-6
+  drivers, the drivers' standard deviation in the expectation reached 1e5 rides, and the
+  expected plan completed 2.1 rides where no incentive completes 10.9, losing 8.4 times the
+  oracle's lift (it now wins 0.861 of it). The Jacobians read the best response's shares at the
+  solved drivers, as the solve's own derivative does: the same at the fixed point, and exactly 0
+  for such a zone. Markets 0-29 read the same shares to three decimals at 400 blocks in float64
+  and float32 and at 50 blocks; outside the class two other logs moved by 0.006 and 0.004
+  (ADR 0137 amended).
+
+### Notes
+
+- A misspecification test reads 20 logs of the unstable drift with the room reading the drift's
+  error, and asserts the true plant stays in the set over the certified steps on at least 13, the
+  floor of a rate of 0.9 by ADR 0115's binomial rule (it stayed in on 20). A second pins the log
+  whose drift the fit misses by 1.5 of its errors: with the bound the plant stays in, least `h`
+  +0.72. The barrier families also hold a plant whose drift is within a bound of the model's, at
+  each edge of the radius, in the set over the certified steps, which a room of the channel alone
+  does not (least `h` -0.53 on the integrator). `validation/misspec_power.mac` step 6 reproduces
+  the floor of 13 and its power: 0.8 against a stay-in rate of 0.53 or less.
+
 ## [1.2.0] — 2026-11-07
 
 Fixes, four opt-in settings and one deprecation. Numbers that move, each with its size below:
@@ -8510,6 +8687,8 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[1.3.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.3.0
+[1.2.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.2.0
 [1.1.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.1.1
 [1.1.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.1.0
 [1.0.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.0.0
