@@ -44,7 +44,7 @@ With one discount for every block the multiplicative form is the single discount
 blocks uninflated. A model of one block is the same model under the additive and the
 multiplicative form. ``R_t - P_t`` is a variance under the directional and the additive form;
 under the multiplicative form with discounts that differ it is not, and :func:`smooth`,
-:func:`backward_sample` and :func:`forecast` refuse such a step.
+:func:`backward_sample`, :func:`constrained_sample` and :func:`forecast` refuse such a step.
 
 The observational variance is learned (Normal-Gamma): ``Prior.dof`` is ``n_0`` and
 ``Prior.scale`` is ``S_0``, the prior point estimate of the variance; an infinite ``dof`` means
@@ -118,6 +118,13 @@ What it does not do, and what to watch:
   constant beside a level at step 684 of 1500 and proportional columns at step 215 of 600, where
   the additive form ran on before or failed later. The directional form holds the direction at
   its prior variance, so only a prior that wide against what the data resolve meets the check.
+* **A term in two blocks is read only through their sum.** Two levels, a level beside a trend's,
+  or one harmonic of a period in two seasonal blocks: every row reads the copies alike and the
+  evolution moves them alike, so one copy minus another is read by no row, whatever the data,
+  and its interval is the prior's. The filter finds those directions from the blocks and logs
+  them (``chc_event="dlm_unread"``); the directional form holds them as it holds an unread
+  regression direction, and the other forms grow them by ``1 / delta`` a step. The directional
+  form used to discount them as if read: two levels at 0.95 failed at step 421 of 1500.
 * **The directional form does not inflate what the data do not read.** Where the truth moves in
   a direction the rows leave unread, nothing widens the intervals for it: a coefficient that
   drifts (a random walk of sd 0.05) on a price held 26 steps, at the discounts above, covered
@@ -165,7 +172,7 @@ geos is multivariate Student ``t``. That is the update one geo at a time with no
 them, and its density the product of theirs (``validation/geo_dlm.mac``, steps 1 and 2).
 
 * One geo is :func:`forward_filter`'s model of the national blocks and then the regional ones,
-  unless a term is in both (below), and with every discount 1 the filter is the conjugate
+  and with every discount 1 the filter is the conjugate
   regression on the first state over every observation at once; the tests hold the first to
   ``1e-12`` and the second to ``1e-10``.
 * A term in both the national and the regional blocks -- a national level beside each geo's
@@ -175,7 +182,9 @@ them, and its density the product of theirs (``validation/geo_dlm.mac``, steps 1
   directions from the blocks and logs them (``chc_event="dlm_geo_unread"``); the directional
   form holds them as it holds an unread regression direction, and the other forms grow them by
   ``1 / delta`` a step. The directional form used to discount them as if read: a national level
-  beside three geos' levels at 0.95 failed at step 448 of 1500.
+  beside three geos' levels at 0.95 failed at step 448 of 1500. A term in two national blocks,
+  or in two of a geo's regional ones, is a single model's twin (above), logged as
+  ``chc_event="dlm_unread"``.
 * The filter is dense: with ``p`` coordinates, the national ones and every geo's, a step costs
   ``O(p^3)`` and the fit holds ``2 T`` covariances of ``p^2`` entries. An observation of one geo
   adds nothing to the posterior precision between two others, and the multiplicative form, a
@@ -557,10 +566,13 @@ class _Structure:
     inv_sqrt: _Array  # delta^(-1/2) per coordinate
     hold: _Array  # per coordinate: its discount is skipped while its regressor is zero
     inverse: _Array  # G^-1, which maps a past step's row of F into the current state's coordinates
-    unread: _Array  # (p, m): directions no row reads whatever the data, a stack's over geos
+    unread: _Array  # (p, m): directions no row reads whatever the data, found from the blocks
 
 
-def _structure(model: DynamicLinearModel) -> _Structure:
+def _structure(model: DynamicLinearModel, unread: _Array | None = None) -> _Structure:
+    """What the filter reads off ``model``. ``unread`` is the directions no row reads whatever the
+    data, the blocks' twins (:func:`_twins`) when omitted; a stack over geos passes its own, since
+    its rows read each geo's regional blocks apart."""
     p = model.size
     g = np.zeros((p, p))
     f = np.zeros(p)
@@ -591,7 +603,7 @@ def _structure(model: DynamicLinearModel) -> _Structure:
         inv_sqrt,
         hold,
         np.linalg.inv(g).astype(np.float64),
-        np.zeros((p, 0)),
+        _twins(model.blocks)[0] if unread is None else unread,
     )
 
 
@@ -685,17 +697,18 @@ def _slide(window: _Array, rows: _Array, s: _Structure, steps: int) -> _Array:
 def _unread(s: _Structure, window: _Array) -> _Array:
     """The directions of the state that the rows in ``window`` do not read, ``(p, m)``.
 
-    A model's blocks other than regressions are observable by construction, so a direction goes
-    unread only where the regression columns are, over the window, combinations of each other
-    and of the rows' other entries: a constant beside a level, proportional columns, a price held
-    for the whole window, a column that stays zero. The columns are scaled to a largest entry of
+    A model's blocks other than regressions are observable by construction unless two of them
+    have one term, so apart from those a direction goes unread only where the regression columns
+    are, over the window, combinations of each other and of the rows' other entries: a constant
+    beside a level, proportional columns, a price held for the whole window, a column that stays
+    zero. The columns are scaled to a largest entry of
     1 and freed of what the other entries explain; a direction whose residual is below
     ``_UNREAD`` is not read. The other entries' span keeps only its singular values above
     ``_UNREAD`` of the largest: over a short window a slow seasonal is close to a polynomial, and a
-    span held to rounding would read noise as a direction. A stack over geos is not observable by
-    construction: the directions it leaves unread whatever the data, ``s.unread``, found from its
-    blocks (:func:`_twins`), are added, since a rank read off the window at ``_UNREAD`` would take
-    a slow seasonal for one too.
+    span held to rounding would read noise as a direction. The directions a term in two blocks
+    leaves unread whatever the data, two levels or a national level beside each geo's,
+    ``s.unread``, found from the blocks (:func:`_twins`), are added, since a rank read off the
+    window at ``_UNREAD`` would take a slow seasonal for one too.
     """
     reg = s.regression
     if reg.size == 0:
@@ -838,6 +851,10 @@ def forward_filter(  # noqa: PLR0915
     that step, ``R_t / delta``: West and Harrison's feed-back intervention after a monitor's
     alarm. Each is logged.
 
+    A term in two blocks, two levels or one harmonic twice, is read only through their sum: the
+    filter logs it (``chc_event="dlm_unread"``), and the directional form holds one copy minus
+    another at its prior variance.
+
     Raises:
         ValueError: on a ``y`` that is not a vector of finite values and ``NaN``, an ``x`` whose
             shape is not ``(T, model.regressors)`` or that is not finite, or an intervention at a
@@ -854,6 +871,7 @@ def forward_filter(  # noqa: PLR0915
     xs = _regressors(model, x, horizon)
     extra = _interventions(interventions, horizon)
     s = _structure(model)
+    _warn_repeats(_twins(model.blocks)[2], model.form)
     p = model.size
     beta = model.variance_discount
 
@@ -1386,19 +1404,36 @@ def _convergence(states: _Array, variance: _Array) -> tuple[float, float]:
 
 def _transitions(fit: DLMFit) -> tuple[_Array, _Array]:
     """``R*_1``, the first prior's covariance, and ``W*_t`` for ``t = 2, ..., T``, both in units
-    of ``V``: ``R_t = G C_(t-1) G' + W_t`` with ``W_t`` the discount's blockwise inflation, zero
-    exactly where a block's discount is 1 or a held coordinate is idle.
+    of ``V``: ``R_t = G C_(t-1) G' + W_t``, with ``W_t`` the discount's evolution read again as
+    the filter ran it. It is zero exactly on the rows of a coordinate a step does not discount, a
+    block at a discount of 1 or an idle held regressor: the additive form's ``W_t`` is blockwise,
+    and the directional form keeps those rows of ``G C G'`` in exact arithmetic, so the rounding
+    its nested core leaves on them, ``1e-17`` of the rest, is set to zero.
 
     Raises:
-        ValueError: on a fit whose ``R_t`` is not the discount's, such as one with interventions.
+        ValueError: on a fit whose ``R_t`` is not the discount's, such as one with interventions,
+            or a step whose ``W_t`` is not a variance, as the multiplicative form's with blocks
+            whose discounts differ is once they correlate.
     """
-    s = _structure(fit.model)
+    model = fit.model
+    s = _structure(model)
     horizon, p = fit.mean.shape
     active = fit.design != 0.0
+    rates = np.zeros(p)
+    for sl, rate in zip(s.slices, s.rates, strict=True):
+        rates[sl] = rate
     w = np.zeros((max(horizon - 1, 0), p, p))
+    window, reads = np.zeros((0, p)), _reads(s, model.form)
+    if reads:
+        window = _slide(window, fit.design[:1], s, p)
     for t in range(1, horizon):
         evolved = s.evolution @ fit.covariance[t - 1] @ s.evolution.T
-        w[t - 1] = _evolve(s, "additive", evolved, active[t]) - evolved
+        if model.form == "additive":
+            w[t - 1] = _evolve(s, "additive", evolved, active[t]) - evolved
+        else:
+            if reads:
+                window = _slide(window, fit.design[t : t + 1], s, p)
+            w[t - 1] = _sym(_evolve(s, model.form, evolved, active[t], window)) - evolved
         scale_of = float(np.abs(fit.prior_covariance[t]).max())
         if not np.allclose(
             evolved + w[t - 1], fit.prior_covariance[t], rtol=0.0, atol=1e-9 * scale_of
@@ -1407,8 +1442,62 @@ def _transitions(fit: DLMFit) -> tuple[_Array, _Array]:
                 f"step {t}: the prior covariance is not the discount's evolution of the last"
                 " posterior; constrained sampling does not take a fit with interventions"
             )
+        if model.form == "directional":
+            kept = (rates == 0.0) | ~np.where(s.hold, active[t], True)
+            w[t - 1][kept] = 0.0
+            w[t - 1][:, kept] = 0.0
+        elif model.form == "multiplicative":
+            lowest = float(np.linalg.eigvalsh(w[t - 1])[0])
+            if lowest < -1e-9 * scale_of:
+                raise ValueError(
+                    f"step {t}: the evolution variance W = D P D - P has an eigenvalue"
+                    f" {lowest:.3g}, so it is not a variance and the discounts define no"
+                    " Gaussian prior over paths for the signs to truncate: form='multiplicative'"
+                    " with blocks whose discounts differ does this once they correlate;"
+                    " form='directional' keeps the evolution a variance"
+                )
         w[t - 1] /= fit.scale[t - 1]
     return fit.prior_covariance[0] / fit.model.prior.scale, w
+
+
+def _coupling(w: _Array, cs: list[int], us: list[int], columns: list[int]) -> tuple[_Array, _Array]:
+    """The other states' innovation given the constrained coefficients' at each step: its
+    regression on the coefficients that move, ``K_t = W_uc W_cc^-1``, ``(T - 1, u, c)``, and the
+    variance it leaves, ``W_uu - K_t W_cu``, ``(T - 1, u, u)``. A coefficient whose evolution
+    variance is zero at a step does not move there, and its row of ``W_t`` is zero, so its column
+    of ``K_t`` is zero. An evolution that keeps the blocks apart, as the additive form's does,
+    gives ``K_t = 0`` and ``W_uu`` exactly. ``columns`` names each constrained coefficient's
+    column of ``x``.
+
+    Raises:
+        ValueError: at a step whose evolution variance moves two or more constrained
+            coefficients only together: its correlation matrix over them has eigenvalues more
+            than ``_CONDITION_LIMIT`` apart.
+    """
+    couple = np.zeros((w.shape[0], len(us), len(cs)))
+    left = w[:, us][:, :, us]
+    for t in range(w.shape[0]):
+        moving = np.flatnonzero(np.diag(w[t])[cs] > 0.0)
+        if not moving.size:
+            continue
+        on = np.asarray(cs)[moving]
+        wcc, wuc = w[t][np.ix_(on, on)], w[t][np.ix_(us, on)]
+        root = np.sqrt(np.diag(wcc))
+        values = np.linalg.eigvalsh(wcc / np.outer(root, root))
+        if values[0] * _CONDITION_LIMIT < values[-1]:
+            names = [columns[i] for i in moving]
+            raise ValueError(
+                f"step {t + 1}: the evolution variance moves the coefficients on columns {names}"
+                " only together: its correlation matrix over them is singular past what float64"
+                " keeps apart, as the directional form's can be where its window leaves"
+                " combinations of their columns unread (columns held constant, or at zero,"
+                " beside a level); constrained sampling needs each one's innovation apart from"
+                " the others', and Regression(hold_when_idle=True) keeps an idle one still"
+            )
+        k = np.linalg.solve(wcc, wuc.T).T
+        couple[t][:, moving] = k
+        left[t] = left[t] - k @ wuc.T
+    return couple, left
 
 
 def _unit_filter(
@@ -1544,7 +1633,12 @@ def constrained_sample(  # noqa: C901, PLR0912, PLR0915
       (Pakman and Paninski 2014): the orbit is an ellipse, reflected where it meets a wall, with
       no step size and no rejection. The steps a zero evolution variance ties together (a discount
       of 1, or an idle held regressor) are one value;
-    * the other states given those paths, by forward filtering and backward sampling;
+    * the other states given those paths, by forward filtering and backward sampling. Where
+      ``W_t`` couples the blocks, as the directional form's does, their evolution adds the
+      regression of their innovation on the constrained coefficients',
+      ``K_t (c_t - c_(t-1))`` with ``K_t = W_uc W_cc^-1``, and its variance is what that leaves,
+      ``W_uu - K_t W_cu``: Gaussian conditioning, which the filter and the backward step then
+      carry exactly (``validation/dlm_constrained_conditioning.mac``);
     * ``V`` from its inverse gamma given the constrained values alone, the other states
       integrated out as well. Given every state, each evolution innovation would add a degree of
       freedom, which pins ``V`` to the path and slows its chain.
@@ -1558,11 +1652,23 @@ def constrained_sample(  # noqa: C901, PLR0912, PLR0915
     ``ess`` say whether the chains mixed; the draws are not to be read when they are not
     :attr:`ConstrainedDraws.mixed`, and the run is then logged as a warning.
 
+    Every form whose ``W_t`` is a variance is taken: the directional and the additive always, the
+    multiplicative where its blocks' discounts are equal or the blocks stay uncorrelated enough.
+    A step is refused where ``W_t`` moves two constrained coefficients only together, as the
+    directional form's can where its window leaves combinations of their columns unread: two
+    columns held constant, or at zero, beside a level alone. On a level beside a drifting
+    coefficient held while idle and a static one, eight steps with the variance learned, the
+    directional form's draws matched rejection from 1.5 million exact unconstrained draws within
+    1.6 Monte Carlo standard errors in every mean, over five seeds; drawn without the coupling,
+    the level's means missed by 5.6-6.4.
+
     Raises:
         ValueError: on no signs, a column that is not one of ``x``'s or not in a width-one
-            regression block, a sign that is neither, a form other than ``"additive"`` (the
-            others' evolution couples the blocks), a variance discount below 1, a fit with
-            interventions, ``draws`` below 4, ``chains`` below 2 or a negative ``warmup``.
+            regression block, a sign that is neither, a variance discount below 1, a fit with
+            interventions, a step whose evolution variance is not a variance (the multiplicative
+            form's, with blocks whose discounts differ, once they correlate) or moves two
+            constrained coefficients only together, ``draws`` below 4, ``chains`` below 2 or a
+            negative ``warmup``.
     """
     model = fit.model
     if not signs:
@@ -1571,10 +1677,6 @@ def constrained_sample(  # noqa: C901, PLR0912, PLR0915
     draws = _count(draws, "draws", 4, ", two a half for split R-hat")
     chains = _count(chains, "chains", 2, " for R-hat")
     warmup = _count(draws if warmup is None else warmup, "warmup", 0)
-    if model.form != "additive":
-        raise ValueError(
-            "constrained sampling needs form='additive', whose evolution keeps the blocks apart"
-        )
     if model.variance_discount != 1.0:
         raise ValueError("constrained sampling needs a variance discount of 1")
     s = _structure(model)
@@ -1649,13 +1751,17 @@ def constrained_sample(  # noqa: C901, PLR0912, PLR0915
         axis=1,
     )
 
-    # the other states given the constrained paths: a DLM with known offsets
+    # the other states given the constrained paths: a DLM with known offsets, whose evolution
+    # adds the regression of its innovation on the constrained ones where W_t couples the blocks
     gu, fu = g[np.ix_(us, us)], design[:, us]
     shift = first_cov[np.ix_(us, cs)] @ np.linalg.inv(first_cov[np.ix_(cs, cs)])
     pu = len(us)
     if pu:
         r_first = first_cov[np.ix_(us, us)] - shift @ first_cov[np.ix_(cs, us)]
-        gains, _, _, back, roots = _unit_filter(gu, fu, observed, r_first, w[:, us][:, :, us])
+        names = [int(np.flatnonzero(s.regression == j)[0]) for j in cs]
+        couple, w_others = _coupling(w, cs, us, names)
+        coupled = bool(np.any(couple))
+        gains, _, _, back, roots = _unit_filter(gu, fu, observed, r_first, w_others)
 
     # the variance given the constrained values, the other states integrated out: V given y is
     # IG(n_T / 2, n_T S_T / 2) and the values given V are N(value_mean, V value_cov)
@@ -1704,6 +1810,8 @@ def constrained_sample(  # noqa: C901, PLR0912, PLR0915
             for t in range(horizon):
                 if t:
                     a = means[:, t - 1] @ gu.T
+                    if coupled:
+                        a = a + (theta[:, t, cs] - theta[:, t - 1, cs]) @ couple[t - 1].T
                 ahead[:, t] = a
                 if observed[t]:
                     a = a + (offsets[:, t] - a @ fu[t])[:, None] * gains[t]
@@ -1991,10 +2099,9 @@ class GeoDLM:
 
     A national term that a regional block also has, a level beside each geo's level, leaves the
     national copy minus the geos' copies unread whatever the data, and
-    :func:`forward_filter_geos` finds that direction from the blocks and holds it. A single
-    :class:`DynamicLinearModel` is not searched for such a pair, so under the directional form a
-    stack of one geo with one differs from :func:`forward_filter` on the same blocks, which
-    discounts the pair's difference as if the data read it.
+    :func:`forward_filter_geos` finds that direction from the blocks and holds it.
+    :func:`forward_filter` finds a term in two blocks of a single :class:`DynamicLinearModel` the
+    same way, so a stack of one geo is its model of the same blocks under every form.
 
     Raises:
         ValueError: on a ``geos`` that is not a positive integer, a ``relative_variance`` that is
@@ -2066,41 +2173,72 @@ def _terms(block: Block) -> list[tuple[tuple[object, ...], int]]:
     return terms
 
 
-def _twins(model: GeoDLM) -> tuple[_Array, list[int]]:
-    """The stacked state's directions that no geo's row reads, whatever the data, and the
-    national coordinates they start from.
-
-    A national coordinate whose term a regional block also has -- a level beside each geo's
-    level, a slope beside each geo's slope, a harmonic beside the same harmonic of the same
-    period -- is read by each geo only through its sum with the geo's own copy, and the
-    evolution moves the two alike. The national coordinate minus the sum of the geos' copies is
-    then unread at every step: its window's singular value is zero to rounding, ``1e-17`` of the
-    largest. Regression coordinates are left to :func:`_unread`, which reads them off the columns.
-    """
-    national, regional = _sizes(model.national), _sizes(model.regional)
-    p = national + regional * model.geos
-    copies: dict[tuple[object, ...], int] = {}
+def _named(blocks: tuple[Block, ...]) -> list[tuple[int, tuple[object, ...]]]:
+    """Each coordinate of the blocks other than a regression's, with its term."""
+    named: list[tuple[int, tuple[object, ...]]] = []
     at = 0
-    for b in model.regional:
-        for term, i in _terms(b):
-            copies.setdefault(term, at + i)
+    for b in blocks:
+        named.extend((at + i, term) for term, i in _terms(b))
         at += b.size
+    return named
+
+
+def _twins(
+    national: tuple[Block, ...], regional: tuple[Block, ...] = (), geos: int = 1
+) -> tuple[_Array, list[int], list[list[int]]]:
+    """The directions of the state that no row reads, whatever the data, ``(p, m)``; the national
+    coordinates whose term a regional block also has; and the coordinates of each term that two
+    blocks of one kind have. A single model is the national blocks of one geo.
+
+    A row reads every copy of a term alike -- a polynomial's term of an order, a harmonic's
+    coordinate -- and the evolution moves the copies alike, so the rows read them only through
+    sums, and the window's singular value on what the sums leave out is zero to rounding,
+    ``1e-17`` of the largest:
+
+    * a national coordinate whose term a regional block also has is read by each geo only through
+      its sum with the geo's copy: the national coordinate minus the sum of the geos' copies;
+    * a term that two national blocks have, and no regional one, or that two of a geo's regional
+      blocks have, as two levels do: the first copy minus each other one.
+
+    Regression coordinates are left to :func:`_unread`, which reads them off the columns.
+    """
+    national_size, regional_size = _sizes(national), _sizes(regional)
+    p = national_size + regional_size * geos
+    first: dict[tuple[object, ...], int] = {}
+    for c, term in _named(regional):
+        first.setdefault(term, c)
     directions: list[_Array] = []
     coordinates: list[int] = []
-    at = 0
-    for b in model.national:
-        for term, i in _terms(b):
-            if term in copies:
-                d = np.zeros(p)
-                d[at + i] = 1.0
-                d[national + copies[term] :: regional] = -1.0
-                directions.append(d)
-                coordinates.append(at + i)
-        at += b.size
-    return np.array(directions, dtype=np.float64).reshape(-1, p).T, coordinates
+    alone: dict[tuple[object, ...], list[int]] = {}
+    for c, term in _named(national):
+        if term in first:
+            d = np.zeros(p)
+            d[c] = 1.0
+            d[national_size + first[term] :: regional_size] = -1.0
+            directions.append(d)
+            coordinates.append(c)
+        else:
+            alone.setdefault(term, []).append(c)
+    own: dict[tuple[object, ...], list[int]] = {}
+    for c, term in _named(regional):
+        own.setdefault(term, []).append(c)
+    groups: list[list[int]] = []
+    starts = [national_size + g * regional_size for g in range(geos)]
+    for copies, bases in ((alone, [0]), (own, starts)):
+        for offsets in copies.values():
+            for base in bases if len(offsets) > 1 else []:
+                group = [base + c for c in offsets]
+                for c in group[1:]:
+                    d = np.zeros(p)
+                    d[group[0]], d[c] = 1.0, -1.0
+                    directions.append(d)
+                groups.append(group)
+    return np.array(directions, dtype=np.float64).reshape(-1, p).T, coordinates, groups
 
 
 def _warn_twins(coordinates: list[int], form: DiscountForm) -> None:
+    if not coordinates:
+        return
     _log.warning(
         "dlm over geos: national coordinates %s each have a twin in every geo's regional blocks,"
         " so the national copy is read only through each geo's sum with its own: the national"
@@ -2111,6 +2249,22 @@ def _warn_twins(coordinates: list[int], form: DiscountForm) -> None:
         if form == "directional"
         else f"form={form!r} grows it by 1 / delta a step; form='directional' holds it",
         extra={"chc_event": "dlm_geo_unread", "coordinates": coordinates},
+    )
+
+
+def _warn_repeats(groups: list[list[int]], form: DiscountForm) -> None:
+    if not groups:
+        return
+    _log.warning(
+        "dlm: the coordinates in each of %s are one term in more than one block, as two levels or"
+        " one harmonic twice are, and the evolution moves them alike, so the rows read them only"
+        " through their sum: one copy minus another is never read, and its interval is the"
+        " prior's; %s",
+        groups,
+        "form='directional' holds those directions at their prior variance"
+        if form == "directional"
+        else f"form={form!r} grows them by 1 / delta a step; form='directional' holds them",
+        extra={"chc_event": "dlm_unread", "coordinates": groups},
     )
 
 
@@ -2188,7 +2342,9 @@ def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None)
 
     A national term that a regional block also has, a level beside each geo's level, is read only
     through each geo's sum with its copy: the filter logs it (``chc_event="dlm_geo_unread"``), and
-    the directional form holds the national copy minus the geos' copies at its prior variance.
+    the directional form holds the national copy minus the geos' copies at its prior variance. A
+    term in two national blocks, or in two of a geo's regional ones, is logged as
+    ``chc_event="dlm_unread"`` and held the same way.
 
     Raises:
         ValueError: on a ``y`` that is not ``(T, geos)`` of finite values and ``NaN``, or an ``x``
@@ -2203,10 +2359,10 @@ def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None)
         raise ValueError("y has an infinite value; a missing observation is NaN")
     horizon, geos = ys.shape
     stacked = model.stacked
-    twins, coordinates = _twins(model)
-    s = replace(_structure(stacked), unread=twins)
-    if coordinates:
-        _warn_twins(coordinates, stacked.form)
+    twins, coordinates, groups = _twins(model.national, model.regional, model.geos)
+    s = _structure(stacked, twins)
+    _warn_twins(coordinates, stacked.form)
+    _warn_repeats(groups, stacked.form)
     design = _geo_design(model, s, x, horizon)
     active = np.any(design != 0.0, axis=1)
     weights = np.asarray(model.relative_variance, dtype=np.float64)

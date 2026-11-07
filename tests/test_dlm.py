@@ -431,6 +431,97 @@ def test_a_constant_beside_a_level_is_refused_or_held_not_carried():
     assert np.max(fit.one_step_scale[52:]) < 2.0 * (variance + 0.02**2)
 
 
+def _twin_levels(form: DiscountForm, horizon: int = 1500):
+    """Two level blocks at 0.95 over a level's random walk, and their prior."""
+    rng = np.random.default_rng(0)
+    y = 5.0 + 0.3 * rng.standard_normal(horizon) + np.cumsum(0.02 * rng.standard_normal(horizon))
+    blocks = (Polynomial(1, 0.95), Polynomial(1, 0.95))
+    return DynamicLinearModel(blocks, Prior(np.zeros(2), 10.0 * np.eye(2), 0.1, 3.0), form), y
+
+
+def _held_information(fit, directions: np.ndarray) -> np.ndarray:
+    """The eigenvalues of ``D' (C_t / S_t)^-1 D`` at each step, the prior's in the first row."""
+    prior = fit.model.prior
+    covariances = [prior.covariance / prior.scale, *(fit.covariance / fit.scale[:, None, None])]
+    return np.array(
+        [np.linalg.eigvalsh(directions.T @ np.linalg.solve(c, directions)) for c in covariances]
+    )
+
+
+def test_two_level_blocks_are_read_only_through_their_sum_and_held(caplog):
+    """Every row reads two levels alike and the evolution moves them alike, so their difference is
+    read by no row, whatever the data. A single model's blocks were not searched for such a pair,
+    so the directional form discounted the difference every step as if read: the filter failed at
+    step 421 of 1500, its variance grown as ``0.95^-t``. It is found from the blocks now and held:
+    what the filter knows on it stays the prior's at every step, and the model is logged once."""
+    model, y = _twin_levels("directional")
+    with caplog.at_level(logging.WARNING, logger="chc.dlm"):
+        fit = forward_filter(model, y)
+    records = [r for r in caplog.records if r.name == "chc.dlm"]
+    assert [r.chc_event for r in records] == ["dlm_unread"]
+    assert records[0].coordinates == [[0, 1]]
+    information = _held_information(fit, np.array([[1.0, -1.0]]).T)
+    np.testing.assert_allclose(information[1:, 0], information[0, 0], rtol=1e-10, atol=0.0)
+    assert np.all(np.isfinite(fit.log_scores))
+
+
+def test_the_other_forms_grow_two_level_blocks_difference_as_any_unread_direction(caplog):
+    """The additive and the multiplicative form grow the difference of two levels by
+    ``1 / delta`` a step, as any direction the data do not read, until the covariance's
+    eigenvalues span ``1e13``, where the filter refuses the step; the model is logged first."""
+    for form in ("additive", "multiplicative"):
+        model, y = _twin_levels(form)
+        caplog.clear()
+        with (
+            caplog.at_level(logging.WARNING, logger="chc.dlm"),
+            pytest.raises(FloatingPointError, match=r"times its smallest.*grown under a discount"),
+        ):
+            forward_filter(model, y)
+        assert [r.chc_event for r in caplog.records if r.name == "chc.dlm"] == ["dlm_unread"]
+
+
+@pytest.mark.parametrize(
+    ("blocks", "groups"),
+    [
+        ((Polynomial(1, 0.95), Polynomial(1, 0.9)), [[0, 1]]),
+        ((Polynomial(2, 0.95), Polynomial(1, 0.9), Regression(1, 0.9)), [[0, 2]]),
+        ((Polynomial(2, 0.95), Polynomial(3, 0.98)), [[0, 2], [1, 3]]),
+        ((Polynomial(1, 0.95), Polynomial(1, 0.9), Polynomial(1, 0.99)), [[0, 1, 2]]),
+        (
+            (Seasonal(12.0, (1, 6), 0.95), Polynomial(1, 0.9), Seasonal(12.0, (1, 2, 6), 0.98)),
+            [[0, 4], [1, 5], [2, 8]],
+        ),
+        ((Seasonal(52.0, (1,), 0.98), Polynomial(1, 0.9), Seasonal(52.18, (1,), 0.98)), []),
+        ((Polynomial(2, 0.95), Seasonal(13.0, (1, 2), 0.95), Regression(2, 0.99)), []),
+    ],
+    ids=["levels", "trend-level-x", "trends", "three-levels", "harmonics", "periods", "none"],
+)
+def test_a_single_model_s_twins_are_what_its_window_does_not_read(blocks, groups):
+    """A level beside a level and a slope reads its level only, a slope beside a slope its slope
+    too, three levels two differences, a harmonic its two coordinates and at the Nyquist frequency
+    one; a harmonic of another period is no twin. With the regression's directions, the found ones
+    span the null space of the window, the rows of the last ``p`` steps, which no singular value
+    cut can be trusted to find. A model with no repeated term has none, so it filters as before."""
+    from chc.dlm import _slide, _structure, _twins, _unread
+
+    p = sum(b.size for b in blocks)
+    model = DynamicLinearModel(blocks, _prior(p))
+    directions, coordinates, found = _twins(model.blocks)
+    assert (coordinates, found) == ([], groups)
+    s = _structure(model)
+    assert s.unread.shape == (p, sum(len(g) - 1 for g in groups))
+    np.testing.assert_array_equal(s.unread, directions)
+    design = np.tile(s.design, (160, 1))
+    design[:, s.regression] = np.random.default_rng(2).gamma(2.0, 1.0, (160, s.regression.size))
+    window = np.zeros((0, p))
+    for t in range(160):
+        window = _slide(window, design[t : t + 1], s, p)
+    values = np.linalg.svd(window, compute_uv=False)
+    unread = _unread(s, window)
+    assert unread.shape[1] == np.sum(values < 1e-12 * values[0])
+    assert np.max(np.abs(window @ unread), initial=0.0) <= 1e-14 * np.abs(window).max()
+
+
 def test_a_seasonal_block_rotates_once_a_period():
     block = Seasonal(12, (1, 2, 6), 1.0)
     g = block._evolution()
@@ -975,18 +1066,30 @@ def test_the_constrained_values_covariance_is_the_batch_posterior_s():
     )
 
 
-def test_two_channels_held_to_their_signs_match_rejection_from_the_batch_posterior():
+@pytest.mark.parametrize(
+    ("form", "discounts"),
+    [
+        ("additive", (0.8, 0.7, 0.75)),
+        ("directional", (0.8, 0.7, 0.75)),
+        ("multiplicative", (0.75, 0.75, 0.75)),
+    ],
+)
+def test_two_channels_held_to_their_signs_match_rejection_from_the_batch_posterior(form, discounts):
     """Two drifting coefficients, each held positive, over three steps: six values, whose
-    truncated posterior rejection from two million draws of the batch posterior samples exactly."""
+    truncated posterior rejection from two million draws of the batch posterior samples exactly.
+    The batch posterior reads each step's evolution variance off the filter, so it holds under
+    the directional form, whose ``W_t`` couples the level to the coefficients, and under the
+    multiplicative one with one discount, whose ``W_t`` is a variance."""
+    level, first, second = discounts
     model = DynamicLinearModel(
-        (Polynomial(1, 0.8), Regression(1, 0.7), Regression(1, 0.75)),
+        (Polynomial(1, level), Regression(1, first), Regression(1, second)),
         Prior(
             np.zeros(3),
             np.array([[4.0, 0.5, -0.3], [0.5, 1.0, 0.2], [-0.3, 0.2, 1.0]]),
             0.5,
             math.inf,
         ),
-        "additive",
+        form,
     )
     x = np.array([[1.0, 0.3], [0.2, 1.5], [1.2, 0.8]])
     fit = forward_filter(model, np.array([0.3, -0.4, 0.1]), x)
@@ -1001,6 +1104,76 @@ def test_two_channels_held_to_their_signs_match_rejection_from_the_batch_posteri
     se = np.hypot(states.std(axis=0) / math.sqrt(draws.ess), oracle_se)
     assert np.all(np.abs(oracle - mean) > 50.0 * se)
     assert np.max(np.abs(states.mean(axis=0) - oracle) / se) < 4.5
+
+
+def _report_world(form: DiscountForm, dof: float):
+    """A level, a drifting coefficient held while idle (idle at step 3) and a static one, eight
+    steps with step 5 missing; the first held positive, the second negative."""
+    rng = np.random.default_rng(21)
+    x = rng.gamma(2.0, 1.0, (8, 2))
+    x[3, 0] = 0.0
+    y = 1.0 + x[:, 0] * 0.15 + x[:, 1] * (-0.1) + 0.5 * rng.standard_normal(8)
+    y[5] = np.nan
+    blocks = (Polynomial(1, 0.9), Regression(1, 0.8, hold_when_idle=True), Regression(1, 1.0))
+    covariance = np.array([[2.0, 0.3, 0.0], [0.3, 1.0, 0.2], [0.0, 0.2, 1.0]])
+    model = DynamicLinearModel(blocks, Prior(np.array([1.0, 0.0, 0.0]), covariance, 0.3, dof), form)
+    return forward_filter(model, y, x)
+
+
+def test_a_directional_fit_held_to_its_signs_matches_rejection_from_backward_sample():
+    """Under the directional form ``W_t`` couples the level to the coefficients, so the level's
+    path given the coefficients' moves with their innovations: its evolution adds their
+    regression, ``K_t (c_t - c_(t-1))``, and its evolution variance is what that leaves. Against
+    rejection from 1.5 million exact unconstrained draws of :func:`backward_sample` with the
+    variance learned (two in five are kept): every state's mean within 5 Monte Carlo standard
+    errors, ``V``'s too, and every standard deviation within 2.5%. The truncation moves the
+    means by up to 72 standard errors. Over five seeds the means were within 1.6 standard errors
+    and the deviations within 0.8%, about 3 standard errors of their estimate, so the 25 means
+    reach 5 by chance with probability under ``2e-5``, a union bound, and a deviation 2.5% with
+    less. Without the coupling the level's means missed by 5.6-6.4 standard errors and the
+    deviations by up to 4.6%; with it but the evolution variance left at ``W_uu``, by 5.8-6.7
+    and 5.3%."""
+    fit = _report_world("directional", 4.0)
+    free = backward_sample(fit, 1_500_000, seed=1)
+    kept = (free.states[:, :, 1] >= 0.0).all(axis=1) & (free.states[:, :, 2] <= 0.0).all(axis=1)
+    oracle, oracle_v = free.states[kept], free.variance[kept, -1]
+    unconstrained = free.states.mean(axis=0)
+    del free
+    draws = constrained_sample(fit, {0: "positive", 1: "negative"}, 10_000, seed=2)
+    assert draws.mixed
+    states, v = draws.states.reshape(-1, 8, 3), draws.variance.ravel()
+    se = oracle.std(axis=0) * math.sqrt(1.0 / draws.ess + 1.0 / oracle.shape[0])
+    assert np.max(np.abs(oracle.mean(axis=0) - unconstrained) / se) > 50.0
+    assert np.max(np.abs(states.mean(axis=0) - oracle.mean(axis=0)) / se) < 5.0
+    np.testing.assert_allclose(states.std(axis=0), oracle.std(axis=0), rtol=0.025)
+    v_se = oracle_v.std() * math.sqrt(1.0 / draws.ess + 1.0 / oracle_v.size)
+    assert abs(v.mean() - oracle_v.mean()) < 5.0 * v_se
+    assert np.all(states[:, 2, 1] == states[:, 3, 1])
+    assert np.all(states[:, :, 2] == states[:, :1, 2])
+
+
+@pytest.mark.parametrize("dof", [4.0, math.inf])
+def test_with_every_discount_one_the_directional_draws_are_the_additive_ones(dof):
+    """With every discount 1 nothing is discounted, ``W_t = 0`` under both forms, and the
+    coupling of the blocks the directional form needs is zero: the same seed draws the same
+    states and variances, to ``1e-12``."""
+    blocks = (Polynomial(1, 1.0), Regression(1, 1.0), Regression(1, 1.0))
+    rng = np.random.default_rng(21)
+    x = rng.gamma(2.0, 1.0, (8, 2))
+    y = 1.0 + x[:, 0] * 0.15 + x[:, 1] * (-0.1) + 0.5 * rng.standard_normal(8)
+    covariance = np.array([[2.0, 0.3, 0.0], [0.3, 1.0, 0.2], [0.0, 0.2, 1.0]])
+    prior = Prior(np.array([1.0, 0.0, 0.0]), covariance, 0.3, dof)
+    ours, theirs = (
+        constrained_sample(
+            forward_filter(DynamicLinearModel(blocks, prior, form), y, x),
+            {0: "positive", 1: "negative"},
+            200,
+            seed=4,
+        )
+        for form in ("directional", "additive")
+    )
+    np.testing.assert_allclose(ours.states, theirs.states, rtol=1e-12, atol=0.0)
+    np.testing.assert_allclose(ours.variance, theirs.variance, rtol=1e-12, atol=0.0)
 
 
 def test_a_negative_effect_held_positive_moves_into_the_level():
@@ -1097,12 +1270,21 @@ def test_an_orbit_that_meets_a_wall_reflects_and_one_that_does_not_is_a_fresh_dr
     assert end[0, 0] == pytest.approx(1.17, rel=1e-12)
 
 
-def _signed_fit(blocks=None, form: DiscountForm = "additive", beta: float = 1.0, **kwargs):
+def _signed_fit(
+    blocks=None,
+    form: DiscountForm = "additive",
+    beta: float = 1.0,
+    constant: bool = False,
+    **kwargs,
+):
     y, x = _channel_world(1.0, seed=23, horizon=12)
     blocks = blocks or (Polynomial(1, 0.95), Regression(1, 0.98))
     p = sum(b.size for b in blocks)
     model = DynamicLinearModel(blocks, _prior(p, dof=3.0), form, variance_discount=beta)
-    return forward_filter(model, y, np.tile(x[:, None], (1, p - 1)), **kwargs)
+    columns = np.tile(x[:, None], (1, p - 1))
+    if constant:  # spend held at 2 and 3: proportional to each other and to the level's row
+        columns = np.tile([2.0, 3.0], (y.size, 1))
+    return forward_filter(model, y, columns, **kwargs)
 
 
 @pytest.mark.parametrize(
@@ -1124,7 +1306,22 @@ def _signed_fit(blocks=None, form: DiscountForm = "additive", beta: float = 1.0,
             {},
             "shares a regression block of width 2",
         ),
-        (lambda: _signed_fit(form="multiplicative"), {0: "positive"}, {}, "form='additive'"),
+        (
+            lambda: _signed_fit(form="multiplicative"),
+            {0: "positive"},
+            {},
+            r"not a variance .*form='multiplicative' with blocks whose discounts differ",
+        ),
+        (
+            lambda: _signed_fit(
+                (Polynomial(1, 0.95), Regression(1, 0.9), Regression(1, 0.9)),
+                form="directional",
+                constant=True,
+            ),
+            {0: "positive", 1: "positive"},
+            {},
+            r"moves the coefficients on columns \[0, 1\] only together",
+        ),
         (lambda: _signed_fit(beta=0.95), {0: "positive"}, {}, "variance discount of 1"),
         (
             lambda: _signed_fit(interventions={5: 0.5}),

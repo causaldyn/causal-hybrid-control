@@ -2,7 +2,8 @@
 
 **Status:** proposed, 2026-10-02. Experimental, as `chc.dlm` is. Amended 2026-11-06: a term in
 both the national and the regional blocks leaves a direction no row reads; the filter finds it
-from the blocks, logs it, and the directional form holds it.
+from the blocks, logs it, and the directional form holds it. Amended 2026-11-07: a term in two
+blocks of one kind, a single model's included, is found and held the same way.
 
 ## Context
 
@@ -55,10 +56,22 @@ sampling. A discount DLM's filter is exact and in closed form, and its coefficie
   and logged nothing before. The directions are not read off the window by rank: at the
   module's `1e-6` cut a slow seasonal in a single model is close enough to a polynomial over its
   window to be taken for one, where the twins' singular value is `1e-17` of the largest. A
-  single model, and a stack with no such term, filter as before to the bit. A single model is
-  not searched for such a pair, so under the directional form a stack of one geo with one
-  differs from `forward_filter` on the same blocks, which discounts the pair's difference as if
-  read; the one-geo equality below is held on blocks without one.
+  stack with no such term filters as before to the bit.
+- **A term in two blocks of one kind is read only through their sum (amended 2026-11-07).** Two
+  national blocks with one term, two of a geo's regional blocks, or two blocks of a single
+  `DynamicLinearModel` (two levels, a level beside a trend's, one harmonic twice) are read alike
+  by every row and moved alike by the evolution, so the first copy minus each other one is read
+  by no row. `forward_filter` and `forward_filter_geos` find these directions from the blocks
+  too, by the same terms, and log them as `chc_event="dlm_unread"`; the directional form holds
+  them. Where a regional block also has the term, the national copies are the twins above, and
+  no direction is counted twice. `dlm_geo_unread` keeps its 1.2.0 meaning, a national term
+  beside the geos' copies, so a consumer that filters on it reads what it read; one name for
+  both would have changed that, and `dlm_geo_unread` would misname a single model's pair. Up to
+  1.2.0 only stacks were searched, and only across the two kinds: under the directional form
+  two levels at 0.95 failed at step 421 of 1500, and a stack of one geo with a national level
+  and harmonic beside its own differed from `forward_filter` on the same blocks by 0.87 of the
+  largest covariance entry. They now agree to `1e-14` (`1e-12` in the tests) under every form,
+  and a model with no repeated term filters as before to the bit.
 - **The filter is dense**, a step `O(p^3)` in the stacked state's `p` coordinates, and the fit
   holds `2 T` covariances of `p^2` entries.
 - **Smoothing and sampling are `chc.dlm`'s, over the stacked state.** `smooth` and
@@ -73,7 +86,8 @@ sampling. A discount DLM's filter is exact and in closed form, and its coefficie
 - `tests/test_geo_dlm.py` holds:
   - one geo to `forward_filter`'s model of the national blocks and then the regional ones, every
     output to `1e-12`, in both forms, with a variance discount below 1, a known variance, a
-    regressor held while idle and missing steps;
+    regressor held while idle and missing steps; and, under every form, with a national level
+    and harmonic beside the geo's own (amended 2026-11-07);
   - four geos with every discount 1, a season and missing observations: the state moves by `G`
     alone, so every observation is a row of one regression on the first state, and the filter's
     log-likelihood is that regression's multivariate `t` marginal, and its last mean, covariance,

@@ -4,6 +4,8 @@
 and its "no third form"; ADR 0046's filter over geos takes the same default. Amended 2026-11-06:
 the nested core's floor is read in correlation units, so no form depends on a regressor's units;
 `forecast(evolution="constant")` holds the first step's evolution variance under every form.
+Amended 2026-11-07: `constrained_sample` takes the directional form, and the multiplicative one
+where its evolution variance is a variance.
 
 ## Context
 
@@ -64,8 +66,30 @@ The multiplicative form covered 0.88-0.90 on the same grid. It has two defects o
   - with one discount it is Kulhavý and Kárný's directional forgetting,
     `R^-1 = P^-1 - (1 - delta) A' (A P A')^-1 A`, and `P / delta` once every direction is read.
 - **The old forms stay**, by name: `form="additive"` and `form="multiplicative"`.
-  `constrained_sample` still needs `form="additive"`, because its Gibbs blocks assume an
+  `constrained_sample` needed `form="additive"` up to 1.2.0, because its Gibbs blocks assumed an
   evolution that keeps the blocks apart.
+- **`constrained_sample` conditions on a dense `W_t` (amended 2026-11-07).** `W_t` depends on the
+  design, not on `y`, under every form, so the model is still a Gaussian prior over paths. The
+  three Gibbs blocks stay (ADR 0042). The constrained values' Gaussian, the other states
+  integrated out, already came from the full filter and smoother, which take any `W_t`. The other
+  states' draw given the constrained paths now conditions their innovation on the constrained
+  ones: their evolution adds `K_t (c_t - c_(t-1))`, `K_t = W_uc W_cc^-1`, and its variance is
+  `W_uu - K_t W_cu` (`validation/dlm_constrained_conditioning.mac`: the recursion is the joint
+  Gaussian's conditional, exactly, on a two-step example with a dense `W`). `W_t` is read again
+  as the filter ran it. The rows the directional core keeps at `P`'s in exact arithmetic (a
+  block at a discount of 1, an idle held regressor) are set to zero, since rounding leaves them
+  at `1e-17` of the rest, and a zero variance ties a coefficient's steps into one value. Under
+  the additive form `K_t = 0` and the draws are as before to the bit. The multiplicative form is
+  taken where its `W_t` is a variance, with one discount for every block or blocks that stay
+  uncorrelated enough; a step whose `W_t` has a negative eigenvalue is refused, naming the form.
+  A step whose `W_t` moves two constrained coefficients only together is refused too: the
+  directional core does that where the window leaves combinations of their columns unread and
+  the other blocks are too few to take them, as two columns held constant, or at zero, beside a
+  level alone. On a level beside a drifting coefficient held while idle and a static one, eight
+  steps with the variance learned, the directional form's draws matched rejection from 1.5
+  million draws of `backward_sample` within 1.6 Monte Carlo standard errors in every mean and
+  0.8% in every standard deviation, over five seeds. Without the coupling the level's means
+  missed by 5.6-6.4 standard errors; with the coupling but `W_uu` left whole, by 5.8-6.7.
 - **An unresolved direction is refused under every form.** A posterior whose correlation matrix
   has eigenvalues more than `1e13` apart raises `FloatingPointError` and names the widest
   direction. The check reads the correlations, not the covariance, so a prior tight on one
@@ -105,8 +129,8 @@ The multiplicative form covered 0.88-0.90 on the same grid. It has two defects o
   and one geo's regional coordinates. The directional form is dense across geos, as the
   additive form is.
 - Fits that ran under the old default now give other numbers. Code that relied on component
-  discounting must pass `form="additive"`. `constrained_sample` refuses a fit of the new default
-  and names the form it needs.
+  discounting must pass `form="additive"`. `constrained_sample` refused a fit of the new default
+  up to 1.2.0 and takes it since 1.3.0.
 
 ## Alternatives
 
