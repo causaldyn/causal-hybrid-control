@@ -422,29 +422,32 @@ that lift exactly what the world's media lift, for `allocate_geos` to plan on.
 **Offline causal control under equilibrium interference** (`marketplace`): incentives learned from
 confounded switchback logs where SUTVA fails. The equilibrium-aware allocation plans through a
 congestion equilibrium `fit_equilibrium` estimates from the logs, the drivers' sensitivity, the
-crowding and their total and each zone's attractiveness per unit of demand, and through a W-DRO
-pessimism tilt on the response (ADR 0114). On 400 blocks it wins 81–100 % of the best plan's lift
-over no incentive on 30 markets (median 95.5 %), 51–98 % on 50 (median 83 %), in float64, the best
-plan being the exact optimum `SharedStateMarket.oracle_allocation` returns (ADR 0134). That share
-is the fitted equilibrium's: through it, the adjusted response's tilt moves the share by
-−0.002 ± 0.003 on 400 blocks against a response of zero (mean ± standard error over the 30; from
-−0.08 to +0.03), and by −0.044 ± 0.019 on 50 (from −0.41 to +0.12). A zone whose attractiveness the
-fit does not identify is held at zero incentive. On markets outside the fitted class, whose
-attractiveness stays put while the demand moves, the tilt cost share too: 0.76 of the lift against
-0.83 with a response of zero, over 100 logs of 400 blocks, and the fit warns there (ADR 0123). Up
-to 1.1.0 the tilted plan was ascended from the even split alone; it is now ascended from the fitted
-game's exact optimum too, and keeps the better on its objective (ADR 0137): 75–100 % (median 92 %)
-and 51–98 % (median 80 %) moved to the shares above. A fit on logs whose incentives do not move
-the completions is refused. The SUTVA allocations,
+crowding and their total and each zone's attractiveness per unit of demand (ADR 0114), and by
+default on the completions the fit expects under its own uncertainty, which reads no response
+(ADR 0137). On 400 blocks it wins 92–100 % of the best plan's lift over no incentive on 30 markets
+(median 97.1 %), 80–100 % on 50 (median 91 %), in float64, the best plan being the exact optimum
+`SharedStateMarket.oracle_allocation` returns (ADR 0134). A zone whose attractiveness the fit does
+not identify is held at zero incentive. On markets outside the fitted class, whose attractiveness
+stays put while the demand moves, it wins 0.79 of the lift on average over 100 logs of 400 blocks
+(median 0.85, tenth percentile 0.77), and the fit warns there (ADR 0123); on one of those logs it
+lost 8.4 times the lift, where the fit read an attractiveness of −1.5e12 for a zone it does not
+identify and that zone's demand swamped the expectation's variance. A fit on logs whose incentives
+do not move the completions is refused. The SUTVA allocations,
 MOPO-style and naive causal, capture a median of 0 % and 35 % of the lift on 400 blocks (at most
 30 % and 79 %), and on 15 and 7 of the 30 markets less than no incentive at all.
 The planner requires the fitted equilibrium: through the simulator's own it landed near the oracle
 whatever response it was given, which measures knowing the equilibrium, not the response.
-On request, `pessimistic_equilibrium_allocation(objective="expected")` plans on the completions the
-fit expects under its own uncertainty in place of the tilt: on the 30 markets of 400 blocks its mean
-share of the lift is 0.971 against the tilt's 0.948, its least 0.920 against 0.805, more on 14
-markets and less on 1, by 0.018 (float64; ADR 0137). Called without `objective`, the planner warns
-that from 1.3.0 the default is `"expected"`: pass `objective="tilted"` to keep the tilted plans.
+On request, `pessimistic_equilibrium_allocation(objective="tilted")`, the default up to 1.2.0,
+plans through a W-DRO pessimism tilt on the adjusted response in place of the expectation: on the
+same markets it wins 81–100 % (median 95.5 %) and 51–98 % (median 83 %). Against it the default's
+mean share on 400 blocks is 0.971 against 0.948, its least 0.920 against 0.805, more on 14 markets
+and less on 1, by 0.018 (float64; ADR 0137). The tilted share is the fitted equilibrium's: the tilt
+moves it by −0.002 ± 0.003 on 400 blocks against a response of zero (mean ± standard error over
+the 30; from −0.08 to +0.03), and by −0.044 ± 0.019 on 50 (from −0.41 to +0.12); outside the
+fitted class it cost share, 0.76 of the lift against 0.83 with a response of zero. Up to 1.1.0
+the tilted plan was ascended from the even split alone; it is now ascended from the fitted game's
+exact optimum too, and keeps the better on its objective: 75–100 % (median 92 %) and 51–98 %
+(median 80 %) moved to its shares above.
 `SharedStateMarket(payment="per_driver")`, experimental, is the world whose budget pays each
 driver in a zone rather than the zone, with its exact oracle a convex program,
 `chc.games.per_driver_congestion_allocation`, solved to a duality gap below 1.3e-13 on six markets;

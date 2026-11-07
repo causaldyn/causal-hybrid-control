@@ -25,16 +25,22 @@ equilibrium :func:`fit_equilibrium` estimates from the logs, passed as ``equilib
 never through the simulator's own base demand, attractiveness and equilibrium map, which no log
 supplies: through those, a response of zero planned as close to the oracle as the adjusted
 one, so the comparison measured knowing the equilibrium. The SUTVA baselines get no such
-structure. The plan's value is the fitted equilibrium's: on 30 markets in float64 the adjusted
-response's tilt moved the share of the best plan's lift by -0.002 +- 0.003 on 400 blocks against
-a response of zero (mean +- standard error; -0.08 to +0.03), and by -0.044 +- 0.019 on 50 (-0.41
-to +0.12), the best plan being the exact oracle's (:meth:`SharedStateMarket.oracle_allocation`).
+structure. The plan's value is the fitted equilibrium's. The default objective reads no response:
+on 30 markets in float64 its plan won 0.971 of the best plan's lift on 400 blocks (0.920 to 1.000)
+and 0.914 on 50 (0.802 to 1.000), the best plan being the exact oracle's
+(:meth:`SharedStateMarket.oracle_allocation`). The opt-in tilted objective reads the adjusted
+response, and its tilt moved the share by -0.002 +- 0.003 on 400 blocks against a response of
+zero (mean +- standard error; -0.08 to +0.03), and by -0.044 +- 0.019 on 50 (-0.41 to +0.12).
 Where the market lies outside the fitted class, its attractiveness fixed while the demand moves,
-the tilt cost share too: 0.76 of the lift against 0.83 with a response of zero, over 100 logs of
-400 blocks. Up to 1.1.0, whose tilted plan was ascended from the even split alone, these read
--0.022 +- 0.012, -0.057 +- 0.025, and 0.73 against 0.79 (ADR 0134; through a fit that stopped
-early, 0.72 against 0.40). The fit warns on such a market, and the planner refuses a fit whose
-drivers do not tell an incentive from none (ADR 0123).
+the default plan won 0.79 of the lift on average over 100 logs of 400 blocks (median 0.85, tenth
+percentile 0.77), and on one of them lost 8.4 times the lift: the fit read an attractiveness of
+-1.5e12 for a zone it does not identify, and the expectation's variance through that zone's
+demand reached 1e5 rides a zone. The tilted plan won 0.76 (median 0.84, tenth percentile 0.61, at
+worst -1.19), and the tilt cost share: 0.83 with a response of zero. Up to 1.1.0, whose tilted
+plan was ascended from
+the even split alone, these read -0.022 +- 0.012, -0.057 +- 0.025, and 0.73 against 0.79
+(ADR 0134; through a fit that stopped early, 0.72 against 0.40). The fit warns on such a market,
+and the planner refuses a fit whose drivers do not tell an incentive from none (ADR 0123).
 
 Everything is differentiable and reuses the equilibrium solver in :mod:`chc.games`.
 """
@@ -388,8 +394,9 @@ def calibrate_shared_state(logs: dict[str, Array]) -> ExposureResponse:
     zones' demand, which draws drivers from it too. Holding the total takes out the randomised
     budget and keeps that part. Against its logs rerun with incentives that do not follow demand, it
     read 0.20 to 0.59 higher on 30 markets at either precision, where :func:`calibrate_naive_causal`
-    read up to 0.33 higher. :func:`pessimistic_equilibrium_allocation` reads it only through its
-    tilt, ``-min(max(marginal, 0), radius * se)``.
+    read up to 0.33 higher. :func:`pessimistic_equilibrium_allocation` reads it only through the
+    tilted objective's tilt, ``-min(max(marginal, 0), radius * se)``; its default objective reads
+    no response.
     """
     return _calibrate(logs, ("demand", "aggregate"))
 
@@ -995,7 +1002,7 @@ def _fitted_drivers(attract: Array, u: Array, parameters: tuple[Array, Array, Ar
 
 PlanObjective = Literal["tilted", "expected"]
 """What :func:`pessimistic_equilibrium_allocation` maximises: the fit's completions with the
-response's tilt, or the fit's expected completions under its own uncertainty."""
+response's tilt, or the fit's expected completions under its own uncertainty, the default."""
 
 _INCENTIVE_Z = float(special.ndtri(0.95))
 """Vuong's ``z`` below which a fit's incentive response is not told from none, one-sided 5%."""
@@ -1417,17 +1424,19 @@ def fit_equilibrium(logs: dict[str, Array], *, max_iter: int = 500) -> FittedEqu
 
 def pessimistic_equilibrium_allocation(  # noqa: C901
     market: SharedStateMarket,
-    response: ExposureResponse | None,
+    response: ExposureResponse | None = None,
     *,
     radius: float = 1.0,
     steps: int = 600,
     equilibrium: FittedEquilibrium,
-    objective: PlanObjective | None = None,
+    objective: PlanObjective = "expected",
 ) -> Array:
     """CHC allocation: plan the budget *through* the congestion equilibrium (``chc.games``) so the
-    driver-conservation (cannibalisation) channel the SUTVA baselines assume away is structural. The
-    adjusted response gates the plan through a W-DRO pessimism tilt (``radius * SE``): where
-    the offline estimate is weak or unsupported, the incentive is discounted rather than trusted.
+    driver-conservation (cannibalisation) channel the SUTVA baselines assume away is structural. By
+    default the plan maximises the completions the fit expects under its own uncertainty, which
+    hedges each zone's kink at its demand; on request, ``objective="tilted"``, the adjusted
+    response gates it through a W-DRO pessimism tilt (``radius * SE``): where the offline estimate
+    is weak or unsupported, the incentive is discounted rather than trusted.
 
     A zone whose attractiveness the fit does not identify, its
     :attr:`FittedEquilibrium.attract_se` infinite or above the attractiveness's size, is held at
@@ -1438,32 +1447,36 @@ def pessimistic_equilibrium_allocation(  # noqa: C901
     ``equilibrium`` is the one planned through, and is required, a keyword with no default:
     :func:`fit_equilibrium`'s, estimated from the logs. ``market`` gives only the budget and the
     zones; its own base demand, attractiveness and solver are the simulator's truth, which no log
-    supplies, and the planner does not read them. ``response`` enters only through the tilt.
+    supplies, and the planner does not read them. ``response`` and ``radius`` enter only through
+    the tilt.
 
-    ``objective`` chooses what the plan maximises. ``"tilted"``, the default, is the fit's
-    completions plus the response's tilt. Not given, it is ``"tilted"``, and a ``FutureWarning``
-    says that from 1.3.0 the default is ``"expected"`` and ``response`` a keyword that may be left
-    out: pass ``objective="tilted"`` to keep these plans. ``"expected"`` is the fit's expected
-    completions under its own uncertainty, ``S(u) = sum_i E[min(D_i, X_i(u))]``, ``X_i - D_i``
-    normal about the fit's drivers less the planning demand, of variance
+    ``objective`` chooses what the plan maximises. ``"expected"``, the default since 1.3.0, is the
+    fit's expected completions under its own uncertainty, ``S(u) = sum_i E[min(D_i, X_i(u))]``,
+    ``X_i - D_i`` normal about the fit's drivers less the planning demand, of variance
     ``g_i' C g_i + h_i' C_d h_i``: ``C`` the fit's sandwich (:attr:`FittedEquilibrium.covariance`)
     over the zones it identifies and the market's parameters, ``C_d`` the planning demand's
     (:attr:`FittedEquilibrium.demand_covariance`), ``g_i`` and ``h_i`` the drivers' Jacobians in
     them, in closed form. Each term is the normal loss function
     (``validation/marketplace_expected_completions.mac``). A plug-in plan sits on each zone's kink
     at its demand, where an error in either direction costs (Liyanage and Shanthikumar 2005); the
-    expectation hedges it. The response is not read and may be None. Nearly all of the hedge is the
-    demand's error: at the plan the parameters' SD per zone is 0.07 to 0.18 of the demand's
-    (markets 0-9). What it assumes: the drivers' error is normal, the fit's parameters and its
-    planning demand are uncorrelated though read from the same logs, and a plan is scored at the
-    planning demand.
+    expectation hedges it. It reads no response: leave ``response`` out, since one given is
+    refused rather than planned as if it were read. Nearly all of the hedge is the demand's error:
+    at the plan the parameters' SD per zone is 0.07 to 0.18 of the demand's (markets 0-9). What it
+    assumes: the drivers' error is normal, the fit's parameters and its planning demand are
+    uncorrelated though read from the same logs, and a plan is scored at the planning demand. A fit
+    outside its class, which warns, can read an absurd attractiveness for a zone it does not
+    identify, and the variance follows it: on one of 100 such logs the plan lost 8.4 times the
+    lift (the module's note). ``"tilted"``, the default up to 1.2.0, is the fit's completions plus
+    the response's tilt, and needs a response: pass ``objective="tilted"`` with one to keep those
+    plans.
 
     Either objective is ascended ``steps`` times from the even split and from the fitted game's
     exact optimum (:func:`chc.games.exact_congestion_allocation`), and the plan better on it is
     kept: one ascent alone stops on a kink short of what is reachable. On markets 0-29, logs of 400
     blocks, the expected plan won 0.971 of the exact oracle's lift on average in float64, where the
     tilted plan won 0.948 (more on 14 markets, less on 1, by 0.018), and 0.984 in float32 against
-    0.941 (more on 20, less on 1, by 0.015), neither less than the naive plan on any. Up to 1.1.0
+    0.941 (more on 20, less on 1, by 0.015), neither less than the naive plan on any; on logs of 50
+    blocks in float64, 0.914 against 0.815 (more on 24, less on 2, by 0.031). Up to 1.1.0
     the tilted objective was ascended from the even split alone and won 0.900 and 0.907; on float32
     market 18 its surrogate stopped at 9.83 where 10.67 is reachable, and it won 0.735, below the
     naive plan's 0.805, where it now wins 0.978. In float64 the second start raised the tilted
@@ -1476,28 +1489,23 @@ def pessimistic_equilibrium_allocation(  # noqa: C901
             response or an equilibrium whose zones are not ``market``'s, an
             equilibrium whose drivers do not tell an incentive from none
             (:attr:`FittedEquilibrium.incentive_z`): every plan through it reads the same, or one
-            that identifies no zone's attractiveness; under ``"expected"``, an equilibrium with no
-            covariance or a singular one; an ``objective`` that is neither.
+            that identifies no zone's attractiveness; under ``"expected"``, a ``response`` given,
+            which it does not read, or an equilibrium with no covariance or a singular one; an
+            ``objective`` that is neither.
         TypeError: when ``equilibrium`` is not given (Python's own), or ``response`` is None
             under ``"tilted"``.
     """
     _lump_sum(market, "pessimistic_equilibrium_allocation")
     _radius(radius)
-    if objective is None:
-        warnings.warn(
-            "pessimistic_equilibrium_allocation plans on the 'tilted' objective when none is"
-            " given; from 1.3.0 the default is 'expected', the fit's expected completions under"
-            " its own uncertainty, which reads no response, and response becomes a keyword that"
-            " may be left out. Pass objective='tilted' to keep these plans, or"
-            " objective='expected' to plan on the expectation now.",
-            FutureWarning,
-            stacklevel=2,
-        )
-        objective = "tilted"
     if objective not in ("tilted", "expected"):
         raise ValueError(f"objective is {objective!r}; it is 'tilted' or 'expected'")
     if response is None and objective == "tilted":
         raise TypeError("the tilted objective reads the response's tilt: pass a response")
+    if response is not None and objective == "expected":
+        raise ValueError(
+            "the expected objective, the default, reads no response, and response is given: leave"
+            " response out, or pass objective='tilted' to plan on its tilt"
+        )
     if response is not None:
         for name, part in (("marginal", response.marginal), ("se", response.se)):
             if jnp.shape(part) != (market.n_zones,):

@@ -35,6 +35,24 @@ in float32 (less on 1, by 0.015) and 24 of 30 on 50 blocks (less on 2, by 0.031)
 the naive plan, with no radius to choose and no response read. Its cost: it needs the fit's
 covariance, so a hand-built `FittedEquilibrium` with none, or a singular sandwich, is refused
 under it. The flip waits one minor release so that callers see the warning first.
+Amended 2026-11-07: **the default is `"expected"`.** Called without `objective`, the planner plans
+on the fit's expected completions, and the warning is gone. `response` defaults to None and may
+be left out; under `"expected"`, which does not read it, a response given is refused with a
+`ValueError` naming it. A call written for 1.2.0's default, a response and no `objective`, so
+stops rather than return a plan that ignored what it was handed; `objective="tilted"` with a
+response plans as 1.2.0's default did, by the same code. The default's plan won 0.971 of the
+exact oracle's lift on markets 0-29 in float64 (0.920 to 1.000), 0.984 in float32 (0.921 to
+1.000) and 0.914 on logs of 50 blocks (0.802 to 1.000), never less than the naive plan; outside
+the fitted class, over the 100 logs above, 0.79 on average against the tilted plan's 0.76
+(medians 0.85 and 0.84, tenth percentiles 0.77 and 0.61; more on 45 logs, less on 9). On one of
+them, market 0's seventh, the default plan lost 8.4 times the lift where the tilted plan won 0.81:
+the fit read an attractiveness of −1.5e12 for zone 8, which it does not identify and the planner
+holds. The solve leaves that zone 3.1e-6 drivers where the logit's share is zero, and the
+closed-form Jacobians multiply that residue by the attractiveness, so the expectation's standard
+deviation reached 1e5 rides a zone, and the plan that maximised the expectation completed 2.1
+rides of the 10.9 that no incentive completes. The fit warned on every one of these logs. The tilt stays, opt-in, as a reading of
+the reduced form. The Decision's "the default stays `objective="tilted"`" and the Consequences'
+"the default does not move" describe the releases up to 1.2.0.
 
 ## Context
 

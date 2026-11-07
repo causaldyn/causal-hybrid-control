@@ -947,20 +947,36 @@ def test_the_tilted_plan_ascends_from_the_fitted_game_s_optimum_too() -> None:
         assert market.value(plan) - base > 0.95 * lift
 
 
-def test_the_planner_warns_that_its_default_objective_becomes_expected(env: dict) -> None:
-    """Not given, the objective is ``"tilted"``, and a ``FutureWarning`` says that from 1.3.0 it is
-    ``"expected"`` and ``response`` a keyword that may be left out. Given, nothing warns, and the
-    default's plan is the tilted one."""
+def test_the_planner_s_default_objective_is_expected_and_reads_no_response(env: dict) -> None:
+    """Up to 1.2.0 the default was ``"tilted"``, and 1.2.0 warned that it would become
+    ``"expected"``. Now, not given, the objective is ``"expected"``, nothing warns, and the response
+    may be left out; one given under it is refused, since the plan would not read it. The tilted
+    plan is still one keyword away, and differs."""
     market, fitted = env["market"], env["fitted"]
     shared = calibrate_shared_state(env["logs"])
-    with pytest.warns(FutureWarning, match=r"from 1\.3\.0 the default is 'expected'.*response"):
-        default = pessimistic_equilibrium_allocation(market, shared, equilibrium=fitted, steps=5)
+    parameters = inspect.signature(pessimistic_equilibrium_allocation).parameters
+    assert parameters["objective"].default == "expected"
+    assert parameters["response"].default is None
+    assert parameters["response"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     with warnings.catch_warnings():
-        warnings.simplefilter("error", FutureWarning)
+        warnings.simplefilter("error")
+        default = pessimistic_equilibrium_allocation(market, equilibrium=fitted, steps=5)
+        expected = pessimistic_equilibrium_allocation(
+            market, equilibrium=fitted, steps=5, objective="expected"
+        )
         tilted = pessimistic_equilibrium_allocation(
             market, shared, equilibrium=fitted, steps=5, objective="tilted"
         )
-    assert bool(jnp.array_equal(default, tilted))
+    assert bool(jnp.array_equal(default, expected))
+    assert not bool(jnp.array_equal(default, tilted))
+    for call in (
+        lambda: pessimistic_equilibrium_allocation(market, shared, equilibrium=fitted, steps=5),
+        lambda: pessimistic_equilibrium_allocation(
+            market, response=shared, equilibrium=fitted, steps=5, objective="expected"
+        ),
+    ):
+        with pytest.raises(ValueError, match=r"reads no response, and response is given"):
+            call()
 
 
 def test_the_expected_objective_holds_a_zone_the_logs_do_not_identify() -> None:
