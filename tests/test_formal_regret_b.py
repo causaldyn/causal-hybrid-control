@@ -1398,18 +1398,27 @@ def test_information_weighted_floor_reads_nan_where_its_quadrature_does_not_sett
 
 def _prior_mean(f, centre, scale):
     """``E f(b)`` over ``b ~ N(centre, scale^2)``, by quadrature in standard units, split where
-    ``b = 0``: the regret's poles sit at ``b = +-i sqrt(rr)``."""
+    ``b = 0``: the regret's poles sit at ``b = +-i sqrt(rr)``. The mean is read to 1e-12 of
+    ``E|f(b)|``, not of itself: the slope changes sign at ``b = +-sqrt(rr)``, and its mean can
+    cancel below what rounding lets QUADPACK read to 1e-12 of itself (0.0018 of an ``E|f|`` of
+    0.155 at ``b ~ N(1.9375, 1.03125^2)``, ``rr = 1``)."""
     split = -centre / scale
-    value, _ = quad(
-        lambda z: f(centre + scale * z) * math.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi),
-        -40.0,
-        40.0,
-        points=[split] if abs(split) < 40.0 else None,
-        epsabs=0.0,
-        epsrel=1e-12,
-        limit=400,
-    )
-    return value
+    points = [split] if abs(split) < 40.0 else None
+
+    def mean(g, epsabs, epsrel):
+        value, _ = quad(
+            lambda z: g(centre + scale * z) * math.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi),
+            -40.0,
+            40.0,
+            points=points,
+            epsabs=epsabs,
+            epsrel=epsrel,
+            limit=400,
+        )
+        return value
+
+    size = mean(lambda effect: abs(f(effect)), 0.0, 1e-6)
+    return mean(f, 1e-12 * size, 1e-12)
 
 
 @FAST
@@ -1421,6 +1430,7 @@ def _prior_mean(f, centre, scale):
     log_info=st.floats(-1.0, 4.0),
 )
 @example(b=1.9999999999999998, rr=0.5, xt=0.625, width=0.05, log_info=0.0)
+@example(b=1.9375, rr=1.0, xt=1.0, width=1.03125, log_info=0.0)
 def test_information_weighted_floors_order_below_the_bayes_regret(b, rr, xt, width, log_info):
     """weighted_van_trees.mac STEP 4: the best weight's floor is at least the floors of C = W psi'
     and of C = 1, and the latter is at least rr times the action floor; the Bayes regret, read here
