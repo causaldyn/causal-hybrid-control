@@ -1,7 +1,7 @@
 # ADR 0062 — Few clusters read against a t with G - 1 degrees of freedom
 
 **Status:** accepted, 2026-10-07. Amends ADR 0053. Amended 2026-11-06: `estimate_network_effects`
-reads the same convention.
+reads the same convention. Amended 2026-11-07: the degrees of freedom travel with the covariance.
 
 ## Context
 
@@ -96,3 +96,10 @@ read 1.3 % above HC0. A 95 % interval is 12 % wider than the normal's on the old
 clusters, and 37 % wider at 5. On 200 panels of 20 clusters, 2560 rows each, the direct
 effect's interval covered the truth 93.5 % of the time where the old one covered 90.0 %, and the
 spillover's 96.0 % where it covered 95.0 %.
+
+## Amended 2026-11-07: the degrees of freedom travel with the covariance
+
+The private `chc._robust_cov.RobustCov` carries `df` beside the covariance it is read with
+(ADR 0053, amended 2026-11-07): `G - 1` over clusters, two ways the smaller dimension's count less
+one, `N - 1` over rows and under HC3, and the cosines' count over one group's periods (ADR 0075).
+A reader sizes its `t` from the read it takes, not from a count of its own.

@@ -1,6 +1,6 @@
 # ADR 0053 — A channel error summed within clusters
 
-**Status:** accepted, 2026-10-06.
+**Status:** accepted, 2026-10-06. Amended 2026-11-07: one module reads every robust covariance.
 
 ## Context
 
@@ -115,3 +115,33 @@ Two things break it:
   cluster.
 - **A minimum number of clusters before `prescribe` clusters.** Rejected: the row sandwich is not
   safer at few clusters, only narrower, and the certificate names how many there were.
+
+## Amended 2026-11-07: one module
+
+This ADR's factor, the clusters' sums, ADR 0061's two ways, ADR 0075's cosines and ADR 0062's
+degrees of freedom were stated in six places, and copies drifted: `estimate_network_effects` read
+its clusters with no factor until 1.2.0. They are now read in one private module,
+`chc._robust_cov`. `robust_cov` reads the covariance of a sum of scores, over rows, within
+clusters, two ways or across one group's periods; `sandwich` a regression's coefficients, HC3 over
+rows or CR1 within clusters. Each returns a frozen `RobustCov`: the covariance, its kind (`HC0`,
+`HC1`, `HC3`, `CR1`, `two-way`, `cosines`), `G` the independent terms it sums, the factor it
+carries, `df`, and two ways each dimension's read alone. A new robust covariance is read through
+it, so its factor and its `t` cannot drift from these.
+
+- *Each reader keeps its factor.* This ADR's `G / (G - 1) (N - 1) / (N - k)` for the channel's
+  error, its influence and `estimate_network_effects`; `G / (G - 1)` alone, given no `k`, for
+  `interference_check`, `lag_check`, `persistence_check` and the tube's noise mean, which for a
+  mean, `k = 1`, is the same factor; `N / (N - 1)` over the rows of each arm of
+  `shadow_price_effect`'s contrast.
+- *Numbers.* The channel's error, the influence, the tube's noise mean, `persistence_check` and
+  every HC3 error read to the bit what 1.2.0 read. Where a copy took the factor at another point
+  of the product, numbers moved at rounding: at most 6 float64 eps in `interference_check`,
+  `lag_check` and `shadow_price_effect`; in `estimate_network_effects`' clustered errors 4 float64
+  eps, and up to 4e-7 of themselves in float32, where each cluster's scores are now summed in
+  another order.
+- *Tests*: each row its own cluster reads the rows, HC1 at this factor and HC0 times
+  `N / (N - 1)` at `G / (G - 1)` alone; permuting the rows with their labels moves nothing beyond
+  rounding; scaling the scores by `c` scales the covariance by `c^2`, and a regression's design by
+  `c` its coefficients' by `1 / c^2`; two ways is the two dimensions' sums less their
+  intersection's, with a covariance added where a part read below nothing, and reads none below
+  nothing; HC3 and CR1 by hand; NumPy and JAX scores alike.

@@ -33,9 +33,10 @@ import numpy as np
 from jax import Array
 from numpy.typing import NDArray
 
+from chc._robust_cov import _clustered_squares
 from chc.cost import total_cost
 from chc.dynamics import HybridDynamics, _EulerStep
-from chc.dynamics_id import CausalDynamicsFit, _clustered_squares
+from chc.dynamics_id import CausalDynamicsFit
 from chc.plan import (
     CausalPlan,
     PlannedCostBias,

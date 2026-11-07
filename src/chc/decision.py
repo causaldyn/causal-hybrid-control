@@ -54,6 +54,7 @@ from scipy.stats import chi2, norm
 from scipy.stats import t as student_t
 
 from chc import _units
+from chc._robust_cov import robust_cov
 from chc.causal import _polynomial_features
 from chc.control import LinearConstraint, SolverStatus
 from chc.cost import QuadraticCost, total_cost
@@ -5762,7 +5763,7 @@ def _field_scale(fit: CausalDynamicsFit) -> float:
     """How many of its standard errors the tube reads :func:`_field_error` at, in units of the
     normal's: ``t_nu(0.975) / z(0.975)``, ``nu`` the degrees of freedom the channel's error is read
     with, the independent terms its spread sums less one, its cosines or its clusters
-    (:func:`chc.dynamics_id._degrees_of_freedom`, the ``t`` its tests are sized against). Given
+    (:func:`chc._robust_cov._degrees_of_freedom`, the ``t`` its tests are sized against). Given
     clusters or periods, the drift's own error and the push's mean are read from the same sums or
     cosines as the channel's (ADR 0133), so the field's whole error is read with that count; given
     neither, every part is read from the rows, the drift's own error pooled over them.
@@ -5880,9 +5881,7 @@ def _noise_read(fit: CausalDynamicsFit, dt: float, labels: NDArray[Any]) -> _Noi
     count = int(units.max()) + 1
     if count < 2:
         return None
-    sums = np.zeros((count, error.shape[1]))
-    np.add.at(sums, units, error)
-    level = count / (count - 1) * (sums.T @ sums) / error.shape[0] ** 2
+    level = robust_cov(error, None, units).cov / error.shape[0] ** 2
     groups = units % min(count, _JACKKNIFE_GROUPS)
     earlier, later = _consecutive(labels[:, 2], labels[:, 1])
     covariances, carries = [], []
