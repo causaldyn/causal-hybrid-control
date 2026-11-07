@@ -66,7 +66,7 @@ on the zone plant, for the response curves `response` in the plans they warm-sta
 the geo world `geo_world` in the geo models scored on it. They may change or be withdrawn in
 any minor release. Pin an exact version if you depend on one.
 
-94 entries in modules of other tiers are experimental on the same terms, for the same
+97 entries in modules of other tiers are experimental on the same terms, for the same
 reason. An entry is a name, `Class.member` for a field or a method, `function(argument=)` for an
 argument, or a value or key in quotes:
 
@@ -103,7 +103,8 @@ argument, or a value or key in quotes:
 - `chc.regret`: `minimax_regret_move`, `MinimaxRegretMove`, `MoveRule`;
 - `chc.plan`: `CausalPlan.decision_weight`, `DecisionWeight`, `CausalPlan.relaxed_cost`,
   `CausalPlan.planned_cost_bias`, `PlannedCostBias`, `CostBiasDirection`, `causal_plan(inner=)`,
-  `causal_plan(outer=)`;
+  `causal_plan(outer=)`, `certify_safety(drift_error=)`, `BarrierConstraint.drift_error`,
+  `SafetyCertificate.drift_error`;
 - `chc.mpc`: `RecedingHorizon.inner`, `RecedingHorizon.outer`.
 
 ## Research

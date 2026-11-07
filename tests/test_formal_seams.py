@@ -15,6 +15,7 @@ import itertools
 import logging
 import math
 
+import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -97,6 +98,7 @@ FORMAL_LINKS = {
         "tests": (
             "test_deviation_tube_is_the_gap_to_the_plant_at_the_radius_s_edge",
             "test_deviation_tube_bounds_the_gap_on_two_states_and_two_levers",
+            "test_deviation_tube_with_the_drift_s_error_is_the_gap_to_the_plant_at_both_edges",
         ),
     },
     "chc.plan.certify_safety": {
@@ -104,6 +106,7 @@ FORMAL_LINKS = {
         "tests": (
             "test_a_step_whose_plant_can_leave_the_set_is_not_certified",
             "test_deviation_tube_is_the_gap_to_the_plant_at_the_radius_s_edge",
+            "test_deviation_tube_with_the_drift_s_error_is_the_gap_to_the_plant_at_both_edges",
             "test_centred_gamma_star_on_the_exact_two_lever_example",
         ),
     },
@@ -637,6 +640,84 @@ def test_deviation_tube_bounds_the_gap_on_two_states_and_two_levers(seed: int, d
     gap = np.linalg.norm(ys - xs, axis=1)
     deviation = np.asarray(audit.deviation)
     assert np.all(gap <= deviation * (1.0 + 1e-12) + 1e-14), (gap, deviation)
+
+
+class _Pushed(eqx.Module):
+    """``field`` with ``shift`` added: a plant whose drift is off the model's by a constant."""
+
+    field: LinearDynamics
+    shift: float
+
+    def __call__(self, t: object, x: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
+        return self.field(t, x, u) + self.shift  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("euler", [False, True])
+@pytest.mark.parametrize(("drift", "dt"), [(-1.0, 0.1), (0.0, 1.0), (0.5, 0.1)])
+def test_deviation_tube_with_the_drift_s_error_is_the_gap_to_the_plant_at_both_edges(
+    drift: float, dt: float, euler: bool
+) -> None:
+    """barrier_deviation_tube.mac (5), (7): a drift error ``eps`` is a constant added to the field
+    at every stage, as the channel's error times the action is, so on one state, one lever and
+    actions of one sign the plant at ``b_hat + Delta`` whose drift is off by ``+eps`` is the tube
+    from the model at every step, to rounding, under RK4 or Euler; and with no action it is
+    ``h phi(z) eps (R(z)^k - 1)/(R(z) - 1)`` under RK4. Read without the drift's error, the tube
+    is narrower at every step after the first."""
+    b_hat, delta, eps = 0.5021, 0.1004, 0.19
+    actions = np.linspace(0.3, 2.0, 12)[:, None]
+
+    def stepped(channel: float, shift: float) -> object:
+        field = _Pushed(LinearDynamics(jnp.array([[drift]]), jnp.array([[channel]])), shift)
+        return _EulerStep(field) if euler else field  # type: ignore[arg-type]
+
+    model = stepped(b_hat, 0.0)
+    plan = _hand_plan(model, actions, dt)
+    audit = certify_safety(
+        plan,
+        model,  # type: ignore[arg-type]
+        _ceiling,
+        dt,
+        u_max=5.0,
+        sensitivity=_sensitivity(delta, 0.0),
+        drift_error=eps,
+    )
+    assert audit.drift_error == eps
+    nominal = np.asarray(plan.trajectory)[:, 0]
+    edge = np.asarray(rollout(stepped(b_hat + delta, eps), jnp.zeros(1), plan.actions, dt))  # type: ignore[arg-type]
+    np.testing.assert_allclose(
+        np.asarray(audit.deviation), np.abs(edge[:, 0] - nominal), rtol=1e-12, atol=1e-14
+    )
+    channel_only = certify_safety(
+        plan,
+        model,  # type: ignore[arg-type]
+        _ceiling,
+        dt,
+        u_max=5.0,
+        sensitivity=_sensitivity(delta, 0.0),
+    )
+    assert channel_only.drift_error is None
+    assert np.all(np.asarray(channel_only.deviation)[1:] < np.asarray(audit.deviation)[1:])
+
+    idle = np.zeros((30, 1))
+    alone = certify_safety(
+        _hand_plan(model, idle, dt),
+        model,  # type: ignore[arg-type]
+        _ceiling,
+        dt,
+        u_max=5.0,
+        sensitivity=_sensitivity(delta, 0.0),
+        drift_error=eps,
+    )
+    pushed = np.asarray(rollout(stepped(b_hat, eps), jnp.zeros(1), jnp.asarray(idle), dt))  # type: ignore[arg-type]
+    np.testing.assert_allclose(
+        np.asarray(alone.deviation), np.abs(pushed[:, 0]), rtol=1e-12, atol=1e-14
+    )
+    if not euler and drift != 0.0:
+        z = dt * drift
+        growth = 1 + z + z**2 / 2 + z**3 / 6 + z**4 / 24
+        gain = dt * (1 + z / 2 + z**2 / 6 + z**3 / 24)
+        closed = gain * eps * (growth ** np.arange(31) - 1.0) / (growth - 1.0)
+        np.testing.assert_allclose(np.asarray(alone.deviation), closed, rtol=1e-12, atol=1e-14)
 
 
 def test_a_step_whose_plant_can_leave_the_set_is_not_certified() -> None:

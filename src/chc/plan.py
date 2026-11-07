@@ -1691,13 +1691,19 @@ class BarrierConstraint:
     :func:`certify_safety` reads it; ``None`` reads it from the barrier where that is affine or
     quadratic (:data:`RoomModel`), at the path the solve starts from.
 
+    ``drift_error`` (*experimental*) bounds the drift's error, as :func:`certify_safety` reads
+    it: the deviation the held next states are read less widens by what it opens. ``None`` reads
+    the channel's error alone, as up to 1.2. :func:`chc.prescribe` passes its fit's under
+    ``barrier_drift_error``.
+
     Raises:
         ValueError: on a ``gamma`` below 1 or not finite, which is not a sensitivity level, a
             ``cvar_gap`` not positive or not finite, which scales no radius, a ``u_max`` with an
             entry negative or nan, or none positive, which is no action's size, a ``centre`` with
             an entry not a finite number, which is no action, a ``curvature`` negative or not
-            finite, which bounds no bend, or an empty tuple of barriers, which holds nothing --
-            here, rather than after the solve that would have used them.
+            finite, which bounds no bend, a ``drift_error`` negative or not finite, which bounds
+            no error, or an empty tuple of barriers, which holds nothing -- here, rather than
+            after the solve that would have used them.
     """
 
     barrier: Barrier
@@ -1709,10 +1715,13 @@ class BarrierConstraint:
     sensitivity: ChannelSensitivity | None = None
     centre: tuple[float, ...] | None = None
     curvature: float | None = None
+    drift_error: float | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.barrier, tuple) and not self.barrier:
             raise ValueError("an empty tuple of barriers holds no condition")
+        if self.drift_error is not None:
+            object.__setattr__(self, "drift_error", _drift_bound(self.drift_error))
         if self.u_max is not None:
             object.__setattr__(self, "u_max", tuple(float(v) for v in _reach(self.u_max)))
         if self.centre is not None:
@@ -2290,6 +2299,7 @@ def _plan(  # noqa: C901, PLR0912, PLR0915
         barrier.sensitivity,
         barrier.centre,
         barrier.curvature,
+        barrier.drift_error,
     )
     return replace(plan, safety=audit), multipliers
 
@@ -2336,6 +2346,8 @@ class _HeldBarrier(eqx.Module):
     centre: Array | None = None
     # per barrier, the curvature its room at a next state is read less (_barrier_room); None, zeros
     curvature: Array | None = None
+    # a bound on the drift's error the deviation tube carries beside the channel's; None, none
+    drift: Array | None = None
     rest: PenaltyModel | None = None
     rest_weight: float = eqx.field(static=True, default=0.0)
 
@@ -2346,7 +2358,14 @@ class _HeldBarrier(eqx.Module):
         factor: positive where the audit fails."""
         reached = self._next_states(states, actions)
         deviation = _deviation_tube(
-            self.model, states, actions, self.dt, self._delta(states), self.inverse, self.centre
+            self.model,
+            states,
+            actions,
+            self.dt,
+            self._delta(states),
+            self.inverse,
+            self.centre,
+            self.drift,
         )[1:]
         columns = []
         for index, barrier in enumerate(self._barriers()):
@@ -2568,6 +2587,9 @@ def _hold_barrier(  # noqa: C901, PLR0912, PLR0915
             ],
             actions.dtype,
         ),
+        drift=None
+        if barrier.drift_error is None
+        else jnp.asarray(barrier.drift_error, actions.dtype),
         multipliers=jnp.zeros(actions.shape[:1] + columns, actions.dtype),
         weight=jnp.asarray(1.0, actions.dtype),
         backoff=jnp.asarray(0.0, actions.dtype),
@@ -3063,13 +3085,18 @@ class SafetyCertificate:
     # takes past the estimate's size from it; ``absolute``, a sensitivity model's bound on the
     # channel's error (``sensitivity=``), which can hold a channel far from its estimate
     radius_model: Literal["relative", "absolute"]
-    # e_0 .. e_H: how far the path of a plant whose channel is within the radius of the model's
-    # can be from the model's predicted states under the plan's actions; a step is certified only
+    # e_0 .. e_H: how far the path of a plant whose channel is within the radius of the model's,
+    # and whose drift is within ``drift_error`` of it where that is read, can be from the model's
+    # predicted states under the plan's actions; a step is certified only
     # where h less ||grad h|| times it, and less half the barrier's curvature times its square, is
     # not negative at the step's state and at the next
     deviation: Array
     # how that room is read (:data:`RoomModel`); with several barriers, the weakest's
     room_model: RoomModel = "first_order"
+    # the bound on the drift's error ``deviation`` carries beside the channel's (``drift_error=``);
+    # None where it carries the channel's alone, and a certified step promises nothing of a plant
+    # whose drift is not the model's. *Experimental.*
+    drift_error: float | None = None
 
 
 def _norm(vectors: Array) -> Array:
@@ -3195,6 +3222,7 @@ def _deviation_tube(
     delta: float | Array,
     inverse: Array | NDArray[np.float64] | None = None,
     centre: Array | NDArray[np.float64] | None = None,
+    drift: float | Array | None = None,
 ) -> Array:
     """``e_0 .. e_H``: how far from the model's states ``states`` (``x_0 .. x_{H-1}``) the path of a
     plant whose channel is within ``delta`` of the model's at each step can be, stepped by the same
@@ -3209,7 +3237,14 @@ def _deviation_tube(
     one lever and ``u_k - c`` of one sign the plant at the radius's edge reaches it
     (``validation/barrier_deviation_tube.mac``). Where the model is not affine in the state, or
     the channel's error moves with it, it reads the map's slope and the radius at the model's
-    state, a bound to first order in the gap only."""
+    state, a bound to first order in the gap only.
+
+    Given ``drift``, a bound on the drift's error at the centre, the field of a plant whose drift
+    is within it of the model's moves by that error as well, a constant added at every stage as
+    the channel's error is, so each step's push is ``||dF/dc|| (delta_k ||D^+ (u_k - c)|| +
+    drift)``; on one state it is met where the two errors push one way
+    (``validation/barrier_deviation_tube.mac`` (5)). A drift error that moves with the state is
+    read at the model's state, to first order in the gap, as the channel's is."""
     steps = states.shape[0]
     radii = jnp.broadcast_to(jnp.asarray(delta, states.dtype), (steps,))
 
@@ -3219,6 +3254,8 @@ def _deviation_tube(
             times, states, actions
         )
         pushes = gain * radii * _norm(_shaped(taken, inverse, centre))
+        if drift is not None:
+            pushes = pushes + gain * drift
 
         def carry(gap: Array, step: tuple[Array, Array]) -> tuple[Array, Array]:
             rate, push = step
@@ -3229,8 +3266,9 @@ def _deviation_tube(
         return jnp.concatenate([jnp.zeros((1,), states.dtype), reached])
 
     # a radius of zero, the ordinary barrier's at gamma = 1, opens no tube: skip the slopes
+    opened = jnp.any(radii != 0.0)
     return jax.lax.cond(
-        jnp.any(radii != 0.0),
+        opened if drift is None else opened | (jnp.asarray(drift) != 0.0),
         carried,
         lambda _: jnp.zeros((steps + 1,), states.dtype),
         None,
@@ -3307,6 +3345,20 @@ def _bend(curvature: float) -> float:
             f"curvature={bend} bounds no bend of the barrier: it is a finite number not negative"
         )
     return bend
+
+
+def _drift_bound(drift_error: float) -> float:
+    """A caller's ``drift_error``, checked: a finite number not negative.
+
+    Raises:
+        ValueError: otherwise, since no error has such a bound.
+    """
+    bound = float(drift_error)
+    if not 0.0 <= bound < math.inf:
+        raise ValueError(
+            f"drift_error={bound} bounds no error of the drift: it is a finite number not negative"
+        )
+    return bound
 
 
 def _reach(u_max: ArrayLike, levers: int | None = None) -> NDArray[np.float64]:
@@ -3392,6 +3444,7 @@ def certify_safety(
     sensitivity: ChannelSensitivity | None = None,
     centre: ArrayLike | None = None,
     curvature: float | None = None,
+    drift_error: float | None = None,
 ) -> SafetyCertificate:
     """Price a plan's barrier guarantee against a partially identified control effect.
 
@@ -3459,17 +3512,19 @@ def certify_safety(
             given a hidden confounder moves by a factor within ``[1/gamma, gamma]``, at the
             sensitivity's ``level``. ``gamma = 1`` is then the sampling error alone, not exact
             identification, and ``gamma_star`` is each step's largest ``gamma`` under that model:
-            finite, or ``inf`` where the drift alone keeps the step. What it certifies is a plant
-            with the model's drift and a channel within the radius: on 20 logs whose levers follow
-            a confounder at ``gamma = 1.5``, of a stable drift and of an unstable one, a plan held
-            and certified under the fit's own sensitivity at that level kept the plant with the
-            true channel, and those at both edges of the radius, in the set over its certified
-            steps on every log (ADR 0119). The true plant also misses the fitted drift, by the
-            fit's sampling error, ``drift_error`` 0.094 to 0.098 on the unstable drift's logs and
-            the largest miss 1.7 of it, which the radius does not carry: it stayed in the set on
-            all 20 stable logs, and on the unstable drift left it on 1 of 20, least ``h`` -0.09.
-            The drift's error is the error tube's, :func:`causal_plan`'s ``model_error``
-            (ADR 0111). The certificate's ``radius_model`` reads ``"absolute"`` with a
+            finite, or ``inf`` where the drift alone keeps the step. Without ``drift_error`` what it
+            certifies is a plant with the model's drift and a channel within the radius: on 20
+            logs whose levers follow a confounder at ``gamma = 1.5``, of a stable drift and of an
+            unstable one, a plan held and certified under the fit's own sensitivity at that level
+            kept the plant with the true channel, and those at both edges of the radius, in the
+            set over its certified steps on every log (ADR 0119). The true plant also misses the
+            fitted drift, by the fit's sampling error, ``drift_error`` 0.094 to 0.098 on the
+            unstable drift's logs and the largest miss 1.7 of it, which the radius does not carry:
+            it stayed in the set on all 20 stable logs, and on the unstable drift left it on 1 of
+            20, least ``h`` -0.09. That error is then the error tube's, :func:`causal_plan`'s
+            ``model_error`` (ADR 0111), or the room's under ``drift_error``, below, with which the
+            true plant stayed in the set on all 40 logs. The certificate's ``radius_model`` reads
+            ``"absolute"`` with a
             ``sensitivity`` and ``"relative"`` without one. :func:`chc.prescribe` passes its fit's
             own by default, where the fit gives one (ADR 0125).
         centre: the action, one number per lever, every action is read from: the channel's
@@ -3492,6 +3547,29 @@ def certify_safety(
             ``e`` only. The certificate's ``room_model`` says which (:data:`RoomModel`). On a
             disk ``1 - ||x||^2`` the room read to first order was ``e^2`` above the least ``h``:
             a step whose plant could reach ``h = -0.10`` was certified (ADR 0132).
+        drift_error: *experimental*: a bound on the drift's error, how far the plant's field at
+            the ``centre`` may be from the model's at every state the plan reaches, in the rate's
+            units and the Euclidean norm over the states. The deviation tube carries it beside the
+            channel's radius, a constant added to the field at every stage as the channel's error
+            is, ``e_{k+1} = ||dF/dx|| e_k + ||dF/dc|| (Delta_k ||D^+ (u_k - c)|| + drift_error)``
+            (``validation/barrier_deviation_tube.mac`` (5)), so a certified step also holds a
+            plant whose drift is within it of the model's: exactly where the model is affine in
+            the state and the drift's error does not move with it, to first order in the tube's
+            width where it does. The condition, and ``gamma_star`` with it, still read the model's
+            drift: the error reaches the certificate through the room alone. A fit's
+            ``drift_error`` is a standard error, a root mean over the log's rows and its states;
+            :func:`chc.prescribe` passes ``t sqrt(n)`` times it under ``barrier_drift_error``,
+            ``t`` Student's at 0.975 and ``n`` the states, which reads it at the log's rows, not at
+            the plan's states, where a plan that leaves the log meets a larger error (ADR 0104).
+            On the 20 unstable logs above, each plan held and certified under the fit's own
+            sensitivity at ``gamma = 1.5`` and that bound (0.185 to 0.192), the true plant stayed
+            in the set over the certified steps on every log, least ``h`` +0.72, where without it
+            it left on 1. The price is the certified steps on the unstable drift: 24.85 of 30 on
+            average, where they were 29.95; by log 28, 25, 19, 22, 22, 20, 28, 26, 25, 26, 23, 22,
+            26, 24, 29, 28, 25, 21, 30 and 28, where they were 30 but on one log 29; 5 plans end
+            ``infeasible``, and the cost is 5.7 % higher on average. On the stable drift (-1)
+            every plan was certified on all 30 steps either way, its cost 0.43 % higher on
+            average. None reads the channel's error alone, as up to 1.2 (ADR 0119, amended).
 
     Assumes the plant is control-affine, and checks it: the condition reads the drift and the
     channel at zero action, so a model whose field, seen through ``grad h``, is not affine in the
@@ -3514,8 +3592,10 @@ def certify_safety(
     affine in the state and the channel's error does not move with the state (a relative radius,
     or a sensitivity of ``channel_degree`` 0); elsewhere it reads the map's slope and the radius at
     the model's states, and holds to first order in its own width, whatever ``room_model`` says of
-    ``h``. It is about the channel alone: an error in the drift, and a plant stepped by another map
-    than the model's, are outside it. Reading ``h`` at both ends of a step also catches a path that
+    ``h``. Without ``drift_error`` it is about the channel alone: an error in the drift is outside
+    it. With it, a plant whose drift is within ``drift_error`` of the model's is inside it, and the
+    tube's push reads that bound too. A plant stepped by another map than the model's is outside
+    it either way. Reading ``h`` at both ends of a step also catches a path that
     leaves the set between the points the condition is read at: at ``dt = 1`` and ``alpha = 1`` a
     plan that met it at every step of twelve ended outside the set. Between the steps nothing is
     read.
@@ -3528,8 +3608,8 @@ def certify_safety(
             backing ``gamma_star`` is non-positive, which asks how much confounding a controller
             with no authority tolerates; if ``u_max`` per lever has an entry negative or nan,
             none positive, not one per lever, or a 0 at a lever the plan moves from ``centre``;
-            if ``centre`` is not a finite number per lever; if ``curvature`` is negative or not
-            finite; if a state of the plan's predicted
+            if ``centre`` is not a finite number per lever; if ``curvature`` or ``drift_error`` is
+            negative or not finite; if a state of the plan's predicted
             path is not a finite number; if the model is not affine in the action where the
             condition is read; or, with a ``sensitivity``, if the sensitivity's channel has
             another size.
@@ -3547,6 +3627,7 @@ def certify_safety(
         sensitivity,
         centre,
         curvature,
+        drift_error,
     )
 
 
@@ -3563,6 +3644,7 @@ def _audit(  # noqa: C901, PLR0912, PLR0915
     sensitivity: ChannelSensitivity | None = None,
     centre: ArrayLike | None = None,
     curvature: float | None = None,
+    drift_error: float | None = None,
 ) -> SafetyCertificate:
     """:func:`certify_safety`, with ``gamma_star`` read on the actions ``box`` admits too.
 
@@ -3597,6 +3679,7 @@ def _audit(  # noqa: C901, PLR0912, PLR0915
                 sensitivity,
                 centre,
                 curvature,
+                drift_error,
             )
             for one in barrier
         ]
@@ -3614,6 +3697,7 @@ def _audit(  # noqa: C901, PLR0912, PLR0915
     bend, room_model = _room_curvature(
         barrier, plan.trajectory, None if curvature is None else _bend(curvature)
     )
+    drift_radius = None if drift_error is None else _drift_bound(drift_error)
     states, actions = plan.trajectory[:-1], plan.actions
     # every action is read from the centre: the field's error there is the drift's alone
     point = None if centre is None else _centre(centre, actions.shape[1])
@@ -3654,6 +3738,7 @@ def _audit(  # noqa: C901, PLR0912, PLR0915
         jnp.asarray(delta, states.dtype),
         None if inverse is None else jnp.asarray(inverse, states.dtype),
         None if point is None else jnp.asarray(point, states.dtype),
+        None if drift_radius is None else jnp.asarray(drift_radius, states.dtype),
     )
     room = _barrier_room(barrier, plan.trajectory, deviation, bend)
     certified = (guaranteed >= required) & (room[:-1] >= 0.0) & (room[1:] >= 0.0)
@@ -3768,6 +3853,7 @@ def _audit(  # noqa: C901, PLR0912, PLR0915
         radius_model="relative" if sensitivity is None else "absolute",
         deviation=deviation,
         room_model=room_model,
+        drift_error=drift_radius,
     )
 
 
@@ -3922,6 +4008,7 @@ def _every_barrier(audits: Sequence[SafetyCertificate]) -> SafetyCertificate:
         radius_model=audits[0].radius_model,  # one sensitivity audits every barrier
         deviation=audits[0].deviation,  # the plant's path, which no barrier moves
         room_model=max((audit.room_model for audit in audits), key=_ROOM_ORDER.index),
+        drift_error=audits[0].drift_error,  # one bound widens every barrier's room
     )
 
 
