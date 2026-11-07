@@ -3764,7 +3764,7 @@ class LagCheck:
     groups: int  # ``G``: the groups among them
 
 
-def lag_check(  # noqa: PLR0915
+def lag_check(  # noqa: C901, PLR0915
     fit: CausalDynamicsFit,
     data: dict[str, Array],
     units: ArrayLike,
