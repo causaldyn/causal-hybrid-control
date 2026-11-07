@@ -19,8 +19,8 @@ states its rate, its rate under the defect it names, and the smallest defect it 
 probability 0.8. Each barrier family also reads a plan its plant leaves the set under, so a count
 that runs past the exit fails. `just mutants` plants the wrong certificates of `tests/mutants/` one
 at a time over five blocks: each of the four above fails its file on all five, the barrier's fails
-16 of its 32 tests, and no file fails clean on any block. The job's tests take about twice their
-time before: 3300 s in one process on a loaded laptop, where the same files took 1700 s.
+16 of its 32 tests, and no file fails clean on any block. The job's tests take 1.8 times their
+time before: 2980 s in one process on a loaded laptop, where the same files took 1690 s.
 
 ## Context
 
