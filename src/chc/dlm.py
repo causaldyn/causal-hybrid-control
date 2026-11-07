@@ -1481,7 +1481,7 @@ def _coupling(w: _Array, cs: list[int], us: list[int], columns: list[int]) -> tu
         if not moving.size:
             continue
         on = np.asarray(cs)[moving]
-        wcc, wuc = w[t][np.ix_(on, on)], w[t][np.ix_(us, on)]
+        wcc, wuc = w[t][np.ix_(on, on)], w[t][np.ix_(np.asarray(us), on)]
         root = np.sqrt(np.diag(wcc))
         values = np.linalg.eigvalsh(wcc / np.outer(root, root))
         if values[0] * _CONDITION_LIMIT < values[-1]:
