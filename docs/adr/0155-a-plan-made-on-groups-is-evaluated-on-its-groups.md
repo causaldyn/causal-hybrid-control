@@ -2,6 +2,30 @@
 
 **Status:** accepted, 2026-11-06. Experimental. Amends ADR 0049's evaluation and ADR 0113's
 grouping, and adds `settings.clusters` to the record of ADR 0145.
+Amended 2026-11-07: **no bias-corrected value.** `value` stays the self-normalised estimate, with
+`normalisation_bias`, its first-order bias under the model (ADR 0095), reported beside it. The
+value less that bias was measured against each design's true cost, and was to become a field only
+if it read a smaller mean error on all four designs below and an RMSE higher by no more than its
+Monte Carlo error on any. One prescription per design, fitted once in float64 and evaluated on 200
+later panels, each from its own seed; the truth is the Gaussian moment recursion of the true plant
+from the law the windows start at, each calendar time zero alike:
+
+| design | evaluated | mean reported bias | value: mean error (MC SE) | less the bias: mean error | RMSE: value, less the bias (MC SE) |
+|---|---|---|---|---|---|
+| the groups below, `min_effective=30`, `model_error=0` | 194 | −0.00372 | −0.00473 (0.00186) | −0.00100 | 0.02632, 0.02597 (0.0016) |
+| ADR 0054's held lever: 150 units over 20 periods, the second lever at 0.5 | 200 | +0.00022 | −0.00313 (0.00192) | −0.00335 | 0.02723, 0.02725 (0.0013) |
+| the quickstart's plant as `tests/test_lifecycle_loop.py` logs it: 400 units over 12 periods, the incentive drawn afresh, a horizon of 3 | 200 | +0.00007 | −0.00151 (0.00195) | −0.00157 | 0.02756, 0.02756 (0.0012) |
+| 150 units, not grouped, over 24 periods: `x' = 0.8 x + 0.5 u + N(0, 0.1^2)`, `u = −0.3 x + N(0, 0.7^2)`, a horizon of 4 | 200 | +0.00029 | −0.00032 (0.00239) | −0.00061 | 0.03365, 0.03364 (0.0018) |
+
+The last three read the defaults (`min_effective=100`, `model_error=1`); the quickstart's own logs
+cannot be evaluated, since its incentive chased a demand outside the plan's state. On the groups,
+at 71 effective windows, the correction removes four fifths of the mean error and lowers the RMSE
+by 0.00035 (paired MC SE 0.00028). On the other three, at 112 to 126 effective windows, the
+reported bias is 0.03 to 0.12 of the mean error's Monte Carlo error and of the other sign from the
+mean error read, so the corrected value reads the larger mean error on each, and the RMSE moves by
+less than 0.1 %. The rule fails, and nothing is added. The warning ADR 0095 logs where the bias
+passes 0.05 of the interval's half-width fired on 178 of the 194 grouped panels and on none of the
+other 600: it marks the evaluations where the correction moved the reading.
 
 ## Context
 
