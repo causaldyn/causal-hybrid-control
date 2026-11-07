@@ -428,11 +428,9 @@ default on the completions the fit expects under its own uncertainty, which read
 (median 97.1 %), 80–100 % on 50 (median 91 %), in float64, the best plan being the exact optimum
 `SharedStateMarket.oracle_allocation` returns (ADR 0134). A zone whose attractiveness the fit does
 not identify is held at zero incentive. On markets outside the fitted class, whose attractiveness
-stays put while the demand moves, it wins 0.79 of the lift on average over 100 logs of 400 blocks
-(median 0.85, tenth percentile 0.77), and the fit warns there (ADR 0123); on one of those logs it
-lost 8.4 times the lift, where the fit read an attractiveness of −1.5e12 for a zone it does not
-identify and that zone's demand swamped the expectation's variance. A fit on logs whose incentives
-do not move the completions is refused. The SUTVA allocations,
+stays put while the demand moves, it wins 0.88 of the lift on average over 100 logs of 400 blocks
+(median 0.85, at worst 0.71), and the fit and the planner warn there (ADR 0123). A fit on logs
+whose incentives do not move the completions is refused. The SUTVA allocations,
 MOPO-style and naive causal, capture a median of 0 % and 35 % of the lift on 400 blocks (at most
 30 % and 79 %), and on 15 and 7 of the 30 markets less than no incentive at all.
 The planner requires the fitted equilibrium: through the simulator's own it landed near the oracle

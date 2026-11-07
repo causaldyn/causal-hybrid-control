@@ -43,14 +43,26 @@ stops rather than return a plan that ignored what it was handed; `objective="til
 response plans as 1.2.0's default did, by the same code. The default's plan won 0.971 of the
 exact oracle's lift on markets 0-29 in float64 (0.920 to 1.000), 0.984 in float32 (0.921 to
 1.000) and 0.914 on logs of 50 blocks (0.802 to 1.000), never less than the naive plan; outside
-the fitted class, over the 100 logs above, 0.79 on average against the tilted plan's 0.76
-(medians 0.85 and 0.84, tenth percentiles 0.77 and 0.61; more on 45 logs, less on 9). On one of
-them, market 0's seventh, the default plan lost 8.4 times the lift where the tilted plan won 0.81:
-the fit read an attractiveness of −1.5e12 for zone 8, which it does not identify and the planner
-holds. The solve leaves that zone 3.1e-6 drivers where the logit's share is zero, and the
-closed-form Jacobians multiply that residue by the attractiveness, so the expectation's standard
-deviation reached 1e5 rides a zone, and the plan that maximised the expectation completed 2.1
-rides of the 10.9 that no incentive completes. The fit warned on every one of these logs. The tilt stays, opt-in, as a reading of
+the fitted class, over the 100 logs above, 0.88 on average against the tilted plan's 0.76
+(medians 0.85 and 0.84, tenth percentiles 0.78 and 0.61, at worst 0.71 and −1.19; more on 46
+logs, less on 8, by 0.059 at most).
+Measured before the flip, one of those logs, market 0's seventh, had the expected plan lose 8.4
+times the lift where the tilted plan won 0.81. The fit read an attractiveness of −1.5e12 for
+zone 8, which it does not identify and the planner holds at zero incentive. The equilibrium solve
+stops at its tolerance and left that zone 3.1e-6 drivers where the logit's share is 0, and the
+closed-form Jacobians read the share as `drivers / mass`, so the residue entered the `q`-weighted
+mean of the zone's value, `-7.3e11`, and the demand's column multiplied by its attractiveness:
+the drivers' standard deviation in the expectation reached 1e5 rides a zone, and the plan that
+maximised the expectation completed 2.1 rides of the 10.9 that no incentive completes. The
+Jacobians now read the shares of the best response at the solved drivers, `softmax(beta*w)`, as
+the solve's own implicit derivative reads them: equal to `drivers / mass` at the fixed point, and
+exactly 0 for a zone whose share underflows, so every term it enters is 0. That log now reads
+0.861, two others moved by 0.006 and 0.004, and no plan in the fitted class moved: markets 0-29
+read the same shares to three decimals at 400 blocks in float64 and float32 and at 50 blocks,
+for the expected, the tilted and the naive plans. The planner now also warns where it plans
+through a fit whose `lack_of_fit` is below 0.01, naming the zones it holds and the
+attractiveness the fit read for each; the fit's own warning names no zone. The tilt stays,
+opt-in, as a reading of
 the reduced form. The Decision's "the default stays `objective="tilted"`" and the Consequences'
 "the default does not move" describe the releases up to 1.2.0.
 
