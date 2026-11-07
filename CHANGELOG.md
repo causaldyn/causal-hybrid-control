@@ -382,8 +382,8 @@ warns that its default objective becomes `"expected"` in 1.3.0. No name is remov
   of the process: a gate or tube test that counts the library's warnings and ran after it on the
   same worker saw none and failed (three gate tests after the dither file, five tests with the
   whole job in one process).
-- A warning raised in a test fails it (`filterwarnings = ["error"]`, with one listed exception and
-  its reason), and an unregistered marker fails the run (`--strict-markers`).
+- A warning raised in a test fails it (`filterwarnings = ["error"]`, with two listed exceptions,
+  each with its reason), and an unregistered marker fails the run (`--strict-markers`).
 - CI runs the suite on macOS arm64, on Python 3.14.
 - The reachability test that counts grid columns reads its barrier's edge halfway between two
   nodes (`1.0125 - x[0]`), where it was on a node and the count read the last bit of a jitted

@@ -189,6 +189,9 @@ filterwarnings = [
     # free-threaded legs: CPython re-enables the GIL to import an extension module that has not
     # declared it safe without it, and warns once; that leg then tests with the GIL on
     "ignore:The global interpreter lock:RuntimeWarning",
+    # SciPy's SLSQP and TNC may step one or two ulps past a bound; SciPy clips the step back and
+    # warns (its gh-11403 mitigation), so the point the library and the tests read is in the box
+    "ignore:Values in x were outside bounds during a minimize step:RuntimeWarning",
 ]
 
 [tool.ty.environment]
