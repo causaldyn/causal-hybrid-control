@@ -14,7 +14,7 @@ from functools import cache
 
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from numpy.polynomial.hermite_e import hermegauss
 from scipy.optimize import minimize, minimize_scalar
@@ -846,6 +846,8 @@ def test_transportability_exact_regret_exceeds_the_second_order_budget() -> None
     st.floats(0.2, 2.0),
     st.floats(0.01, 0.5),
 )
+@example(b_src=1.0, rr=1.0, xt=1.0, lip=1.0, eps=0.5)
+@example(b_src=1.0, rr=2.0, xt=1.0, lip=2.0, eps=0.5)
 def test_transportability_exact_wdro_bound_is_the_largest_regret_in_the_ball(
     b_src: float, rr: float, xt: float, lip: float, eps: float
 ) -> None:
@@ -861,6 +863,34 @@ def test_transportability_exact_wdro_bound_is_the_largest_regret_in_the_ball(
     assert grid.max() <= curve.exact_wdro_bound * (1 + 1e-10) + 1e-15 * scale
     assert curve.exact_wdro_bound <= grid.max() * (1 + 1e-6) + 1e-15 * scale
     assert np.all(curve.exact_regret <= curve.exact_wdro_bound * (1 + 1e-10) + 1e-15 * scale)
+
+
+def test_transportability_at_the_knife_edge_the_regret_is_fourth_order() -> None:
+    """At rr = b_src^2 the CE-quadratic coefficient is zero, so the quadratic regret is zero at
+    every distance and has no slope to read (nan, as the module's other knife-edge readings). The
+    exact regret, ``(b_tgt - 1)^4 / (4 (b_tgt^2 + 1))`` at ``b_src = rr = xt = 1``, rises with the
+    fourth power of the distance; the closed form holds to the cancellation of a cost gap of 8e-11
+    at d = 0.005 between costs of order 1."""
+    curve = transportability_regret_certificate(b_src=1.0, rr=1.0)
+    assert np.all(curve.nontransport_regret == 0.0)
+    assert curve.wdro_bound == 0.0
+    assert math.isnan(curve.nontransport_slope)
+    b = 1.0 + curve.w1_distances
+    quartic = (b - 1.0) ** 4 / (4.0 * (b**2 + 1.0))
+    assert curve.exact_regret == pytest.approx(quartic, rel=1e-5, abs=0.0)
+    assert 3.9 < curve.exact_slope < 4.0
+
+
+def test_transportability_reads_the_exact_slope_where_the_regret_is_positive() -> None:
+    """The exact regret is zero where the target's effect is rr/b_src, whose optimal action is the
+    source's: at b_src = xt = 1, rr = 2, Lip = 2 that is the grid's last distance, 0.5. The slope is
+    the fit over the other distances."""
+    curve = transportability_regret_certificate(
+        b_src=1.0, rr=2.0, xt=1.0, lip=2.0, wdro_radius=0.5, d_hi=0.5
+    )
+    assert curve.exact_regret[-1] == 0.0
+    d, regret = curve.w1_distances[:-1], curve.exact_regret[:-1]
+    assert curve.exact_slope == float(np.polyfit(np.log(d), np.log(regret), 1)[0])
 
 
 # ---------------------------------------------------------------- van_trees_certificate

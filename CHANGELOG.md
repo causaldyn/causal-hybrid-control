@@ -170,6 +170,16 @@ repeats a term. No name is removed or renamed.
   for such a zone. Markets 0-29 read the same shares to three decimals at 400 blocks in float64
   and float32 and at 50 blocks; outside the class two other logs moved by 0.006 and 0.004
   (ADR 0137 amended).
+- **`transportability_regret_certificate` takes no log of a zero regret** (`chc.research`). It
+  fitted both log-log slopes over every distance, so a regret of exactly zero at one of them took
+  the log of zero, a `RuntimeWarning` that a warnings filter turns into an error: at the knife edge
+  `rr = b_src**2`, where the CE-quadratic coefficient is zero and so is that regret at every
+  distance, and where the target's effect is `rr / b_src`, whose optimal action is the source's
+  (at `b_src = xt = 1`, `rr = 2`, `lip = 2`, the distance 0.5). `nontransport_slope` reads `nan`
+  at the knife edge, as the module's other knife-edge readings do, and `exact_slope` is fitted over
+  the distances where the regret is positive, `nan` where fewer than two are; elsewhere both read
+  as before, to the bit. At the knife edge the exact regret is of fourth order: its slope reads
+  3.96 over the default distances.
 
 ### Notes
 

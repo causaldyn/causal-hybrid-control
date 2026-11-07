@@ -1285,8 +1285,13 @@ class TransportabilityCurve:
     # CE-quadratic regret at every d <= eps but not the exact one, 1.39 times it at d = eps on the
     # defaults
     wdro_bound: float
-    nontransport_slope: float  # log-log slope of the CE-quadratic regret vs W1 (= 2)
-    exact_slope: float  # log-log slope of the simulated regret vs W1 (~ 2)
+    # log-log slope of the CE-quadratic regret vs W1 (= 2); nan at the knife edge rr = b_src^2,
+    # where C is zero and so is that regret at every distance
+    nontransport_slope: float
+    # log-log slope of the simulated regret vs W1 (~ 2), over the distances where it is positive: it
+    # is zero where the target's effect is rr/b_src, whose optimal action is the source's; nan
+    # where fewer than two are
+    exact_slope: float
     # the exact regret's largest value over every target with |b_tgt - b_src| <= Lip*eps: a bound
     # on it at every d <= eps, either side
     exact_wdro_bound: float
@@ -1326,7 +1331,8 @@ def transportability_regret_certificate(
     (``validation/transportability_regret.mac`` (D) derives the regret, and the cubic is its
     slope's other factor).
     """
-    coeff = xt**2 * (rr - b_src**2) ** 2 / (rr + b_src**2) ** 3
+    knife_edge = _knife_edge(b_src, rr)
+    coeff = 0.0 if knife_edge else xt**2 * (rr - b_src**2) ** 2 / (rr + b_src**2) ** 3
     ds = np.geomspace(d_lo, d_hi, n_d)
     transportable = np.zeros(n_d)  # b_tgt = b_src: recoverable, zero regret at any distance
     nontransport = coeff * lip**2 * ds**2  # b_tgt = b_src + Lip*d: CE-quadratic regret
@@ -1339,8 +1345,15 @@ def transportability_regret_certificate(
         return c_src - c_tgt
 
     exact_reg = np.array([exact(b_src + lip * d) for d in ds])
-    slope = float(np.polyfit(np.log(ds), np.log(nontransport), 1)[0])
-    exact_slope = float(np.polyfit(np.log(ds), np.log(exact_reg), 1)[0])
+    slope = (
+        float("nan") if knife_edge else float(np.polyfit(np.log(ds), np.log(nontransport), 1)[0])
+    )
+    read = exact_reg > 0.0
+    exact_slope = (
+        float(np.polyfit(np.log(ds[read]), np.log(exact_reg[read]), 1)[0])
+        if np.count_nonzero(read) >= 2
+        else float("nan")
+    )
     reach = lip * wdro_radius
     u_src = b_src * xt / (b_src**2 + rr)
     turns = np.roots([u_src, 0.0, u_src * rr, -rr * xt])
