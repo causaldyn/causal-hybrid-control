@@ -263,13 +263,16 @@ def planned_cost_bias(
 
     ``S`` is read as the fit's own dependence declares it: the influence's outer products summed
     row by row and state by state, within each cluster for a fit given ``clusters``, two ways for
-    one given two (the two dimensions' sums less their intersection's), and across the periods'
-    cosines for one given ``periods``. ``bias_upper`` is the largest bias over the reads a fit
-    clustered two ways also gives, each dimension's alone, which the channel's error takes the
-    largest of; ``bias`` where the fit has one read. Up to 1.1 ``bias`` was the read with the
-    largest ``tr(W S)``, and the expectation of the largest of three noisy reads sits above each
-    read's: on 600 logs of 20 units over 4 periods it read +0.0105, the two ways' read +0.0079,
-    against +0.0068 with ``S`` the parameters' covariance across the logs.
+    one given two (the two dimensions' sums less their intersection's, whole), and across the
+    periods' cosines for one given ``periods``. Two ways, the channel's error takes away the part
+    of those sums that reads below nothing, which adds a covariance to them and keeps a standard
+    error real; the bias is linear in ``S`` and reads the sums whole. ``bias_upper`` is the
+    largest of ``bias`` and the biases at the reads the channel's error takes the largest of: the
+    two ways' with that part taken away and each dimension's alone; ``bias`` where the fit has
+    one read. On 600 logs of 20 units over 4 periods ``bias`` averaged +0.0071 against +0.0068
+    with ``S`` the parameters' covariance across the logs. Up to 1.1 it was the read with the
+    largest ``tr(W S)``, +0.0105 there, since the largest of three noisy reads sits above each
+    read's mean; in 1.2 the two ways' read with the part below nothing taken away, +0.0079.
 
     The first-order term is not read: the fit's own bias ``E[e]`` is not known to the fit, so
     ``first_order`` is 0. It is of the order of ``S``: on those logs it was -0.0047.
@@ -308,11 +311,14 @@ def planned_cost_bias(
         )
     problem, cost, count = _parameter_cost(plan, fit.residual, "the fit")
     terms = _bias_terms(problem, plan.actions, cost, count, tolerance)
-    reads = _clustered_squares(np.asarray(fit.influence), fit.clusters, fit.periods)
+    influence = np.asarray(fit.influence)
+    reads = _clustered_squares(influence, fit.clusters, fit.periods)
+    whole = _clustered_squares(influence, fit.clusters, fit.periods, clip=False)[0]
     size = np.asarray(fit._parameter_size, dtype=np.float64)
     unmoved = np.asarray(fit.unmoved, dtype=np.float64)
-    upper = max(terms.bias(square, None).bias for square in reads)
-    return terms.bias(reads[0], None, _unseen(terms.weight, unmoved, size), upper)
+    point = terms.bias(whole, None).bias
+    upper = max(point, *(terms.bias(square, None).bias for square in reads))
+    return terms.bias(whole, None, _unseen(terms.weight, unmoved, size), upper)
 
 
 def _unseen(

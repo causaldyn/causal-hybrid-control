@@ -15,15 +15,19 @@ above it. The largest bias over the reads is kept beside it, as `PlannedCostBias
 (+0.0110 there). The quickstart's bias, +2.84e-5, does not move: its two ways' read is the one of
 the largest `tr(W S)`. The first-order term is still not read; on those logs it was -0.0047, and
 the gaps the plant paid averaged +0.0024 (SE 0.0020).
-Amended 2026-11-07: the two ways' read sits above that `S` by the part below nothing it takes
-away, not by its small-sample factor. On the same 600 logs (3 transitions a unit, so the periods
-are the smaller dimension and the read carries `G / (G - 1) = 3/2`), each dimension's sums at its
-own CR1 factor and the cells' at theirs read +0.0079 as well; without `G / (G - 1)` the bias fell to
-+0.0053, 22 % below. The two ways' sums with no part taken away read +0.0071, 4 % above, 0.6
-paired standard errors. Taking that part away moved the bias on 546 of the 600 logs, by +0.00087
-(SE 0.00007) on average: the bias is linear in `S`, and the part taken away, which keeps a
-standard error real, adds to `S`. The read is unchanged. Counted with the oracle's own sampling
-error, by a bootstrap over the logs, the two ways' read is 1.9 standard errors above it.
+Amended 2026-11-07: the bias reads the two ways' sums whole. Their read sat above that `S` by
+the part below nothing it takes away, not by its small-sample factor. On the same 600 logs (3
+transitions a unit, so the periods are the smaller dimension and the read carries
+`G / (G - 1) = 3/2`), each dimension's sums at its own CR1 factor and the cells' at theirs read
++0.0079 as well; without `G / (G - 1)` the bias fell to +0.0053, 22 % below. Taking the part away
+moved the bias on 546 of the 600 logs, by +0.00087 (SE 0.00007) on average: the bias is linear in
+`S`, and the part taken away, which keeps a standard error real, adds a covariance to `S`. Read
+off the whole sums, the bias averages +0.0071 there, 1.041 times the oracle's and 0.58 paired
+standard errors above it, where the clipped read was 1.169 times and 2.44 above. The channel's error
+and `bias_upper` keep the clipped reads; `bias_upper` is now the largest of the bias and their
+biases, since the whole sums' bias was above every clipped read's on 37 of the 600 logs, and
+averaged +0.0111. The quickstart's bias moves from +2.8435e-5 to +2.9763e-5; its `bias_upper`,
++3.263e-5, does not.
 
 ## Context
 

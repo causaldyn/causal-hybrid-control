@@ -206,7 +206,11 @@ def _degrees_of_freedom(rows: int, clusters: np.ndarray | None, periods: np.ndar
 
 
 def _clustered_squares(
-    rows: np.ndarray, clusters: np.ndarray | None, periods: np.ndarray | None = None
+    rows: np.ndarray,
+    clusters: np.ndarray | None,
+    periods: np.ndarray | None = None,
+    *,
+    clip: bool = True,
 ) -> tuple[np.ndarray, ...]:
     """``rows``' covariance, ``(N, n, ...)`` per transition and state as
     :attr:`chc.dynamics_id.CausalDynamicsFit.influence` is: the sum of the outer products of its
@@ -221,6 +225,11 @@ def _clustered_squares(
     then each dimension's sums alone, moved from the smaller dimension's CR1 factor, which
     ``rows`` carry, to its own. The two-way sums alone can read less than either dimension does:
     on a log of 3 units over 4 periods they read nothing of a channel affine in the state.
+
+    ``clip`` False keeps the two ways' sums whole, any part below nothing included. Taking that
+    part away adds a covariance to them, which keeps a standard error real; a reader linear in the
+    covariance, as a bias is, is read without bias off the whole sums, and above it off the
+    clipped ones (ADR 0088).
     """
     if periods is not None:
         projected = np.tensordot(_cosines(periods), rows.sum(axis=1), axes=(1, 0))
@@ -239,7 +248,12 @@ def _clustered_squares(
     first, second = square(clusters[:, 0]), square(clusters[:, 1])
     cells = square(np.unique(clusters, axis=0, return_inverse=True)[1].reshape(-1))
     spread, every = first + second - cells, first + second + cells
-    both = np.maximum(spread, 0.0) if spread.ndim == 0 else _less_below_nothing(spread, every)
+    if not clip:
+        both = spread
+    elif spread.ndim == 0:
+        both = np.maximum(spread, 0.0)
+    else:
+        both = _less_below_nothing(spread, every)
     smaller = _cluster_count(clusters)
     alone = []
     for one, codes in ((first, clusters[:, 0]), (second, clusters[:, 1])):

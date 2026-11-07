@@ -6,8 +6,9 @@ HC1 and at ``G / (G - 1)`` alone HC0 times ``N / (N - 1)``; permuting the rows w
 moves nothing beyond rounding; scaling the scores by ``c`` scales the covariance by ``c^2`` and a
 regression's design by ``c`` its coefficients' by ``1 / c^2``; two ways is the two dimensions' sums
 less their intersection's, with its part below nothing taken away, which adds a covariance to them
-and leaves the read none; HC3 and CR1 against numpy by hand; NumPy and JAX scores read alike.
-Matrices are compared on the columns' own scales, where rounding is of one size.
+and leaves the read none, and whole the sums read the covariance on average where the clipped ones
+read above it; HC3 and CR1 against numpy by hand; NumPy and JAX scores read alike. Matrices are
+compared on the columns' own scales, where rounding is of one size.
 """
 
 import jax.numpy as jnp
@@ -16,7 +17,13 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from chc._robust_cov import _cosine_count, _less_below_nothing, robust_cov, sandwich
+from chc._robust_cov import (
+    _clustered_squares,
+    _cosine_count,
+    _less_below_nothing,
+    robust_cov,
+    sandwich,
+)
 
 
 def _draw(data: st.DataObject) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -136,7 +143,8 @@ def test_scaling_the_scores_scales_the_covariance_by_its_square(
 def test_two_ways_are_both_dimensions_less_their_intersection(data: st.DataObject) -> None:
     """``c (A + B - I)``, ``A`` and ``B`` each dimension's sums and ``I`` the cells', at CR1's
     factor ``c`` at the smaller dimension's ``G``, its part below nothing taken away, which adds
-    a covariance and leaves none; each dimension alone at its own factor; ``df = min(G) - 1``."""
+    a covariance and leaves none; each dimension alone at its own factor; ``df = min(G) - 1``.
+    Unclipped, the sums whole, as a bias linear in the covariance reads them."""
     scores, _, two = _draw(data)
     rows = scores.shape[0]
     cells = np.unique(two, axis=0, return_inverse=True)[1].reshape(-1)
@@ -154,8 +162,33 @@ def test_two_ways_are_both_dimensions_less_their_intersection(data: st.DataObjec
     _close(read.cov / scales, factor * _less_below_nothing(spread, every) / scales, 1e-9, size)
     assert np.min(np.linalg.eigvalsh((read.cov - factor * spread) / scales)) >= -1e-9 * size
     assert np.min(np.linalg.eigvalsh(read.cov / scales)) >= -1e-9 * size
+    rows3 = scores[:, None]
+    sums = [_clustered_squares(rows3, codes)[0] for codes in (two[:, 0], two[:, 1], cells)]
+    whole = _clustered_squares(rows3, two, clip=False)
+    np.testing.assert_array_equal(whole[0], sums[0] + sums[1] - sums[2])
+    for kept, clipped in zip(whole[1:], _clustered_squares(rows3, two)[1:], strict=True):
+        np.testing.assert_array_equal(kept, clipped)
     for alone, square, count in zip(read.alone, (first, second), counts, strict=True):
         _close(alone, count / (count - 1) * (rows - 1) / (rows - 3) * square, 1e-12)
+
+
+def test_the_whole_two_ways_read_the_covariance_and_the_clipped_read_above_it() -> None:
+    """Independent rows of covariance ``I`` on a 3 by 4 grid: each of ``A``, ``B`` and ``I``
+    reads ``N I`` on average, so the whole sums do, and taking their part below nothing away
+    reads above it. Over 3000 logs the whole sums' trace sits within 4 standard errors of
+    ``N p`` and the clipped one more than 2 above it."""
+    codes = np.stack(np.meshgrid(np.arange(3), np.arange(4), indexing="ij"), -1).reshape(-1, 2)
+    rng = np.random.default_rng(0)
+    traces = []
+    for _ in range(3000):
+        rows = rng.standard_normal((12, 1, 2))
+        whole = _clustered_squares(rows, codes, clip=False)[0]
+        clipped = _clustered_squares(rows, codes)[0]
+        traces.append((np.trace(whole), np.trace(clipped)))
+    whole_mean, clipped_mean = np.mean(traces, axis=0)
+    whole_se, clipped_se = np.std(traces, axis=0, ddof=1) / np.sqrt(len(traces))
+    assert abs(whole_mean - 24.0) < 4.0 * whole_se
+    assert clipped_mean - 24.0 > 2.0 * clipped_se
 
 
 def test_a_second_way_of_one_row_a_cell_reads_the_first_way_alone() -> None:

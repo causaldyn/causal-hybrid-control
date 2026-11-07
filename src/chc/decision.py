@@ -1731,8 +1731,9 @@ class Prescription:
         moves (ADR 0145):
 
         * the certificate's ``planned_cost_bias``, the planned cost, its bias's three terms, the
-          bias, the largest over the reads of its covariance (``bias_upper``), its ``direction``
-          and the corrected cost, or None, and ``planned_cost_bias_reason``, why it is None;
+          bias, the largest over it and the reads of its covariance (``bias_upper``), its
+          ``direction`` and the corrected cost, or None, and ``planned_cost_bias_reason``, why it
+          is None;
         * ``logger_check``, the logger check's verdict (:class:`~chc.evaluation.LoggerCheck`): its
           statistic, p-value, each pair's partial correlation and the one it could detect, a nan
           correlation or an infinite detectable one None; None where it was not run;
