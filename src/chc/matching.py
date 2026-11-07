@@ -93,15 +93,20 @@ def sinkhorn(
         raise ValueError(f"eps must be positive and finite, got {eps}")
     if not 0.0 < tol < np.inf:
         raise ValueError(f"tol must be positive and finite, got {tol}")
-    cost = jnp.asarray(cost)
-    a, b = jnp.asarray(supply), jnp.asarray(demand)
+    # one float type for all three: integer masses have no rounding to read, and the scan's
+    # potentials must keep the type they start in
+    cost, a, b = jnp.asarray(cost), jnp.asarray(supply), jnp.asarray(demand)
+    dtype = jnp.result_type(cost, a, b)
+    if not jnp.issubdtype(dtype, jnp.floating):
+        dtype = jnp.result_type(float)
+    cost, a, b = cost.astype(dtype), a.astype(dtype), b.astype(dtype)
     for name, values in (("cost", cost), ("supply", a), ("demand", b)):
         if not bool(jnp.all(jnp.isfinite(values))):
             raise ValueError(f"{name} must be finite")
     if bool(jnp.any(a < 0.0)) or bool(jnp.any(b < 0.0)):
         raise ValueError("supply and demand are masses, and cannot be negative")
     total_a, total_b = float(jnp.sum(a)), float(jnp.sum(b))
-    rounding = 4.0 * (a.size + b.size) * float(jnp.finfo(jnp.result_type(a, b)).eps)
+    rounding = 4.0 * (a.size + b.size) * float(jnp.finfo(dtype).eps)
     if not (total_a > 0.0 and abs(total_a - total_b) <= max(1e-9, rounding) * total_a):
         raise ValueError(
             f"supply and demand must have equal positive totals; got {total_a} and {total_b}:"

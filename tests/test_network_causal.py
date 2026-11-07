@@ -101,11 +101,74 @@ def test_the_network_effects_read_the_same_with_the_outcome_or_a_treatment_far_f
         "direct_se": direct,
         "spillover": spillover,
         "spillover_se": spillover,
+        "df": 1.0,
     }
     one = estimate_network_effects(data)
     other = estimate_network_effects({**data, moved: (column + 1e3 * jnp.std(column)) * 1e-6})
     for name, value in one.items():
         assert other[name] / per_unit[name] == pytest.approx(value, rel=1e-11, abs=0.0), name
+
+
+def _final_stage_errors(design: NDArray, outcome: NDArray, cid: NDArray) -> dict[str, NDArray]:
+    """The final least squares' HC0, HC3 and unscaled clustered errors, read by numpy."""
+    coef = np.linalg.lstsq(design, outcome, rcond=None)[0]
+    resid = outcome - design @ coef
+    bread = np.linalg.inv(design.T @ design)
+    leverage = np.einsum("ij,jk,ik->i", design, bread, design)
+
+    def sandwich(scores: NDArray) -> NDArray:
+        return np.sqrt(np.diag(bread @ (scores.T @ scores) @ bread))
+
+    sums = np.stack([(design * resid[:, None])[cid == c].sum(axis=0) for c in np.unique(cid)])
+    return {
+        "hc0": sandwich(design * resid[:, None]),
+        "hc3": sandwich(design * (resid / (1.0 - leverage))[:, None]),
+        "cr0": sandwich(sums),
+    }
+
+
+def test_the_errors_are_cr1_against_t_of_the_clusters_and_hc3_without_them(monkeypatch) -> None:
+    """Read through nuisances that predict nothing, so that the final least squares of the outcome
+    on the treatment and the exposure is all there is. The clusters' scores were summed with no
+    small-sample factor, CR0, so that every row its own cluster read the rows' HC0 and 15
+    clusters an error 3.5 % short of CR1's; without clusters the error was HC0, where the
+    library's other regressions read HC3."""
+
+    def predicts_nothing(phi_train, target, phi_test, ridge) -> jax.Array:
+        return jnp.zeros(phi_test.shape[0])
+
+    monkeypatch.setattr(network_causal, "_centred_ridge_predict", predicts_nothing)
+    data = _data()
+    n = int(data["u"].shape[0])
+    design = np.stack([np.asarray(data["u"]), np.asarray(data["e"])], axis=1)
+    outcome = np.asarray(data["x_next"])
+    names = ("direct_se", "spillover_se")
+    flat = estimate_network_effects(data)
+    reads = _final_stage_errors(design, outcome, np.arange(n))
+    for k, name in enumerate(names):
+        assert flat[name] == pytest.approx(reads["hc3"][k], rel=1e-10, abs=0.0), name
+    assert flat["df"] == n - 1
+    own = estimate_network_effects({**data, "cid": jnp.arange(n)})
+    for k, name in enumerate(names):
+        hc1 = reads["hc0"][k] * np.sqrt(n / (n - 2))
+        assert own[name] == pytest.approx(hc1, rel=1e-10, abs=0.0), name
+    assert own["df"] == n - 1
+    for g in (15, 5):
+        cid = np.arange(n) % g
+        clustered = estimate_network_effects({**data, "cid": jnp.asarray(cid)})
+        cr0 = _final_stage_errors(design, outcome, cid)["cr0"]
+        for k, name in enumerate(names):
+            cr1 = cr0[k] * np.sqrt(g / (g - 1) * (n - 1) / (n - 2))
+            assert clustered[name] == pytest.approx(cr1, rel=1e-10, abs=0.0), (g, name)
+        assert clustered["df"] == g - 1
+
+
+def test_one_cluster_is_refused() -> None:
+    """The clusters' summed scores sum to nothing at one cluster, which read a standard error of
+    rounding."""
+    data = _data()
+    with pytest.raises(ValueError, match="cid holds 1 cluster"):
+        estimate_network_effects({**data, "cid": jnp.zeros(data["u"].shape[0], dtype=int)})
 
 
 @pytest.mark.parametrize("units", [1e-9, 1e-6, 1e-3, 1e3, 1e6])

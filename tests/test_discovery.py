@@ -112,3 +112,23 @@ def test_a_child_is_not_a_parent_of_its_parent_in_either_column_order(
     edges = {(t, s) for t, s, _lag, _kind in discover_lagged_parents(series, max_lag=2).edges()}
     assert (parent, child) not in edges
     assert (child, parent) in edges
+
+
+@pytest.mark.parametrize(("steps", "max_lag"), [(7, 3), (8, 2), (12, 3)])
+def test_a_short_series_keeps_no_more_parents_than_its_tests_have_rows_for(steps, max_lag) -> None:
+    """A test given ``k`` parents on ``n`` rows has ``n - k - 2`` degrees of freedom. Fisher's z,
+    floored at one, read the collinear residuals of a test with none left as a perfect
+    correlation, and kept parents past the rows. Each kept edge's p-value is a probability."""
+    series = _simulate_var(steps, seed=3)
+    rows = steps - max_lag
+    graph = discover_lagged_parents(series, max_lag=max_lag, alpha=0.2)
+    parents = np.asarray(graph.state_parents).reshape(series.shape[1], -1).sum(axis=1)
+    assert parents.max() <= rows - 2
+    assert graph.state_p_values is not None
+    kept = graph.state_p_values[np.asarray(graph.state_parents)]
+    assert np.all((kept >= 0.0) & (kept <= 1.0))
+
+
+def test_a_series_too_short_for_one_test_is_refused() -> None:
+    with pytest.raises(ValueError, match="leaves 2 rows at max_lag=3"):
+        discover_lagged_parents(_simulate_var(5, seed=0), max_lag=3)

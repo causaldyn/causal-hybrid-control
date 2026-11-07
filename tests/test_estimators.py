@@ -19,6 +19,7 @@ from chc.estimators import (
     EconMLDoubleML,
     EffectEstimate,
     RLearner,
+    _t_stat,
 )
 
 # Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
@@ -217,6 +218,26 @@ def test_a_nan_standard_error_reads_a_nan_statistic() -> None:
     data["x_next"] = data["x_next"].at[5].set(float("nan"))
     result = DoubleML().estimate(data, covariates=("x", "z"))
     assert math.isnan(result.diagnostics["t_stat"])
+
+
+@pytest.mark.parametrize("estimator", [BackdoorOLS(), DoubleML()], ids=["backdoor", "dml"])
+def test_a_zero_effect_with_no_error_reads_a_nan_statistic_and_warns(estimator) -> None:
+    """On an outcome of zeros the effect and its error are both 0: the backdoor estimate raised
+    ZeroDivisionError, and Double ML read a t statistic of inf, the strongest evidence there is,
+    for an effect of nothing."""
+    data = dict(_data())
+    data["x_next"] = jnp.zeros_like(data["x_next"])
+    with pytest.warns(UserWarning, match="its t statistic reads nan"):
+        result = estimator.estimate(data, covariates=("x", "z"))
+    assert (result.effect, result.std_error) == (0.0, 0.0)
+    assert math.isnan(result.diagnostics["t_stat"])
+
+
+def test_an_effect_with_no_error_reads_the_infinity_of_its_sign() -> None:
+    """Double ML read +inf beside a negative effect."""
+    assert _t_stat(-2.0, 0.0) == -math.inf
+    assert _t_stat(2.0, 0.0) == math.inf
+    assert math.isnan(_t_stat(math.nan, math.nan))
 
 
 SECOND_ROLES = {

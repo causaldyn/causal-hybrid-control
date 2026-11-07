@@ -180,15 +180,31 @@ def test_a_negative_control_reads_the_gamma_its_endpoint_crosses_zero_at() -> No
     assert _quantile_level_bound(reflected, gamma * (1.0 - 1e-5), design, None)[0] < 0.0
 
 
-def test_at_gamma_one_it_is_the_mean_and_the_radius_widens_by_the_gap() -> None:
+def test_at_gamma_one_it_is_the_mean_and_the_radius_widens_by_the_running_maximum() -> None:
+    """At a ``Gamma`` of the grid ``2^(k/4)`` the radius widens by the largest gap the bound reads
+    at the grid's values up to it."""
     rng = np.random.default_rng(8)
     x = rng.uniform(0.0, 1.0, 500)
     y = x + rng.standard_normal(500)
     kwargs = {"covariates": x, "covariate_form": "quantile"}
     assert msm_worst_case_mean(y, 1.0, **kwargs) == float(np.mean(y))
-    worst = msm_worst_case_mean(y, 3.0, propensity=0.4, **kwargs)
-    radius = confounding_robust_radius(0.1, y, 3.0, propensity=0.4, **kwargs)
-    assert radius == pytest.approx(0.1 + worst - y.mean(), rel=1e-12, abs=0.0)
+    assert confounding_robust_radius(0.1, y, 1.0, **kwargs) == 0.1
+    grid = [msm_worst_case_mean(y, 2.0 ** (k / 4), propensity=0.4, **kwargs) for k in range(1, 5)]
+    radius = confounding_robust_radius(0.1, y, 2.0, propensity=0.4, **kwargs)
+    assert radius == pytest.approx(0.1 + max(grid) - y.mean(), rel=1e-12, abs=0.0)
+
+
+@pytest.mark.parametrize("seed", [101, 104, 108])
+def test_the_radius_grows_with_gamma_where_the_refitted_bound_falls(seed) -> None:
+    """On 60 rows with two covariates and a t(3) spread that moves with one, the bound refitted at
+    each ``Gamma`` fell between neighbours 0.025 apart, by 0.003, 0.023 and 0.038 on these three
+    samples, and the radius fell with it."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(60, 2))
+    y = x @ np.array([1.0, -0.5]) + (1.0 + np.abs(x[:, 0])) * rng.standard_t(3, size=60)
+    kwargs = {"covariates": x, "covariate_form": "quantile"}
+    radius = [confounding_robust_radius(0.0, y, g, **kwargs) for g in np.linspace(1.0, 3.0, 81)]
+    assert np.all(np.diff(radius) >= 0.0)
 
 
 @pytest.mark.parametrize(

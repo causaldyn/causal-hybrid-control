@@ -88,9 +88,18 @@ def callaway_santanna(
 
     A group is ``never_treated`` or a period of the panel, ``0..T-1``; any other label is refused,
     naming its row, here and in :func:`twoway_fixed_effects_att`, :func:`de_chaisemartin` and
-    :func:`callaway_santanna_inference`. A unit first treated after the panel is never treated
-    within it, and is labelled ``never_treated``.
+    :func:`callaway_santanna_inference`, and so is a group of booleans, which says whether a unit
+    is treated and not when. A unit first treated after the panel is never treated within it, and
+    is labelled ``never_treated``. ``never_treated`` lies outside the panel's periods, or is 0, as
+    R's ``did`` and diff-diff code it, where no unit is treated from the first period: a later
+    period read as never treated took that cohort out of the comparison without a word.
+
+    Raises:
+        ValueError: on a ``control`` other than ``"notyet"`` and ``"never"``, which was read as
+            ``"notyet"``; on a group outside the panel, missing, not a whole number or a boolean;
+            on a ``never_treated`` in ``1..T-1``; on outcomes that are not finite.
     """
+    _control(control)
     outcomes, group = _panel(outcomes, group, never_treated)
     n_periods = int(outcomes.shape[1])
     treated_groups = tuple(sorted({int(g) for g in group.tolist() if g != never_treated}))
@@ -132,6 +141,16 @@ def callaway_santanna(
     return GroupTimeATT(att, event_study, overall, treated_groups, n_periods)
 
 
+def _control(control: str) -> None:
+    """Refuse a comparison other than the two the estimators know."""
+    if control not in ("notyet", "never"):
+        msg = (
+            f"control is {control!r}: 'notyet' compares with the units not yet treated, 'never' "
+            "with the never-treated units alone"
+        )
+        raise ValueError(msg)
+
+
 def _panel(outcomes: Outcomes, group: Groups, never_treated: int) -> tuple[Outcomes, Groups]:
     outcomes = np.asarray(_real_numbers(outcomes, "outcomes"), dtype=np.float64)
     group = _groups(group)
@@ -139,6 +158,14 @@ def _panel(outcomes: Outcomes, group: Groups, never_treated: int) -> tuple[Outco
         msg = "outcomes must be (N, T) and group (N,) with matching N"
         raise ValueError(msg)
     n_periods = outcomes.shape[1]
+    if 0 < never_treated < n_periods:
+        msg = (
+            f"never_treated is {never_treated}, a period of the panel's 0..{n_periods - 1}: the "
+            "units first treated then would read as never treated; label the never-treated units "
+            f"outside the panel, -1 or {n_periods}, or 0 where no unit is treated from the first "
+            "period"
+        )
+        raise ValueError(msg)
     # -2 marked the last two periods treated in TWFE and dropped the unit from CS's controls, and
     # a period past the panel crashed CS where TWFE and DID_M read it as never treated
     outside = np.flatnonzero((group != never_treated) & ((group < 0) | (group >= n_periods)))
@@ -162,7 +189,14 @@ def _groups(group: Groups) -> Groups:
     naming the first that is not, where one is not. NumPy's cast to int64 truncated 2.5 to 2, and
     read a nan or an infinity as -2**63 and 2**64 - 1 as -1, never treated."""
     labels = np.asarray(_real_numbers(group, "group"))
-    if labels.dtype.kind not in "bi":
+    if labels.dtype.kind == "b":
+        # read as cohorts 0 and 1: CS returned nan, and TWFE a number of no meaning
+        msg = (
+            "group holds booleans, which say whether a unit is treated and not when: a group is "
+            "the period a unit is first treated in, or never_treated"
+        )
+        raise ValueError(msg)
+    if labels.dtype.kind != "i":
         for row, label in enumerate(labels.reshape(-1).tolist()):
             what = _not_a_group(label)
             if what is not None:
@@ -177,6 +211,8 @@ def _groups(group: Groups) -> Groups:
 def _not_a_group(label: Any) -> str | None:
     """What keeps a real number from being a group, a whole number int64 holds; ``None`` where
     nothing does."""
+    if isinstance(label, bool | np.bool_):
+        return "a boolean, which says whether a unit is treated and not when"
     if isinstance(label, Decimal):
         missing, finite = label.is_nan(), label.is_finite()
     elif isinstance(label, float | np.floating):
@@ -263,11 +299,13 @@ def callaway_santanna_inference(
     Needs the ``did`` extra (``pip install 'causal-hybrid-control[did]'``).
 
     Raises:
-        ValueError: on :func:`callaway_santanna`'s refusals; a panel with no cell after
-            treatment; ``alpha`` outside ``(0, 1)``; fewer than two draws.
+        ValueError: on :func:`callaway_santanna`'s refusals, a misspelt ``control`` among them,
+            which raised a bare ``KeyError`` here; a panel with no cell after treatment; ``alpha``
+            outside ``(0, 1)``; fewer than two draws.
         RuntimeError: when diff-diff's estimates do not reproduce these, which would put the
             intervals around another estimate.
     """
+    _control(control)
     if not 0.0 < alpha < 1.0:
         msg = f"alpha must lie in (0, 1), got {alpha}"
         raise ValueError(msg)
@@ -286,8 +324,9 @@ def callaway_santanna_inference(
     except ImportError as exc:
         raise ImportError(_DID_HINT) from exc
 
-    # a unit treated from the first period has no base period: no cell of its own, and no control
-    kept = np.flatnonzero(group != 0)
+    # a unit treated from the first period has no base period: no cell of its own, and no control;
+    # never-treated units labelled 0 stay, which this filter dropped, every one of them
+    kept = np.flatnonzero((group != 0) | (group == never_treated))
     frame = pd.DataFrame(
         {
             "unit": np.repeat(kept, n_periods),

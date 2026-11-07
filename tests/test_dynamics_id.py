@@ -42,6 +42,7 @@ from chc.dynamics_id import (
     _unmoved_actions,
     _unmoved_directions,
     fit_causal_residual,
+    lag_check,
     nuisance_shift,
     omitted_confounder_bound,
     persistence_check,
@@ -1203,6 +1204,60 @@ def test_the_fit_names_the_directions_its_log_never_moves(
     assert fit.unmoved.shape[1] == unmoved
 
 
+def _far_lever_log(level: float, spread: float, determined: bool = False) -> dict[str, jax.Array]:
+    """A lever logged ``level`` of its units from zero, ``level + spread (-z + eta)``, or set by its
+    covariate exactly, ``level + 0.3 z + 0.1 z^2``, moving one state by its move from the level,
+    as float32 columns: ``x' = x + 0.1 (-0.5 x + (u - level) + z)``."""
+    rng = np.random.default_rng(0)
+    rows = 2000
+    z = rng.normal(size=(rows, 1))
+    move = 0.3 * z + 0.1 * z**2 if determined else spread * (-z + rng.normal(size=(rows, 1)))
+    x = rng.normal(size=(rows, 1))
+    x_next = x + 0.1 * (-0.5 * x + move + z) + 1e-2 * rng.normal(size=(rows, 1))
+    log = {"x": x, "u": level + move, "z": z, "x_next": x_next}
+    return {name: jnp.asarray(column, dtype=jnp.float32) for name, column in log.items()}
+
+
+@pytest.mark.parametrize(
+    ("level", "spread"),
+    [(0.0, 1.0), (100.0, 1.0), (100.0, 0.05), (293.0, 0.05), (1000.0, 0.1), (1000.0, 1.0)],
+)
+def test_a_lever_far_from_zero_that_moves_a_little_is_read_in_float32(
+    level: float, spread: float
+) -> None:
+    """In float32, JAX's default. At 293 of its units with a spread of 0.05, and at 1000 with 0.1,
+    the lever's residual keeps 1.7e-4 and 1.0e-4 of its raw size, under the square root of the
+    precision, 3.5e-4, where the fit cut: it read the lever as never moved, and returned no
+    channel, where float64 read 1.001 and 0.961, within 0.03 and 1.7 errors of the truth, 1. Cut
+    at rounding, 7.6e-6, the fit reads every lever within two of its errors of the channel."""
+    with enable_x64(False):
+        zero = LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1)))
+        fit = fit_causal_residual(
+            zero, _far_lever_log(level, spread), 0.1, adjust_for=("z",), channel_degree=0
+        )
+    assert fit.residual.channel.dtype == jnp.float32
+    assert fit.identified
+    assert fit.channel_error is not None
+    assert abs(float(np.asarray(fit.residual.channel)[0, 0, 0]) - 1.0) < 2.0 * fit.channel_error
+
+
+@pytest.mark.parametrize("level", [0.0, 293.0, 1000.0])
+def test_a_lever_its_covariate_sets_stays_unmoved_in_float32(level: float) -> None:
+    """Set by its covariate exactly, a lever keeps 5e-8 to 1.4e-6 of its raw size in float32, its
+    projection's rounding, under the cut of 7.6e-6: still never moved."""
+    with enable_x64(False):
+        fit = fit_causal_residual(
+            LinearDynamics(jnp.zeros((1, 1)), jnp.zeros((1, 1))),
+            _far_lever_log(level, 0.0, determined=True),
+            0.1,
+            adjust_for=("z",),
+            channel_degree=0,
+        )
+    assert not fit.identified
+    assert fit.unmoved is not None
+    assert fit.unmoved.shape[1] == 1
+
+
 @pytest.mark.parametrize(
     ("rows", "actions", "nuisance_degree", "unmoved"),
     [(3, 3, 2, 9), (2, 1, 0, 1)],
@@ -1720,6 +1775,24 @@ def test_an_action_the_log_never_used_is_each_span_it_kept() -> None:
         for span in ("constant", "state", "covariates"):
             basis = np.abs(np.asarray(getattr(logged, span)))
             np.testing.assert_allclose(basis, [[0.0], [1.0]], rtol=0.0, atol=1e-12, err_msg=span)
+
+
+@pytest.mark.parametrize("level", [0.3, 0.5, 1.7, 293.0])
+@pytest.mark.parametrize("rows", [960, 4000])
+def test_an_action_held_at_one_level_is_the_span_kept_at_one_level(rows: int, level: float) -> None:
+    """The first action held at ``level``, the second dithered. Less its least-squares fit on a
+    constant, the held action kept the fit's rounding, 90 eps of its size at 0.5 on 960 rows and
+    228 to 391 eps on 4000, past the cut of 64 eps: the log read as having moved it, and a plan
+    as having set it by a rule. Fitted once more on that residual, it keeps none."""
+    log = _policy_log(
+        rows,
+        lambda rng, x, z: np.concatenate([np.full((z.size, 1), level), _dithered(rng, x, z)], 1),
+    )
+    covariates = jnp.concatenate([log["x"], log["z"]], axis=1)
+    logged = _logged_relations(log["u"], log["x"], covariates, nuisance_degree=2)
+    for span in ("constant", "state", "covariates"):
+        basis = np.abs(np.asarray(getattr(logged, span)))
+        np.testing.assert_allclose(basis, [[1.0], [0.0]], rtol=0.0, atol=1e-12, err_msg=span)
 
 
 @pytest.mark.parametrize("units", [1e-15, 1e-12, 1e15])
@@ -3255,6 +3328,25 @@ def test_the_persistence_check_on_one_pair_or_none_reads_no_test() -> None:
     assert math.isnan(none.p_value)
 
 
+def test_both_checks_refuse_periods_no_unit_steps_through() -> None:
+    """Periods counted in days a week apart, 0, 7, 14: no unit had two transitions one period
+    apart, and both checks read nothing and returned nan without a word. So did ``lag_check`` at
+    more lags than any unit's run of consecutive transitions."""
+    data, units, periods = _persistent_log(0.0, units=20, periods=10)
+    fit = fit_causal_residual(_known, data, 0.1, adjust_for=("z",), channel_degree=0)
+    weekly = 7 * periods
+    with pytest.raises(ValueError, match="the least spacing within a unit is 7"):
+        persistence_check(fit, units, weekly)
+    with pytest.raises(ValueError, match="the least spacing within a unit is 7"):
+        lag_check(fit, data, units, weekly, lags=1, adjust_for=("z",))
+    with pytest.raises(ValueError, match="no unit has two transitions one period apart"):
+        persistence_check(fit, np.arange(units.size), periods)
+    with pytest.raises(ValueError, match="no unit has 11 transitions in consecutive periods"):
+        lag_check(fit, data, units, periods, lags=10, adjust_for=("z",))
+    assert lag_check(fit, data, units, periods, lags=9, adjust_for=("z",)).transitions == 20
+    assert persistence_check(fit, units, periods).pairs == 20 * 9
+
+
 def test_the_persistence_check_of_a_fit_given_periods_sums_each_period_s_products() -> None:
     """A fit given its transitions' periods reads its units as one group's: the check sums the
     pairs' products within each period and tests their total over the spread of the sums'
@@ -3632,21 +3724,57 @@ def _seasonal_known(t, x, u):
 @pytest.mark.parametrize("integrator", ["euler", "rk4"])
 def test_the_known_physics_is_read_at_each_transition_s_start(integrator: str) -> None:
     """Read at ``t = 0`` throughout, the season stays in the rate the residual explains, and the
-    policy that follows it confounds the channel: 1.35 where it is 1.0, 1.37 where RK4 reads 1.03.
-    Read at each transition's start, the channel lands within its error, of the Euler map the log
-    was stepped by or of its RK4 reading."""
+    policy that follows it confounds the channel: 1.35 where it is 1.0, 1.37 where RK4 reads 1.03,
+    and the fit, given no times, is refused. Read at each transition's start, the channel lands
+    within its error, of the Euler map the log was stepped by or of its RK4 reading."""
     data, times = _seasonal_log()
     options = {"adjust_for": ("z",), "channel_degree": 0, "integrator": integrator}
     fit = fit_causal_residual(_seasonal_known, data, 0.1, times=times, **options)
-    clockless = fit_causal_residual(_seasonal_known, data, 0.1, **options)
     assert fit.channel_error is not None
     # RK4's reading of an Euler log: the decay h whose growth factor is 0.95, and the channel
     # over RK4's input gain 1 + h/2 + h^2/6 + h^3/24 there, both solved in Maxima
     truth = 1.0 if integrator == "euler" else 1.0258659
     assert abs(float(np.asarray(fit.residual.channel).ravel()[0]) - truth) < 4 * fit.channel_error
-    assert abs(float(np.asarray(clockless.residual.channel).ravel()[0]) - truth) > 0.25
+    with pytest.raises(ValueError, match="known reads the time"):
+        fit_causal_residual(_seasonal_known, data, 0.1, **options)
     with pytest.raises(ValueError, match="times gives each"):
         fit_causal_residual(_seasonal_known, data, 0.1, times=times[1:], **options)
+
+
+@pytest.mark.parametrize(
+    "known",
+    [
+        lambda t, x, u: jnp.sin(0.3 * t) * jnp.ones_like(x),
+        lambda t, x, u: jnp.cos(2.0 * jnp.pi * t) * jnp.ones_like(x),
+        lambda t, x, u: -0.5 * x + 1e-4 * t,
+        lambda t, x, u: -0.5 * x * jnp.exp(t),
+    ],
+    ids=["a season", "a cycle of one unit of time", "a slow trend", "an overflow at the probe"],
+)
+def test_a_known_that_reads_the_time_refuses_no_times(known) -> None:
+    """Every transition read at ``t = 0`` leaves the push at its own time in the rate. A known
+    periodic in one unit of time reads the same rate at every whole time, and at the probe's
+    irrational one moves; a known that overflows there is read as one that moves."""
+    data, _ = _seasonal_log(200)
+    with pytest.raises(ValueError, match=r"known reads the time.*give each transition's start"):
+        fit_causal_residual(known, data, 0.1, adjust_for=("z",), channel_degree=0)
+
+
+def test_a_known_that_does_not_read_the_time_fits_as_it_did_without_times() -> None:
+    """The probe reads ``known`` on eight rows at two times and changes nothing else: a
+    time-free known fits bit for bit as with every start at ``t = 0`` given as ``times``."""
+    data, _ = _seasonal_log(400)
+    options = {"adjust_for": ("z",), "channel_degree": 0}
+    clockless = fit_causal_residual(_known_free_of_time, data, 0.1, **options)
+    at_zero = fit_causal_residual(_known_free_of_time, data, 0.1, times=np.zeros(400), **options)
+    np.testing.assert_array_equal(
+        np.asarray(clockless.residual.channel), np.asarray(at_zero.residual.channel)
+    )
+    assert clockless.channel_error == at_zero.channel_error
+
+
+def _known_free_of_time(t, x, u):
+    return -0.5 * x
 
 
 def test_the_rk4_fit_converges_where_the_known_physics_leaves_the_residual_nothing() -> None:
@@ -4178,6 +4306,23 @@ def test_a_missing_cluster_label_is_refused_rather_than_pooled_into_one_cluster(
     """``np.unique`` pools every nan into one label: ten transitions of no known cluster were read
     as one cluster of their own, without a word."""
     with pytest.raises(ValueError, match=f"clusters hold a missing label at {where}"):
+        fit_causal_residual(_known, _clustered_log(50), 0.1, **CLUSTERED, clusters=labels)
+
+
+@pytest.mark.parametrize("dtype", ["string", "boolean", "Int64"])
+def test_pandas_missing_label_is_refused_as_missing(dtype: str) -> None:
+    """A ``string`` or ``boolean`` column holds pandas' ``NA`` as itself, which NumPy keeps as an
+    object, and its truth value raised a ``TypeError`` in the sort; an ``Int64`` column turns it
+    into a nan, which was refused already."""
+    pd = pytest.importorskip("pandas")
+    values = {
+        "string": [f"c{i % 5}" for i in range(50)],
+        "boolean": [i % 2 == 0 for i in range(50)],
+    }
+    labels = pd.array(
+        [pd.NA if i == 6 else v for i, v in enumerate(values.get(dtype, range(50)))], dtype=dtype
+    )
+    with pytest.raises(ValueError, match="clusters hold a missing label at row 6"):
         fit_causal_residual(_known, _clustered_log(50), 0.1, **CLUSTERED, clusters=labels)
 
 

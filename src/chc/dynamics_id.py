@@ -115,6 +115,12 @@ six steps up to ``|A|dt = 1.2``, so reaching the cap means there is no fixed poi
 _NUISANCE_SHIFT_WARN = 3.0
 """How far, in the errors of the move, a spline refit may move a fit with the polynomial
 nuisances alone before :func:`fit_causal_residual` warns that they miss the log's."""
+_CLOCK_PROBE = 1000.0 * math.sqrt(2.0)
+"""The time :func:`fit_causal_residual` reads ``known`` at beside ``t = 0``, given no ``times``, to
+tell whether it reads the time. Irrational, so that a ``known`` periodic in a period that divides
+it, the one it cannot tell, has an irrational period."""
+_CLOCK_PROBE_ROWS = 8
+"""The transitions, the log's first, that ``known`` is read on at both times."""
 
 _log = logging.getLogger(__name__)
 
@@ -359,8 +365,9 @@ class CausalDynamicsFit:
     # so its residual is the noise where the push is linear.
     influence: Array | None = None
     # (p, r), in ``influence``'s order: the directions the log's actions never move. Each moves one
-    # state's channel where the action residuals, scaled to the raw actions' size, fall below the
-    # square root of the working precision, with the drift regression's response to it on this log.
+    # state's channel where the action residuals, scaled to the raw actions' size, keep at most
+    # ``chc._units.ROUNDING`` eps of the working precision, rounding, with the drift regression's
+    # response to it on this log.
     # The moment has no data there. Where the drift's features take up a direction's push on the
     # log, no rate of the log tells it apart, and the channel is held at zero along it, in the
     # actions' scaled units; where they cannot, the log's rates rule out all but one value, and the
@@ -1181,7 +1188,14 @@ def _representer(sensitivity: Array) -> Array:
 
 def _kept(residual: Array, scale: Array) -> Array:
     """Unit columns ``(k, r)``, in the units ``scale`` divides out: the combinations of
-    ``residual``'s columns that, scaled, keep less than the square root of the working precision."""
+    ``residual``'s columns that, scaled, keep at most ``chc._units.ROUNDING`` eps of the working
+    precision, rounding, as :func:`_instrument_relevance` reads a push.
+
+    The cut was the square root of the precision, 3.5e-4 in float32: a lever logged at 293 of its
+    units with a spread of 0.05, whose residual keeps 1.7e-4 of its raw size, read as never moved,
+    and the fit returned no channel, where float64 read 1.001 with an error of 0.046. A lever the
+    covariates set exactly keeps 1.4e-6 or less in float32, below the cut of 7.6e-6, on logs of
+    4000 to 200000 rows and nuisances of degree 2 and 3."""
     residual = residual * scale
     # A log of fewer transitions than coefficients has fewer singular values than directions, and a
     # thin SVD returns no row for the rest, which no transition moves: zero rows bring them back
@@ -1190,8 +1204,27 @@ def _kept(residual: Array, scale: Array) -> Array:
     if short > 0:
         residual = jnp.concatenate([residual, jnp.zeros((short, residual.shape[1]))])
     _, singular, rows = jnp.linalg.svd(residual, full_matrices=False)
-    null = rows[singular <= jnp.sqrt(jnp.finfo(singular.dtype).eps)].T * scale[:, None]
+    null = rows[singular <= _units.ROUNDING * jnp.finfo(singular.dtype).eps].T * scale[:, None]
     return null / jnp.linalg.norm(null, axis=0)
+
+
+def _left_over(design: Array, target: Array, *, scaled: bool = False) -> Array:
+    """``target`` less its least-squares fit on ``design``, refined once; on the columns scaled by
+    :func:`chc._units.least_squares` where ``scaled``.
+
+    The first residual keeps the coefficients' rounding: an action the covariates set exactly left
+    up to 44 eps of its size on 1000 rows in float64, over 40 logs, and one held at a level left 90
+    eps on a log of 960 rows, which the cut of 64 eps (:func:`_kept`) read as a move. Fitted again
+    on that residual, the rounding lies in the design's span and goes: 0.6 eps at most, in float32
+    too, where a move of 1e-4 of the size reads the same."""
+
+    def fitted(values: Array) -> Array:
+        if scaled:
+            return design @ _units.least_squares(design, values)
+        return design @ jnp.linalg.lstsq(design, values)[0]
+
+    left = target - fitted(target)
+    return left - fitted(left)
 
 
 def _unmoved_directions(
@@ -1204,8 +1237,8 @@ def _unmoved_directions(
 ) -> Array:
     """The channel's coefficient directions, unit columns ``(m k, r)``, along which the log's
     actions, less their least-squares projection on the nuisance's features (``sieve`` where
-    given, :func:`_nuisance_sieve`), keep less than the square root of the working precision of
-    their raw size.
+    given, :func:`_nuisance_sieve`), keep at most rounding of their raw size,
+    ``chc._units.ROUNDING`` eps of the working precision (:func:`_kept`).
 
     Projected without the cross-fit's ridge and folds, a policy the covariates determine leaves
     rounding, where the ridge would leave a bias that grows as the log shrinks. Scaled to the raw
@@ -1216,7 +1249,7 @@ def _unmoved_directions(
         if sieve is None
         else sieve
     )
-    left = actions - features @ jnp.linalg.lstsq(features, actions)[0]
+    left = _left_over(features, actions)
     scale = 1.0 / _units.norms(_channel_design(actions, states, channel_degree))
     return _kept(_channel_design(left, states, channel_degree), scale)
 
@@ -1330,12 +1363,13 @@ def _split_unmoved(directions: Array, raw: Array, design: Array) -> _Unmoved:
     # in each column's own units, so the rank cutoff falls at one share of every column: on the
     # raw columns, relative to the largest singular value, it dropped a column logged in units far
     # from the others'
-    left = push - design @ _units.least_squares(design, push)
+    left = _left_over(design, push, scaled=True)
     # as in _kept: a log of fewer transitions than directions leaves the rest a zero singular value
     short = left.shape[1] - left.shape[0]
     padded = jnp.concatenate([left, jnp.zeros((short, left.shape[1]))]) if short > 0 else left
     out, singular, rows = jnp.linalg.svd(padded, full_matrices=False)
-    seen = singular > jnp.sqrt(jnp.finfo(singular.dtype).eps)
+    # rounding of the raw actions' size, as _kept cuts
+    seen = singular > _units.ROUNDING * jnp.finfo(singular.dtype).eps
     return _Unmoved(
         raw=raw,
         basis=basis,
@@ -1439,7 +1473,7 @@ def _logged_relations(
     scale = 1.0 / size
 
     def kept(features: Array) -> np.ndarray:
-        left = actions - features @ jnp.linalg.lstsq(features, actions)[0]
+        left = _left_over(features, actions)
         columns = np.asarray(_kept(left, scale) * size[:, None], dtype=np.float64)
         return np.linalg.qr(columns)[0] if columns.shape[1] else columns
 
@@ -1904,7 +1938,7 @@ def fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
             reads below nothing; and each dimension's sums alone, at its own. A shock every unit
             shares in a period, met by levers every unit moves together, makes one period's scores
             move together across units, which a sum within units leaves out (ADR 0061). A missing
-            label, ``None``, nan or NaT, is refused.
+            label, ``None``, nan, NaT or pandas' ``NA``, is refused.
         periods: each transition's period, a whole number of steps, on a log whose transitions
             fall in one group, one unit's or the units' of one declared cluster, which leaves no
             second cluster to sum within: one label a transition, two periods at least. The
@@ -1933,7 +1967,9 @@ def fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
             nothing else: a seasonal known push read at ``t = 0`` throughout leaves the season in
             the rate, and a logging policy that follows the season then confounds the channel with
             it: on a log of 3000 Euler steps the channel came back 1.35 where it is 1.0, 37 of
-            its errors off.
+            its errors off. So ``None`` is refused where ``known`` reads the time: where its rate
+            on the log's first 8 transitions moves by more than rounding between ``t = 0`` and
+            ``t = 1000 sqrt(2)``, irrational so that no rational period hides the move.
 
     Returns:
         A :class:`CausalDynamicsFit`. Read ``identified`` before ``residual``. A log that moves
@@ -1956,8 +1992,8 @@ def fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
             covariate or a driver, at the step's start or its end. Each would read a column the fit
             reads in another role: adjusted for the action, the channel came back as the
             confounded regression's. On ``unconfounded=True`` with an instrument. On ``times``
-            that are not one finite number a transition. On ``clusters`` that hold a missing or a
-            masked label.
+            that are not one finite number a transition, and on ``times=None`` where ``known``
+            reads the time. On ``clusters`` that hold a missing or a masked label.
     """
     if integrator not in ("euler", "rk4"):
         raise ValueError(f"integrator={integrator!r} is neither 'euler' nor 'rk4'")
@@ -1995,6 +2031,8 @@ def fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
         )
     codes = None if clusters is None else _cluster_codes(clusters, x.shape[0])
     steps = None if periods is None else _period_codes(periods, x.shape[0])
+    if times is None:
+        _refuse_a_clock(known, x, u)
     starts = jnp.zeros(x.shape[0], dtype=x.dtype) if times is None else _start_times(times, x)
     known_rate = jax.vmap(known)(starts, x, u)
 
@@ -2715,6 +2753,36 @@ def _spline_shift(
     return float(jnp.sqrt(jnp.mean(at_rows**2))), max(error, floor)
 
 
+def _refuse_a_clock(known: Dynamics, x: Array, u: Array) -> None:
+    """Refuse a ``known`` that reads the time, where no ``times`` say when each transition starts:
+    its rates on the log's first :data:`_CLOCK_PROBE_ROWS` transitions, read at ``t = 0`` and at
+    :data:`_CLOCK_PROBE`, differ by more than ``chc._units.ROUNDING`` eps of the larger. Read at
+    ``t = 0`` throughout, such a ``known`` leaves its push at the transitions' own times in the
+    rate the residual explains."""
+    rows = min(int(x.shape[0]), _CLOCK_PROBE_ROWS)
+    if rows == 0:
+        return
+    states, actions = x[:rows], u[:rows]
+
+    def rate(time: float) -> Array:
+        return jax.vmap(known)(jnp.full(rows, time, dtype=x.dtype), states, actions)
+
+    start, later = rate(0.0), rate(_CLOCK_PROBE)
+    apart = jnp.abs(later - start)
+    rounding = (
+        _units.ROUNDING * jnp.finfo(apart.dtype).eps * jnp.maximum(jnp.abs(start), jnp.abs(later))
+    )
+    same = (start == later) | (jnp.isnan(start) & jnp.isnan(later)) | (apart <= rounding)
+    if not bool(jnp.all(same)):
+        raise ValueError(
+            f"known reads the time: on the log's first {rows} transitions its rate at t = 0 and at "
+            f"t = {_CLOCK_PROBE:.6g} differs by up to {float(jnp.nanmax(apart)):.3g}, and with "
+            "times=None every transition starts at t = 0, which leaves its push at the "
+            "transitions' own times in the rate the residual explains; give each transition's "
+            "start time as times="
+        )
+
+
 def _start_times(times: ArrayLike, x: Array) -> Array:
     """Each transition's start time, one finite number a transition, in the states' precision."""
     starts = jnp.asarray(_real_numbers(times, "times"), dtype=x.dtype)
@@ -2748,7 +2816,9 @@ def _period_codes(periods: ArrayLike, rows: int) -> np.ndarray:
 
 
 def _missing_labels(labels: np.ndarray) -> np.ndarray:
-    """Whether each label, flattened, is missing: ``None``, a nan, or a NaT."""
+    """Whether each label, flattened, is missing: ``None``, a nan, a NaT, or pandas' ``NA``, known
+    by its type's name, since pandas is not a dependency. A ``string`` or ``boolean`` column holds
+    ``NA`` as itself, and its truth value raised a ``TypeError`` in the sort."""
     if labels.dtype.kind in "mM":
         return np.isnat(labels).ravel()
     if labels.dtype.kind in "fc":
@@ -2758,6 +2828,7 @@ def _missing_labels(labels: np.ndarray) -> np.ndarray:
     return np.array(
         [
             label is None
+            or type(label).__name__ == "NAType"
             or (isinstance(label, float | np.floating) and math.isnan(label))
             or (isinstance(label, np.datetime64 | np.timedelta64) and bool(np.isnat(label)))
             for label in labels.ravel()
@@ -3411,12 +3482,38 @@ def persistence_check(
 
     Raises:
         ValueError: the fit kept no moment residual, as where its channel is not identified; the
-            labels are not one a transition; a period is not a whole number; or a unit has two
-            transitions starting in one period.
+            labels are not one a transition; a period is not a whole number; a unit has two
+            transitions starting in one period; or the log spans two periods or more and no unit
+            has two transitions one period apart, as on periods counted in days a week apart,
+            where the check read no pair and returned nan without a word.
     """
     if fit.moment_residual is None:
         raise ValueError("the fit kept no moment residual: its channel is not identified")
-    return _persistence(fit.moment_residual, units, periods, fit.periods is not None, fit.clusters)
+    check = _persistence(fit.moment_residual, units, periods, fit.periods is not None, fit.clusters)
+    steps = np.asarray(periods).reshape(-1)
+    if check.pairs == 0 and np.unique(steps).size >= 2:
+        raise ValueError(_no_step_apart(np.asarray(units).reshape(-1), steps))
+    return check
+
+
+def _no_step_apart(units: np.ndarray, steps: np.ndarray) -> str:
+    """The refusal of a log of two periods or more on which no unit has two transitions one
+    period apart, naming its least spacing within a unit."""
+    codes = np.unique(units, return_inverse=True)[1].reshape(-1)
+    order = np.lexsort((steps, codes))
+    same = codes[order[:-1]] == codes[order[1:]]
+    apart = (steps[order[1:]] - steps[order[:-1]])[same]
+    seen = (
+        f"the least spacing within a unit is {apart.min():g}"
+        if apart.size
+        else "no unit has two transitions"
+    )
+    return (
+        f"no unit has two transitions one period apart on a log of {np.unique(steps).size} "
+        f"periods ({seen}): periods are whole numbers of steps, a unit's consecutive transitions "
+        "1 apart, so codes on a coarser grid, as 0, 7, 14 for weeks counted in days, leave "
+        "nothing to read; give the periods in steps"
+    )
 
 
 def nuisance_shift(fit: CausalDynamicsFit, refit: CausalDynamicsFit, states: ArrayLike) -> float:
@@ -3711,7 +3808,10 @@ def lag_check(  # noqa: PLR0915
     Raises:
         ValueError: the fit kept no moment residual, as where its channel is not identified; the
             columns or the labels are not one row a transition; ``lags`` is not a positive whole
-            number; or a unit has two transitions starting in one period.
+            number; a unit has two transitions starting in one period; or the log spans two
+            periods or more and no transition has its unit's transitions 1 to ``lags`` periods
+            earlier, as on periods counted in days a week apart, where the check read no
+            transition and returned nan without a word.
     """
     if fit.moment_residual is None:
         raise ValueError("the fit kept no moment residual: its channel is not identified")
@@ -3743,6 +3843,13 @@ def lag_check(  # noqa: PLR0915
         [[where.get((code, step - lag), -1) for lag in range(1, lags + 1)] for code, step in pairs]
     ).reshape(rows, lags)
     keep = np.all(late >= 0, axis=1)
+    if not np.any(keep) and np.unique(steps).size >= 2:
+        if not np.any(late[:, 0] >= 0):
+            raise ValueError(_no_step_apart(labels, steps))
+        raise ValueError(
+            f"no transition has its unit's transitions 1 to {lags} periods earlier: no unit has "
+            f"{lags + 1} transitions in consecutive periods; lower lags"
+        )
     n_states, n_levers = residual.shape[1], levers.shape[1]
     nan = np.full((n_states, lags, n_levers), math.nan)
     clustered = codes if fit.clusters is None else np.asarray(fit.clusters).reshape(rows, -1)[:, 0]

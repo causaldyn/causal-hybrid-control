@@ -677,17 +677,25 @@ def estimate_network_effects(
     default: it is hop-1 (the ``neighbours`` column is what a panel carries), and on a graph-blind
     split it removes most of the training set, which the estimator feels.
 
-    Returns the two effects and their **cluster-robust** influence-function standard errors,
-    clustered on ``cid`` when the data carry it and heteroskedastic otherwise. Under interference
-    an i.i.d. SE is not conservative-or-not, it is wrong: the score correlates across units that
-    share a spillover, and the cluster is the only level at which independence is credible here. A
-    95% interval is ``effect +/- 1.96 * se``.
+    Returns the two effects, their **cluster-robust** influence-function standard errors, and
+    ``df``, the degrees of freedom of the ``t`` an interval reads them against. Clustered on
+    ``cid`` when the data carry it: CR1, the clusters' summed scores times
+    ``G / (G - 1) (N - 1) / (N - 2)`` over ``G`` clusters, ``N`` rows and the two coefficients,
+    against ``t(G - 1)``; with every row its own cluster that is HC1. Otherwise HC3, each row's
+    residual over one less its leverage on the two treatment residuals, as the library's other
+    regressions read it, against ``t(N - 1)``. Under interference an i.i.d. SE is not
+    conservative-or-not, it is wrong: the score correlates across units that share a spillover,
+    and the cluster is the only level at which independence is credible here. A 95% interval is
+    ``effect +/- t_df(0.975) * se``. At 15 clusters of 300 rows that is 2.224 of the clusters'
+    unscaled errors, where the normal's 1.96 times them was 12 % narrower; at 5 clusters 3.109,
+    where it was 37 % narrower.
 
     Raises:
         ValueError: when a column is read in two roles -- the exposure or a covariate named
             ``x_next``, ``u`` or ``cid``, which this reads as the outcome, the treatment and the
-            cluster, the exposure among the covariates, or a covariate named twice; or when the
-            neighbour exclusion leaves a fold too few training rows.
+            cluster, the exposure among the covariates, or a covariate named twice; when the
+            neighbour exclusion leaves a fold too few training rows; or when ``cid`` holds one
+            cluster.
     """
     _refuse_shared_names(
         {
@@ -734,15 +742,30 @@ def estimate_network_effects(
     gram = design.T @ design
     coef = jnp.linalg.solve(gram, design.T @ y_res)
     resid = y_res - design @ coef
-    groups = data.get("cid")
-    meat = _sandwich_meat(design, resid, None if groups is None else jnp.asarray(groups))
     inv = jnp.linalg.inv(gram)
+    groups = data.get("cid")
+    if groups is None:
+        leverage = jnp.einsum("ij,jk,ik->i", design, inv, design)
+        meat = _sandwich_meat(design, resid / (1.0 - leverage), None)
+        df = n - 1
+    else:
+        labels = jnp.asarray(groups)
+        clusters = int(jnp.unique(labels).shape[0])
+        if clusters < 2:
+            raise ValueError(
+                f"cid holds {clusters} cluster; a clustered error reads the spread across two at "
+                "least -- drop cid for the heteroskedastic error"
+            )
+        small_sample = clusters / (clusters - 1) * (n - 1) / (n - design.shape[1])
+        meat = small_sample * _sandwich_meat(design, resid, labels)
+        df = clusters - 1
     var = jnp.diag(inv @ meat @ inv)
     return {
         "direct": float(coef[0]),
         "spillover": float(coef[1]),
         "direct_se": float(jnp.sqrt(var[0])),
         "spillover_se": float(jnp.sqrt(var[1])),
+        "df": float(df),
     }
 
 

@@ -1,6 +1,7 @@
 # ADR 0062 — Few clusters read against a t with G - 1 degrees of freedom
 
-**Status:** accepted, 2026-10-07. Amends ADR 0053.
+**Status:** accepted, 2026-10-07. Amends ADR 0053. Amended 2026-11-06: `estimate_network_effects`
+reads the same convention.
 
 ## Context
 
@@ -81,3 +82,17 @@ A size's Monte Carlo standard error is 1.1 points near 5 % and 1.5 near 10 %.
   as a matrix of `N` by `N`.
 - **The normal's quantile, as DoubleML's.** Rejected: at 5 clusters it rejects twice to three
   times as often as it says.
+
+## Amended 2026-11-06: the network estimator
+
+`chc.network_causal.estimate_network_effects` summed its clusters' scores with no small-sample
+factor, CR0, and its docstring read the interval at the normal's 1.96; without clusters it read
+HC0. It now reads this ADR's convention: CR1 with ADR 0053's factor
+`G / (G - 1) (N - 1) / (N - k)` over its two coefficients, and a new field `df`, `G - 1`, for the
+`t` an interval reads. Without clusters it reads HC3, as ADR 0106's effects do, against
+`t(N - 1)`. On a log of 300 rows the clustered errors moved by the factor alone, ×1.0368 at 15
+clusters and ×1.1199 at 5; every row its own cluster now reads HC1, HC0 × 1.0034; the HC3 error
+read 1.3 % above HC0. A 95 % interval is 12 % wider than the normal's on the old error at 15
+clusters, and 37 % wider at 5. On 200 panels of 20 clusters, 2560 rows each, the direct
+effect's interval covered the truth 93.5 % of the time where the old one covered 90.0 %, and the
+spillover's 96.0 % where it covered 95.0 %.

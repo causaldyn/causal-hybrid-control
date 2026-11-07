@@ -3,6 +3,8 @@
 **Status:** accepted, 2026-10-30. Experimental (`chc.discovery`). Adds two fields to
 `LaggedGraph` and a method, `LaggedGraph.causal_graph`. Changes no parent, edge or pathway that
 1.0.0 discovers, and neither `chc.graph` nor the decision record: `SCHEMA_VERSION` stays 3.
+Amended 2026-11-06: the test is the partial correlation's exact `t` with `n - k - 2` degrees of
+freedom, and the p-value an edge keeps is the `t`'s, so every stored p-value moves (below).
 
 ## Context
 
@@ -77,3 +79,25 @@ that pass. Which of those p-values the edge carries is the decision.
 - **`CausalGraph.unrolled(..., provenance=)`**, keyed by the triples, would build the same graph in
   one call. Not added here: it changes the stable `chc.graph`, and `from_edges(..., provenance=)` on
   the unrolled pairs gives the same graph from what exists.
+
+## Amended 2026-11-06: the exact t
+
+`partial_corr_test` read Fisher's z with `n - k - 3` degrees of freedom, floored at 1. Under the
+null at 5 % it rejected 17 % to 18 % of 2000 draws where `n - k - 2` is 1, every draw where it is
+0, where the two residuals lie on one line, and 3.3 % at 2. It now reads
+`t = r sqrt((n - k - 2) / (1 - r^2))` against `t(n - k - 2)`, exact under Gaussian noise: 4.8 % to
+5.2 % at one and two degrees of freedom over 20000 draws (`validation/partial_corr_t.mac` derives
+its p-value at both, `1 - 2 asin|r| / pi` and `1 - |r|`). Below one degree of freedom it raises,
+and `discover_lagged_parents` keeps at most `T - max_lag - 2` parents a target and refuses a
+series with fewer than 3 rows past `max_lag`.
+
+- *Every stored p-value moves.* At the `t`'s 0.01 point Fisher's z read 23 % lower at 10 rows,
+  4.6 % at 50 and 0.6 % at 400; at its 0.05 point, 2.3 %, 0.6 % and 0.1 %. In the far tail the
+  `t`'s is heavier: on the 600-step series the tests use, the kept p-values are 1.003 to 1.7e6
+  times Fisher's on the VAR and up to 1e52 times on the series with the lever, and the edge whose
+  `erfc` underflowed to 0.0 now keeps 6.5e-254. A decision record written before keeps the old
+  p-value, and replays it as written.
+- *No parent, edge or pathway moves* on those series, at either level or under the parent caps:
+  the digest of 1.0.0's graphs and the pathway's responses hold. On a short series, where the
+  floor read a correlation of 1 as a parent, the graphs do move.
+- The p-value can still underflow to 0.0, far enough into the tail.
