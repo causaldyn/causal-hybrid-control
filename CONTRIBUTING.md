@@ -33,6 +33,12 @@ The plain `pytest` deselects `tests/misspecification/` (ADR 0115): each test the
 certificate on a plant its model gets wrong, by Monte Carlo, and asserts that the certificate holds
 at its level or says so. A case that does neither is marked `xfail(strict=True)` with the numbers
 measured, so a change that makes it hold fails the job until the mark is removed.
+`CHC_MISSPEC_BLOCK=<n>` reads another block of seeds than CI's, block 0, and `just mutants` plants
+the wrong certificates of `tests/mutants/` one at a time, to show which of them the suite catches.
+
+Complexity is ratcheted: ruff's C901, PLR0912 and PLR0915 hold, and the functions past their limits
+on 2026-11-06 carry a `# noqa` for them. A function that grows past a limit is split rather than
+given one, and RUF100 removes a `# noqa` that a function no longer needs.
 
 The formal proofs are gated too. `proofs/*.v` must compile under **Rocq 9.2** (pinned: the proofs use
 the post-rename `From Stdlib Require Import`, which does not exist before Rocq 9.0):
@@ -75,6 +81,14 @@ keeps it; wherever it is installed, jax takes the GPU without being asked, so pi
   bad case fails; assert both, and prefer a test that fails when the implementation is reverted.
 - **No number in a docstring, README or CHANGELOG that the test suite does not produce.** If a claim
   is measured, there should be a test or a script that regenerates it.
+- **A change stays inside its module's tier** (`docs/api/index.md`). A stable module may read an
+  experimental module only for one of the experimental entries that page lists, and an underscore
+  name of another tier only through the list in `tests/test_tier_boundary.py`, which names the entry
+  each such name moves; a new crossing extends that list in the same change, or is not made.
+- **A default moves one minor after it warns.** Outside the experimental tier, a default that
+  changes first raises a `FutureWarning` for one minor release wherever the argument is not passed,
+  naming the new default and the release that brings it; the next minor moves it, and the
+  changelog argues the move. 0.20.0 and 0.22.0 moved the defaults that 0.19.0 and 0.21.0 announced.
 - **Scope claims precisely.** Where a result holds only for a scalar action, a control-affine plant,
   a linear smoother or a local neighbourhood, the docstring says so. Over-general claims are the one
   kind of bug this codebase treats as severe.

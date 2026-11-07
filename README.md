@@ -30,6 +30,12 @@ library for the step from those logs to a decision:
 When nothing in the logs identifies the effect, `chc` returns no plan rather than a confident wrong
 one.
 
+**Stable means the stable tier.** The `Production/Stable` classifier and Semantic Versioning cover
+the [stable tier](https://causaldyn.github.io/causal-hybrid-control/api/#the-tiers) of the API
+reference: 154 of the 861 names the modules list in `__all__`, in 15 modules. The rest are
+evolving, experimental or research, each promising less, and each page of the reference states its
+tier.
+
 ## The one result
 
 On a confounded log, fitting the action's effect without the logged confounder flips its sign (true

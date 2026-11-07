@@ -926,7 +926,7 @@ def _rates(
     )
 
 
-def _check(
+def _check(  # noqa: C901
     channels: Sequence[Channel],
     periods: int,
     lower: np.ndarray,
@@ -1558,7 +1558,7 @@ def _marginal(
     return max(slopes, default=0.0) / periods
 
 
-def _branch_and_bound(
+def _branch_and_bound(  # noqa: C901, PLR0912, PLR0915
     worths: tuple[_Worth, ...],
     lower: np.ndarray,
     upper: np.ndarray,
@@ -1794,7 +1794,7 @@ def budget_for(
     return plan
 
 
-def _budget_for(
+def _budget_for(  # noqa: C901
     channels: Sequence[Channel],
     goal: Goal,
     periods: int,
@@ -1864,7 +1864,7 @@ def _budget_for(
     return _on_envelopes(given, budget, periods, lower_rates, upper_rates, spent, settings, clock)
 
 
-def _sought(
+def _sought(  # noqa: C901
     worths: tuple[_Worth, ...],
     goal: Goal,
     periods: int,
@@ -2373,7 +2373,7 @@ def _read(stacks: Sequence[_Stack], split: np.ndarray, count: int) -> tuple[np.n
     return values, slopes
 
 
-def _cvar_search(
+def _cvar_search(  # noqa: C901, PLR0915
     curves: tuple[_Stack, ...],
     starts: Sequence[np.ndarray],
     base: np.ndarray,
@@ -2682,7 +2682,7 @@ def _cvar(gain: np.ndarray, level: float, weights: np.ndarray | None = None) -> 
     return total / share
 
 
-def decision_weight(
+def decision_weight(  # noqa: C901, PLR0915
     channels: Sequence[Channel],
     budget: float,
     periods: int,
@@ -2987,7 +2987,7 @@ def budget_for_geos(
     return found
 
 
-def _meet(layout: _Layout, periods: int, goal: Goal) -> GeoAllocation:
+def _meet(layout: _Layout, periods: int, goal: Goal) -> GeoAllocation:  # noqa: C901
     """:func:`budget_for_geos`'s plan for ``goal`` over the grid ``layout`` lays out."""
     least, most = _reach(layout, periods)
     concave = relax(layout.cells) is layout.cells
@@ -3067,7 +3067,7 @@ def _meet(layout: _Layout, periods: int, goal: Goal) -> GeoAllocation:
             )
 
 
-def _layout(
+def _layout(  # noqa: C901, PLR0912
     cells: Sequence[Sequence[Channel]],
     periods: int,
     lower: ArrayLike,
@@ -3756,7 +3756,7 @@ Dirichlet of concentration 0.3 over the cells, which spends most of the budget i
 seed they are drawn from."""
 
 
-def _outer(
+def _outer(  # noqa: C901, PLR0912, PLR0915
     envelopes: Sequence[_Variable],
     lower: np.ndarray,
     upper: np.ndarray,
@@ -3968,7 +3968,7 @@ def _polish(
     return None
 
 
-def _close(
+def _close(  # noqa: C901
     envelopes: Sequence[_Variable],
     lower: np.ndarray,
     upper: np.ndarray,

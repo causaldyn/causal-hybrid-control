@@ -2,7 +2,8 @@
 
 ``lag_check`` regresses a fit's moment residual on its levers some periods back, the fit's own
 regressors held: under the fit's premise those slopes are zero. On :mod:`_misspec_world`'s plant
-with a dead time it rejects and names the lag; without one it rejects at its size.
+with a dead time it rejects and names the lag; without one it rejects at its size. The seeds are
+read from the run's block (:mod:`_misspec_counts`).
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import warnings
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from _misspec_counts import at_most, seeds
 from _misspec_world import DT, World
 
 from chc.dynamics import LinearDynamics
@@ -50,14 +52,14 @@ def _read(dead_time: int, seed: int) -> tuple[float, int | None]:
     return check.p_value, check.lag
 
 
-@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("seed", seeds(0, 6))
 def test_a_lever_read_two_periods_late_is_named(seed: int) -> None:
     p_value, lag = _read(2, seed)
     assert p_value <= 1e-6
     assert lag == 2
 
 
-@pytest.mark.parametrize("seed", range(2))
+@pytest.mark.parametrize("seed", seeds(0, 2))
 def test_a_lever_read_one_period_late_is_named(seed: int) -> None:
     p_value, lag = _read(1, seed)
     assert p_value <= 1e-6
@@ -65,10 +67,16 @@ def test_a_lever_read_one_period_late_is_named(seed: int) -> None:
 
 
 def test_without_a_dead_time_the_check_rejects_at_its_size() -> None:
-    """Six control logs: at 0.05 the check rejected on 1, seed 1 (p = 0.039), where 2 or more
-    would have a chance of 0.033 at the check's size; on 60 it rejected on 5."""
-    rejected = [_read(0, seed)[0] <= 0.05 for seed in range(6)]
-    assert sum(rejected) <= 1
+    """200 control logs, rejected at 0.05 on at most 24 and at 0.2 on at most 70, the ceilings of
+    ``Binomial(200, 0.06)`` and ``Binomial(200, 0.25)`` at ``alpha = 1/1000``: over 1000 logs the
+    check rejected 0.056 and 0.214 of them, a little above its levels. Block 0: 12 and 45. A
+    p-value 0.33 times its own rejects ``p1`` = 0.161 and 0.547, where the ceilings fail a
+    block with probability 0.93 and above 0.999999; the second fails with probability 0.8 down to a
+    p-value 0.52 times its own, its minimal detectable defect."""
+    p_values = np.array([_read(0, seed)[0] for seed in seeds(0)])
+    rejected = {level: int(np.sum(p_values <= level)) for level in (0.05, 0.2)}
+    assert rejected[0.05] <= at_most("0.06"), rejected
+    assert rejected[0.2] <= at_most("0.25"), rejected
 
 
 def test_lag_check_refuses_labels_that_do_not_pair_and_a_lag_that_is_not_one() -> None:

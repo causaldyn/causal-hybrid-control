@@ -2028,7 +2028,7 @@ def _certified(tube: NDArray[np.float64], tolerance: float, trajectory: Array) -
     return min(_within(tube, tolerance), reached)
 
 
-def _plan(
+def _plan(  # noqa: C901, PLR0912, PLR0915
     model: Dynamics,
     x0: Array,
     cost: QuadraticCost,
@@ -2417,7 +2417,7 @@ def _barrier_state(
     return held.scale(states, actions), held.shortfall(states, actions)
 
 
-def _hold_barrier(
+def _hold_barrier(  # noqa: C901, PLR0912, PLR0915
     model: Dynamics,
     x0: Array,
     cost: QuadraticCost,
@@ -2835,7 +2835,7 @@ def _restore(
     return current if float(np.max(held_at(current))) <= 0.0 else None
 
 
-def _rounds(
+def _rounds(  # noqa: C901
     model: Dynamics,
     x0: Array,
     dt: float,
@@ -3544,7 +3544,7 @@ def certify_safety(
     )
 
 
-def _audit(
+def _audit(  # noqa: C901, PLR0912, PLR0915
     plan: CausalPlan,
     model: Dynamics,
     barrier: Barrier,

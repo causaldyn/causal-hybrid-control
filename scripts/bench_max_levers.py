@@ -346,7 +346,7 @@ def prox_check(cases: int = 300) -> float:
     return worst
 
 
-def group_l1_path(
+def group_l1_path(  # noqa: C901
     objective: Callable[[jax.Array], jax.Array],
     shape: tuple[int, int],
     lo: np.ndarray,

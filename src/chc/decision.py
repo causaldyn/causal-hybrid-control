@@ -579,7 +579,7 @@ def _number(value: object) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def _read_rule(
+def _read_rule(  # noqa: C901
     written: object, levers: tuple[str, ...], states: tuple[str, ...], record: Mapping[str, Any]
 ) -> _Rule:
     """The rule :meth:`PrescribedPolicy.to_json` wrote, in the floats it was read in."""
@@ -1214,7 +1214,7 @@ class Prescription:
             first += count
         return tuple(prices)
 
-    def evaluate(
+    def evaluate(  # noqa: C901, PLR0912, PLR0915
         self,
         panel: Panel,
         *,
@@ -2248,7 +2248,7 @@ class Prescription:
         return [f"- drivers in the drift, with their push on `{self.target}`'s rate: {pushes}"]
 
 
-def prescribe(
+def prescribe(  # noqa: C901, PLR0912, PLR0915
     panel: Panel,
     *,
     levers: Sequence[Lever],

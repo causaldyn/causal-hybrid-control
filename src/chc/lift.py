@@ -485,7 +485,7 @@ def _end(
     return optimize.brentq(excess, inside, value, xtol=tolerance, rtol=tolerance), None
 
 
-def fit_lift(
+def fit_lift(  # noqa: C901, PLR0912, PLR0915
     tests: Sequence[LiftTest],
     channel: Channel,
     *,

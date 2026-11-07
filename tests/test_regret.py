@@ -958,7 +958,7 @@ def test_capped_exploration_front_loads_and_does_not_become_a_taper() -> None:
         capped_exploration_policy(horizon=10, cap=0.0)
 
 
-def test_capped_exploration_under_a_schedule_and_a_budget_moves_the_mass_not_the_length() -> None:
+def test_capped_exploration_under_a_schedule_and_a_budget_moves_the_mass_not_the_length() -> None:  # noqa: C901, PLR0915
     # validation/capped_exploration_schedule.mac, proofs/capped_exploration_schedule.v.
     # The constant-cap law left this as open scope: a cap that VARIES, or a budget on top of a cap,
     # changes the feasible set, so n* stops being a formula. What survives is the stopping MASS.
@@ -1188,7 +1188,7 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_the_leading_form_
     assert abs(policy.predicted_mass - leading_form(10**5)) > 1.9
 
 
-def test_multivariate_van_trees_prices_an_alignment_where_the_scalar_floor_prices_a_ratio() -> None:
+def test_multivariate_van_trees_prices_an_alignment_where_the_scalar_floor_prices_a_ratio() -> None:  # noqa: PLR0915
     # validation/multivariate_van_trees.mac, proofs/multivariate_van_trees.v.
     # The scalar floor on the action suggests the multivariate case has the same structure, with
     # psi' a Jacobian and the floor a trace. The structure is the same; the conclusion is not.
@@ -1895,7 +1895,7 @@ def test_delayed_network_law_and_the_limit_of_its_design_rule() -> None:
     assert abs(curve.c_fold_measured / curve.c_fold_predicted - 1.0) < 1e-12
 
 
-def test_optimal_fold_partition_recovers_the_stripe_law_and_certifies() -> None:
+def test_optimal_fold_partition_recovers_the_stripe_law_and_certifies() -> None:  # noqa: C901
     # validation/fold_spectrum_law.mac, proofs/fold_spectrum_law.v.
     import itertools
 

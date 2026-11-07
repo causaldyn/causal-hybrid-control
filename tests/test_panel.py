@@ -554,6 +554,15 @@ def test_text_from_a_pandas_or_a_polars_frame_is_refused_when_read_as_numbers() 
             panel.wide("y")
 
 
+def _longdoubles(*texts: str) -> list[np.longdouble]:
+    """``texts`` read as ``longdouble``. Where it is float64, as on arm64, ``1e400`` overflows to an
+    infinity as it is read, with a RuntimeWarning, and the cases that read it are skipped there."""
+    with warnings.catch_warnings():
+        if not _WIDE_LONGDOUBLE:
+            warnings.filterwarnings("ignore", "overflow encountered", RuntimeWarning)
+        return [np.longdouble(text) for text in texts]
+
+
 @pytest.mark.parametrize(
     ("values", "shown"),
     [
@@ -562,12 +571,12 @@ def test_text_from_a_pandas_or_a_polars_frame_is_refused_when_read_as_numbers() 
         (_cells(1, 10**400, 2), "10{400}"),
         (_cells(Fraction(1), Fraction(10**400, 3), Fraction(2)), r"Fraction\(10{400}, 3\)"),
         pytest.param(
-            np.array(["1", "1e400", "2"]).astype(np.longdouble),
+            np.array(_longdoubles("1", "1e400", "2")),
             r"np\.longdouble\('1e\+400'\)",
             marks=pytest.mark.skipif(not _WIDE_LONGDOUBLE, reason="longdouble is float64 here"),
         ),
         pytest.param(
-            _cells(np.longdouble(1), np.longdouble("1e400"), np.longdouble(2)),
+            _cells(*_longdoubles("1", "1e400", "2")),
             r"np\.longdouble\('1e\+400'\)",
             marks=pytest.mark.skipif(not _WIDE_LONGDOUBLE, reason="longdouble is float64 here"),
         ),

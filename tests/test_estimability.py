@@ -37,7 +37,7 @@ EDGES = [("z", "y"), ("u1", "y"), ("u2", "y"), ("z", "u1"), ("z", "u2")]
 
 
 @functools.cache
-def _panel(policy: str, scale: float = 1.0) -> Panel:
+def _panel(policy: str, scale: float = 1.0) -> Panel:  # noqa: C901
     """A hundred units of fifteen periods under ``policy``, the levers logged in units ``scale``
     times their own."""
     rng = np.random.default_rng(303)

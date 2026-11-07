@@ -81,7 +81,7 @@ def _oracle_bet(rng: np.random.Generator) -> float:
     return k / (float(np.mean(squares)) + k * k)
 
 
-def _run(
+def _run(  # noqa: C901
     paths: int,
     steps: int,
     b: float,

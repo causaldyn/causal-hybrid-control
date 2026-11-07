@@ -696,6 +696,17 @@ def test_unequal_weights_give_the_convolution_s_tail(q: float) -> None:
     assert got == pytest.approx(_two_term_tail(q, 3.0, 0.7), rel=1e-7, abs=1e-12)
 
 
+@pytest.mark.parametrize("q", [1e-6, 1e-7])
+def test_a_statistic_far_below_the_largest_weight_reads_its_tail(q: float) -> None:
+    """At ``q`` a millionth of the largest weight or less the head runs seven decades past the
+    integrand's mass near 0, and one rule over all of it read the tail 0.5 low: 0.4992 for a
+    single weight at ``q = 1e-6``, where it is 0.9992."""
+    got = _chi_square_mixture_survival(q, np.ones(1))
+    assert got == pytest.approx(stats.chi2.sf(q, 1), rel=1e-9, abs=0.0)
+    got = _chi_square_mixture_survival(q, np.array([1.0, 0.3]))
+    assert got == pytest.approx(_two_term_tail(q, 1.0, 0.3), rel=1e-9, abs=0.0)
+
+
 def test_no_weight_is_a_point_mass_at_zero() -> None:
     assert _chi_square_mixture_survival(0.5, np.zeros(3)) == 0.0
     assert _chi_square_mixture_survival(0.0, np.zeros(3)) == 1.0

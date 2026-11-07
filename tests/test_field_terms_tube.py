@@ -137,7 +137,7 @@ def _factor(rows: int, coefficients: int, groups: int | None) -> float:
     return groups / (groups - 1) * (rows - 1) / (rows - coefficients)
 
 
-def _by_the_one_step_map(
+def _by_the_one_step_map(  # noqa: PLR0915
     log: dict[str, np.ndarray],
     dt: float,
     integrator: str,

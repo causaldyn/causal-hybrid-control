@@ -57,6 +57,55 @@ test-cpu workers="4":
 misspecification workers="2":
     JAX_PLATFORMS=cpu uv run pytest -m misspecification -n {{workers}} --dist loadfile tests/misspecification
 
+# The wrong certificates of tests/mutants/chc_mutants.py, each planted alone on the misspecification
+# file that reads it, over `blocks` seed blocks: a file that fails on four in five of them or more
+# caught its mutant. A file whose seeds no block moves runs once. About two hours at five blocks.
+# Plants each wrong certificate on the misspecification file that reads it: caught, or MISSED.
+mutants blocks="5":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export JAX_PLATFORMS=cpu PYTHONPATH=tests/mutants
+    for case in tube:0.85/tube channel:0.8/channel ope:0.8/ope regret:0.1/regret \
+        dither:0.33/dither lag:0.33/lag lift:0.8/lift gate:4/gate barrier:1/barrier; do
+      mutant=${case%/*} file=tests/misspecification/test_misspec_${case#*/}.py
+      blocks={{blocks}}
+      grep -q _misspec_counts "$file" || blocks=1
+      failed=0
+      for block in $(seq 0 $((blocks - 1))); do
+        CHC_MUTANT=$mutant CHC_MISSPEC_BLOCK=$block uv run pytest -p chc_mutants -p no:cacheprovider \
+          -m misspecification -x -q "$file" > /dev/null 2>&1
+        status=$?
+        [ $status -gt 1 ] && { echo "$mutant: pytest stopped with status $status on block $block"; exit 1; }
+        failed=$((failed + status))
+      done
+      [ $((5 * failed)) -ge $((4 * blocks)) ] && verdict=caught || verdict=MISSED
+      echo "$mutant on $file: failed on $failed of $blocks blocks, $verdict"
+    done
+
+# The commit `just wheel` builds; `just rev=v0.24.0 wheel` builds that tag.
+rev := "HEAD"
+
+# release.yml's `wheel` job, here: the wheel and sdist `uv build` makes of a commit, the wheel
+# installed beside the locked test dependencies in a copy of that commit whose src/ is removed, and
+# the suite run against it. A module or a file the build leaves out passes every run from the
+# checkout and fails here, as on 0.24.0's tag. The copy and its environment, a few GB, go under
+# TMPDIR, /var/tmp when that is unset: on a tmpfs /tmp they would sit in memory.
+# Builds the commit `rev`, not the working tree, and hands its arguments to pytest.
+[positional-arguments]
+wheel *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    unset UV_PROJECT_ENVIRONMENT VIRTUAL_ENV
+    work=$(mktemp -d "${TMPDIR:-/var/tmp}/chc-wheel.XXXXXX"); trap 'rm -rf "$work"' EXIT
+    git archive "{{rev}}" | tar -x -C "$work"
+    cd "$work"
+    uv build --python 3.11
+    uv sync --frozen --python 3.14 --group dev --no-install-project
+    uv pip install --no-deps dist/*.whl
+    uv pip check
+    rm -r src
+    uv run --no-sync pytest "$@"
+
 fix:
     uv run ruff check --fix .
     uv run ruff format .

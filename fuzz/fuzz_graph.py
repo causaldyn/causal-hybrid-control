@@ -113,7 +113,7 @@ def _subset(provider: atheris.FuzzedDataProvider, pool: list[str]) -> set[str]:
     return {node for node in pool if provider.ConsumeBool()}
 
 
-def check(data: bytes) -> None:
+def check(data: bytes) -> None:  # noqa: C901, PLR0912
     provider = atheris.FuzzedDataProvider(data)
     size = provider.ConsumeIntInRange(2, len(NODES))
     edges = [
