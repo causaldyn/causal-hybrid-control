@@ -431,6 +431,97 @@ def test_a_constant_beside_a_level_is_refused_or_held_not_carried():
     assert np.max(fit.one_step_scale[52:]) < 2.0 * (variance + 0.02**2)
 
 
+def _twin_levels(form: DiscountForm, horizon: int = 1500):
+    """Two level blocks at 0.95 over a level's random walk, and their prior."""
+    rng = np.random.default_rng(0)
+    y = 5.0 + 0.3 * rng.standard_normal(horizon) + np.cumsum(0.02 * rng.standard_normal(horizon))
+    blocks = (Polynomial(1, 0.95), Polynomial(1, 0.95))
+    return DynamicLinearModel(blocks, Prior(np.zeros(2), 10.0 * np.eye(2), 0.1, 3.0), form), y
+
+
+def _held_information(fit, directions: np.ndarray) -> np.ndarray:
+    """The eigenvalues of ``D' (C_t / S_t)^-1 D`` at each step, the prior's in the first row."""
+    prior = fit.model.prior
+    covariances = [prior.covariance / prior.scale, *(fit.covariance / fit.scale[:, None, None])]
+    return np.array(
+        [np.linalg.eigvalsh(directions.T @ np.linalg.solve(c, directions)) for c in covariances]
+    )
+
+
+def test_two_level_blocks_are_read_only_through_their_sum_and_held(caplog):
+    """Every row reads two levels alike and the evolution moves them alike, so their difference is
+    read by no row, whatever the data. A single model's blocks were not searched for such a pair,
+    so the directional form discounted the difference every step as if read: the filter failed at
+    step 421 of 1500, its variance grown as ``0.95^-t``. It is found from the blocks now and held:
+    what the filter knows on it stays the prior's at every step, and the model is logged once."""
+    model, y = _twin_levels("directional")
+    with caplog.at_level(logging.WARNING, logger="chc.dlm"):
+        fit = forward_filter(model, y)
+    records = [r for r in caplog.records if r.name == "chc.dlm"]
+    assert [r.chc_event for r in records] == ["dlm_unread"]
+    assert records[0].coordinates == [[0, 1]]
+    information = _held_information(fit, np.array([[1.0, -1.0]]).T)
+    np.testing.assert_allclose(information[1:, 0], information[0, 0], rtol=1e-10, atol=0.0)
+    assert np.all(np.isfinite(fit.log_scores))
+
+
+def test_the_other_forms_grow_two_level_blocks_difference_as_any_unread_direction(caplog):
+    """The additive and the multiplicative form grow the difference of two levels by
+    ``1 / delta`` a step, as any direction the data do not read, until the covariance's
+    eigenvalues span ``1e13``, where the filter refuses the step; the model is logged first."""
+    for form in ("additive", "multiplicative"):
+        model, y = _twin_levels(form)
+        caplog.clear()
+        with (
+            caplog.at_level(logging.WARNING, logger="chc.dlm"),
+            pytest.raises(FloatingPointError, match=r"times its smallest.*grown under a discount"),
+        ):
+            forward_filter(model, y)
+        assert [r.chc_event for r in caplog.records if r.name == "chc.dlm"] == ["dlm_unread"]
+
+
+@pytest.mark.parametrize(
+    ("blocks", "groups"),
+    [
+        ((Polynomial(1, 0.95), Polynomial(1, 0.9)), [[0, 1]]),
+        ((Polynomial(2, 0.95), Polynomial(1, 0.9), Regression(1, 0.9)), [[0, 2]]),
+        ((Polynomial(2, 0.95), Polynomial(3, 0.98)), [[0, 2], [1, 3]]),
+        ((Polynomial(1, 0.95), Polynomial(1, 0.9), Polynomial(1, 0.99)), [[0, 1, 2]]),
+        (
+            (Seasonal(12.0, (1, 6), 0.95), Polynomial(1, 0.9), Seasonal(12.0, (1, 2, 6), 0.98)),
+            [[0, 4], [1, 5], [2, 8]],
+        ),
+        ((Seasonal(52.0, (1,), 0.98), Polynomial(1, 0.9), Seasonal(52.18, (1,), 0.98)), []),
+        ((Polynomial(2, 0.95), Seasonal(13.0, (1, 2), 0.95), Regression(2, 0.99)), []),
+    ],
+    ids=["levels", "trend-level-x", "trends", "three-levels", "harmonics", "periods", "none"],
+)
+def test_a_single_model_s_twins_are_what_its_window_does_not_read(blocks, groups):
+    """A level beside a level and a slope reads its level only, a slope beside a slope its slope
+    too, three levels two differences, a harmonic its two coordinates and at the Nyquist frequency
+    one; a harmonic of another period is no twin. With the regression's directions, the found ones
+    span the null space of the window, the rows of the last ``p`` steps, which no singular value
+    cut can be trusted to find. A model with no repeated term has none, so it filters as before."""
+    from chc.dlm import _slide, _structure, _twins, _unread
+
+    p = sum(b.size for b in blocks)
+    model = DynamicLinearModel(blocks, _prior(p))
+    directions, coordinates, found = _twins(model.blocks)
+    assert (coordinates, found) == ([], groups)
+    s = _structure(model)
+    assert s.unread.shape == (p, sum(len(g) - 1 for g in groups))
+    np.testing.assert_array_equal(s.unread, directions)
+    design = np.tile(s.design, (160, 1))
+    design[:, s.regression] = np.random.default_rng(2).gamma(2.0, 1.0, (160, s.regression.size))
+    window = np.zeros((0, p))
+    for t in range(160):
+        window = _slide(window, design[t : t + 1], s, p)
+    values = np.linalg.svd(window, compute_uv=False)
+    unread = _unread(s, window)
+    assert unread.shape[1] == np.sum(values < 1e-12 * values[0])
+    assert np.max(np.abs(window @ unread), initial=0.0) <= 1e-14 * np.abs(window).max()
+
+
 def test_a_seasonal_block_rotates_once_a_period():
     block = Seasonal(12, (1, 2, 6), 1.0)
     g = block._evolution()

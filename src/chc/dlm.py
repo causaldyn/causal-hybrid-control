@@ -118,6 +118,13 @@ What it does not do, and what to watch:
   constant beside a level at step 684 of 1500 and proportional columns at step 215 of 600, where
   the additive form ran on before or failed later. The directional form holds the direction at
   its prior variance, so only a prior that wide against what the data resolve meets the check.
+* **A term in two blocks is read only through their sum.** Two levels, a level beside a trend's,
+  or one harmonic of a period in two seasonal blocks: every row reads the copies alike and the
+  evolution moves them alike, so one copy minus another is read by no row, whatever the data,
+  and its interval is the prior's. The filter finds those directions from the blocks and logs
+  them (``chc_event="dlm_unread"``); the directional form holds them as it holds an unread
+  regression direction, and the other forms grow them by ``1 / delta`` a step. The directional
+  form used to discount them as if read: two levels at 0.95 failed at step 421 of 1500.
 * **The directional form does not inflate what the data do not read.** Where the truth moves in
   a direction the rows leave unread, nothing widens the intervals for it: a coefficient that
   drifts (a random walk of sd 0.05) on a price held 26 steps, at the discounts above, covered
@@ -165,7 +172,7 @@ geos is multivariate Student ``t``. That is the update one geo at a time with no
 them, and its density the product of theirs (``validation/geo_dlm.mac``, steps 1 and 2).
 
 * One geo is :func:`forward_filter`'s model of the national blocks and then the regional ones,
-  unless a term is in both (below), and with every discount 1 the filter is the conjugate
+  and with every discount 1 the filter is the conjugate
   regression on the first state over every observation at once; the tests hold the first to
   ``1e-12`` and the second to ``1e-10``.
 * A term in both the national and the regional blocks -- a national level beside each geo's
@@ -175,7 +182,9 @@ them, and its density the product of theirs (``validation/geo_dlm.mac``, steps 1
   directions from the blocks and logs them (``chc_event="dlm_geo_unread"``); the directional
   form holds them as it holds an unread regression direction, and the other forms grow them by
   ``1 / delta`` a step. The directional form used to discount them as if read: a national level
-  beside three geos' levels at 0.95 failed at step 448 of 1500.
+  beside three geos' levels at 0.95 failed at step 448 of 1500. A term in two national blocks,
+  or in two of a geo's regional ones, is a single model's twin (above), logged as
+  ``chc_event="dlm_unread"``.
 * The filter is dense: with ``p`` coordinates, the national ones and every geo's, a step costs
   ``O(p^3)`` and the fit holds ``2 T`` covariances of ``p^2`` entries. An observation of one geo
   adds nothing to the posterior precision between two others, and the multiplicative form, a
@@ -557,10 +566,13 @@ class _Structure:
     inv_sqrt: _Array  # delta^(-1/2) per coordinate
     hold: _Array  # per coordinate: its discount is skipped while its regressor is zero
     inverse: _Array  # G^-1, which maps a past step's row of F into the current state's coordinates
-    unread: _Array  # (p, m): directions no row reads whatever the data, a stack's over geos
+    unread: _Array  # (p, m): directions no row reads whatever the data, found from the blocks
 
 
-def _structure(model: DynamicLinearModel) -> _Structure:
+def _structure(model: DynamicLinearModel, unread: _Array | None = None) -> _Structure:
+    """What the filter reads off ``model``. ``unread`` is the directions no row reads whatever the
+    data, the blocks' twins (:func:`_twins`) when omitted; a stack over geos passes its own, since
+    its rows read each geo's regional blocks apart."""
     p = model.size
     g = np.zeros((p, p))
     f = np.zeros(p)
@@ -591,7 +603,7 @@ def _structure(model: DynamicLinearModel) -> _Structure:
         inv_sqrt,
         hold,
         np.linalg.inv(g).astype(np.float64),
-        np.zeros((p, 0)),
+        _twins(model.blocks)[0] if unread is None else unread,
     )
 
 
@@ -685,17 +697,18 @@ def _slide(window: _Array, rows: _Array, s: _Structure, steps: int) -> _Array:
 def _unread(s: _Structure, window: _Array) -> _Array:
     """The directions of the state that the rows in ``window`` do not read, ``(p, m)``.
 
-    A model's blocks other than regressions are observable by construction, so a direction goes
-    unread only where the regression columns are, over the window, combinations of each other
-    and of the rows' other entries: a constant beside a level, proportional columns, a price held
-    for the whole window, a column that stays zero. The columns are scaled to a largest entry of
+    A model's blocks other than regressions are observable by construction unless two of them
+    have one term, so apart from those a direction goes unread only where the regression columns
+    are, over the window, combinations of each other and of the rows' other entries: a constant
+    beside a level, proportional columns, a price held for the whole window, a column that stays
+    zero. The columns are scaled to a largest entry of
     1 and freed of what the other entries explain; a direction whose residual is below
     ``_UNREAD`` is not read. The other entries' span keeps only its singular values above
     ``_UNREAD`` of the largest: over a short window a slow seasonal is close to a polynomial, and a
-    span held to rounding would read noise as a direction. A stack over geos is not observable by
-    construction: the directions it leaves unread whatever the data, ``s.unread``, found from its
-    blocks (:func:`_twins`), are added, since a rank read off the window at ``_UNREAD`` would take
-    a slow seasonal for one too.
+    span held to rounding would read noise as a direction. The directions a term in two blocks
+    leaves unread whatever the data, two levels or a national level beside each geo's,
+    ``s.unread``, found from the blocks (:func:`_twins`), are added, since a rank read off the
+    window at ``_UNREAD`` would take a slow seasonal for one too.
     """
     reg = s.regression
     if reg.size == 0:
@@ -838,6 +851,10 @@ def forward_filter(  # noqa: PLR0915
     that step, ``R_t / delta``: West and Harrison's feed-back intervention after a monitor's
     alarm. Each is logged.
 
+    A term in two blocks, two levels or one harmonic twice, is read only through their sum: the
+    filter logs it (``chc_event="dlm_unread"``), and the directional form holds one copy minus
+    another at its prior variance.
+
     Raises:
         ValueError: on a ``y`` that is not a vector of finite values and ``NaN``, an ``x`` whose
             shape is not ``(T, model.regressors)`` or that is not finite, or an intervention at a
@@ -854,6 +871,7 @@ def forward_filter(  # noqa: PLR0915
     xs = _regressors(model, x, horizon)
     extra = _interventions(interventions, horizon)
     s = _structure(model)
+    _warn_repeats(_twins(model.blocks)[2], model.form)
     p = model.size
     beta = model.variance_discount
 
@@ -1991,10 +2009,9 @@ class GeoDLM:
 
     A national term that a regional block also has, a level beside each geo's level, leaves the
     national copy minus the geos' copies unread whatever the data, and
-    :func:`forward_filter_geos` finds that direction from the blocks and holds it. A single
-    :class:`DynamicLinearModel` is not searched for such a pair, so under the directional form a
-    stack of one geo with one differs from :func:`forward_filter` on the same blocks, which
-    discounts the pair's difference as if the data read it.
+    :func:`forward_filter_geos` finds that direction from the blocks and holds it.
+    :func:`forward_filter` finds a term in two blocks of a single :class:`DynamicLinearModel` the
+    same way, so a stack of one geo is its model of the same blocks under every form.
 
     Raises:
         ValueError: on a ``geos`` that is not a positive integer, a ``relative_variance`` that is
@@ -2066,41 +2083,72 @@ def _terms(block: Block) -> list[tuple[tuple[object, ...], int]]:
     return terms
 
 
-def _twins(model: GeoDLM) -> tuple[_Array, list[int]]:
-    """The stacked state's directions that no geo's row reads, whatever the data, and the
-    national coordinates they start from.
-
-    A national coordinate whose term a regional block also has -- a level beside each geo's
-    level, a slope beside each geo's slope, a harmonic beside the same harmonic of the same
-    period -- is read by each geo only through its sum with the geo's own copy, and the
-    evolution moves the two alike. The national coordinate minus the sum of the geos' copies is
-    then unread at every step: its window's singular value is zero to rounding, ``1e-17`` of the
-    largest. Regression coordinates are left to :func:`_unread`, which reads them off the columns.
-    """
-    national, regional = _sizes(model.national), _sizes(model.regional)
-    p = national + regional * model.geos
-    copies: dict[tuple[object, ...], int] = {}
+def _named(blocks: tuple[Block, ...]) -> list[tuple[int, tuple[object, ...]]]:
+    """Each coordinate of the blocks other than a regression's, with its term."""
+    named: list[tuple[int, tuple[object, ...]]] = []
     at = 0
-    for b in model.regional:
-        for term, i in _terms(b):
-            copies.setdefault(term, at + i)
+    for b in blocks:
+        named.extend((at + i, term) for term, i in _terms(b))
         at += b.size
+    return named
+
+
+def _twins(
+    national: tuple[Block, ...], regional: tuple[Block, ...] = (), geos: int = 1
+) -> tuple[_Array, list[int], list[list[int]]]:
+    """The directions of the state that no row reads, whatever the data, ``(p, m)``; the national
+    coordinates whose term a regional block also has; and the coordinates of each term that two
+    blocks of one kind have. A single model is the national blocks of one geo.
+
+    A row reads every copy of a term alike -- a polynomial's term of an order, a harmonic's
+    coordinate -- and the evolution moves the copies alike, so the rows read them only through
+    sums, and the window's singular value on what the sums leave out is zero to rounding,
+    ``1e-17`` of the largest:
+
+    * a national coordinate whose term a regional block also has is read by each geo only through
+      its sum with the geo's copy: the national coordinate minus the sum of the geos' copies;
+    * a term that two national blocks have, and no regional one, or that two of a geo's regional
+      blocks have, as two levels do: the first copy minus each other one.
+
+    Regression coordinates are left to :func:`_unread`, which reads them off the columns.
+    """
+    national_size, regional_size = _sizes(national), _sizes(regional)
+    p = national_size + regional_size * geos
+    first: dict[tuple[object, ...], int] = {}
+    for c, term in _named(regional):
+        first.setdefault(term, c)
     directions: list[_Array] = []
     coordinates: list[int] = []
-    at = 0
-    for b in model.national:
-        for term, i in _terms(b):
-            if term in copies:
-                d = np.zeros(p)
-                d[at + i] = 1.0
-                d[national + copies[term] :: regional] = -1.0
-                directions.append(d)
-                coordinates.append(at + i)
-        at += b.size
-    return np.array(directions, dtype=np.float64).reshape(-1, p).T, coordinates
+    alone: dict[tuple[object, ...], list[int]] = {}
+    for c, term in _named(national):
+        if term in first:
+            d = np.zeros(p)
+            d[c] = 1.0
+            d[national_size + first[term] :: regional_size] = -1.0
+            directions.append(d)
+            coordinates.append(c)
+        else:
+            alone.setdefault(term, []).append(c)
+    own: dict[tuple[object, ...], list[int]] = {}
+    for c, term in _named(regional):
+        own.setdefault(term, []).append(c)
+    groups: list[list[int]] = []
+    starts = [national_size + g * regional_size for g in range(geos)]
+    for copies, bases in ((alone, [0]), (own, starts)):
+        for offsets in copies.values():
+            for base in bases if len(offsets) > 1 else []:
+                group = [base + c for c in offsets]
+                for c in group[1:]:
+                    d = np.zeros(p)
+                    d[group[0]], d[c] = 1.0, -1.0
+                    directions.append(d)
+                groups.append(group)
+    return np.array(directions, dtype=np.float64).reshape(-1, p).T, coordinates, groups
 
 
 def _warn_twins(coordinates: list[int], form: DiscountForm) -> None:
+    if not coordinates:
+        return
     _log.warning(
         "dlm over geos: national coordinates %s each have a twin in every geo's regional blocks,"
         " so the national copy is read only through each geo's sum with its own: the national"
@@ -2111,6 +2159,22 @@ def _warn_twins(coordinates: list[int], form: DiscountForm) -> None:
         if form == "directional"
         else f"form={form!r} grows it by 1 / delta a step; form='directional' holds it",
         extra={"chc_event": "dlm_geo_unread", "coordinates": coordinates},
+    )
+
+
+def _warn_repeats(groups: list[list[int]], form: DiscountForm) -> None:
+    if not groups:
+        return
+    _log.warning(
+        "dlm: the coordinates in each of %s are one term in more than one block, as two levels or"
+        " one harmonic twice are, and the evolution moves them alike, so the rows read them only"
+        " through their sum: one copy minus another is never read, and its interval is the"
+        " prior's; %s",
+        groups,
+        "form='directional' holds those directions at their prior variance"
+        if form == "directional"
+        else f"form={form!r} grows them by 1 / delta a step; form='directional' holds them",
+        extra={"chc_event": "dlm_unread", "coordinates": groups},
     )
 
 
@@ -2188,7 +2252,9 @@ def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None)
 
     A national term that a regional block also has, a level beside each geo's level, is read only
     through each geo's sum with its copy: the filter logs it (``chc_event="dlm_geo_unread"``), and
-    the directional form holds the national copy minus the geos' copies at its prior variance.
+    the directional form holds the national copy minus the geos' copies at its prior variance. A
+    term in two national blocks, or in two of a geo's regional ones, is logged as
+    ``chc_event="dlm_unread"`` and held the same way.
 
     Raises:
         ValueError: on a ``y`` that is not ``(T, geos)`` of finite values and ``NaN``, or an ``x``
@@ -2203,10 +2269,10 @@ def forward_filter_geos(model: GeoDLM, y: ArrayLike, x: ArrayLike | None = None)
         raise ValueError("y has an infinite value; a missing observation is NaN")
     horizon, geos = ys.shape
     stacked = model.stacked
-    twins, coordinates = _twins(model)
-    s = replace(_structure(stacked), unread=twins)
-    if coordinates:
-        _warn_twins(coordinates, stacked.form)
+    twins, coordinates, groups = _twins(model.national, model.regional, model.geos)
+    s = _structure(stacked, twins)
+    _warn_twins(coordinates, stacked.form)
+    _warn_repeats(groups, stacked.form)
     design = _geo_design(model, s, x, horizon)
     active = np.any(design != 0.0, axis=1)
     weights = np.asarray(model.relative_variance, dtype=np.float64)

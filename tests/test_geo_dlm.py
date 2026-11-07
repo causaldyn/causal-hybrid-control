@@ -9,7 +9,6 @@ shows it is the sequential one and its density the product of the sequential one
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 import math
 
@@ -341,35 +340,52 @@ def test_the_other_forms_grow_a_national_level_beside_its_twins_as_any_unread_di
 
 
 @pytest.mark.parametrize(
-    ("national", "regional", "twins"),
+    ("national", "regional", "twins", "groups"),
     [
-        ((Polynomial(2, 0.95),), (Polynomial(1, 0.98),), [0]),
-        ((Polynomial(1, 0.95),), (Polynomial(2, 0.98),), [0]),
-        ((Polynomial(2, 0.95),), (Polynomial(2, 0.98),), [0, 1]),
+        ((Polynomial(2, 0.95),), (Polynomial(1, 0.98),), [0], []),
+        ((Polynomial(1, 0.95),), (Polynomial(2, 0.98),), [0], []),
+        ((Polynomial(2, 0.95),), (Polynomial(2, 0.98),), [0, 1], []),
         (
             (Polynomial(1, 0.95), Seasonal(52.0, (1,), 0.98)),
             (Polynomial(1, 0.98), Seasonal(52.0, (1,), 0.98), Regression(1, 0.9)),
             [0, 1, 2],
+            [],
         ),
         (
             (Seasonal(12.0, (1, 6), 0.98),),
             (Polynomial(1, 0.98), Seasonal(12.0, (1, 2, 6), 0.98)),
             [0, 1, 2],
+            [],
         ),
-        ((Polynomial(1, 0.95), Regression(1, 0.95)), (Regression(1, 0.95),), []),
-        ((Seasonal(52.0, (1,), 0.98),), (Polynomial(1, 0.98), Seasonal(52.18, (1,), 0.98)), []),
-        (NATIONAL, REGIONAL, []),
+        ((Polynomial(1, 0.95), Regression(1, 0.95)), (Regression(1, 0.95),), [], []),
+        (
+            (Seasonal(52.0, (1,), 0.98),),
+            (Polynomial(1, 0.98), Seasonal(52.18, (1,), 0.98)),
+            [],
+            [],
+        ),
+        (NATIONAL, REGIONAL, [], []),
+        ((Polynomial(1, 0.95), Polynomial(1, 0.9)), (Regression(1, 0.9),), [], [[0, 1]]),
+        ((Polynomial(1, 0.95), Polynomial(1, 0.9)), (Polynomial(1, 0.98),), [0, 1], []),
+        (
+            (Polynomial(1, 0.95),),
+            (Polynomial(1, 0.98), Polynomial(2, 0.9)),
+            [0],
+            [[1, 2], [4, 5], [7, 8]],
+        ),
     ],
 )
 def test_the_directions_found_from_the_blocks_are_what_the_window_does_not_read(
-    national, regional, twins
+    national, regional, twins, groups
 ):
     """A level beside a level and a slope reads its level only; a slope beside a slope its slope
     too; a harmonic its two coordinates, at the Nyquist frequency one; a regression is read off
-    its columns; a harmonic of another period is no twin. With the regression's directions, the
-    found ones span the null space of the stacked window, the rows of every geo over the steps
-    the filter reads, which no singular value cut can be trusted to find: over that window a slow
-    seasonal is close to a polynomial."""
+    its columns; a harmonic of another period is no twin. Two national levels are read only
+    through their sum, and two levels in each geo's regional blocks through theirs; beside a
+    regional level, two national ones are each a twin of the geos' copies. With the regression's
+    directions, the found ones span the null space of the stacked window, the rows of every geo
+    over the steps the filter reads, which no singular value cut can be trusted to find: over
+    that window a slow seasonal is close to a polynomial."""
     geos, horizon = 3, 160
     model = GeoDLM(
         national,
@@ -379,9 +395,9 @@ def test_the_directions_found_from_the_blocks_are_what_the_window_does_not_read(
             _prior(sum(b.size for b in national)), _prior(sum(b.size for b in regional)), geos
         ),
     )
-    directions, coordinates = _twins(model)
-    assert coordinates == twins
-    s = dataclasses.replace(_structure(model.stacked), unread=directions)
+    directions, coordinates, found = _twins(model.national, model.regional, model.geos)
+    assert (coordinates, found) == (twins, groups)
+    s = _structure(model.stacked, directions)
     width = model.regressors
     x = np.random.default_rng(2).gamma(2.0, 1.0, (horizon, geos, width)) if width else None
     design = _geo_design(model, s, x, horizon)
@@ -394,10 +410,41 @@ def test_the_directions_found_from_the_blocks_are_what_the_window_does_not_read(
     assert np.max(np.abs(window @ unread), initial=0.0) <= 1e-14 * np.abs(window).max()
 
 
-def test_a_single_model_has_no_directions_unread_by_construction():
-    """Only a stack over geos repeats a block in two places; one model's blocks are each read."""
+def test_a_single_model_with_no_repeated_term_has_no_directions_unread_by_construction():
+    """A model whose blocks repeat no term reads each, so it filters as it did before twins were
+    searched for."""
     model = DynamicLinearModel(NATIONAL + REGIONAL, _prior(10))
     assert _structure(model).unread.shape == (10, 0)
+
+
+@pytest.mark.parametrize("form", ["directional", "additive", "multiplicative"])
+def test_one_geo_with_a_twin_term_is_chc_dlm_s_filter_of_its_blocks(form):
+    """A national level and harmonic beside the geo's own level and harmonic: the stack finds the
+    national copies minus the geo's as twins, and the single model on the same blocks finds the
+    same directions as a term in two blocks, so the two filters agree to ``1e-12`` under every
+    form. Up to 1.2.0 the single model was not searched, and under the directional form it
+    discounted those directions as if read: its covariances differed by up to 0.87 of the
+    largest."""
+    rng = np.random.default_rng(3)
+    x = rng.gamma(2.0, 1.0, (T, 1, 1))
+    y = 5.0 + 0.5 * x[..., 0] + 0.3 * rng.standard_normal((T, 1))
+    y[rng.random((T, 1)) < 0.1] = np.nan
+    national = (Polynomial(1, 0.95), Seasonal(13.0, (1,), 0.98))
+    regional = (Polynomial(1, 0.9), Seasonal(13.0, (1, 2), 0.97), Regression(1, 0.9))
+    prior = _prior(3 + 6)
+    geo = forward_filter_geos(GeoDLM(national, regional, 1, prior, form), y, x)
+    alone = forward_filter(DynamicLinearModel(national + regional, prior, form), y[:, 0], x[:, 0])
+    pairs = [
+        (geo.prior_covariance, alone.prior_covariance),
+        (geo.one_step_mean[:, 0], alone.one_step_mean),
+        (geo.one_step_scale[:, 0, 0], alone.one_step_scale),
+        (geo.mean, alone.mean),
+        (geo.covariance, alone.covariance),
+        (geo.scale, alone.scale),
+    ]
+    for ours, theirs in pairs:
+        np.testing.assert_allclose(ours, theirs, rtol=1e-12, atol=1e-12 * np.abs(theirs).max())
+    assert geo.log_likelihood == pytest.approx(alone.log_likelihood, rel=1e-12, abs=0.0)
 
 
 def test_a_stacked_prior_repeats_the_regional_one_for_each_geo():
