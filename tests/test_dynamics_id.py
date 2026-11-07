@@ -21,6 +21,7 @@ import scipy.linalg
 import scipy.stats
 
 from chc import _units, causal, dynamics_id
+from chc._robust_cov import _cosine_count, _less_below_nothing
 from chc.control import projected_gradient_control
 from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import HybridDynamics, LinearDynamics
@@ -31,7 +32,6 @@ from chc.dynamics_id import (
     _channel_design,
     _chosen_sieve,
     _clustered_squares,
-    _less_below_nothing,
     _logged_relations,
     _nuisance_sieve,
     _persistence,
@@ -2673,8 +2673,6 @@ def test_one_unit_s_influence_square_is_its_projections_on_cosines_squared() -> 
 def test_the_cosines_are_the_most_whole_ones_at_or_below_0_4_n_to_the_two_thirds() -> None:
     """``1000 nu^3 <= 64 N^2`` in whole numbers, and never fewer than one: at 1000 and 8000
     transitions the count is 40 and 160, where floating point reads a hair below each."""
-    from chc.dynamics_id import _cosine_count
-
     counts = {n: _cosine_count(n) for n in (1, 2, 8, 50, 200, 399, 999, 1000, 4000, 8000)}
     assert counts == {
         1: 1,

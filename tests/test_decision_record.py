@@ -703,14 +703,17 @@ def test_the_certificate_s_bias_is_the_fit_s_at_the_quickstart(
     assert made.certificate.planned_cost_bias_reason is None
     assert bias is not None
     assert bias.planned_cost == made.plan.task_cost
-    # the fit is clustered two ways, and the bias reads the two ways' covariance, which here is
-    # also the read of the largest tr(W S) the bias took up to 1.1: its number does not move
+    # the fit is clustered two ways, and the bias reads the two ways' sums whole. Up to 1.2 it
+    # read them with the part below nothing taken away, as the channel's error reads them, which
+    # here took a part away: the bias read 2.8435e-05 where the whole sums read 2.9763e-05
     reads = _reads(plan, fit)
+    whole = _whole(plan, fit)
     assert len(reads) == 3
-    assert (bias.optimism, bias.curvature) == (reads[0].optimism, reads[0].curvature)
+    assert (bias.optimism, bias.curvature) == (whole.optimism, whole.curvature)
     assert max(reads, key=lambda read: read.optimism) == reads[0]
-    assert bias.bias == pytest.approx(2.8435e-05, rel=1e-3, abs=0.0)
-    assert bias.bias_upper == max(read.bias for read in reads)
+    assert reads[0].bias == pytest.approx(2.8435e-05, rel=1e-3, abs=0.0)
+    assert bias.bias == pytest.approx(2.9763e-05, rel=1e-3, abs=0.0)
+    assert bias.bias_upper == max(bias.bias, *(read.bias for read in reads))
     written = made.to_json()["certificate"]["planned_cost_bias"]
     assert written == {
         "planned_cost": bias.planned_cost,
@@ -728,12 +731,18 @@ def test_the_certificate_s_bias_is_the_fit_s_at_the_quickstart(
     assert "planned cost's bias, to second order" in made.report()
 
 
-def _reads(plan: Any, fit: Any) -> list[PlannedCostBias]:
-    """The bias at each read of the fit's covariance: two ways, then each dimension alone."""
+def _reads(plan: Any, fit: Any, *, clip: bool = True) -> list[PlannedCostBias]:
+    """The bias at each read of the fit's covariance: two ways, then each dimension alone; under
+    ``clip`` False the two ways' sums whole, their part below nothing kept."""
     problem, cost, count = _parameter_cost(plan, fit.residual, "the fit")
     terms = _bias_terms(problem, plan.actions, cost, count, None)
-    squares = _clustered_squares(np.asarray(fit.influence), fit.clusters, fit.periods)
+    squares = _clustered_squares(np.asarray(fit.influence), fit.clusters, fit.periods, clip=clip)
     return [terms.bias(square, None) for square in squares]
+
+
+def _whole(plan: Any, fit: Any) -> PlannedCostBias:
+    """The bias at the two ways' sums whole."""
+    return _reads(plan, fit, clip=False)[0]
 
 
 def _short_logs(seed: int, units: int = 20, periods: int = 4) -> Panel:
@@ -755,10 +764,15 @@ def _short_logs(seed: int, units: int = 20, periods: int = 4) -> Panel:
 
 def test_the_bias_reads_the_fit_s_own_dependence_and_its_largest_read_apart() -> None:
     """``prescribe`` fits a log of 20 units over 4 periods clustered two ways, and the bias reads
-    the two ways' covariance; ``bias_upper`` is the largest bias over that read and each
-    dimension's alone. Up to 1.1 the bias was the read of the largest ``tr(W S)``, another read
-    than the two ways' on most of these logs: the largest of three noisy reads sits above each
-    read's own mean, 55 % above the bias the parameters' covariance across 600 such logs gives."""
+    the two ways' sums whole; ``bias_upper`` is the largest of it and the biases at the reads the
+    channel's error takes the largest of, the two ways' with their part below nothing taken away
+    and each dimension's alone. Up to 1.1 the bias was the read of the largest ``tr(W S)``,
+    another read than the two ways' on most of these logs: the largest of three noisy reads sits
+    above each read's own mean, 55 % above the bias the parameters' covariance across 600 such
+    logs gives. In 1.2 it was the two ways' read with the part below nothing taken away, which
+    adds a covariance to the sums and sat 17 % above, 2.4 paired standard errors; whole, the bias
+    is 4 % above, 0.6 of them. Taking the part away moves the bias on most such logs, and on two
+    of these four at least."""
     seen: list[tuple[Any, Any]] = []
     real = decision._fit_cost_bias
 
@@ -766,7 +780,7 @@ def test_the_bias_reads_the_fit_s_own_dependence_and_its_largest_read_apart() ->
         seen.append((plan, fit))
         return real(plan, fit)
 
-    moved = 0
+    moved = clipped = 0
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(decision, "_fit_cost_bias", spy)
         for seed in range(4):
@@ -785,12 +799,14 @@ def test_the_bias_reads_the_fit_s_own_dependence_and_its_largest_read_apart() ->
             bias = made.certificate.planned_cost_bias
             assert bias is not None
             assert np.ndim(fit.clusters) == 2
-            reads = _reads(plan, fit)
-            assert (bias.optimism, bias.curvature) == (reads[0].optimism, reads[0].curvature)
-            assert bias.bias_upper == max(read.bias for read in reads)
+            reads, whole = _reads(plan, fit), _whole(plan, fit)
+            assert (bias.optimism, bias.curvature) == (whole.optimism, whole.curvature)
+            assert bias.bias_upper == max(bias.bias, *(read.bias for read in reads))
             assert bias.bias_upper >= bias.bias
             moved += max(reads, key=lambda read: read.optimism) != reads[0]
+            clipped += whole.bias != reads[0].bias
     assert moved >= 2
+    assert clipped >= 2
 
 
 def test_the_bias_moves_nothing_else_and_is_off_by_default(quickstart: Prescription) -> None:

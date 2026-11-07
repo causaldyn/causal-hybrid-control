@@ -30,6 +30,7 @@ from jax.typing import ArrayLike
 from scipy import sparse, special
 from scipy.optimize import linprog
 
+from chc._robust_cov import robust_cov
 from chc.frames import _real_numbers
 from chc.games import project_simplex
 
@@ -234,9 +235,8 @@ def _contrast_covariance(
     covariance = np.zeros((values.shape[1], values.shape[1]))
     for mass, _, *arms in blocks:
         for weights in arms:
-            count = np.count_nonzero(weights)
             spread = weights[:, None] * (values - weights @ values)
-            covariance += mass**2 * (spread.T @ spread) * count / (count - 1)
+            covariance += mass**2 * robust_cov(spread[weights != 0.0], 1).cov
     return covariance
 
 

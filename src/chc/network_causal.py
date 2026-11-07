@@ -23,6 +23,7 @@ from jax import Array
 from numpy.typing import NDArray
 
 from chc import _units
+from chc._robust_cov import sandwich
 from chc.causal import _centred_ridge_predict, _polynomial_features, _stream_key
 from chc.frames import _real_entries, _real_numbers, _refuse_shared_names
 from chc.irf import peak_lag
@@ -615,16 +616,6 @@ def _fold_chunks(n: int, folds: int, seed: int, groups: Array | None) -> list[Ar
     return [jnp.where(row_fold == k)[0] for k in range(folds)]
 
 
-def _sandwich_meat(design: Array, resid: Array, groups: Array | None) -> Array:
-    """``sum_c X_c' e_c e_c' X_c``: a cluster-robust sandwich's meat, HC when ``groups`` is None."""
-    if groups is None:
-        weighted = design * resid[:, None]
-        return weighted.T @ weighted
-    labels = jnp.unique(groups)
-    sums = jnp.stack([(design[groups == c] * resid[groups == c, None]).sum(axis=0) for c in labels])
-    return sums.T @ sums
-
-
 def _neighbour_units(data: dict[str, Array]) -> Array:
     """``(n_units, n_units)``: is unit ``j`` a hop-1 neighbour of unit ``i``, or ``i`` itself?
 
@@ -744,28 +735,23 @@ def estimate_network_effects(
     resid = y_res - design @ coef
     inv = jnp.linalg.inv(gram)
     groups = data.get("cid")
-    if groups is None:
-        leverage = jnp.einsum("ij,jk,ik->i", design, inv, design)
-        meat = _sandwich_meat(design, resid / (1.0 - leverage), None)
-        df = n - 1
-    else:
-        labels = jnp.asarray(groups)
-        clusters = int(jnp.unique(labels).shape[0])
+    codes = None
+    if groups is not None:
+        codes = np.unique(np.asarray(groups), return_inverse=True)[1].reshape(-1)
+        clusters = int(codes.max()) + 1
         if clusters < 2:
             raise ValueError(
                 f"cid holds {clusters} cluster; a clustered error reads the spread across two at "
                 "least -- drop cid for the heteroskedastic error"
             )
-        small_sample = clusters / (clusters - 1) * (n - 1) / (n - design.shape[1])
-        meat = small_sample * _sandwich_meat(design, resid, labels)
-        df = clusters - 1
-    var = jnp.diag(inv @ meat @ inv)
+    read = sandwich(inv, design, resid, codes, design.shape[1])
+    var = jnp.diag(read.cov)
     return {
         "direct": float(coef[0]),
         "spillover": float(coef[1]),
         "direct_se": float(jnp.sqrt(var[0])),
         "spillover_se": float(jnp.sqrt(var[1])),
-        "df": float(df),
+        "df": float(read.df),
     }
 
 

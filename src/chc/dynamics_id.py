@@ -69,6 +69,17 @@ from scipy.stats import f as fisher
 from scipy.stats import t as student_t
 
 from chc import _units
+from chc._robust_cov import (
+    _cluster_count,
+    _cluster_factor,
+    _clustered_squares,
+    _cosines,
+    _degrees_of_freedom,
+    _period_cosines,
+    _small_sample,
+    robust_cov,
+    sandwich,
+)
 from chc.causal import (
     _ACTION_AND_OUTCOME,
     _TRANSITION,
@@ -798,15 +809,6 @@ def _channel_coefficients(
     return jnp.linalg.solve(gram, instrument.T @ state_residual)
 
 
-def _small_sample(rows: int, n_coeff: int, clusters: int | None) -> float:
-    """The robust covariance's small-sample factor: ``N / (N - k)`` over rows, and CR1's
-    ``G / (G - 1) (N - 1) / (N - k)`` over ``G`` clusters, which is the same where each row is its
-    own."""
-    if clusters is None:
-        return rows / max(rows - n_coeff, 1)
-    return clusters / (clusters - 1) * (rows - 1) / max(rows - n_coeff, 1)
-
-
 def _robust_spreads(
     sensitivity: Array,
     score: Array,
@@ -842,148 +844,9 @@ def _score_spreads(
 ) -> tuple[Array, ...]:
     """:func:`_robust_spreads` of the rows' scores ``(N, p)``, each a transition's states summed:
     the sum of their outer products, or of their sums within each cluster, or across the periods'
-    cosines."""
-    n = scores.shape[0]
-    if periods is not None:
-        projected = jnp.asarray(_cosines(periods)) @ scores
-        return (_small_sample(n, n_coeff, None) * projected.T @ projected,)
-    if clusters is None:
-        # a transition's states may share its noise, so its scores are summed over them first
-        return (_small_sample(n, n_coeff, None) * scores.T @ scores,)
-    factor = _small_sample(n, n_coeff, _cluster_count(clusters))
-    if clusters.ndim == 1:
-        summed = jax.ops.segment_sum(
-            scores, jnp.asarray(clusters), num_segments=int(clusters.max()) + 1
-        )
-        return (factor * summed.T @ summed,)
-    squares = _clustered_squares(np.asarray(scores)[:, None], clusters)
-    return tuple(factor * jnp.asarray(square) for square in squares)
-
-
-def _cluster_count(clusters: np.ndarray) -> int:
-    """``G`` in CR1's factor: the clusters' count, or two-way the smaller dimension's, which bounds
-    how many independent terms the error is read from (Cameron, Gelbach and Miller 2011)."""
-    return int(np.min(clusters.max(axis=0))) + 1
-
-
-def _cosine_count(rows: int) -> int:
-    """``nu``, the cosines ``T`` periods are read with: the most whole ones at or below
-    ``0.4 T^(2/3)``, the count Lazarus, Lewis, Stock and Watson (2018) recommend, and one at the
-    least. Read in whole numbers, ``1000 nu^3 <= 64 T^2``, since in floating point
-    ``0.4 * 1000 ** (2 / 3)`` falls short of 40."""
-    count = max(int(0.4 * rows ** (2.0 / 3.0)), 1)
-    while 1000 * (count + 1) ** 3 <= 64 * rows**2:
-        count += 1
-    while count > 1 and 1000 * count**3 > 64 * rows**2:
-        count -= 1
-    return count
-
-
-def _period_cosines(periods: np.ndarray) -> int:
-    """``nu`` for transitions labelled ``periods``: :func:`_cosine_count` of the distinct periods,
-    which on one unit are its transitions."""
-    return _cosine_count(int(np.unique(periods).size))
-
-
-def _cosines(periods: np.ndarray) -> np.ndarray:
-    """``(nu, N)``: ``sqrt(2 / nu) cos(pi j (p_i + 1/2) / P)`` for ``j`` from 1 to ``nu``
-    (:func:`_period_cosines`), at each transition's period ``p_i`` counted from the log's first,
-    over the ``P`` periods it spans, a period it lacks holding no score, as Parzen (1963) reads a
-    series with gaps.
-
-    ``sum_j c_j c_j'`` with ``c_j = sum_i w_ji s_i`` is the equal-weighted cosine estimate of the
-    covariance of the scores' sum (Lazarus, Lewis, Stock and Watson 2018). Over a span without
-    gaps each cosine sums to nothing, so a mean of the scores, which the moment sets to nothing,
-    moves none of it. Where the scores are independent each ``c_j c_j'`` reads their covariance;
-    where they persist, the cosines' low frequencies read the long-run one. As the log grows at a
-    fixed ``nu`` the ``c_j`` read as independent normals, so a ``t`` statistic read off the
-    estimate is a ``t(nu)``. The transitions of one period share its weights, so ``c_j`` reads the
-    sums of the scores within each period, whatever their dependence across the transitions of
-    one period: Driscoll and Kraay's (1998) reading, here with the cosines' kernel.
-    """
-    count = _period_cosines(periods)
-    span = int(periods.max()) + 1
-    frequencies = np.arange(1, count + 1)[:, None]
-    return math.sqrt(2.0 / count) * np.cos(math.pi * frequencies * (periods[None, :] + 0.5) / span)
-
-
-def _degrees_of_freedom(rows: int, clusters: np.ndarray | None, periods: np.ndarray | None) -> int:
-    """The ``t`` a test read off the channel's error is sized against: one fewer than the
-    independent terms its spread sums, the rows or the clusters (ADR 0062), or ``nu`` over one
-    group's periods, whose cosines leave out the mean the moment sets to nothing (ADR 0075)."""
-    if periods is not None:
-        return _period_cosines(periods)
-    return (rows if clusters is None else _cluster_count(clusters)) - 1
-
-
-def _clustered_squares(
-    rows: np.ndarray, clusters: np.ndarray | None, periods: np.ndarray | None = None
-) -> tuple[np.ndarray, ...]:
-    """``rows``' covariance, ``(N, n, ...)`` per transition and state as
-    :attr:`CausalDynamicsFit.influence` is: the sum of the outer products of its independent
-    terms, each a transition's states summed, or under ``clusters`` a cluster's transitions and
-    states summed. Under ``periods``, one group's, each transition's states summed and projected on
-    the cosines of :func:`_cosines`, which sums each period's transitions, as the channel's error
-    is read.
-
-    Two-way, three covariances, and a reader takes the one it reads largest (MacKinnon, Nielsen
-    and Webb 2024): the two dimensions' sums less their intersection's, which both count (Cameron,
-    Gelbach and Miller 2011), less any part that reads below nothing (:func:`_less_below_nothing`);
-    then each dimension's sums alone, moved from the smaller dimension's CR1 factor, which
-    ``rows`` carry, to its own. The two-way sums alone can read less than either dimension does:
-    on a log of 3 units over 4 periods they read nothing of a channel affine in the state.
-    """
-    if periods is not None:
-        projected = np.tensordot(_cosines(periods), rows.sum(axis=1), axes=(1, 0))
-        return (np.tensordot(projected, projected, axes=(0, 0)),)
-    per_row = rows.sum(axis=1)
-    if clusters is None:
-        return (np.tensordot(per_row, per_row, axes=(0, 0)),)
-
-    def square(codes: np.ndarray) -> np.ndarray:
-        summed = np.zeros((int(codes.max()) + 1, *per_row.shape[1:]))
-        np.add.at(summed, codes, per_row)
-        return np.tensordot(summed, summed, axes=(0, 0))
-
-    if clusters.ndim == 1:
-        return (square(clusters),)
-    first, second = square(clusters[:, 0]), square(clusters[:, 1])
-    cells = square(np.unique(clusters, axis=0, return_inverse=True)[1].reshape(-1))
-    spread, every = first + second - cells, first + second + cells
-    both = np.maximum(spread, 0.0) if spread.ndim == 0 else _less_below_nothing(spread, every)
-    smaller = _cluster_count(clusters)
-    alone = []
-    for one, codes in ((first, clusters[:, 0]), (second, clusters[:, 1])):
-        count = int(codes.max()) + 1
-        # the factor whole, so a dimension of the smaller count keeps its sums bit for bit
-        alone.append(one * ((count / (count - 1)) / (smaller / (smaller - 1))))
-    return (both, *alone)
-
-
-def _less_below_nothing(spread: np.ndarray, every: np.ndarray) -> np.ndarray:
-    """``spread`` less the part it reads below nothing, measured against ``every``, its sums with
-    every sign a plus: ``spread - T Q min(L, 0) Q' T'``, ``every = T T'`` and ``Q L Q'`` the
-    eigendecomposition of ``T^+ spread T^+'``. ``-every <= spread <= every``, so ``L`` lies in
-    ``[-1, 1]``, and a spread with no part below nothing keeps every bit. ``every`` is
-    ``spread`` plus twice the cells' sums, and any reference ``a spread + b cells``, the cells'
-    sums alone or the units' and the periods' together among them, has the same generalised
-    eigenvectors ``v``; each part taken away, ``spread v v' spread / v' spread v``, depends on
-    ``v`` alone, so they all take away the same part.
-
-    Both move with the coefficients as the scores do, so a change of their units or of the
-    state's zero changes no value read off the result. The eigenvalues of ``spread`` itself, which
-    Cameron, Gelbach and Miller (2011) clip, move with them: on a panel of 200 regions over 11
-    periods, moving the state's zero moved the channel's error from 0.008164 to 0.009408.
-    """
-    values, vectors = np.linalg.eigh(every)
-    kept = values > values[-1] * values.size * np.finfo(np.float64).eps
-    root, whitening = (
-        vectors[:, kept] * np.sqrt(values[kept]),
-        vectors[:, kept] / np.sqrt(values[kept]),
-    )
-    shares, turns = np.linalg.eigh(whitening.T @ spread @ whitening)
-    lifted = root @ turns
-    return spread - (lifted * np.minimum(shares, 0.0)) @ lifted.T
+    cosines (:func:`chc._robust_cov.robust_cov`). A transition's states may share its noise, so
+    its scores are summed over them first."""
+    return robust_cov(scores, n_coeff, clusters, periods).reads
 
 
 def _error_at_rows(blocks: Array, features: Array) -> float:
@@ -3227,18 +3090,13 @@ class ChannelRegion:
 def _clustered_scores(
     design: np.ndarray, residual: np.ndarray, clusters: np.ndarray
 ) -> list[list[np.ndarray]]:
-    """Per state, the ``r`` reads of :func:`_clustered_squares`, each ``(q, q)``: the state's
-    scores ``D_i e_i``, ``D`` the channel's design ``(N, q)`` and ``e`` the moment's residual
-    ``(N, n)``, summed within ``clusters`` and squared at CR1's factor, as the channel's error
-    reads them, a state at a time: :func:`channel_region` reads each state's noise off its own."""
-    factor = _small_sample(design.shape[0], design.shape[1], _cluster_count(clusters))
+    """Per state, the ``r`` reads of :func:`chc._robust_cov.robust_cov`, each ``(q, q)``: the
+    state's scores ``D_i e_i``, ``D`` the channel's design ``(N, q)`` and ``e`` the moment's
+    residual ``(N, n)``, summed within ``clusters`` and squared at CR1's factor, as the channel's
+    error reads them, a state at a time: :func:`channel_region` reads each state's noise off its
+    own."""
     return [
-        [
-            factor * square
-            for square in _clustered_squares(
-                (design * residual[:, state, None])[:, None, :], clusters
-            )
-        ]
+        list(robust_cov(design * residual[:, state, None], design.shape[1], clusters).reads)
         for state in range(residual.shape[1])
     ]
 
@@ -3593,7 +3451,7 @@ def _persistence(
     # centred, as CR1 centres a regression's scores: uncentred, the statistic stays under
     # sqrt(G - 1), so at six units or fewer it never clears t(G - 1)'s 5 % quantile
     centred = sums - np.bincount(codes[later])[present] * (float(np.sum(products)) / pairs)
-    spread = math.sqrt(count / (count - 1) * float(np.sum(centred**2))) if count > 1 else 0.0
+    spread = math.sqrt(_cluster_factor(count) * float(np.sum(centred**2))) if count > 1 else 0.0
     freedom = count - 1
     if clusters is not None:
         # the fit's clusters hold transitions whose noise moves together, several units' or one
@@ -3610,7 +3468,7 @@ def _persistence(
             reads = _clustered_squares(
                 centred_products[:, :, None], codes[:, 0] if codes.shape[1] == 1 else codes
             )
-            spread = math.sqrt(groups / (groups - 1) * max(float(np.squeeze(r)) for r in reads))
+            spread = math.sqrt(_cluster_factor(groups) * max(float(np.squeeze(r)) for r in reads))
     paired_periods = steps[later] - steps[later].min()
     if count == 1 or across_periods:
         # one unit leaves no second unit's sum to read a spread from, and a fit given periods says
@@ -3724,9 +3582,7 @@ def _interference(
     left = outcome - standard @ slope
     coefficient, t = nan.copy(), nan.copy()
     for state in range(n_states):
-        scores = np.zeros((count, standard.shape[1]))
-        np.add.at(scores, codes, standard * left[:, state : state + 1])
-        cov = count / (count - 1) * gram_inv @ (scores.T @ scores) @ gram_inv
+        cov = sandwich(gram_inv, standard, left[:, state], codes).cov
         error = np.sqrt(np.maximum(np.diag(cov), 0.0))
         coefficient[state, live] = slope[:, state] / scale
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -3879,9 +3735,7 @@ def lag_check(  # noqa: C901, PLR0915
     coefficient, t = nan.reshape(n_states, -1).copy(), nan.reshape(n_states, -1).copy()
     p_values = []
     for state in range(n_states):
-        scores = np.zeros((count, standard.shape[1]))
-        np.add.at(scores, groups, standard * left[:, state : state + 1])
-        cov = count / (count - 1) * gram_inv @ (scores.T @ scores) @ gram_inv
+        cov = sandwich(gram_inv, standard, left[:, state], groups).cov
         coefficient[state, live] = slope[:, state] / scale
         with np.errstate(divide="ignore", invalid="ignore"):
             t[state, live] = slope[:, state] / np.sqrt(np.maximum(np.diag(cov), 0.0))

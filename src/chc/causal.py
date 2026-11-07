@@ -26,6 +26,7 @@ from jax import Array
 from scipy.stats import t as student_t
 
 from chc import _units
+from chc._robust_cov import sandwich
 from chc.frames import _real_entries
 
 __all__ = [
@@ -262,9 +263,7 @@ def _hc3_errors(features: Array, residual: Array) -> Array:
     scale = _units.power_of_two(_units.root_mean_square(design))
     scaled = design * scale
     bread = jnp.linalg.inv(scaled.T @ scaled)
-    leverage = jnp.einsum("ij,jk,ik->i", scaled, bread, scaled)
-    weighted = scaled * (residual / (1.0 - leverage))[:, None]
-    return scale * jnp.sqrt(jnp.diag(bread @ (weighted.T @ weighted) @ bread))
+    return scale * jnp.sqrt(jnp.diag(sandwich(bread, scaled, residual).cov))
 
 
 def _ols_with_hc3_se(features: Array, target: Array) -> tuple[Array, Array]:
