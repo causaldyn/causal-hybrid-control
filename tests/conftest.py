@@ -36,8 +36,8 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 @pytest.fixture(autouse=True, scope="module")
 def _release_compiled_programs():
-    """Drop JAX's compiled programs after each test file. One process runs the whole suite on a
-    leg without workers, and on the dependency floors (jax 0.4.30) the programs it kept reached
+    """Drop JAX's compiled programs after each test file. A process runs many files, and on the
+    dependency floors (jax 0.4.30) the programs one process kept over the whole suite reached
     10.7 GB over the first 1470 tests and killed a 16 GB runner past four fifths of the suite;
     dropped per file, 5.6 GB, for 13 % more time."""
     yield

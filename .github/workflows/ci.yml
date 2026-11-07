@@ -4,8 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  # release.yml runs the whole workflow on the tagged commit before it publishes anything.
-  workflow_call:
 
 permissions:
   contents: read
@@ -43,12 +41,19 @@ jobs:
   # abi3, which such a build cannot load, and diff-diff builds for CPython with the GIL only -- since
   # uv.lock cannot: PEP 508 has no marker for the build. The tests that need either skip without it,
   # and `--no-sync` keeps `uv run` from installing them again.
+  #
+  # Each leg runs as two shards of the test files (.github/shard_tests.py), each on two workers: one
+  # process took the suite three hours, and the organisation runs twenty jobs at once, so a third
+  # shard per leg would queue rather than run. A worker holds one file's compiled programs at a time
+  # (tests/conftest.py drops them per file), 5.6 GB at most on the floors' jax, so two fit a 16 GB
+  # runner and three would not.
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15", "3.14t", "3.15t"]
+        shard: [0, 1]
         include:
           - python-version: "3.14t"
             without: --no-install-package polars --no-install-package polars-runtime-32 --no-install-package diff-diff
@@ -63,14 +68,21 @@ jobs:
       - name: Sync dependencies
         run: uv sync --group dev ${{ matrix.without }}
       - name: Tests
-        run: uv run --no-sync pytest
+        run: |
+          shard=$(uv run --no-sync python .github/shard_tests.py ${{ matrix.shard }} 2)
+          read -ra files <<< "$shard"
+          uv run --no-sync pytest -n 2 --dist loadfile "${files[@]}"
 
   # The suite on macOS arm64, on one Python: XLA compiles there for another instruction set than
   # on the Linux legs, so a test whose verdict rests on a last bit -- a boundary on a node of a
   # jitted grid, a digest of floats -- fails here first. Tests only: the lint legs read the same
-  # source wherever they run.
+  # source wherever they run. Three shards of one worker each: the runner has 7 GB.
   test-macos:
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install uv
@@ -80,7 +92,10 @@ jobs:
       - name: Sync dependencies
         run: uv sync --group dev
       - name: Tests
-        run: uv run --no-sync pytest
+        run: |
+          shard=$(uv run --no-sync python .github/shard_tests.py ${{ matrix.shard }} 3)
+          read -ra files <<< "$shard"
+          uv run --no-sync pytest "${files[@]}"
 
   # The certificates read on plants their models get wrong (ADR 0115): a persistent confounder,
   # AR noise, dead time, nuisances outside the sieve, actions outside the logged support, a plant
@@ -103,9 +118,13 @@ jobs:
   # The floors in pyproject.toml are published: an installer pairs chc with any version they admit,
   # where every leg above runs the lockfile's. This one resolves each direct dependency to its
   # floor, the `trees` extra's included, on the oldest Python, and runs the tests there; it is the
-  # one leg that installs that extra. The lockfile it resolves is not kept.
+  # one leg that installs that extra. The lockfile it resolves is not kept. Sharded as `test` is.
   test-lowest:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install uv
@@ -115,7 +134,10 @@ jobs:
       - name: Sync the floors
         run: uv sync --group dev --extra trees --resolution lowest-direct
       - name: Tests
-        run: uv run --no-sync pytest
+        run: |
+          shard=$(uv run --no-sync python .github/shard_tests.py ${{ matrix.shard }} 2)
+          read -ra files <<< "$shard"
+          uv run --no-sync pytest -n 2 --dist loadfile "${files[@]}"
 
   # The formal claims are gated like the Python ones: every docstring that cites a Rocq lemma is only
   # as good as the file still compiling. Pinned to 9.2 because the proofs use the post-rename

@@ -93,20 +93,45 @@ jobs:
           name: sbom
           path: sbom/
 
-  # The whole of ci.yml, on the tagged commit: a tag can name a commit that main's CI never ran on,
-  # and nothing is published until every check passes on what is published.
+  # main's CI on the tagged commit, read rather than run again: a tag can name a commit that main's
+  # CI never ran on, or did not pass on, and then nothing is published. A tag pushed while that run
+  # is still going waits for it.
   ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
     permissions:
-      contents: read
-    uses: ./.github/workflows/ci.yml
+      actions: read
+    steps:
+      - name: Require main's CI to have passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          while :; do
+            runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main \
+              --event push --commit "$GITHUB_SHA" --json status,conclusion,url)
+            echo "$runs" | jq -r '.[] | "\(.status) \(.conclusion) \(.url)"'
+            if echo "$runs" | jq -e 'any(.[]; .conclusion == "success")' > /dev/null; then
+              exit 0
+            fi
+            if ! echo "$runs" | jq -e 'any(.[]; .status != "completed")' > /dev/null; then
+              echo "main's CI has not passed on $GITHUB_SHA: tag a commit it passed on"
+              exit 1
+            fi
+            sleep 60
+          done
 
   # The tests against the wheel PyPI will serve, with the source tree removed: a module or a file
-  # the build leaves out passes every job that runs from the checkout, and fails here.
+  # the build leaves out passes every job that runs from the checkout, and fails here. Sharded as
+  # ci.yml's `test` is.
   wheel:
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
@@ -124,7 +149,10 @@ jobs:
           uv pip check
           rm -r src
       - name: Tests against the installed wheel
-        run: uv run --no-sync pytest
+        run: |
+          shard=$(uv run --no-sync python .github/shard_tests.py ${{ matrix.shard }} 2)
+          read -ra files <<< "$shard"
+          uv run --no-sync pytest -n 2 --dist loadfile "${files[@]}"
 
   publish:
     needs: [build, ci, wheel]
