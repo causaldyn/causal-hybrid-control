@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---|---|
-| 1.1.x | yes |
-| < 1.1 | no |
+| 1.2.x | yes |
+| < 1.2 | no |
 
 This is a single-author research library. Only the latest minor gets fixes; there are no
 backports. If you are pinned to an older minor, the upgrade path is the
@@ -63,7 +63,7 @@ wastes your time:
     --bundle causal-hybrid-control-<version>.provenance.sigstore.json \
     --repo causaldyn/causal-hybrid-control
   # the PEP 740 attestation, straight from the index:
-  curl -s https://pypi.org/integrity/causal-hybrid-control/1.1.1/causal_hybrid_control-1.1.1-py3-none-any.whl/provenance
+  curl -s https://pypi.org/integrity/causal-hybrid-control/1.2.0/causal_hybrid_control-1.2.0-py3-none-any.whl/provenance
   ```
 
   The bundle route still fetches Sigstore's trust root; with no network at all, add

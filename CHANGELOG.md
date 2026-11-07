@@ -5,6 +5,402 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
 experimental may change in any minor release (`docs/api/index.md`).
 
+## [1.2.0] — 2026-11-07
+
+Fixes, four opt-in settings and one deprecation. Numbers that move, each with its size below:
+the default marketplace plan (`pessimistic_equilibrium_allocation`'s tilted objective now also
+starts from the fitted game's optimum), `partial_corr_test`'s p-values (the exact `t`),
+`estimate_network_effects`' standard errors (CR1 over clusters, HC3 without),
+`planned_cost_bias` (the fit's own covariance), the DLM's directional form under a change of
+units, and which Koopman lifts `koopman_lqr_gain` grants. `pessimistic_equilibrium_allocation`
+warns that its default objective becomes `"expected"` in 1.3.0. No name is removed or renamed.
+
+### Added
+
+- `settings.plan_sha256` and `settings.clusters` in `PlanEvaluation.to_json()` (experimental): an
+  evaluation names the decision it read, by a sha256 over the decision record's `schema_version`,
+  `schedule` and `inputs` less `inputs.panel_sha256`, the rows in the order they were handed in,
+  as JSON with sorted keys and no spaces (null from `evaluate_plan`, whose
+  plan is no decision's), and the column a plan made on groups had the panel grouped by (null
+  otherwise). `settings.panel_sha256` stays the panel's as handed in; `EVALUATION_SCHEMA_VERSION`
+  stays 1, since both keys are new (ADR 0145).
+- `GateConfig.rollback_restart` and `GateConfig.rollback_horizon` (experimental): a deployed zone's
+  rollback evidence also starts again every `rollback_restart` decisions after the DEPLOY, blocks
+  in blocks, and discards none. The rollback reads a mixture of e-processes started on that grid,
+  each 1 until its start: one test supermartingale under the same null, so a wrong ROLLBACK keeps
+  probability at most `alpha_harm`, and one number a bet carries it. The starts carry the drift
+  alarm's epoch weights, or, with `rollback_horizon`, equal weights over the starts within it. In
+  blocks of one period at a mean of 0.5, the baseline's blocks at 0.2, centred, a candidate that
+  turned 0.12 worse 5000 blocks after its DEPLOY was rolled back within 3000 blocks on 0.340 of
+  1000 paths every 250 blocks with the epoch weights and on 0.770 alike over 10 000, against
+  0.070 unset; turned at the DEPLOY, on 0.929 and 0.732 against 0.925. A candidate that did not
+  turn was rolled back within 8000 blocks on 6 of 1000 paths with the epoch weights, as unset, and
+  on 4 alike, at an `alpha_harm` of 0.05, and the lab plant's six null cells on none of 1000 paths
+  each. Per decision, a candidate +0.06 for 3000 decisions and -0.06 after was caught on 185 and
+  198 of 200 paths against 3. Unset, every e-value and verdict is what it was; the gate's log
+  records carry both settings beside `log_rollback` (ADR 0146 amended).
+- `read_switchback` logs `switchback_unbounded` where the steady state's Fieller interval is the
+  whole line, and only there, and `SwitchbackReading` says how often: on one zone at `a = 0.9`,
+  1000 runs, 13.9 % of the jackknife's readings over 200 periods and 0.3 % over 400, 0.1 % and none
+  uncorrected; none on 4 zones. The near-unit-root warning fired on every one of the 200-period
+  runs on both paths, so it did not tell them apart (ADR 0143 amended).
+- `causal_plan(outer="safeguarded")`, `RecedingHorizon.outer` (experimental) and the `OuterRule`
+  type naming the two rules: a held barrier's augmented-Lagrangian rounds each get a fixed share
+  of 333 steps, run until `steps` are spent (at
+  most 30 rounds more than the full shares), and grow the penalty tenfold after every round whose
+  measure fails to halve, its share run out or not, Birgin and Martínez's rule as they state it.
+  Under the default `"halved"` rounds, each given half of the steps left, a plan whose every round
+  runs out of its share never grows the penalty: on an unstable drift held under the fit's own
+  `ChannelSensitivity` it stayed at its start over all 15 rounds, and at 100 000 steps the plan
+  was certified on 27 steps of 30 where 10 000 certified 30. Safeguarded, the penalty grew 7 times
+  there, and ten times the budget ran the same rounds further, shortening no plan's certified
+  steps on the two logs measured and lowering one's cost 65.95203 → 65.95086. It ships opt-in
+  because it moves plans both ways: of 218 plans the planning tests hold at a barrier it left 125
+  within 1e-9, made 27 cheaper and 62 costlier at the same certified steps (by up to 43 %),
+  certified 4 on fewer leading steps (two from 12 to 7, ending `infeasible` where the halved
+  rounds certified all 12), and ended 18 converged plans `max_iterations`. Neither rule brings
+  those unstable plans within 0.2 % of SLSQP's: its plan rests most actions at the deviation
+  tube's kink at zero (ADR 0144, amended).
+- `inputs.panel_sorted_sha256` in the decision record (experimental, as `Prescription.from_json`
+  is): the panel's digest over its rows sorted by unit and period, which `from_json` checks in place
+  of `inputs.panel_sha256`. `SCHEMA_VERSION` stays 3: a key is added and none changes meaning
+  (ADR 0145).
+- `PlannedCostBias.bias_upper` (experimental) and the record's
+  `certificate.planned_cost_bias.bias_upper`: the largest bias over the reads of a fit's
+  covariance, never below `bias`, and `bias` where the fit has one read; None for a bias read from
+  a covariance given by hand. `report()` prints it where it is above the bias, and says that the
+  first-order term is not read (ADR 0088).
+- `estimate_network_effects` returns `df` (evolving), the degrees of freedom of the `t` its
+  interval reads: `G - 1` over `G` clusters of `cid`, `N - 1` without (ADR 0062 amended).
+
+### Changed
+
+- **The default's plans move.** `pessimistic_equilibrium_allocation`'s tilted objective, the
+  default, is ascended from the fitted game's exact optimum as well as from the even split, by the
+  helper the expected objective uses, and keeps the plan better on its surrogate. One ascent from
+  the even split stopped on a `min(demand, drivers)` kink short of what is reachable. On markets
+  0-29, logs of 400 blocks, the tilted plan's share of the exact oracle's lift rose from 0.900 to
+  0.948 in float64 and from 0.907 to 0.941 in float32; its surrogate fell on no market. In float64
+  the share rose on 17 markets and fell on 3, by up to 0.079, each with a higher surrogate. On
+  float32 market 18, where the tilted plan won 0.735 against the naive plan's 0.805, it wins 0.978.
+  Logs of 50 blocks: 0.789 to 0.815; outside the fitted class, 100 logs: 0.733 to 0.762 (ADR 0137
+  amended).
+- **`chc.misspecification.planned_cost_bias`, and with it `prescribe(planned_cost_bias=True)`, read
+  the fit's own covariance, not the largest of three reads** (experimental). A fit clustered two
+  ways, as `prescribe` fits a panel of more than one unit over more than one period, gave the bias
+  the read of the largest `tr(W S)` among the two ways' and each dimension's alone, and the largest
+  of three noisy reads sits above each: on 600 logs of 20 units over 4 periods the bias averaged
+  +0.0105 against +0.0068 with `S` the parameters' covariance across the logs. It now reads the two
+  ways' covariance, +0.0079 there; the bias moves only where another read was the largest (477 of
+  the 600 logs), and the quickstart's +2.84e-5 does not move. The docstring states the second-order
+  expansion and that its first-order term is not read (-0.0047 on those logs) (ADR 0088).
+- **`partial_corr_test` reads the partial correlation's exact `t` with `n - k - 2` degrees of
+  freedom**, where it read Fisher's `z` with `max(n - k - 3, 1)`. Every p-value moves, and with it
+  each discovered edge's stored p-value in `LaggedGraph` and in a decision record that names a
+  discovered graph: at the `t`'s 0.01 point the `z` read the p-value 23 % low at 10 rows, 4.6 % at
+  50 and 0.6 % at 400; on the 600-step series the discovery tests keep, the stored p-values moved
+  by factors of 1.003 to 1.7e6, an edge whose `z` underflowed to 0 now keeps 6.5e-254, and the
+  graphs, their digests and the pathways read the same (ADR 0151 amended,
+  `validation/partial_corr_t.mac`).
+- **`estimate_network_effects`' standard errors are CR1 over the clusters and HC3 without them.**
+  The clusters' scores were summed with no small-sample factor, CR0, and the docstring read the
+  interval at the normal's 1.96; without clusters the error was HC0, where the library's other
+  regressions read HC3. The clustered errors now carry ADR 0053's factor
+  `G / (G - 1) (N - 1) / (N - 2)`, so on a log of 300 rows they moved ×1.0368 at 15 clusters and
+  ×1.1199 at 5, every row its own cluster reads HC1 (HC0 × 1.0034), and the HC3 error read 1.3 %
+  above HC0; a 95 % interval reads `t(df)`'s quantile, 12 % wider than the normal's on the old
+  error at 15 clusters and 37 % at 5. On 200 panels of 20 clusters, 2560 rows each, the direct
+  effect's interval covered the truth 93.5 % of the time where it covered 90.0 %, the spillover's
+  96.0 % where it covered 95.0 % (ADR 0062 amended). `cid` of one cluster is refused.
+- **`koopman_lqr_gain` reads the state's closure residuals**, the first `state_dim` of
+  `KoopmanModel.closure_residuals`, where it read every feature's. In one step a lift of degree 2
+  or more does not close even on an exactly linear plant: on `x' = a x + b u` the `x^2` feature's
+  residual is `sqrt(1 - a^4)` under the linear form and `1 - a^2` under the bilinear one, while
+  the state's is zero (`validation/koopman_discrete_closure.mac`). The default degree-3 lift of
+  `x' = 0.9 x + 0.5 u` was refused at 0.607, though it predicted the next state to round-off and
+  its gain was the plant's LQR to 8e-9, and the refusal's remedies, a richer lift or
+  `form="bilinear"`, could not help. Some lifts refused before are granted: on `x' = 0.9 x + 0.5 u`
+  and `x' = 0.5 x + 0.5 u` every degree from 1 to 3 in both forms. On `x' = 2x - x^3 + u/10` at
+  degree 3 the gain is now granted and `koopman_controller` refuses its loop (spectral radius
+  1.14), where the gain was refused before; at degree 1 it is refused as before. `max_residual`
+  keeps its default of 0.5, now on the state; `closure_residuals` keeps every feature's as a
+  diagnostic; the refusal names the remedies that can close the state, and `KoopmanModel`'s
+  docstring says what the bilinear form carries in one step (ADR 0093, amended).
+
+### Deprecated
+
+- Calling `pessimistic_equilibrium_allocation` without `objective` emits a `FutureWarning`: from
+  1.3.0 the default is `"expected"`, and `response` a keyword that may be left out. Pass
+  `objective="tilted"` to keep today's plans. Why `"expected"`: against the tilted plan with both
+  starts it won more of the exact oracle's lift on 14 of markets 0-29 in float64 (0.971 against
+  0.948; less on 1, by 0.018), 20 in float32 (0.984 against 0.941; less on 1, by 0.015) and 24 on
+  50 blocks (0.914 against 0.815; less on 2, by 0.031), never less than the naive plan, with no
+  radius to choose and no response read. It needs the fit's covariance: a hand-built
+  `FittedEquilibrium` without one is refused under it.
+
+### Fixed
+
+- **The default DLM form no longer depends on a regressor's units, and its constant forecast
+  holds the first step's evolution variance** (`chc.dlm`, experimental; both since
+  `form="directional"` became the default in 0.20.0). The directional form dropped a block's
+  directions below `1e-13` of the largest variance in the read covariance, which compares a
+  level's units with a coefficient's: with spend in currency the coefficient's block fell under
+  it and was never discounted. On a drifting coefficient beside a level, spend in units of
+  `10^6`, 100 series of 156 steps, its 90% intervals covered 0.60 against 0.87 in units of 1,
+  the one-step ones 0.81 against 0.89, and `S_T / V` read 3.0 against 1.36. In the tests'
+  level-and-spend model, spend in units of `10^5` and up, or `10^-6` and down, moved the fit.
+  The floor is now read in correlation units: every form follows a change of units or of
+  coordinates inside a block to `1e-10` over `10^-8` to `10^8`, and fits at unit scale move by
+  at most `8e-12`.
+  `forecast(evolution="constant")` read the evolution variance off each step's window over the
+  future rows, so spend held or at zero ahead stopped the coefficient's discount part-way: with
+  spend held at 2 for 26 steps its standard deviation at the horizon read 0.040 against the
+  documented 0.068, the predictive one 0.265 against 0.273. It now holds `W_(T+1)` at every step
+  under every form, so directional forecasts with held or zero spend ahead get the documented,
+  wider state bands. A regressor held while idle (`hold_when_idle=True`) is still not discounted
+  at a step ahead where it is zero: `W` is read with it live and its row and column zeroed at
+  those steps. Where it is idle at the first step ahead, that step's state variance can differ
+  from the filter's own prior for it under the directional and the multiplicative form, through
+  the cross-terms of `W` read with it live: on a level beside such a regressor idle for the
+  first 4 of 13 steps ahead, the forecast's standard deviation at the horizon is 0.8% wider
+  than before under the directional form and unchanged under the additive one, and the
+  multiplicative form, which refused that forecast as not a variance, now gives it;
+  `evolution="compounding"` still discounts it step by step (ADR 0121).
+- **A `GeoDLM` term in both the national and the regional blocks is held, and logged**
+  (`chc.dlm`, experimental). A national level beside each geo's level, or a harmonic beside the
+  same harmonic, is read by each geo only through its sum with the geo's copy, so the national
+  copy minus the sum of the geos' copies is read by no row; only regression columns were
+  searched for such directions, and the directional form discounted this one as if read. A
+  national level beside three geos' levels at 0.95 failed with `FloatingPointError` at step 448
+  of 1500, saying the direction was held at its prior variance, with nothing logged before.
+  `forward_filter_geos` now finds these directions from the blocks (a polynomial's terms up to
+  the lower order, each harmonic's coordinates), logs them as a warning
+  (`chc_event="dlm_geo_unread"`), and the directional form holds them: that stack runs 1500
+  steps with what the filter knows on the direction at the prior's to `1e-10`. The other forms
+  grow them by `1 / delta` a step, as any unread direction, and say so. Single models and stacks
+  without such a term filter as before, to the bit. A single model is not searched for such a
+  pair, so a one-geo stack with one now differs from `forward_filter` on the same blocks under
+  the directional form (ADR 0046).
+- **`Prescription.evaluate` reads a plan made on groups on its groups.** A plan from
+  `prescribe(clusters=)` was evaluated on the panel's units one by one, so its weights read a
+  unit's own lever against its group-mates' logged ones while its model correction read the
+  grouped channel. On units in groups of four whose levers move their group-mates' state by 0.4
+  where their own move it by 0.5, the value read 0.144 where the grouped plan's cost is 0.239 and
+  the units' 0.383, and at `model_error=0` the interval covered neither; the default
+  `model_error=1` widened each side by 0.64, which hid it. The panel is now grouped by the same
+  column first, and the value is the grouped plan's own cost, read on each group's mean state;
+  `min_effective` counts the groups' windows. On 200 panels of 150 groups the default
+  `min_effective` refuses (certifiable horizon at most 3 of 4); at 30 the interval covers the
+  group-mean cost on 0.861 (MC SE 0.025) of the 194 panels it reads. A plan made without
+  `clusters` evaluates exactly as before (ADR 0155).
+- **`Prescription.evaluate` evaluates a plan that holds a lever the log never moved.** The held
+  lever entered the logger's fit, whose covariance had no spread in it, and every such plan was
+  refused because "no smoothing in (0, 1.6e-16)" kept the weights' variance finite, a reason that
+  named neither the lever nor the cause. The held lever now leaves the windows' actions, the
+  logger and the smoothing; its price at its level is added to the plan's value and the logger's.
+  On 150 units the evaluation equals the plan's on the moved lever alone, plus that price, to
+  1e-9. A panel that moves the held lever, or keeps it at another level, and a logger that leaves
+  a moved lever no spread given the state now raise a `DecisionError` naming the lever, where the
+  second raised `InfeasibleEvaluation` naming the smoothing (ADR 0054).
+- **The jackknifed switchback reading warned of no unit root past it.** Its near-unit-root check
+  divided by `1 - a_hat` with no guard, so past 1 the ratio went negative: on a random walk over
+  200 periods read at `Horizon(10)` it warned on none of the 156 runs of 400 whose `a_hat` was at
+  or past 1, where the uncorrected reading warned on all. One check, infinite at or past 1, now
+  serves the design, the plug-in and the jackknife, and the jackknife reads it at its jackknifed
+  `a_J` with that estimate's own standard error, where its steady state is read: both readings
+  warn on all 400. The warning's `a_hat` field holds `a_J` on the jackknife's path.
+- **A replay takes the panel's rows in any order.** `Prescription.from_json` compared the digest
+  of the rows in the order they were handed in, so the same rows reordered, as a reload by SQL
+  without `ORDER BY` hands them, were refused as "a panel of other data" though they made the same
+  decision to the bit. It now checks the rows sorted by unit and period; `inputs.panel_sha256` and
+  `provenance.data_sha256` keep their meaning, are not compared after the replay, and the replay
+  returned holds the panel's own. `Panel`'s `data_sha256` is unchanged.
+- **`prescribe(clusters=)` gives the same decision whatever the order of the panel's rows.** Each
+  group's mean summed its rows in the order they were handed in, and a sum's rounding moves with
+  the order: on one grouped panel a shuffle moved the schedule by 8e-17 and the channel's error by
+  an ulp, so a replay on the shuffled rows refused. The rows are summed sorted by unit and period;
+  a panel whose rows were sorted by unit, or by period then unit, decides exactly as before.
+- **A replay's refusal names what differs.** `Prescription.from_json` compares the panel's `seed`
+  and `frequency` before it replays and refuses naming `provenance.seed` or `provenance.frequency`:
+  another seed had run the whole replay and been refused as one that "does not give the record
+  back", another frequency as other data. A column the panel does not have is refused under the
+  input that names it (`inputs.levers`, `inputs.target`, `inputs.constraints`, `inputs.dither`,
+  `inputs.adjustment`, ...), where it read `inputs`; a refusal that names its own field
+  (`inputs.adjustment.kind`) is no longer prefixed a second time; and a `schema_version` of `3.0`,
+  which equals 3, is refused as JSON's integer 3 is not.
+- **Two functions given as `known` digest apart.** The record's `inputs.known` read a function by
+  its type and its text, which is `<lambda>` for every lambda, so two lambdas that compute apart
+  read one digest and a replay took either. A function is now also read by its code: its
+  bytecode, the names it reads and its constants. Bytecode is the interpreter's, so a record made
+  with a function replays on the Python minor that wrote it. A model of arrays digests as before.
+- `prescribe(known=)` reads a known model whatever its truth value: a model that tested false (an
+  empty container's `__len__`, say) was replaced by a zero model.
+- `prescribe(nuisance_knots=)` and `fit_causal_residual(nuisance_knots=)` take a NumPy integer, as
+  `seed` and `folds` do; the record holds it as JSON's integer.
+- **`fit_causal_residual` reads a lever as never moved only where it keeps rounding of its size.**
+  `CausalDynamicsFit.unmoved` cut at the square root of the working precision of the actions' raw
+  size, 3.5e-4 in float32, where the rest of the library reads rounding as 64 eps
+  (`chc._units.ROUNDING`): in float32 a lever logged at 293 of its units with a spread of 0.05, or
+  at 1000 with 0.1, read as never moved, and the fit returned no channel. Both now read the
+  channel, 1.0010 ± 0.0464 and 0.9609 ± 0.0226 against a truth of 1. The residual the cut reads
+  is now refined by a second least-squares fit: the first keeps its coefficients' rounding, and a
+  lever held at one level kept 90 eps of its size on 960 rows and up to 391 eps on 4000, which the
+  new cut alone read as a move, and a plan as a lever set by a rule. A lever held at one level or
+  set by the covariates exactly still reads unmoved: refined, it keeps at most 0.55 eps of its
+  size, in float32 and float64, on logs of 100 to 30000 rows (ADR 0054 amended).
+- **`callaway_santanna_inference` keeps never-treated units labelled 0.** It dropped every unit of
+  group 0 as a first-period adopter before diff-diff saw it, so `never_treated=0`, R `did`'s and
+  diff-diff's coding, dropped every never-treated unit: the default control raised RuntimeError and
+  `control="never"` ValueError. It now reads as the same panel coded -1.
+- **The DiD estimators refuse labels that do not say when.** A `control` other than `"notyet"` or
+  `"never"` fell through to the not-yet-treated units in `callaway_santanna` and
+  `callaway_santanna_inference`; it is refused. A boolean `group` was read as cohorts 0 and 1:
+  `callaway_santanna` read nan, `twoway_fixed_effects_att` 0.2437 silently; all four estimators
+  now refuse it. A `never_treated` inside the panel's periods hid that cohort, `never_treated=4`
+  on 5 periods reading groups (2,) and 0.974 where the panel coded -1 reads (2, 4) and 1.0016; it
+  is refused, and 0 stays allowed.
+- **`fit_causal_residual(clusters=)` refuses pandas' `NA` as a missing label.** A `string` or
+  `boolean` column holds it as itself, and its truth value raised TypeError in the sort; pandas is
+  not a dependency, so `NA` is known by its type's name.
+- **`fit_causal_residual` refuses `times=None` where `known` reads the time.** With no times every
+  transition started at t = 0, so a known push that reads the time left its season in the rate the
+  residual explains, and a policy that follows the season confounded the channel: 2.34 where it is
+  1, 1.0003 with `times=`. The fit now reads `known` on the log's first eight transitions at t = 0
+  and t = 1414.21 and refuses, naming `times=`, where the rate moves by more than rounding; a
+  `known` that does not read the time fits as before, to the bit.
+- **`partial_corr_test` holds its level with one or two degrees of freedom, and refuses fewer.** At
+  one residual dimension the two residuals are collinear, and the floored `z` rejected every true
+  null; at one degree of freedom 17 % to 18 % of them at 5 %. The exact `t` rejects 3.5 % to 5.6 %
+  from 1 to 5 degrees of freedom (Monte Carlo SE 0.5 points) and 5.0 % from 15; below one degree
+  of freedom it raises ValueError. `discover_lagged_parents` keeps at most `rows - 2` parents a
+  target, so each test keeps one, and refuses a series that leaves fewer than 3 rows at `max_lag`.
+- **`confounding_robust_radius(covariate_form="quantile")` grows with `Gamma`, as it says.** The
+  quantile is refitted at each `Gamma`, and its sampling error made the radius fall between
+  neighbouring `Gamma` 0.025 apart in 3 of 20 samples of 60 rows, by up to 0.038. The radius now
+  reads the running maximum over `Gamma' <= Gamma` of bounds whose quantile is fitted on the grid
+  `2^(k/4)`, each read at `min(2^(k/4), Gamma)`: no fall on those samples. At a grid value it is
+  the largest of `msm_worst_case_mean`'s bounds up to it; between, on 2000 rows, it read 0.01 % to
+  0.26 % above the pointwise bound on average. It costs 5 linear programs a grid value, 35 at
+  `Gamma = 3` where it took 5. `msm_worst_case_mean`'s docstring states that its growth with
+  `Gamma` under the quantile form is checked, not proved.
+- **`sinkhorn` reads integer masses, and masses of another float type than the cost.** Integer
+  supply and demand raised ValueError reading their type's rounding, and float32 masses beside a
+  float64 cost failed in the scan, whose potentials changed type; all three are now cast to one
+  float type, the plan the float masses' to the bit.
+- **`BackdoorOLS` and `DoubleML` read a t statistic of nan, with a warning, where the effect and
+  its error are both 0.** On an outcome of zeros `BackdoorOLS` raised ZeroDivisionError and
+  `DoubleML` read +inf, the strongest evidence there is, for an effect of nothing; `DoubleML` also
+  read +inf beside a negative effect of no error, now -inf.
+- **`lag_check` and `persistence_check` refuse periods that no unit steps through.** Both read
+  periods as whole numbers of steps, so codes on a coarser grid, 0, 7, 14 for weeks counted in
+  days, left no transition one period apart, and each returned nan with no transitions or pairs and
+  no word. On a log of two periods or more both now raise ValueError naming the least spacing
+  within a unit; `lag_check` also refuses `lags` longer than any unit's run of consecutive
+  transitions. `prescribe` reads a log with no pair as before, its persistence unread.
+- **`information_lower_bound_certificate`'s `weighted_bayes_floor` and
+  `best_weighted_bayes_floor` read above the Bayes regret they bound under a prior wide against
+  `sqrt(rr)`.** Their quadrature cut the prior's span at `b = 0` alone; the integrands' poles at
+  `b = +-i sqrt(rr)` put a spike `sqrt(rr)/prior_width` wide there, which the rule never sampled,
+  and QUADPACK's own error estimate, 47 % below, was discarded. Under a prior `N(5, 30^2)` at
+  `rr = 1e-3` and 100 units of information both read 6.50e-3, 2.16 times the Bayes regret
+  3.01e-3; they now read 4.81e-4 and 5.06e-4, PARI/GP's 38-digit values to 1e-13
+  (`validation/weighted_van_trees_wide_prior.gp`). The failure was not monotone in the width: at
+  1000 times `sqrt(rr)` the floors read up to 200 times the Bayes regret, at 2000 they held, at
+  3000 the closed form read 4.5e-11 where it is 1.6e-4. The quadrature now cuts at multiples of
+  `sqrt(rr)` around `b = 0`, and a floor reads `nan` where QUADPACK's estimate on one of its
+  means exceeds 1e-8 of it, the test `multivariate_van_trees_certificate`'s matrix floor already
+  applied to its Gauss-Hermite rules; on 400 random priors (`rr` from 1e-9 to 10, widths from
+  1e-3 to 1e3) one floor read `nan`, under a prior 2e7 times wider than `sqrt(rr)`. The values the
+  tests pin move by at most 1.3e-15 of themselves, and the matrix floor not at all (ADR 0136,
+  amended).
+- **`local_highprob_regret_certificate` at the knife edge `rr = b^2`.** `band_over_floor` divided
+  0 by 0, a `nan` with a `RuntimeWarning`, and `empirical_coverage` read 0 for a band of zero; one
+  rounding off the edge, at `b = sqrt(0.5)`, the bands were near 1e-34, their coverage 0 and
+  their ratio to the floor `2 log(2/delta)`, as if the band held. Within four units of rounding of
+  `rr = b^2`, the test `information_lower_bound_certificate` has applied since 0.20.0 and now
+  shares, both read `nan` with no warning, and the bands and the floor 0. The documented
+  coverages 0.725, 0.967 and 0.911 are unchanged.
+- **The dither check's p-value read about 0.5 where it is near 1.** The tail of a weighted sum of
+  chi-squares, which the check's p-value and the tube's quantile read, integrated Imhof's head over
+  one interval out to `40 / q`; where the statistic `q` is a hundred-thousandth of the largest
+  weight or less, that interval runs decades past the integrand's mass near 0, QUADPACK missed the
+  mass and warned, and the tail read 0.5 low: 0.4992 for 0.9992 at `q = 1e-6` times a single
+  weight, and 0.4954 for 0.9970 on one of the dither test's 200 control logs (the closed form in
+  Maxima agrees with the fix to 1e-12). The head is now integrated a decade at a time past
+  1000 over the largest weight. Where the statistic is 0.04 of the largest weight or more, as at
+  every quantile the tube and the regret law read, nothing moves.
+
+### Documentation
+
+- `certify_safety(sensitivity=)` states what its certificate covers: a plant with the model's
+  drift and a channel within the radius. It said the true plant stayed in the set on 20 logs of 20.
+  On 20 logs of an unstable drift at `gamma = 1.5` every plant the radius covers, the true channel
+  and both edges, stayed in the set over the certified steps, and on 20 of a stable drift as well;
+  the true plant, whose drift the fit misses by its sampling error (`drift_error` 0.094–0.098, the
+  largest miss 1.7 of it), left the set on 1 of the 20 unstable logs, least `h` -0.09. A
+  misspecification test holds the channel-only contract on those 20 logs (ADR 0119, amended).
+- The 0.24.1 entry for `DecisionCertificate.tube_per_log_spread` quoted the quickstart's observed
+  spread at step 3 as 0.0061 without naming its estimator. Over 200 logs, each plan deployed
+  20 000 times, the standard deviation over logs of the share of paths the tube holds, less each
+  log's binomial part `p(1 - p)/n`, is 0.0049 beside a mean reported spread of 0.0048 (ratio 0.97,
+  bootstrap 95 % interval 0.88 to 1.09). 0.0061 matches that standard deviation with the binomial
+  part kept: at 3 500 deployments a log it reads 0.0061.
+- Notebook 02 says its last printed line, the one-step fit without noise, depends on the
+  machine: 6.0e-06 on the x86-64 Linux machine that made the outputs, 3.1e-04 on an arm64 Mac,
+  where it sits above the multi-step line; the noisy lines move by about 5 % and keep their order.
+- Notebook 00 prints the version it runs on, 1.2.0, where its committed outputs read 0.24.0; the
+  other notebooks, re-executed on the same machine, print what they printed before.
+- `chc.research.mmm`'s module docstring quotes the start-state `gamma_c` its example recovers as
+  the mean over seeds 0, 1 and 2, `(0.475, 0.179, 0.330)` for a truth of `(0.5, 0.2, 0.35)`, and
+  `(0.473, 0.178, 0.332)` with the noise taken down to `1e-6`.
+- The README's first screen says that "Production/Stable" and semantic versioning cover the stable
+  tier: 155 of the 862 names the modules list in `__all__`, in 15 modules.
+- CONTRIBUTING: a change stays inside its module's tier; a default moves one minor after it warns;
+  the complexity ratchet; `CHC_MISSPEC_BLOCK` and `just mutants`.
+
+### Notes
+
+- **The misspecification tests of the channel's error, the off-policy intervals, the dither check
+  and the lagged-lever check are sized for power.** Each reads 200 logs where it read 40 (20 for
+  the dither check's power, 6 and 2 for the lag the check names, as before), from a block of seeds
+  that `CHC_MISSPEC_BLOCK` names (CI reads block 0), and holds each count to the bound a binomial
+  count at the rate it states crosses with probability 1/1000, where it held the share to three
+  Monte Carlo standard deviations below it. The outcomes are counted apart: where the premises
+  hold, the logs refused, warned on or rejected have a ceiling, so a certificate that says so on
+  every log fails; where one fails, "holds or says so" stays the contract (ADR 0115, amended).
+  A certificate planted wrong now fails its file on each of five blocks of seeds: the channel's
+  error or an off-policy interval 0.8 times its own, the dither or the lagged-lever check's
+  p-value 0.33 times its own; at 40 logs the first two passed with probability 0.82. The job's
+  tests take 1.8 times their time before: 2980 s in one process on a loaded laptop, where the same
+  files took 1690 s.
+- Every barrier family of the misspecification tests also reads a plan its plant leaves the set
+  under, and asserts that the audit's certified steps end before the plant leaves; an audit that
+  certified every step passed 15 of the 16 barrier tests and now fails 16 of 32. One more test pins
+  where the barrier's channel-only contract ends: a plant whose drift the fit misses by 1.5 of its
+  errors leaves the set while the certificate stands.
+- The dither check's misspecification test no longer sets the `chc` logger to ERROR for the rest
+  of the process: a gate or tube test that counts the library's warnings and ran after it on the
+  same worker saw none and failed (three gate tests after the dither file, five tests with the
+  whole job in one process).
+- A warning raised in a test fails it (`filterwarnings = ["error"]`, with one listed exception and
+  its reason), and an unregistered marker fails the run (`--strict-markers`).
+- CI runs the suite on macOS arm64, on Python 3.14.
+- The reachability test that counts grid columns reads its barrier's edge halfway between two
+  nodes (`1.0125 - x[0]`), where it was on a node and the count read the last bit of a jitted
+  `linspace`.
+- `just mutants`: plants each wrong certificate of `tests/mutants/chc_mutants.py`, a pytest plugin
+  pytest does not collect, on the misspecification file that reads it, over five blocks of seeds,
+  and says which the suite catches. `validation/misspec_power.mac` reproduces the tests' floors in
+  exact rationals and computes each count's power at the rates measured.
+- `just wheel`: release.yml's wheel job on this machine. It builds a commit's wheel, installs it
+  beside the locked test dependencies in a copy whose `src/` is removed, and runs the suite there;
+  `just rev=<commit> wheel <tests>` builds another commit.
+- `tests/test_tier_boundary.py`: what a stable module imports from another tier is listed with
+  the experimental entry of `docs/api/index.md` that allows it; every entry the page lists
+  resolves; nothing outside `chc.research` imports it; the README's count of stable names is the
+  modules' own. Ruff's C901, PLR0912 and PLR0915 hold, the 75 functions past their limits on
+  2026-11-06 carrying a `# noqa`.
+
 ## [1.1.1] — 2026-11-07
 
 A patch: no feature, and no signature moves. A decision record replays on another machine's
