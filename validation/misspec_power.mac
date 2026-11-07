@@ -24,6 +24,10 @@
              where all five were read), clean (k = 1) and under the defect its test's docstring
              names, and the probability that its bound fails a block at that rate: the false red
              at the clean rate, which passes below 0.01, and the power at the other
+     STEP 6  the barrier's 20 logs whose room reads the drift's error (amended 2026-11-07): the
+             floor at a rate of 0.9 over 20 logs, how often a block at the measured 20 of 20 and
+             at the channel-only room's 19 of 20 fails it, and the least rate it fails with
+             probability 0.8
 
    Run: timeout 300 maxima --very-quiet -Q -b validation/misspec_power.mac */
 
@@ -47,6 +51,7 @@ print("=== STEP 1: the floors and ceilings ===")$
 /* [p0, the bound the tests use, floor or ceiling, the logs counted]; n is bound for the row, and
    mass, below and above read it */
 for row in [[95/100, 179, floor, 200], [92/100, 171, floor, 200], [80/100, 10, floor, 20],
+            [90/100, 13, floor, 20],
             [5/100, 21, ceiling, 200], [6/100, 24, ceiling, 200], [20/100, 58, ceiling, 200],
             [25/100, 70, ceiling, 200]]
   do block([p : row[1], c : row[2], n : row[4], f],
@@ -117,3 +122,15 @@ for row in measured do block([rate : row[2]/row[3], fails],
   print("STEP 5", row[1], "at k =", row[6], ":", row[2], "of", row[3], "=", float(rate),
         "; the bound", row[4], "fails a block with probability", fails,
         if row[6] = 1 then verdict(fails < 0.01) else ""))$
+
+print("=== STEP 6: the barrier's true plant on 20 logs, the room reading the drift's error ===")$
+block([n : 20, f, rate],
+  f : floor_at(90/100),
+  print("STEP 6a the floor at 0.9 over 20 logs:", f, verdict(f = 13)),
+  print("STEP 6b a block at the measured 20 of 20 fails it with probability", below(f, 1),
+        verdict(below(f, 1) = 0)),
+  print("STEP 6c a block at the channel-only room's 19 of 20 fails it with probability",
+        float(below(f, 19/20)), "(no power: the seed-18 test pins that log)"),
+  rate : detectable(lambda([q], bfloat(below(f, rationalize(q)))), 0b0, 1b0),
+  print("STEP 6d the largest rate staying in that it fails with probability 0.8:",
+        float(rate), verdict(abs(rate - 0.5308b0) < 1b-3)))$
