@@ -20,7 +20,8 @@ probability 0.8. Each barrier family also reads a plan its plant leaves the set 
 that runs past the exit fails. `just mutants` plants the wrong certificates of `tests/mutants/` one
 at a time over five blocks: each of the four above fails its file on all five, the barrier's fails
 16 of its 32 tests, and no file fails clean on any block. The job's tests take 1.8 times their
-time before: 2980 s in one process on a loaded laptop, where the same files took 1690 s.
+time before: 2980 s in one process on a loaded laptop, where the same files took 1690 s; the CI
+job, 7.6 minutes on two workers before, runs on the runner's four.
 
 ## Context
 
@@ -75,7 +76,7 @@ a premise fails, a certificate can still read as valid. Three cases measured her
   on about four paths in ten it comes after the DEPLOY it would have stopped.
 - A pinned contract is a test's own reading of a premise. When a fix redefines a certificate, for
   example the barrier's sensitivity set, the test that reads that certificate is revisited with it.
-- The suite takes a few minutes on two workers, and it runs on one Python version only.
+- The suite takes a few minutes on four workers, and it runs on one Python version only.
 
 ## Alternatives
 
