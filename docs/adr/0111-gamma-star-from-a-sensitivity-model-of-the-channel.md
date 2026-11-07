@@ -10,6 +10,9 @@ Re-measured 2026-10-27 on 0.22.0, on the 200 logs of the Consequences at `Γ_0 =
 stays inside the radius on all of them, and every held plan certifies 30 of 30 steps with none
 leaving the set on the truth. The least true `h` along the held path has median 0.423, was 0.505,
 and 0.468 with a channel linear in the state, was 0.536: less room, the same claim.
+Amended 2026-11-07 by ADR 0119, amended: the set still holds the drift at its estimate, but the
+barrier's room may read a bound on the drift's error, opt-in (`certify_safety(drift_error=)`,
+`prescribe(barrier_drift_error=True)`); `Γ*` reads the channel's sensitivity alone, as before.
 
 ## Context
 

@@ -581,6 +581,9 @@ def test_the_rounds_keep_the_plans_own_pessimism() -> None:
         ({"cvar_gap": 0.0}, "cvar_gap must be"),
         ({"cvar_gap": math.nan}, "cvar_gap must be"),
         ({"cvar_gap": math.inf}, "cvar_gap must be"),
+        ({"drift_error": -0.1}, "bounds no error of the drift"),
+        ({"drift_error": math.nan}, "bounds no error of the drift"),
+        ({"drift_error": math.inf}, "bounds no error of the drift"),
     ],
 )
 def test_a_barrier_constraint_refuses_what_certify_safety_could_not_price(
@@ -1252,6 +1255,63 @@ def test_a_held_disk_keeps_the_plant_at_the_radius_s_edge_in_the_set() -> None:
     edge = LinearDynamics(jnp.zeros((1, 1)), jnp.full((1, 1), 1.0 + delta))
     reached = np.asarray(rollout(edge, jnp.zeros(1), plan.actions, DT))[: steps + 1, 0]
     assert np.all(1.0 - reached**2 >= -1e-9)
+
+
+class _Pushed(eqx.Module):
+    """``field`` with ``shift`` added: a plant whose drift is off the model's by a constant."""
+
+    field: LinearDynamics
+    shift: float
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return self.field(t, x, u) + self.shift
+
+
+def test_a_held_room_that_reads_the_drift_s_error_keeps_a_plant_off_in_both_in_the_set() -> None:
+    """An integrator pushed toward 1.5 under ``x <= 1``, an exact radius of 0.3 on the channel and
+    a bound of 0.2 on the drift's error, both held in the solve and audited: the plant at the
+    radius's edge whose drift is 0.2 above the model's stays in the set over every certified
+    step, 0.012 inside at the least, all 20 certified. Held by the channel's room alone, the plan
+    was certified on all 20 steps as well, and that plant reached ``h = -0.40``. The audit refuses
+    a bound that bounds no error."""
+    delta, bound = 0.3, 0.2
+    sensitivity = plan_module.ChannelSensitivity(
+        gram=np.eye(1), channel_degree=0, sampling=delta, confounding=0.0, level=0.95
+    )
+    cost = QuadraticCost(
+        Q=jnp.eye(1), R=0.01 * jnp.eye(1), Qf=10.0 * jnp.eye(1), x_target=jnp.array([1.5])
+    )
+
+    def ceiling(x: Array) -> Array:
+        return 1.0 - x[0]
+
+    integrator = LinearDynamics(jnp.zeros((1, 1)), jnp.ones((1, 1)))
+    edge = _Pushed(LinearDynamics(jnp.zeros((1, 1)), jnp.full((1, 1), 1.0 + delta)), bound)
+    least = {}
+    for drift_error in (None, bound):
+        plan = causal_plan(
+            integrator,
+            jnp.zeros(1),
+            cost,
+            DT,
+            HORIZON,
+            -2.0,
+            2.0,
+            barrier=BarrierConstraint(
+                ceiling, sensitivity=sensitivity, u_max=(2.0,), drift_error=drift_error
+            ),
+        )
+        assert plan.safety is not None
+        assert plan.safety.drift_error == drift_error
+        steps = plan.safety.certified_steps
+        assert steps == HORIZON
+        reached = np.asarray(rollout(edge, jnp.zeros(1), plan.actions, DT))[: steps + 1, 0]
+        least[drift_error] = float(np.min(1.0 - reached))
+    assert least[bound] >= -1e-9, least
+    assert least[None] < -0.1, least
+    for wrong in (-1.0, math.inf, math.nan):
+        with pytest.raises(ValueError, match="bounds no error of the drift"):
+            certify_safety(plan, integrator, ceiling, DT, u_max=2.0, drift_error=wrong)
 
 
 def test_gamma_star_reads_a_pinned_lever_s_box_and_not_its_logged_mean() -> None:

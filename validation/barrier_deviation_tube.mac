@@ -104,3 +104,61 @@ for k : 1 thru 10 do (
   worst : max(worst, abs(bfloat(max(abs(yhi - xm), abs(ylo - xm)) - e))))$
 print("(4) max over 10 steps of | max plant gap - e_k | =", worst, " (= 0b0)")$
 print("    e_10 =", bfloat(e))$
+
+/* (5) the drift's error (amended 2026-11-07). A plant whose drift is off the model's by a
+   constant delta, ||delta|| <= eps, has delta added to the field at every stage, as the channel's
+   error E u is: with the field affine in the state the gap obeys
+
+       y_{k+1} - x_{k+1} = J (y_k - x_k) + S (E u_k + delta),
+
+   the same J and S, so the norm recursion takes one more push of the same gain,
+
+       e_{k+1} = ||J_k|| e_k + ||S_k|| (Delta ||D^+ u_k|| + eps),
+
+   and bounds ||y_k - x_k|| by the triangle inequality. (5a) the one-step gap, 2 states and
+   2 levers, symbolic; (5b) one state, one lever, actions and the drift's error of one sign: the
+   plant at b_hat + Delta and drift a + 0 x + eps meets the recursion at every step. */
+for mapf in [eulerstep, rk4step] do block([J, S, gap],
+  J : subst([s1 = 0, s2 = 0], jac(mapf, x)),
+  S : subst([s1 = 0, s2 = 0], jac(mapf, s)),
+  gap : mapf(x + d, B + E, s) - mapf(x, B, zero),
+  print("(5a)", mapf, ": gap - (J d + S (E u + delta)) =",
+        ratsimp(gap - (J . d + S . (E . u + s))), " (= 0)"))$
+kill(a, h, bh, Dl)$
+rk4d(y, b, v, shift) := block([k1, k2, k3, k4],
+  k1 : a*y + b*v + shift, k2 : a*(y + h/2*k1) + b*v + shift,
+  k3 : a*(y + h/2*k2) + b*v + shift, k4 : a*(y + h*k3) + b*v + shift,
+  y + h/6 * (k1 + 2*k2 + 2*k3 + k4))$
+eulerd(y, b, v, shift) := y + h * (a*y + b*v + shift)$
+for pair in [[rk4d, R(h*a), h * phi(h*a)], [eulerd, 1 + h*a, h]] do block(
+  [stepd : pair[1], growth : pair[2], gain : pair[3], xm : 0, yp : 0, e : 0, out : []],
+  for v in [v0, v1, v2] do (
+    xm : stepd(xm, bh, v, 0), yp : stepd(yp, bh + Dl, v, ep),
+    e : growth * e + gain * (Dl * v + ep),
+    out : endcons(ratsimp(yp - xm - e), out)),
+  print("(5b)", stepd, ": plant at both edges less the recursion, steps 1..3:", out,
+        " (= [0, 0, 0])"))$
+
+/* (6) a drift error that moves with the state, alpha x + eps, read at the model's state as the
+   code reads it: one Euler step from a gap g leaves h alpha g out of the push, of the second
+   order in the error and the gap together, and nothing at g = 0 */
+block([xm : x0, yp : x0 + g],
+  print("(6) Euler: plant gap - (J g + S (Dl v + alpha x + eps)) =",
+        ratsimp((yp + h*((a + al)*yp + ep + (bh + Dl)*v)) - (xm + h*(a*xm + bh*v))
+                - ((1 + h*a)*g + h*(Dl*v + al*xm + ep))),
+        " (= h al g)"))$
+
+/* (7) the stable and the unstable drift of the tests, a = -1 and 1/2, dt = 1/10, a drift error
+   of eps = 0.19 alone (no action): RK4 rollouts of the plant against the recursion, in bfloat;
+   the recursion is e_k = h phi(z) eps (R(z)^k - 1)/(R(z) - 1), z = h a */
+fpprec : 40$
+for av in [-1, 1/2] do block([xm : 0, yp : 0, e : 0, worst : 0, closed],
+  a : av, h : 1/10,
+  for k : 1 thru 30 do (
+    xm : rk4d(xm, 1, 0, 0), yp : rk4d(yp, 1, 0, 19/100),
+    e : R(h*a) * e + h * phi(h*a) * 19/100,
+    worst : max(worst, abs(bfloat(yp - xm - e)))),
+  closed : h * phi(h*a) * 19/100 * (R(h*a)^30 - 1) / (R(h*a) - 1),
+  print("(7) a =", av, ": max over 30 steps of | plant gap - e_k | =", worst, " (= 0b0);",
+        "e_30 =", bfloat(e), "closed form - e_30 =", bfloat(closed - e), " (= 0b0)"),
+  kill(a, h))$

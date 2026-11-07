@@ -16,7 +16,9 @@ should, so each family also reads a plan the plant leaves the set under, one not
 barrier or one held and then pushed to the top of the box: the audit certifies fewer steps than
 the plant takes to leave. A certificate that certified every step passed every held case and fails
 these. The audit's contract is the channel's: a plant whose drift the fit misses is outside it,
-and the last test here pins where that edge lies.
+and one test here pins where that edge lies. Read with a bound on the drift's error
+(``drift_error``), the contract holds a plant whose drift is within it as well, and the tests that
+read it hold such plants in the set.
 """
 
 from __future__ import annotations
@@ -25,11 +27,14 @@ import dataclasses
 import math
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from _misspec_counts import at_least, seeds
 from _misspec_world import DT, World, ask
 from jax import Array
+from scipy.stats import t as student_t
 
 from chc import Constraint
 from chc.cost import QuadraticCost
@@ -239,17 +244,24 @@ def _held_and_audited(
     target: float,
     weight: float,
     push_from: int | None = None,
+    drift_error: float | None = None,
 ) -> tuple[jnp.ndarray, SafetyCertificate]:
     """The plan held to ``x <= 1`` from 0 chasing ``target`` under the radius ``read``
-    (:func:`_read_as`), each action priced at ``weight``, and its audit by the same radius. With
-    ``push_from``, every action from that step on is moved to the top of the box, 5, before the
-    audit: the plan's path then climbs out of the set from there."""
+    (:func:`_read_as`), each action priced at ``weight``, and its audit by the same radius and
+    ``drift_error``. With ``push_from``, every action from that step on is moved to the top of the
+    box, 5, before the audit: the plan's path then climbs out of the set from there."""
     gamma, share, sensitivity = read
     start = jnp.zeros(1)
     cost = QuadraticCost(
         Q=jnp.eye(1), R=weight * jnp.eye(1), Qf=jnp.eye(1), x_target=jnp.array([target])
     )
-    barrier = BarrierConstraint(_unit_ceiling, gamma=gamma, cvar_gap=share, sensitivity=sensitivity)
+    barrier = BarrierConstraint(
+        _unit_ceiling,
+        gamma=gamma,
+        cvar_gap=share,
+        sensitivity=sensitivity,
+        drift_error=drift_error,
+    )
     plan = causal_plan(model, start, cost, dt, horizon, -5.0, 5.0, barrier=barrier)
     if push_from is not None:
         pushed = plan.actions.at[push_from:].set(5.0)
@@ -265,6 +277,7 @@ def _held_and_audited(
         cvar_gap=share,
         u_max=5.0,
         sensitivity=sensitivity,
+        drift_error=drift_error,
     )
     return plan.actions, audit
 
@@ -319,6 +332,90 @@ def test_the_audit_stops_before_any_plant_in_the_radius_leaves(drift: str, radiu
     )
     assert first <= horizon, (drift, radius)
     assert audit.certified_steps < first, (drift, radius, audit.certified_steps, first)
+
+
+class _Pushed(eqx.Module):
+    """``field`` with ``shift`` added: a plant whose drift is off the model's by a constant."""
+
+    field: LinearDynamics | HybridDynamics
+    shift: float
+
+    def __call__(self, t: Array | float, x: Array, u: Array) -> Array:
+        return self.field(t, x, u) + self.shift
+
+
+# the drift's error the next two tests read, a bound the plant's drift is within
+DRIFT_BOUND = 0.05
+
+
+def _drifted_plants(a: float, delta: float) -> list[_Pushed]:
+    """The plants with a channel within ``delta`` of 1 and a drift within ``DRIFT_BOUND`` of
+    ``a x``: 21 channels, each at both edges of the drift's bound and at its centre."""
+    return [
+        _Pushed(LinearDynamics(jnp.array([[a]]), jnp.array([[channel]])), shift)
+        for channel in np.linspace(1.0 - delta, 1.0 + delta, 21)
+        for shift in (-DRIFT_BOUND, 0.0, DRIFT_BOUND)
+    ]
+
+
+@pytest.mark.parametrize("drift", list(DRIFTS))
+def test_certified_steps_keep_every_plant_in_the_radius_and_the_drift_s_bound_safe(
+    drift: str,
+) -> None:
+    """The known drift and channel of the first family, the plant's drift now off by up to 0.05 as
+    well: the plan held below ``x <= 1`` with that bound read into the room (``drift_error``) keeps
+    every plant within both, stepped as the model is, in the set over every certified step, least
+    ``h`` 0.0023, 0.1157 and 0.1205 on the stable drift, the integrator and the unstable one, each
+    certified on every step. Held by the room of the channel alone, a plant whose drift is 0.05
+    above the model's left the set over the certified steps: to ``h = -0.53`` on the integrator
+    and to -0.056 on the unstable drift."""
+    a, dt, horizon = DRIFTS[drift]
+    delta = 0.5 if drift == "integrator" else 0.3
+    model = LinearDynamics(jnp.array([[a]]), jnp.array([[1.0]]))
+    exact = ChannelSensitivity(
+        gram=np.eye(1), channel_degree=0, sampling=delta, confounding=0.0, level=0.95
+    )
+    read = _read_as("absolute", exact, 1.0, 1.0)
+    actions, audit = _held_and_audited(model, dt, horizon, read, 3.0, 1e-2, drift_error=DRIFT_BOUND)
+    assert audit.drift_error == DRIFT_BOUND
+    assert audit.certified_steps > 0
+    worst = min(
+        float(
+            np.min(
+                1.0
+                - np.asarray(rollout(plant, jnp.zeros(1), actions, dt))[
+                    : audit.certified_steps + 1, 0
+                ]
+            )
+        )
+        for plant in _drifted_plants(a, delta)
+    )
+    # at a corner of the two bounds the plant can meet the room the audit read, zero but for
+    # rounding
+    assert worst >= -1e-12, (drift, audit.certified_steps, worst)
+
+
+@pytest.mark.parametrize("drift", list(DRIFTS))
+def test_the_audit_with_the_drift_s_bound_stops_before_any_plant_in_it_leaves(drift: str) -> None:
+    """The same plan pushed to the top of the box from a third of the horizon on: the first plant
+    within both bounds leaves the set at the step after the push, and the audit read with the
+    drift's bound certifies the steps before it and none after."""
+    a, dt, horizon = DRIFTS[drift]
+    delta = 0.5 if drift == "integrator" else 0.3
+    model = LinearDynamics(jnp.array([[a]]), jnp.array([[1.0]]))
+    exact = ChannelSensitivity(
+        gram=np.eye(1), channel_degree=0, sampling=delta, confounding=0.0, level=0.95
+    )
+    read = _read_as("absolute", exact, 1.0, 1.0)
+    actions, audit = _held_and_audited(
+        model, dt, horizon, read, 3.0, 1e-2, push_from=horizon // 3, drift_error=DRIFT_BOUND
+    )
+    first = min(
+        _exit(np.asarray(rollout(plant, jnp.zeros(1), actions, dt)), ceiling=1.0)
+        for plant in _drifted_plants(a, delta)
+    )
+    assert first <= horizon, drift
+    assert audit.certified_steps < first, (drift, audit.certified_steps, first)
 
 
 def _with_channel(model: HybridDynamics, channel: float) -> HybridDynamics:
@@ -399,6 +496,61 @@ def test_on_twenty_logs_every_plant_whose_channel_is_in_the_radius_stays_safe() 
             assert least >= -1e-12, (seed, channel, certified, least)
 
 
+# The true plant's rate of staying in the set over the certified steps where the room reads the
+# drift's error, and the floor 20 logs hold it to (ADR 0115's binomial rule)
+DRIFT_ROOM_RATE = "0.9"
+DRIFT_ROOM_FLOOR = at_least(DRIFT_ROOM_RATE, 20)
+
+
+def _drift_room(fit: CausalDynamicsFit) -> float:
+    """The bound :func:`chc.prescribe` reads into the room under ``barrier_drift_error``, on one
+    state: the fit's ``drift_error`` at Student's ``t`` of 0.975, its rows less one degrees of
+    freedom, as the tube reads it without clusters or periods."""
+    assert fit.drift_error is not None
+    rows = int(np.asarray(fit.defect).shape[0])
+    return float(student_t.ppf(0.975, rows - 1)) * fit.drift_error
+
+
+def test_on_twenty_logs_the_true_plant_stays_safe_where_the_room_reads_the_drift_s_error() -> None:
+    """The 20 unstable logs above, each plan held and certified under the fit's own sensitivity at
+    ``gamma = 1.5`` and with the drift's error read into the room, ``t`` of 0.975 times the fit's
+    ``drift_error``, 0.185 to 0.192 here. The contract then holds the true plant where both the
+    channel's radius and the drift's bound hold, each a 0.95 statement, so the true plant stays in
+    the set over the certified steps at a rate of 0.9 at least, and 20 logs hold it to at least
+    13, the floor a count at 0.9 falls below with probability 1/1000. It stayed in on all 20, least
+    ``h`` +0.72; without the drift's error it left on 1 (the test below pins that log). 20 logs
+    cannot tell 0.9 from 0.95: the floor fails with probability 0.8 at a rate of 0.53, and the
+    room of the channel alone, 19 of 20 here, passes it, which the next test does not
+    (``validation/misspec_power.mac`` STEP 6). The certified steps are the price: 24.85 on average,
+    19 to 30, where they were 29.95."""
+    gamma, dt, horizon = 1.5, 0.1, 30
+    start = jnp.zeros(1)
+    cost = QuadraticCost(
+        Q=jnp.eye(1), R=1e-4 * jnp.eye(1), Qf=jnp.eye(1), x_target=jnp.array([2.0])
+    )
+    truth = LinearDynamics(jnp.array([[0.5]]), jnp.array([[1.0]]))
+    inside = 0
+    for seed in seeds(0, 20):
+        fit = _confounded_fit(seed, 0.5, dt)
+        model = HybridDynamics(known=UNKNOWN, residual=fit.residual)
+        bound = _drift_room(fit)
+        barrier = BarrierConstraint(
+            _unit_ceiling,
+            gamma=gamma,
+            u_max=(5.0,),
+            sensitivity=ChannelSensitivity.from_fit(fit),
+            drift_error=bound,
+        )
+        plan = causal_plan(model, start, cost, dt, horizon, -5.0, 5.0, barrier=barrier)
+        assert plan.safety is not None
+        assert plan.safety.drift_error == bound
+        certified = plan.safety.certified_steps
+        assert certified > 0
+        path = np.asarray(rollout(truth, start, plan.actions, dt))
+        inside += bool(np.all(1.0 - path[: certified + 1, 0] >= 0.0))
+    assert inside >= DRIFT_ROOM_FLOOR, (inside, DRIFT_ROOM_FLOOR)
+
+
 @pytest.mark.parametrize("radius", ["absolute", "relative"])
 @pytest.mark.parametrize("drift", list(DRIFTS))
 def test_the_audit_under_the_sensitivity_model_stops_before_the_plant_leaves(
@@ -429,8 +581,8 @@ def test_a_plant_whose_drift_the_fit_misses_is_outside_the_contract() -> None:
     sensitivity model at ``gamma = 1.5`` is certified on all 30 steps; the plant with the fitted
     drift and the true channel keeps 0.57 or more below the ceiling, and the true plant crosses it
     at state 29, to ``h = -0.09``, while the certificate stands. Of 20 such logs this is the one
-    whose true plant leaves. A change that prices the drift's error in the room turns this test
-    red, and it is then rewritten to assert that the true plant stays in."""
+    whose true plant leaves. A room that reads the drift's error holds it, which is opt-in
+    (``drift_error``): the next test reads it so."""
     drift, dt, horizon = 0.5, 0.1, 30
     fit = _confounded_fit(18, drift, dt)
     model = HybridDynamics(known=UNKNOWN, residual=fit.residual)
@@ -446,6 +598,34 @@ def test_a_plant_whose_drift_the_fit_misses_is_outside_the_contract() -> None:
     truth = LinearDynamics(jnp.array([[drift]]), jnp.array([[1.0]]))
     path = np.asarray(rollout(truth, jnp.zeros(1), actions, dt))
     assert _exit(path, ceiling=1.0) <= audit.certified_steps, audit.certified_steps
+
+
+def test_a_room_that_reads_the_drift_s_error_keeps_the_plant_the_fit_misses_safe() -> None:
+    """The log of the test above, the plan held and audited with the fit's drift error read into
+    the room: its bound, 0.187, holds the drift's miss of 0.145, and the true plant stays in the set
+    over every certified step, 0.72 or more below the ceiling, where held without it it crossed the
+    ceiling at state 29. A room that leaves the drift's error out lets it leave, as above."""
+    drift, dt, horizon = 0.5, 0.1, 30
+    fit = _confounded_fit(18, drift, dt)
+    model = HybridDynamics(known=UNKNOWN, residual=fit.residual)
+    sensitivity = ChannelSensitivity.from_fit(fit)
+    bound = _drift_room(fit)
+    fitted = float(jax.jacobian(model, argnums=1)(0.0, jnp.zeros(1), jnp.zeros(1))[0, 0])
+    assert abs(fitted - drift) <= bound, (fitted, bound)
+    actions, audit = _held_and_audited(
+        model,
+        dt,
+        horizon,
+        _read_as("absolute", sensitivity, 1.5, 1.0),
+        2.0,
+        1e-4,
+        drift_error=bound,
+    )
+    assert audit.drift_error == bound
+    assert audit.certified_steps > 0
+    truth = LinearDynamics(jnp.array([[drift]]), jnp.array([[1.0]]))
+    path = np.asarray(rollout(truth, jnp.zeros(1), actions, dt))
+    assert _exit(path, ceiling=1.0) > audit.certified_steps, audit.certified_steps
 
 
 def test_a_relative_radius_holds_the_plants_in_its_share_and_says_so() -> None:

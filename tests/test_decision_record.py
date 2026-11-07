@@ -262,6 +262,16 @@ def test_a_record_replays_to_the_bit(shape: str, request: pytest.FixtureRequest)
     assert replayed.certificate == made.certificate
 
 
+def test_a_record_whose_barrier_reads_the_drift_s_error_replays_to_the_bit() -> None:
+    made = _quickstart(barrier_drift_error=True)
+    record = _text(made.to_json())
+    assert record["inputs"]["barrier_drift_error"] is True
+    assert record["certificate"]["barrier_drift_error"] is not None
+    replayed = Prescription.from_json(record, QUICKSTART)
+    assert replayed.to_json() == record
+    assert replayed.certificate == made.certificate
+
+
 def test_a_record_that_made_no_plan_replays() -> None:
     latent = prescribe(
         QUICKSTART,
@@ -400,6 +410,7 @@ def test_an_infinite_setting_is_text_and_none_is_not_given() -> None:
         tube_actions="box",
         dither="eta1",
         planned_cost_bias=False,
+        barrier_drift_error=False,
     )
     text = _text(written)
     assert (text["tolerance"], text["levers"][0]["lo"], text["constraints"][0]) == (
@@ -666,6 +677,7 @@ def test_a_replay_that_does_not_give_the_record_back_names_the_field(
         (("target", "weight"), 3.0),
         (("levers", 0, "cap_per_step"), 0.5),
         (("budgets", 0, "amount"), 2.5),
+        (("barrier_drift_error",), True),
     ],
 )
 def test_each_setting_moves_the_replay(
