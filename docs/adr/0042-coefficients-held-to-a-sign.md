@@ -1,6 +1,8 @@
 # ADR 0042 — Coefficients held to a sign
 
-**Status:** proposed, 2026-10-02. Experimental, as `chc.dlm` is.
+**Status:** proposed, 2026-10-02. Experimental, as `chc.dlm` is. Amended 2026-11-07: every form
+whose `W_t` is a variance is taken, the other states conditioned on the constrained innovations
+(ADR 0121).
 
 ## Context
 
@@ -32,7 +34,9 @@ over paths, and the truncated posterior is a Gaussian truncated to an orthant.
     rejected. With no wall in the way the end is a fresh draw. The velocity is a centred backward
     draw of every state.
   - *The other states, given the constrained paths*, by forward filtering and backward sampling of
-    a DLM with known offsets, whose covariances are computed once.
+    a DLM with known offsets, whose covariances are computed once. Where `W_t` couples the blocks
+    (amended 2026-11-07), its evolution adds the regression of their innovation on the
+    constrained ones, `K_t (c_t - c_(t-1))`, and its variance is what that leaves.
   - *`V`*, from its inverse gamma given the constrained values alone, with the other states
     integrated out as well. `V` given the data is `IG(n_T / 2, n_T S_T / 2)`, and the `k` values
     given `V` are the Gaussian above, so they add `k / 2` to the shape and half their distance
@@ -49,7 +53,9 @@ over paths, and the truncated posterior is a Gaussian truncated to an orthant.
   - no signs;
   - a column that is not one of `x`'s, or that shares its regression block with another column;
   - a sign that is neither `"positive"` nor `"negative"`;
-  - `form="multiplicative"`, whose evolution couples the blocks;
+  - a step whose `W_t` is not a variance, as the multiplicative form's with blocks whose
+    discounts differ, once they correlate, or that moves two constrained coefficients only
+    together (amended 2026-11-07; up to 1.2.0 every form but the additive was refused);
   - a variance discount below 1;
   - a fit with interventions, whose `R_t` is not the discount's;
   - `draws` below 1, `chains` below 2, a negative `warmup`.

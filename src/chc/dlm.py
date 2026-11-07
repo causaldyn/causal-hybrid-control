@@ -44,7 +44,7 @@ With one discount for every block the multiplicative form is the single discount
 blocks uninflated. A model of one block is the same model under the additive and the
 multiplicative form. ``R_t - P_t`` is a variance under the directional and the additive form;
 under the multiplicative form with discounts that differ it is not, and :func:`smooth`,
-:func:`backward_sample` and :func:`forecast` refuse such a step.
+:func:`backward_sample`, :func:`constrained_sample` and :func:`forecast` refuse such a step.
 
 The observational variance is learned (Normal-Gamma): ``Prior.dof`` is ``n_0`` and
 ``Prior.scale`` is ``S_0``, the prior point estimate of the variance; an infinite ``dof`` means
@@ -1404,19 +1404,36 @@ def _convergence(states: _Array, variance: _Array) -> tuple[float, float]:
 
 def _transitions(fit: DLMFit) -> tuple[_Array, _Array]:
     """``R*_1``, the first prior's covariance, and ``W*_t`` for ``t = 2, ..., T``, both in units
-    of ``V``: ``R_t = G C_(t-1) G' + W_t`` with ``W_t`` the discount's blockwise inflation, zero
-    exactly where a block's discount is 1 or a held coordinate is idle.
+    of ``V``: ``R_t = G C_(t-1) G' + W_t``, with ``W_t`` the discount's evolution read again as
+    the filter ran it. It is zero exactly on the rows of a coordinate a step does not discount, a
+    block at a discount of 1 or an idle held regressor: the additive form's ``W_t`` is blockwise,
+    and the directional form keeps those rows of ``G C G'`` in exact arithmetic, so the rounding
+    its nested core leaves on them, ``1e-17`` of the rest, is set to zero.
 
     Raises:
-        ValueError: on a fit whose ``R_t`` is not the discount's, such as one with interventions.
+        ValueError: on a fit whose ``R_t`` is not the discount's, such as one with interventions,
+            or a step whose ``W_t`` is not a variance, as the multiplicative form's with blocks
+            whose discounts differ is once they correlate.
     """
-    s = _structure(fit.model)
+    model = fit.model
+    s = _structure(model)
     horizon, p = fit.mean.shape
     active = fit.design != 0.0
+    rates = np.zeros(p)
+    for sl, rate in zip(s.slices, s.rates, strict=True):
+        rates[sl] = rate
     w = np.zeros((max(horizon - 1, 0), p, p))
+    window, reads = np.zeros((0, p)), _reads(s, model.form)
+    if reads:
+        window = _slide(window, fit.design[:1], s, p)
     for t in range(1, horizon):
         evolved = s.evolution @ fit.covariance[t - 1] @ s.evolution.T
-        w[t - 1] = _evolve(s, "additive", evolved, active[t]) - evolved
+        if model.form == "additive":
+            w[t - 1] = _evolve(s, "additive", evolved, active[t]) - evolved
+        else:
+            if reads:
+                window = _slide(window, fit.design[t : t + 1], s, p)
+            w[t - 1] = _sym(_evolve(s, model.form, evolved, active[t], window)) - evolved
         scale_of = float(np.abs(fit.prior_covariance[t]).max())
         if not np.allclose(
             evolved + w[t - 1], fit.prior_covariance[t], rtol=0.0, atol=1e-9 * scale_of
@@ -1425,8 +1442,62 @@ def _transitions(fit: DLMFit) -> tuple[_Array, _Array]:
                 f"step {t}: the prior covariance is not the discount's evolution of the last"
                 " posterior; constrained sampling does not take a fit with interventions"
             )
+        if model.form == "directional":
+            kept = (rates == 0.0) | ~np.where(s.hold, active[t], True)
+            w[t - 1][kept] = 0.0
+            w[t - 1][:, kept] = 0.0
+        elif model.form == "multiplicative":
+            lowest = float(np.linalg.eigvalsh(w[t - 1])[0])
+            if lowest < -1e-9 * scale_of:
+                raise ValueError(
+                    f"step {t}: the evolution variance W = D P D - P has an eigenvalue"
+                    f" {lowest:.3g}, so it is not a variance and the discounts define no"
+                    " Gaussian prior over paths for the signs to truncate: form='multiplicative'"
+                    " with blocks whose discounts differ does this once they correlate;"
+                    " form='directional' keeps the evolution a variance"
+                )
         w[t - 1] /= fit.scale[t - 1]
     return fit.prior_covariance[0] / fit.model.prior.scale, w
+
+
+def _coupling(w: _Array, cs: list[int], us: list[int], columns: list[int]) -> tuple[_Array, _Array]:
+    """The other states' innovation given the constrained coefficients' at each step: its
+    regression on the coefficients that move, ``K_t = W_uc W_cc^-1``, ``(T - 1, u, c)``, and the
+    variance it leaves, ``W_uu - K_t W_cu``, ``(T - 1, u, u)``. A coefficient whose evolution
+    variance is zero at a step does not move there, and its row of ``W_t`` is zero, so its column
+    of ``K_t`` is zero. An evolution that keeps the blocks apart, as the additive form's does,
+    gives ``K_t = 0`` and ``W_uu`` exactly. ``columns`` names each constrained coefficient's
+    column of ``x``.
+
+    Raises:
+        ValueError: at a step whose evolution variance moves two or more constrained
+            coefficients only together: its correlation matrix over them has eigenvalues more
+            than ``_CONDITION_LIMIT`` apart.
+    """
+    couple = np.zeros((w.shape[0], len(us), len(cs)))
+    left = w[:, us][:, :, us]
+    for t in range(w.shape[0]):
+        moving = np.flatnonzero(np.diag(w[t])[cs] > 0.0)
+        if not moving.size:
+            continue
+        on = np.asarray(cs)[moving]
+        wcc, wuc = w[t][np.ix_(on, on)], w[t][np.ix_(us, on)]
+        root = np.sqrt(np.diag(wcc))
+        values = np.linalg.eigvalsh(wcc / np.outer(root, root))
+        if values[0] * _CONDITION_LIMIT < values[-1]:
+            names = [columns[i] for i in moving]
+            raise ValueError(
+                f"step {t + 1}: the evolution variance moves the coefficients on columns {names}"
+                " only together: its correlation matrix over them is singular past what float64"
+                " keeps apart, as the directional form's can be where its window leaves"
+                " combinations of their columns unread (columns held constant, or at zero,"
+                " beside a level); constrained sampling needs each one's innovation apart from"
+                " the others', and Regression(hold_when_idle=True) keeps an idle one still"
+            )
+        k = np.linalg.solve(wcc, wuc.T).T
+        couple[t][:, moving] = k
+        left[t] = left[t] - k @ wuc.T
+    return couple, left
 
 
 def _unit_filter(
@@ -1562,7 +1633,12 @@ def constrained_sample(  # noqa: C901, PLR0912, PLR0915
       (Pakman and Paninski 2014): the orbit is an ellipse, reflected where it meets a wall, with
       no step size and no rejection. The steps a zero evolution variance ties together (a discount
       of 1, or an idle held regressor) are one value;
-    * the other states given those paths, by forward filtering and backward sampling;
+    * the other states given those paths, by forward filtering and backward sampling. Where
+      ``W_t`` couples the blocks, as the directional form's does, their evolution adds the
+      regression of their innovation on the constrained coefficients',
+      ``K_t (c_t - c_(t-1))`` with ``K_t = W_uc W_cc^-1``, and its variance is what that leaves,
+      ``W_uu - K_t W_cu``: Gaussian conditioning, which the filter and the backward step then
+      carry exactly (``validation/dlm_constrained_conditioning.mac``);
     * ``V`` from its inverse gamma given the constrained values alone, the other states
       integrated out as well. Given every state, each evolution innovation would add a degree of
       freedom, which pins ``V`` to the path and slows its chain.
@@ -1576,11 +1652,23 @@ def constrained_sample(  # noqa: C901, PLR0912, PLR0915
     ``ess`` say whether the chains mixed; the draws are not to be read when they are not
     :attr:`ConstrainedDraws.mixed`, and the run is then logged as a warning.
 
+    Every form whose ``W_t`` is a variance is taken: the directional and the additive always, the
+    multiplicative where its blocks' discounts are equal or the blocks stay uncorrelated enough.
+    A step is refused where ``W_t`` moves two constrained coefficients only together, as the
+    directional form's can where its window leaves combinations of their columns unread: two
+    columns held constant, or at zero, beside a level alone. On a level beside a drifting
+    coefficient held while idle and a static one, eight steps with the variance learned, the
+    directional form's draws matched rejection from 1.5 million exact unconstrained draws within
+    1.6 Monte Carlo standard errors in every mean, over five seeds; drawn without the coupling,
+    the level's means missed by 5.6-6.4.
+
     Raises:
         ValueError: on no signs, a column that is not one of ``x``'s or not in a width-one
-            regression block, a sign that is neither, a form other than ``"additive"`` (the
-            others' evolution couples the blocks), a variance discount below 1, a fit with
-            interventions, ``draws`` below 4, ``chains`` below 2 or a negative ``warmup``.
+            regression block, a sign that is neither, a variance discount below 1, a fit with
+            interventions, a step whose evolution variance is not a variance (the multiplicative
+            form's, with blocks whose discounts differ, once they correlate) or moves two
+            constrained coefficients only together, ``draws`` below 4, ``chains`` below 2 or a
+            negative ``warmup``.
     """
     model = fit.model
     if not signs:
@@ -1589,10 +1677,6 @@ def constrained_sample(  # noqa: C901, PLR0912, PLR0915
     draws = _count(draws, "draws", 4, ", two a half for split R-hat")
     chains = _count(chains, "chains", 2, " for R-hat")
     warmup = _count(draws if warmup is None else warmup, "warmup", 0)
-    if model.form != "additive":
-        raise ValueError(
-            "constrained sampling needs form='additive', whose evolution keeps the blocks apart"
-        )
     if model.variance_discount != 1.0:
         raise ValueError("constrained sampling needs a variance discount of 1")
     s = _structure(model)
@@ -1667,13 +1751,17 @@ def constrained_sample(  # noqa: C901, PLR0912, PLR0915
         axis=1,
     )
 
-    # the other states given the constrained paths: a DLM with known offsets
+    # the other states given the constrained paths: a DLM with known offsets, whose evolution
+    # adds the regression of its innovation on the constrained ones where W_t couples the blocks
     gu, fu = g[np.ix_(us, us)], design[:, us]
     shift = first_cov[np.ix_(us, cs)] @ np.linalg.inv(first_cov[np.ix_(cs, cs)])
     pu = len(us)
     if pu:
         r_first = first_cov[np.ix_(us, us)] - shift @ first_cov[np.ix_(cs, us)]
-        gains, _, _, back, roots = _unit_filter(gu, fu, observed, r_first, w[:, us][:, :, us])
+        names = [int(np.flatnonzero(s.regression == j)[0]) for j in cs]
+        couple, w_others = _coupling(w, cs, us, names)
+        coupled = bool(np.any(couple))
+        gains, _, _, back, roots = _unit_filter(gu, fu, observed, r_first, w_others)
 
     # the variance given the constrained values, the other states integrated out: V given y is
     # IG(n_T / 2, n_T S_T / 2) and the values given V are N(value_mean, V value_cov)
@@ -1722,6 +1810,8 @@ def constrained_sample(  # noqa: C901, PLR0912, PLR0915
             for t in range(horizon):
                 if t:
                     a = means[:, t - 1] @ gu.T
+                    if coupled:
+                        a = a + (theta[:, t, cs] - theta[:, t - 1, cs]) @ couple[t - 1].T
                 ahead[:, t] = a
                 if observed[t]:
                     a = a + (offsets[:, t] - a @ fu[t])[:, None] * gains[t]

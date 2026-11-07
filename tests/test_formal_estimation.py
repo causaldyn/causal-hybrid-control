@@ -31,9 +31,13 @@ from chc.dlm import (
     Polynomial,
     Prior,
     Regression,
+    _coupling,
     _directional,
     _nested,
     _structure,
+    _transitions,
+    _unit_filter,
+    forward_filter,
     forward_filter_geos,
     stacked_prior,
 )
@@ -99,6 +103,14 @@ FORMAL_LINKS = {
             "test_geo_filter_multiplicative_discount_keeps_geos_apart_in_precision",
             "test_directional_discount_keeps_what_the_rows_do_not_read",
             "test_directional_discount_with_one_discount_is_directional_forgetting",
+        ),
+    },
+    "chc.dlm.constrained_sample": {
+        "cites": ("dlm_constrained_conditioning.mac",),
+        "tests": (
+            "test_constrained_coupling_is_the_innovation_s_gaussian_conditional",
+            "test_the_other_states_given_a_constrained_path_are_the_joint_conditional",
+            "test_dlm.py::test_a_directional_fit_held_to_its_signs_matches_rejection_from_backward_sample",
         ),
     },
     "chc.dlm._directional": {
@@ -507,6 +519,132 @@ def test_directional_core_parts_add_up_and_average_the_rates(seed: int) -> None:
     for f in rng.normal(size=(20, 5)):
         ratio = (f @ core @ f) / (f @ covariance @ f)
         assert -1e-12 <= ratio <= 0.5 * (1 + 1e-9)
+
+
+@settings(max_examples=40, deadline=None)
+@given(seed=SEEDS)
+def test_constrained_coupling_is_the_innovation_s_gaussian_conditional(seed: int) -> None:
+    """dlm_constrained_conditioning.mac step 1: ``K_t = W_uc W_cc^-1`` and ``W_uu - K_t W_cu`` are
+    the moments of ``w_u`` given ``w_c``, read here off the precision ``W^-1``, which inverts no
+    block of ``W``. A coefficient whose row of ``W`` is zero does not move, gets a zero column,
+    and the others condition on the rest alone; step 3: a blockwise ``W`` gives ``K = 0`` and
+    ``W_uu`` exactly."""
+    rng = np.random.default_rng(seed)
+    root = rng.normal(size=(5, 5))
+    w = root @ root.T + 0.1 * np.eye(5)
+    cs, us = [1, 3], [0, 2, 4]
+
+    def conditional(m: np.ndarray, given: list[int]) -> tuple[np.ndarray, np.ndarray]:
+        keep = sorted(us + given)
+        q = np.linalg.inv(m[np.ix_(keep, keep)])
+        u, c = [keep.index(i) for i in us], [keep.index(i) for i in given]
+        var = np.linalg.inv(q[np.ix_(u, u)])
+        return -var @ q[np.ix_(u, c)], var
+
+    couple, left = _coupling(w[None], cs, us, [0, 1])
+    k, var = conditional(w, cs)
+    np.testing.assert_allclose(couple[0], k, rtol=1e-9, atol=1e-9 * np.abs(k).max())
+    np.testing.assert_allclose(left[0], var, rtol=1e-9, atol=1e-9 * np.abs(var).max())
+    still = w.copy()
+    still[3], still[:, 3] = 0.0, 0.0
+    couple, left = _coupling(still[None], cs, us, [0, 1])
+    k, var = conditional(still, [1])
+    assert not couple[0][:, 1].any()
+    np.testing.assert_allclose(couple[0][:, :1], k, rtol=1e-9, atol=1e-9 * np.abs(k).max())
+    np.testing.assert_allclose(left[0], var, rtol=1e-9, atol=1e-9 * np.abs(var).max())
+    apart = w.copy()
+    apart[np.ix_(us, cs)], apart[np.ix_(cs, us)] = 0.0, 0.0
+    couple, left = _coupling(apart[None], cs, us, [0, 1])
+    assert not couple.any()
+    np.testing.assert_array_equal(left[0], apart[np.ix_(us, us)])
+
+
+def _joint_given_path(fit, path: np.ndarray, cs: list[int], us: list[int]):
+    """The ``us`` coordinates' path given the ``cs`` ones' ``path`` and ``y``, by conditioning
+    every state and every observed ``y`` at once: the states are built from independent
+    innovations of the filter's own evolution variances, ``R_t - G C_(t-1) G'``, the variance
+    known at 1. Mean ``(T u,)`` and covariance, step-major."""
+    g = _structure(fit.model).evolution
+    horizon, p = fit.mean.shape
+
+    def root(m: np.ndarray) -> np.ndarray:
+        values, vectors = np.linalg.eigh(m)
+        return vectors * np.sqrt(np.clip(values, 0.0, None))
+
+    loading = np.zeros((horizon * p, horizon * p))
+    centre = np.zeros(horizon * p)
+    loading[:p, :p], centre[:p] = root(fit.prior_covariance[0]), fit.prior_mean[0]
+    for t in range(1, horizon):
+        now, before = slice(t * p, (t + 1) * p), slice((t - 1) * p, t * p)
+        loading[now] = g @ loading[before]
+        loading[now, now] += root(fit.prior_covariance[t] - g @ fit.covariance[t - 1] @ g.T)
+        centre[now] = g @ centre[before]
+    seen = np.flatnonzero(~np.isnan(fit.y))
+    rows = np.zeros((seen.size, horizon * p))
+    for i, t in enumerate(seen):
+        rows[i, t * p : (t + 1) * p] = fit.design[t]
+    joint = np.vstack([loading, rows @ loading])
+    covariance = joint @ joint.T + np.diag(np.r_[np.zeros(horizon * p), np.ones(seen.size)])
+    mean = np.r_[centre, rows @ centre]
+    given = [t * p + c for t in range(horizon) for c in cs]
+    given += list(horizon * p + np.arange(seen.size))
+    target = [t * p + u for t in range(horizon) for u in us]
+    gain = covariance[np.ix_(target, given)] @ np.linalg.inv(covariance[np.ix_(given, given)])
+    centred = np.r_[path.ravel(), fit.y[seen]] - mean[given]
+    left = covariance[np.ix_(target, target)] - gain @ covariance[np.ix_(given, target)]
+    return mean[target] + gain @ centred, left
+
+
+def test_the_other_states_given_a_constrained_path_are_the_joint_conditional() -> None:
+    """dlm_constrained_conditioning.mac step 2 on the float code: under the directional form,
+    whose ``W_t`` couples a level and a slope to a coefficient, the level and slope's path given
+    the coefficient's path and ``y`` is the filter and backward recursion of their own DLM, whose
+    evolution adds ``K_t (c_t - c_(t-1))`` and whose evolution variance is ``W_uu - K_t W_cu``.
+    Against the joint Gaussian's conditional the means and covariances agree to ``1e-9``; without
+    the coupling the means miss by more than ``1e-3``."""
+    rng = np.random.default_rng(4)
+    horizon, us, cs = 6, [0, 1], [2]
+    x = rng.gamma(2.0, 1.0, horizon)
+    y = 1.0 + 0.5 * x + 0.3 * rng.standard_normal(horizon)
+    y[3] = np.nan
+    model = DynamicLinearModel(
+        (Polynomial(2, 0.9), Regression(1, 0.8)),
+        Prior(np.array([1.0, 0.0, 0.5]), np.diag([4.0, 1.0, 2.0]) + 0.3, 1.0, math.inf),
+    )
+    fit = forward_filter(model, y, x[:, None])
+    path = np.array([[0.3], [0.5], [0.2], [0.4], [0.4], [0.6]])  # the coefficient's, given
+    oracle, oracle_cov = _joint_given_path(fit, path, cs, us)
+
+    first, w = _transitions(fit)
+    couple, left = _coupling(w, cs, us, [0])
+    shift = first[np.ix_(us, cs)] @ np.linalg.inv(first[np.ix_(cs, cs)])
+    r_first = first[np.ix_(us, us)] - shift @ first[np.ix_(cs, us)]
+    g = _structure(model).evolution[np.ix_(us, us)]
+    fu, fc = fit.design[:, us], fit.design[:, cs]
+    gains, priors, covs, back, _ = _unit_filter(g, fu, ~np.isnan(y), r_first, left)
+
+    def smoothed(coupling: np.ndarray) -> np.ndarray:
+        a = fit.prior_mean[0][us] + shift @ (path[0] - fit.prior_mean[0][cs])
+        means, ahead = np.empty((horizon, 2)), np.empty((horizon, 2))
+        for t in range(horizon):
+            if t:
+                a = g @ means[t - 1] + coupling[t - 1] @ (path[t] - path[t - 1])
+            ahead[t] = a
+            if not np.isnan(y[t]):
+                a = a + gains[t] * (y[t] - fc[t] @ path[t] - fu[t] @ a)
+            means[t] = a
+        for t in range(horizon - 2, -1, -1):
+            means[t] += back[t] @ (means[t + 1] - ahead[t + 1])
+        return means.ravel()
+
+    np.testing.assert_allclose(smoothed(couple), oracle, rtol=1e-9, atol=1e-9)
+    assert np.max(np.abs(smoothed(np.zeros_like(couple)) - oracle)) > 1e-3
+    cov = covs[-1]
+    for t in range(horizon - 1, -1, -1):
+        if t < horizon - 1:
+            cov = covs[t] + back[t] @ (cov - priors[t + 1]) @ back[t].T
+        expected = oracle_cov[2 * t : 2 * t + 2, 2 * t : 2 * t + 2]
+        np.testing.assert_allclose(cov, expected, rtol=1e-9, atol=1e-9 * np.abs(expected).max())
 
 
 # ---------------------------------------------------------------------------- chc.dynamics_id

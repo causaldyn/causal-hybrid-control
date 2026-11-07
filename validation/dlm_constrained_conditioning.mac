@@ -1,0 +1,128 @@
+/* The other states' path given the constrained coefficients' path, behind chc.dlm's
+   constrained_sample under an evolution variance W_t that couples the blocks.
+
+   The state is theta = (u, c): u the coordinates of the other blocks, c the constrained
+   coefficients, each a regression block of its own, so G = blockdiag(G_u, I) and
+   c_t = c_(t-1) + w_c. With V = 1 (the sampler works in units of V):
+       theta_1 ~ N(a, R),   theta_t = G theta_(t-1) + w_t,  w_t ~ N(0, W_t),
+       y_t = F_t theta_t + v_t,  v_t ~ N(0, 1).
+   Given the c path, the u path is a DLM whose evolution adds the regression of w_u on w_c:
+
+   STEP 1  w_u given w_c is N(K w_c, W_uu - K W_cu) with K = W_uc W_cc^-1; the same moments read
+           off the precision W^-1: Var = ((W^-1)_uu)^-1, mean = -Var (W^-1)_uc w_c
+   STEP 2  over two steps, u_(1:2) given c_(1:2) and y_(1:2) is the forward filter and the
+           backward recursion of the u-DLM with the first prior u_1 | c_1 (regression on c_1
+           under R), the observation y_t - F_(t,c) c_t, the evolution
+           u_2 = G_u u_1 + K (c_2 - c_1) + e, e ~ N(0, W_uu - K W_cu):
+           its smoothed mean and covariance, and the cross-covariance B_1 C_2, equal the
+           Gaussian conditional of the joint (theta_1, theta_2, y_1, y_2), exactly
+   STEP 3  with W_uc = 0 (an evolution that keeps the blocks apart, as component discounting
+           does) K = 0 and the conditional variance is W_uu: the recursion without the coupling
+
+   The c path's own distribution, the other states integrated out, is the joint's marginal,
+   which the full filter and smoother give for any W_t; that part needs no new identity.
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/dlm_constrained_conditioning.mac */
+
+linel : 110$
+display2d : false$
+scalarmatrixp : false$  /* a 1 x 1 product stays a matrix */
+
+zero(x) := is(ratdisrep(ratsimp(rat(x))) = 0)$
+allzero(m) := block([ok : true],
+  for i thru length(m) do for j thru length(transpose(m)) do
+    if not zero(m[i, j]) then ok : false,
+  ok)$
+/* run_all.sh reads only whether a file completed, so an identity that fails stops it */
+require(label, holds) := if holds then print(label, true) else error(label, "does not hold")$
+pick(m, rows, cols) := genmatrix(lambda([i, j], m[rows[i], cols[j]]), length(rows), length(cols))$
+
+/* a level and a slope (u), a coefficient (c): a dense W couples them */
+G : matrix([1, 1, 0], [0, 1, 0], [0, 0, 1])$
+R : matrix([2, 1/2, 1/3], [1/2, 1, 1/4], [1/3, 1/4, 3/2])$
+W : matrix([1/2, 1/5, -1/4], [1/5, 1/3, 1/6], [-1/4, 1/6, 1/2])$
+a : matrix([1/2], [-1/3], [1/4])$
+F1 : matrix([1, 0, 2])$
+F2 : matrix([1, 0, 3/2])$
+us : [1, 2]$
+cs : [3]$
+leading(m, k) := pick(m, makelist(i, i, 1, k), makelist(i, i, 1, k))$
+definite(m) := every(lambda([k], is(determinant(leading(m, k)) > 0)), [1, 2, 3])$
+require("R positive definite:", definite(R))$
+require("W positive definite:", definite(W))$
+
+print("=== STEP 1: w_u given w_c, by the covariance and by the precision ===")$
+Wuu : pick(W, us, us)$
+Wuc : pick(W, us, cs)$
+Wcc : pick(W, cs, cs)$
+K : Wuc . invert(Wcc)$
+Wleft : Wuu - K . transpose(Wuc)$
+Q : invert(W)$
+Vq : invert(pick(Q, us, us))$
+require("W_uu - K W_cu = ((W^-1)_uu)^-1:", allzero(Wleft - Vq))$
+require("K = -((W^-1)_uu)^-1 (W^-1)_uc:", allzero(K + Vq . pick(Q, us, cs)))$
+
+print("=== STEP 2: the u path given the c path and y, two steps ===")$
+/* sources e = (theta_1, w, v_1, v_2), independent; z = (theta_1, theta_2, y_1, y_2) = A e */
+Z3 : zeromatrix(3, 3)$
+Z31 : zeromatrix(3, 1)$
+Z13 : zeromatrix(1, 3)$
+A : matrix([1, 0, 0, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0, 0, 0],
+           [1, 1, 0, 1, 0, 0, 0, 0], [0, 1, 0, 0, 1, 0, 0, 0], [0, 0, 1, 0, 0, 1, 0, 0],
+           [1, 0, 2, 0, 0, 0, 1, 0], [0, 0, 0, 0, 0, 0, 0, 0])$
+/* the rows of A for y_1 and y_2 written from F and G, not by hand */
+for j thru 3 do A[7, j] : F1[1, j]$
+FG : F2 . G$
+for j thru 3 do (A[8, j] : FG[1, j], A[8, 3 + j] : F2[1, j])$
+A[8, 8] : 1$
+require("theta_2's rows are G's:", allzero(pick(A, [4, 5, 6], [1, 2, 3]) - G))$
+Se : zeromatrix(8, 8)$
+for i thru 3 do for j thru 3 do (Se[i, j] : R[i, j], Se[3 + i, 3 + j] : W[i, j])$
+Se[7, 7] : 1$
+Se[8, 8] : 1$
+me : matrix([a[1, 1]], [a[2, 1]], [a[3, 1]], [0], [0], [0], [0], [0])$
+Sz : A . Se . transpose(A)$
+mz : A . me$
+target : [1, 2, 4, 5]$            /* u_1, u_2 */
+given : [3, 6, 7, 8]$             /* c_1, c_2, y_1, y_2 */
+o : matrix([c1], [c2], [y1], [y2])$
+Soo : pick(Sz, given, given)$
+Sto : pick(Sz, target, given)$
+mean_joint : pick(mz, target, [1]) + Sto . invert(Soo) . (o - pick(mz, given, [1]))$
+cov_joint : pick(Sz, target, target) - Sto . invert(Soo) . transpose(Sto)$
+
+/* the recursion: the first prior given c_1, then a filter and a backward step */
+Gu : pick(G, us, us)$
+S : pick(R, us, cs) . invert(pick(R, cs, cs))$
+m0 : pick(a, us, [1]) + S . (matrix([c1]) - pick(a, cs, [1]))$
+R1 : pick(R, us, us) - S . pick(R, cs, us)$
+update(m, P, f, obs) := block([q, k],
+  q : f . P . transpose(f) + 1,
+  k : P . transpose(f) . invert(q),
+  [m + k . (obs - f . m), P - k . q . transpose(k)])$
+[m1, C1] : update(m0, R1, pick(F1, [1], us), matrix([y1]) - pick(F1, [1], cs) . matrix([c1]))$
+a2 : Gu . m1 + K . matrix([c2 - c1])$
+R2 : Gu . C1 . transpose(Gu) + Wleft$
+[m2, C2] : update(a2, R2, pick(F2, [1], us), matrix([y2]) - pick(F2, [1], cs) . matrix([c2]))$
+B1 : C1 . transpose(Gu) . invert(R2)$
+s1 : m1 + B1 . (m2 - a2)$
+S1 : C1 + B1 . (C2 - R2) . transpose(B1)$
+mean_rec : matrix([s1[1, 1]], [s1[2, 1]], [m2[1, 1]], [m2[2, 1]])$
+X : B1 . C2$
+cov_rec : matrix([S1[1, 1], S1[1, 2], X[1, 1], X[1, 2]], [S1[2, 1], S1[2, 2], X[2, 1], X[2, 2]],
+                 [X[1, 1], X[2, 1], C2[1, 1], C2[1, 2]], [X[1, 2], X[2, 2], C2[2, 1], C2[2, 2]])$
+require("the recursion's smoothed means are the joint's conditional, in c and y:",
+        allzero(mean_rec - mean_joint))$
+require("its smoothed covariances and B_1 C_2 are the joint's:", allzero(cov_rec - cov_joint))$
+/* without the coupling the recursion is not the conditional: the term is needed */
+a2x : Gu . m1$
+[m2x, C2x] : update(a2x, Gu . C1 . transpose(Gu) + Wuu, pick(F2, [1], us),
+                    matrix([y2]) - pick(F2, [1], cs) . matrix([c2]))$
+require("dropping K and keeping W_uu misses the conditional mean:",
+        not allzero(matrix([m2x[1, 1]], [m2x[2, 1]]) - pick(mean_joint, [3, 4], [1])))$
+
+print("=== STEP 3: an evolution that keeps the blocks apart needs no coupling ===")$
+Wb : matrix([1/2, 1/5, 0], [1/5, 1/3, 0], [0, 0, 1/2])$
+Kb : pick(Wb, us, cs) . invert(pick(Wb, cs, cs))$
+require("K = 0:", allzero(Kb))$
+require("W_uu - K W_cu = W_uu:", allzero(pick(Wb, us, us) - Kb . pick(Wb, cs, us) - pick(Wb, us, us)))$
