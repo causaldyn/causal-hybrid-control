@@ -244,7 +244,8 @@ def test_the_default_inner_solve_is_the_diagonal_descent() -> None:
     assert default.solver_iterations == diagonal.solver_iterations
 
 
-def test_newton_rounds_refuse_what_they_cannot_step_on() -> None:
+@pytest.mark.parametrize("inner", ["newton", "orthant"])
+def test_newton_rounds_refuse_what_they_cannot_step_on(inner: plan_module.InnerSolve) -> None:
     barrier = BarrierConstraint(_velocity_floor, alpha=2.0)
     common = (OSCILLATOR, X0, COST, DT, HORIZON, -U_MAX, U_MAX)
     with pytest.raises(ValueError, match="box alone"):
@@ -252,14 +253,14 @@ def test_newton_rounds_refuse_what_they_cannot_step_on() -> None:
             *common,
             constraints=(LinearConstraint.rate_limit(HORIZON, [1.0]),),
             barrier=barrier,
-            inner="newton",
+            inner=inner,
         )
     rng = np.random.default_rng(0)
     support = SupportModel.fit(
         jnp.asarray(rng.normal(size=(40, 2))), jnp.asarray(rng.normal(size=(40, 1)))
     )
     with pytest.raises(ValueError, match="box alone"):
-        causal_plan(*common, support=support, lam_supp=1.0, barrier=barrier, inner="newton")
+        causal_plan(*common, support=support, lam_supp=1.0, barrier=barrier, inner=inner)
     with pytest.raises(ValueError, match="past its limit"):
         causal_plan(
             OSCILLATOR,
@@ -270,7 +271,40 @@ def test_newton_rounds_refuse_what_they_cannot_step_on() -> None:
             -U_MAX,
             U_MAX,
             barrier=barrier,
-            inner="newton",
+            inner=inner,
         )
     with pytest.raises(ValueError, match="not a round's solve"):
         causal_plan(*common, barrier=barrier, inner="lbfgs")  # type: ignore[arg-type]
+
+
+def test_where_no_step_s_norm_has_a_kink_the_orthant_rounds_are_newton_s() -> None:
+    """The orthant rule cuts the box at each step's centre, where the condition's norm of a
+    one-lever action has its kink. With no radius there is no norm, and with two levers a step the
+    norm couples them and has no sides to cut along: the rounds are Newton's, bit for bit."""
+    assert np.array_equal(
+        np.asarray(_floor_plan("orthant").actions), np.asarray(_floor_plan("newton").actions)
+    )
+    two = (TWO_FORCES, X0, TWO_COST, DT, HORIZON, -TWO_REACH, TWO_REACH)
+    barrier = BarrierConstraint(_velocity_floor, alpha=2.0, gamma=2.0, u_max=tuple(TWO_REACH))
+    orthant = causal_plan(*two, barrier=barrier, inner="orthant")
+    newton = causal_plan(*two, barrier=barrier, inner="newton")
+
+    assert np.array_equal(np.asarray(orthant.actions), np.asarray(newton.actions))
+    assert orthant.solver_iterations == newton.solver_iterations
+
+
+def test_orthant_rounds_land_where_newton_s_do_where_no_action_rests_on_the_kink() -> None:
+    """One lever under a radius at ``gamma = 2``: the floor binds every action away from zero, so
+    the cut at the centre only keeps each Newton step on its side of it. Both converge on one
+    plan, to the stationarity tolerance's share of the box."""
+    newton, orthant = _floor_plan("newton", 2.0), _floor_plan("orthant", 2.0)
+
+    assert newton.solver_status == orthant.solver_status == "converged"
+    assert orthant.stationarity_status == "within"
+    assert orthant.safety is not None
+    assert orthant.safety.certified_steps == HORIZON
+    assert not np.any(np.asarray(orthant.actions) == 0.0)
+    gap = abs(orthant.task_cost - newton.task_cost) / newton.task_cost
+    assert gap <= 1e-6
+    moved = float(jnp.max(jnp.abs(orthant.actions - newton.actions)))
+    assert moved <= 2 * U_MAX * orthant.stationarity_tolerance

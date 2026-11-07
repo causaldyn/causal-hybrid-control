@@ -148,11 +148,13 @@ _TOLERANCE_DEFAULT = 1.0
 given: one unit of the state, the radius a caller who logs each state in units of the error accepted
 on it passes (ADR 0091)."""
 PriceStatus = Literal["exact", "weakly_active", "degenerate", "inactive"]
-InnerSolve = Literal["diagonal", "newton"]
+InnerSolve = Literal["diagonal", "newton", "orthant"]
 """How each augmented-Lagrangian round of a held barrier is solved (:func:`causal_plan`'s
-``inner``): ``diagonal``, the penalised descent in the round's diagonal Gauss-Newton metric, or
+``inner``): ``diagonal``, the penalised descent in the round's diagonal Gauss-Newton metric;
 ``newton``, Bertsekas' projected Newton method on the round's dense curvature, the descent taking
-over where a Newton step fails."""
+over where a Newton step fails; or ``orthant``, the same Newton method on the box cut at each
+step's ``centre``, on whose either side the condition's norm of a one-lever action is linear, so
+that an action comes to rest on the norm's kink exactly."""
 OuterRule = Literal["halved", "safeguarded"]
 """How the augmented-Lagrangian rounds of a held barrier share their budget and grow their penalty
 (:func:`causal_plan`'s ``outer``): ``halved``, each round given half of the steps left and a round
@@ -286,7 +288,11 @@ class CausalPlan:
         On a plan held under a barrier, each step whose condition the rounds ended with a positive
         multiplier on binds too, and pushes along the gradient of its shortfall in ``v``: the
         residual is the augmented Lagrangian's, ``grad J + sum_k mu_k grad c_k`` with ``mu >= 0``,
-        read at the condition the rounds held, a relative 1e-6 inside the audit's.
+        read at the condition the rounds held, a relative 1e-6 inside the audit's. Under
+        ``causal_plan(inner="orthant")`` an action on the condition's kink at the barrier's centre
+        is read by the norm's subdifferential: its miss is the part of its push that the norm's
+        slope does not absorb, and the residual is the smaller of that reading and the one above,
+        each an upper bound on the least.
         """
         return _diagnostic_status(self.stationarity, self.stationarity_tolerance)
 
@@ -930,6 +936,9 @@ class _PlanProblem:
     barrier: bool
     # the condition the barrier rounds held, with their last multipliers; None without a barrier
     held: _HeldBarrier | None = None
+    # whether the rounds took the condition's norm by its sides (inner="orthant"), so that the
+    # first-order check reads an action on the norm's kink by its subdifferential
+    kinked: bool = False
 
     def gradient(self, actions: Array) -> NDArray[np.float64]:
         """The solve's objective, differentiated at ``actions`` and flattened as the rows are: at a
@@ -1128,12 +1137,62 @@ def _diagnostics(problem: _PlanProblem, actions: Array) -> tuple[float | None, f
         least = np.where(either, -np.inf, 0.0)
         fit = lsq_linear(pushes, -gradient, bounds=(least, np.inf), method="bvls")
         miss = gradient + pushes @ fit.x
+    stationarity = _length(miss) / kkt.scale
+    if (
+        problem.kinked
+        and problem.held is not None
+        and _kinked(problem.model, problem.held, actions)
+    ):
+        kinked = _kinked_miss(problem, problem.held, actions, share, kkt, hi <= lo)
+        stationarity = min(stationarity, _length(kinked) / kkt.scale)
     return (
-        _length(miss) / kkt.scale,
+        stationarity,
         stationarity_tolerance,
         violation,
         violation_tolerance,
     )
+
+
+def _kinked_miss(
+    problem: _PlanProblem,
+    held: _HeldBarrier,
+    actions: Array,
+    share: NDArray[np.float64],
+    kkt: _Kkt,
+    fixed: NDArray[np.bool_],
+) -> NDArray[np.float64]:
+    """The plan's first-order miss per action, in :func:`_diagnostics`' units ``share``, with the
+    binding conditions pushing by the rounds' own multipliers and an action on its centre read by
+    the subdifferential of the conditions' norm there.
+
+    The conditions' push splits into its part at the norm fixed and the norm's weight
+    (:func:`_condition_split`). Off the centre the norm's slope is the weight times ``D^+`` and its
+    side's sign; on it, any slope within the weight times ``D^+`` of zero, so the miss there is
+    what is left of the rest once that is taken off. A side of the box takes off a push outward,
+    as in :func:`_kkt`. The masked gradient of the norm reads zero on the centre, one element of
+    that subdifferential, and the multipliers least squares fits are others: the plan's
+    stationarity is the smaller of the two misses, each an upper bound on the least."""
+    centre, nudge = _kink_point(
+        held,
+        actions,
+        broadcast_box(problem.u_lo, actions.shape, "u_lo", actions.dtype),
+        broadcast_box(problem.u_hi, actions.shape, "u_hi", actions.dtype),
+    )
+    smooth, weight, on = (
+        np.asarray(part, np.float64).ravel()
+        for part in _condition_split(
+            held, problem.model, problem.x0, actions, problem.dt, centre, nudge
+        )
+    )
+    on = on.astype(bool)
+    slope = weight * (1.0 if held.inverse is None else float(np.asarray(held.inverse)[0]))
+    side = np.sign(np.asarray(actions, np.float64).ravel() - np.asarray(centre).ravel())
+    pull = (problem.gradient(actions) + smooth + np.where(on, 0.0, slope * side)) / share
+    give = np.where(on, slope, 0.0) / share
+    miss = np.maximum(np.abs(pull) - give, 0.0)
+    miss = np.where(kkt.at_hi, np.maximum(pull - give, 0.0), miss)
+    miss = np.where(kkt.at_lo, np.maximum(-pull - give, 0.0), miss)
+    return np.where(fixed, 0.0, miss)
 
 
 @eqx.filter_jit
@@ -1225,7 +1284,7 @@ def _round_terms(
     )
 
 
-def _newton_round(
+def _newton_round(  # noqa: C901, PLR0912, PLR0915
     model: Dynamics,
     x0: Array,
     dt: float,
@@ -1237,6 +1296,7 @@ def _newton_round(
     metric: Array,
     tol: float,
     cap: int,
+    orthant: bool = False,
 ) -> tuple[Array, int, bool]:
     """A barrier round by Bertsekas' projected Newton method on the box (1982), on the round's
     matrix (:func:`_round_terms`): the one with the penalty's Hessian, or, where its free block is
@@ -1251,6 +1311,15 @@ def _newton_round(
     gradient predicts (Armijo). The round stops where the fall the step predicts is within
     ``tol`` of the round's objective at its start, the descent's own rule, or after ``cap`` steps.
 
+    With ``orthant``, where the condition reads a radius and each step has one lever, every step
+    is taken on the box cut at the step's centre (:func:`_orthants`): the condition's
+    ``||D^+ (u - c)||`` is ``D^+ |u - c|``, linear on either side of ``c``, so the round is smooth
+    on the side each action is on, and a step that would carry an action across ``c`` stops it
+    there, as a side of the box would, where the other rounds' steps crossed and recrossed it. An
+    action on ``c`` takes the side whose one-sided slope falls, its terms read there
+    (:func:`_round_terms`), or, where neither falls, is held at ``c``, a side the step does not
+    leave. The orthant method of Andrew & Gao (2007), on Bertsekas' step.
+
     Returns:
         The actions, the Newton steps taken, and whether the round stopped on its rule or its
         ``cap``: ``False`` where neither matrix's free block is positive definite, or no halving
@@ -1259,21 +1328,35 @@ def _newton_round(
     shape, dtype = actions.shape, actions.dtype
     rounding = 64.0 * float(jnp.finfo(dtype).eps)
     scale = np.asarray(metric, np.float64).ravel()
-    low = np.asarray(lo, np.float64).ravel() * scale
-    high = np.asarray(hi, np.float64).ravel() * scale
-    value, gradient, curved, matrix = _round_terms(model, x0, actions, dt, cost, held)
+    floor, ceiling = np.asarray(lo, np.float64).ravel(), np.asarray(hi, np.float64).ravel()
+    low, high = floor * scale, ceiling * scale
+    kinks = (
+        _kink_point(held, actions, lo, hi) if orthant and _kinked(model, held, actions) else None
+    )
+    if kinks is None:
+        value, gradient, curved, matrix = _round_terms(model, x0, actions, dt, cost, held)
+    else:
+        value = _objective(model, x0, actions, dt, cost, None, 0.0, held, 1.0)
     start = float(value)
     level = abs(start) if math.isfinite(start) else 0.0
     taken = 0
+    still = np.zeros(scale.size, dtype=bool)
     while taken < cap:
         current = float(value)
         point = scale * np.asarray(actions, np.float64).ravel()
+        if kinks is not None:
+            floor, ceiling, still, read = _orthants(
+                model, x0, dt, cost, held, actions, lo, hi, kinks
+            )
+            low, high = floor * scale, ceiling * scale
+            _, gradient, curved, matrix = _round_terms(model, x0, read, dt, cost, held)
         pull = np.asarray(gradient, np.float64).ravel() / scale
         if not (math.isfinite(current) and np.all(np.isfinite(pull))):
             return actions, taken, False
         reach = point - np.clip(point - pull, low, high)
         width = _length(reach)
         bound = ((point <= low + width) & (pull > 0.0)) | ((point >= high - width) & (pull < 0.0))
+        bound |= still
         free = ~bound
         direction = -pull
         if free.any():
@@ -1288,11 +1371,7 @@ def _newton_round(
         for _ in range(_NEWTON_HALVINGS):
             moved = np.clip(point + step * direction, low, high)
             fall = float(pull @ (point - moved))
-            trial = np.where(
-                moved <= low,
-                np.asarray(lo, np.float64).ravel(),
-                np.where(moved >= high, np.asarray(hi, np.float64).ravel(), moved / scale),
-            )
+            trial = np.where(moved <= low, floor, np.where(moved >= high, ceiling, moved / scale))
             candidate = jnp.asarray(trial.reshape(shape), dtype)
             reached = float(_objective(model, x0, candidate, dt, cost, None, 0.0, held, 1.0))
             if fall > 0.0 and reached <= current - 1e-4 * fall:
@@ -1302,7 +1381,10 @@ def _newton_round(
         if not accepted:
             return actions, taken, predicted <= rounding * level
         actions, taken = candidate, taken + 1
-        value, gradient, curved, matrix = _round_terms(model, x0, actions, dt, cost, held)
+        if kinks is None:
+            value, gradient, curved, matrix = _round_terms(model, x0, actions, dt, cost, held)
+        else:  # the terms are read at the top, where an action may leave its centre
+            value = reached
     return actions, taken, True
 
 
@@ -1320,6 +1402,153 @@ def _free_factor(
         except np.linalg.LinAlgError:
             continue
     return None
+
+
+def _kinked(model: Dynamics, held: _HeldBarrier, actions: Array) -> bool:
+    """Whether the held condition reads a radius whose norm has its kink at one lever's centre at
+    each step: one lever, a radius or a sensitivity model, and a model that takes the action it is
+    given, as :func:`_norm_split` reads the norm through the centre."""
+    radius = held.width is not None or float(held.delta) != 0.0
+    return actions.shape[1] == 1 and radius and not isinstance(model, _SetAtStep)
+
+
+def _kink_point(held: _HeldBarrier, actions: Array, lo: Array, hi: Array) -> tuple[Array, Array]:
+    """Each step's centre, ``(H, m)``, zero where the barrier has none, and how far
+    :func:`_norm_split` moves it off an action on it: four of the dtype's eps times the largest
+    of the centre, the box's finite sides and the actions, so that the gap is not rounded away,
+    and the one-sided slopes it reads are within that share of the slopes at the kink. An array,
+    not a number, which the compiled split would be compiled anew for."""
+    dtype = actions.dtype
+    centre = (
+        jnp.zeros_like(actions)
+        if held.centre is None
+        else jnp.broadcast_to(held.centre, actions.shape)
+    )
+    sizes = [np.abs(np.asarray(part, np.float64)) for part in (centre, lo, hi, actions)]
+    size = max(float(np.max(np.where(np.isfinite(part), part, 0.0))) for part in sizes)
+    nudge = 4.0 * float(jnp.finfo(dtype).eps) * (size if size > 0.0 else 1.0)
+    return centre.astype(dtype), jnp.asarray(nudge, dtype)
+
+
+def _norm_split(
+    value_at: Callable[[Array, _HeldBarrier], Array],
+    held: _HeldBarrier,
+    actions: Array,
+    centre: Array,
+    nudge: Array,
+) -> tuple[Array, Array, Array]:
+    """``value_at(actions, held)``, a sum over the held columns, as a function ``F(u, t)`` of the
+    actions and of each step's norm ``t = ||D^+ (u - c)||`` read apart: ``dF/du`` at ``t`` fixed,
+    ``(H, m)``, ``dF/dt``, ``(H,)``, not negative, and which steps' actions are on their centre.
+
+    The norm reads the actions less the centre alone, so a centre per step, ``C``, splits them:
+    ``d/du = dF/du + dF/dt grad N`` and ``d/dC = -dF/dt grad N``, whose sum is ``dF/du`` and whose
+    product with ``u - C`` is ``-dF/dt N``. On the kink, where the norm's gradient reads zero, both
+    are read at the centre moved ``nudge`` along the lever ``D^+`` weighs most, the slopes of the
+    side that move opens. ``dF/dt`` is clipped at zero: each column rises with the norm, the
+    condition's spread and the deviation tube's push alike."""
+    inverse = jnp.ones(actions.shape[1], actions.dtype) if held.inverse is None else held.inverse
+    lead = jnp.argmax(inverse)
+    along = jnp.where(jnp.arange(actions.shape[1]) == lead, 1.0 / inverse[lead], 0.0)
+    on = jnp.all((actions - centre) * inverse == 0.0, axis=-1)
+    point = jnp.where(on[:, None], centre - nudge * along, centre)
+
+    def at(us: Array, read: Array) -> Array:
+        moved = eqx.tree_at(lambda term: term.centre, held, read, is_leaf=lambda leaf: leaf is None)
+        return value_at(us, moved)
+
+    by_action, by_centre = jax.grad(at, argnums=(0, 1))(actions, point)
+    gap = actions - point
+    size = jnp.sqrt(jnp.sum((gap * inverse) ** 2, axis=-1))
+    weight = jnp.maximum(-jnp.sum(by_centre * gap, axis=-1) / size, 0.0)
+    return by_action + by_centre, weight, on
+
+
+@eqx.filter_jit
+def _round_split(
+    model: Dynamics,
+    x0: Array,
+    actions: Array,
+    dt: float,
+    cost: QuadraticCost,
+    held: _HeldBarrier,
+    centre: Array,
+    nudge: Array,
+) -> tuple[Array, Array, Array]:
+    """:func:`_norm_split` of a barrier round's objective."""
+
+    def objective(us: Array, read: _HeldBarrier) -> Array:
+        return _augmented(model, x0, us, dt, cost, None, 0.0, read, 1.0)
+
+    return _norm_split(objective, held, actions, centre, nudge)
+
+
+@eqx.filter_jit
+def _condition_split(
+    held: _HeldBarrier,
+    model: Dynamics,
+    x0: Array,
+    actions: Array,
+    dt: float,
+    centre: Array,
+    nudge: Array,
+) -> tuple[Array, Array, Array]:
+    """:func:`_norm_split` of the held columns weighed by their multipliers: the push of the
+    conditions that bind, as the plan's first-order check reads it."""
+    weights = held.multipliers
+
+    def pushed(us: Array, read: _HeldBarrier) -> Array:
+        shortfall = read.shortfall(rollout(model, x0, us, dt)[:-1], us)
+        # an unheld next state's column is -inf, and its multiplier zero
+        return jnp.sum(weights * jnp.where(weights > 0.0, shortfall, 0.0))
+
+    return _norm_split(pushed, held, actions, centre, nudge)
+
+
+def _orthants(
+    model: Dynamics,
+    x0: Array,
+    dt: float,
+    cost: QuadraticCost,
+    held: _HeldBarrier,
+    actions: Array,
+    lo: Array,
+    hi: Array,
+    kinks: tuple[Array, Array],
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.bool_], Array]:
+    """The box a projected Newton step from ``actions`` takes in :func:`_newton_round`'s orthant
+    rule, its floor and ceiling, the actions held on their centre, and the point the round's
+    terms are read at.
+
+    An action off its centre ``c`` keeps to its side of it. One on it takes the side its one-sided
+    slope falls toward, ``dF/du + dF/dt D^+`` to the right and ``dF/du - dF/dt D^+`` to the left
+    (:func:`_norm_split`), and its terms are read there, ``nudge`` off ``c``; one where neither
+    falls is held at ``c``: zero is in the round's subdifferential along it."""
+    centre, nudge = kinks
+    smooth, weight, on = (
+        np.asarray(part, np.float64).ravel()
+        for part in _round_split(model, x0, actions, dt, cost, held, centre, nudge)
+    )
+    on = on.astype(bool)
+    slope = 1.0 if held.inverse is None else float(np.asarray(held.inverse, np.float64)[0])
+    point = np.asarray(actions, np.float64).ravel()
+    middle = np.asarray(centre, np.float64).ravel()
+    floor, ceiling = np.asarray(lo, np.float64).ravel(), np.asarray(hi, np.float64).ravel()
+    rightward = smooth + weight * slope < 0.0
+    leftward = smooth - weight * slope > 0.0
+    side = np.where(
+        on, np.where(rightward, 1.0, np.where(leftward, -1.0, 0.0)), np.sign(point - middle)
+    )
+    floor = np.where(side > 0.0, np.maximum(floor, middle), np.where(side < 0.0, floor, middle))
+    ceiling = np.where(
+        side < 0.0, np.minimum(ceiling, middle), np.where(side > 0.0, ceiling, middle)
+    )
+    leaving = on & (side != 0.0)
+    read = actions
+    if leaving.any():
+        moved = np.where(leaving, middle + float(nudge) * side, point)
+        read = jnp.asarray(moved.reshape(actions.shape), actions.dtype)
+    return floor, ceiling, side == 0.0, read
 
 
 def _condition_pushes(
@@ -1854,9 +2083,24 @@ def causal_plan(
             :func:`chc.decision.prescribe` holds, whose centre is the log's mean action, Newton,
             like the diagonal descent, can end ``max_iterations`` with stationarity ``beyond``. A
             Newton step whose block of the matrix does not factor, or that buys no fall, hands the
-            round to the descent. It takes the box alone, and factors an ``(H m, H m)`` matrix at
-            each step: a support model, linear rows, or more than 4096 actions are refused.
-            Without a barrier there are no rounds, and it changes nothing.
+            round to the descent. ``"orthant"`` is Newton's method with that kink taken by its
+            sides, at each step with one lever under a radius: the action's box is cut at ``c`` on
+            the side the action is on, where the norm is linear; an action at ``c`` leaves it only
+            toward a side where the round's other terms fall faster than the norm's term rises; and
+            the plan's first-order check reads it by the norm's subdifferential. On an unstable
+            drift held under a :class:`ChannelSensitivity`, three logs of 30 steps on which SLSQP's
+            plan rests 27 to 29 actions at zero, it ends ``converged`` within 1e-7 of SLSQP's cost,
+            certified on all 30 steps, where the default rounds end ``max_iterations`` 0.17 % to
+            1.5 % above it. With several levers a step, or no radius, it steps as ``"newton"``
+            does. It is not the default because it is not better plan by plan: of 227 plans held at
+            a barrier in the library's planning tests it left 36 within 1e-9, made 90 cheaper at
+            the same certified steps, certified 6 on more leading steps and none on fewer, and
+            ended 67 ``converged`` that ended ``max_iterations``; but it made 95 costlier at the
+            same certified steps, 93 that end ``converged`` by at most 7.5e-7 and two plans of the
+            oscillator held at a budget of 10 steps by 5.4 %.
+            Both take the box alone, and factor an ``(H m, H m)`` matrix at each step: a support
+            model, linear rows, or more than 4096 actions are refused. Without a barrier there are
+            no rounds, and either changes nothing.
         outer: how a barrier's rounds share ``steps`` and grow their penalty (*experimental*,
             :data:`OuterRule`). ``"halved"``, the default, gives each round half of the steps
             left, and a round whose share ran out grows no penalty. ``"safeguarded"`` gives each
@@ -1890,9 +2134,9 @@ def causal_plan(
             not a finite number at some state, or the model is not affine in the action there or
             at a finite side of the box, which :func:`certify_safety` refuses of the finished plan
             and is now refused before the solve; if ``warm_start`` is not a finite
-            ``(horizon, m)`` array; or if ``inner`` is neither ``"diagonal"`` nor ``"newton"``,
-            or is ``"newton"`` beside a barrier and a support model, linear rows, or more than
-            4096 actions.
+            ``(horizon, m)`` array; or if ``inner`` is none of ``"diagonal"``, ``"newton"``
+            and ``"orthant"``, or is one of the last two beside a barrier and a support model,
+            linear rows, or more than 4096 actions.
     """
     plan, _ = _plan(
         model,
@@ -2071,19 +2315,21 @@ def _plan(  # noqa: C901, PLR0912, PLR0915
     """
     if uncertainty is not None and support is None:
         raise ValueError("uncertainty penalty requires a support model; it is unused without one")
-    if inner not in ("diagonal", "newton"):
-        raise ValueError(f"inner={inner!r} is not a round's solve: 'diagonal' or 'newton'")
+    if inner not in ("diagonal", "newton", "orthant"):
+        raise ValueError(
+            f"inner={inner!r} is not a round's solve: 'diagonal', 'newton' or 'orthant'"
+        )
     if outer not in ("halved", "safeguarded"):
         raise ValueError(f"outer={outer!r} is not a rounds' rule: 'halved' or 'safeguarded'")
-    if inner == "newton" and barrier is not None:
+    if inner != "diagonal" and barrier is not None:
         if support is not None or any(row.matrix.shape[0] for row in constraints):
             raise ValueError(
-                "inner='newton' steps on the box alone: a support model's penalty or linear rows "
-                "take the diagonal descent, inner='diagonal'"
+                f"inner={inner!r} steps on the box alone: a support model's penalty or linear "
+                "rows take the diagonal descent, inner='diagonal'"
             )
         if horizon * cost.R.shape[0] > _NEWTON_SIZE:
             raise ValueError(
-                f"inner='newton' factors a dense matrix over the {horizon * cost.R.shape[0]} "
+                f"inner={inner!r} factors a dense matrix over the {horizon * cost.R.shape[0]} "
                 f"actions, past its limit of {_NEWTON_SIZE}: use inner='diagonal'"
             )
     # A nan budget passed `model_error < 0` and then read as no budget, `model_error > 0` being
@@ -2254,6 +2500,7 @@ def _plan(  # noqa: C901, PLR0912, PLR0915
         lam_unc=lam_unc,
         barrier=barrier is not None,
         held=held,
+        kinked=barrier is not None and inner == "orthant",
     )
     stationarity, stationarity_tolerance, violation, violation_tolerance = _diagnostics(
         problem, actions
@@ -2500,7 +2747,9 @@ def _hold_barrier(  # noqa: C901, PLR0912, PLR0915
 
     With ``inner="newton"`` each round is first solved by projected Newton on the round's dense
     curvature (:func:`_newton_round`), and the descent takes over only from a Newton step that
-    fails; a Newton step counts as one descent step.
+    fails; a Newton step counts as one descent step. With ``inner="orthant"`` the same Newton step
+    reads each one-lever action on the box cut at the barrier's centre (:func:`_orthants`), on
+    whose sides the condition's norm is linear, so that an action can come to rest on its kink.
     A diagonal metric does not solve an ill-conditioned round, and rounds that each run out of
     descent steps end where rounding leaves them: on an unstable plant at ``dt = 1`` a warm start
     moved by 1e-15 moved the task cost from 12.20 to 14.16, against an optimum of 11.39, and one
@@ -2629,6 +2878,7 @@ def _hold_barrier(  # noqa: C901, PLR0912, PLR0915
         uncertainty=uncertainty,
         lam_unc=lam_unc,
         barrier=True,
+        kinked=inner == "orthant",
     )
     horizon = actions.shape[0]
     best: tuple[int, float, Array] | None = None
@@ -2695,8 +2945,9 @@ def _hold_barrier(  # noqa: C901, PLR0912, PLR0915
             lam_supp=lam_supp,
             problem=problem,
             keep=keep,
-            newton=inner == "newton",
+            newton=inner != "diagonal",
             safeguarded=outer == "safeguarded",
+            orthant=inner == "orthant",
         )
         iterations += taken
         # rounds that held their columns leave a new problem where a next state joins them
@@ -2867,6 +3118,7 @@ def _rounds(  # noqa: C901
     keep: Callable[[Array], None],
     newton: bool = False,
     safeguarded: bool = False,
+    orthant: bool = False,
 ) -> tuple[
     Array,
     SolverStatus,
@@ -2932,7 +3184,7 @@ def _rounds(  # noqa: C901
         taken, solved = 0, False
         if newton:
             actions, taken, solved = _newton_round(
-                model, x0, dt, cost, lo, hi, actions, held, metric, tol, cap
+                model, x0, dt, cost, lo, hi, actions, held, metric, tol, cap, orthant
             )
         newton_steps = taken
         if not solved and taken < cap:

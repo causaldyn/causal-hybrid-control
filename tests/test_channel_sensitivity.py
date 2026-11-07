@@ -12,14 +12,16 @@ from __future__ import annotations
 
 import logging
 import math
+from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax import Array
+from scipy.optimize import minimize
 
-from chc.cost import QuadraticCost
+from chc.cost import QuadraticCost, total_cost
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.dynamics_id import CausalDynamicsFit, fit_causal_residual
 from chc.integrate import rollout
@@ -28,7 +30,13 @@ from chc.plan import (
     BarrierConstraint,
     CausalPlan,
     ChannelSensitivity,
+    InnerSolve,
     OuterRule,
+    _action_shape,
+    _ChannelWidth,
+    _diagnostics,
+    _HeldBarrier,
+    _reach,
     causal_plan,
     certify_safety,
 )
@@ -231,7 +239,9 @@ def test_a_fit_without_a_least_squares_channel_has_no_sensitivity() -> None:
         ChannelSensitivity.from_fit(fit)
 
 
-def _held_on_an_unstable_drift(seed: int, steps: int, outer: OuterRule) -> CausalPlan:
+def _held_on_an_unstable_drift(
+    seed: int, steps: int, outer: OuterRule, inner: InnerSolve = "diagonal"
+) -> CausalPlan:
     """The plan held to ``x <= 1`` under the fit's own sensitivity at ``Gamma = 1.5``, on a log of
     an unstable drift, 0.5, whose lever follows the hidden confounder at that level."""
     fit = _confounded_fit(seed, 1.5, -3.0, drift=0.5)
@@ -240,7 +250,17 @@ def _held_on_an_unstable_drift(seed: int, steps: int, outer: OuterRule) -> Causa
         _ceiling, gamma=1.5, u_max=(5.0,), sensitivity=ChannelSensitivity.from_fit(fit)
     )
     return causal_plan(
-        model, jnp.zeros(1), _COST, _DT, 30, -5.0, 5.0, steps=steps, barrier=barrier, outer=outer
+        model,
+        jnp.zeros(1),
+        _COST,
+        _DT,
+        30,
+        -5.0,
+        5.0,
+        steps=steps,
+        barrier=barrier,
+        outer=outer,
+        inner=inner,
     )
 
 
@@ -302,3 +322,108 @@ def test_a_larger_budget_runs_the_same_safeguarded_rounds_further(
         assert one[0] == other[0]
         assert one[3] == other[3]
         assert one[1:3] == pytest.approx(other[1:3], rel=1e-9, abs=0.0)
+
+
+def _slsqp_on_the_held_columns(seed: int) -> float:
+    """SLSQP's cost, from zeros, on the columns the audit certifies a step by on the log of
+    :func:`_held_on_an_unstable_drift`: each step's condition and the room at its next state, every
+    next state held, no back-off, the rounds' factors at one."""
+    fit = _confounded_fit(seed, 1.5, -3.0, drift=0.5)
+    model = HybridDynamics(known=_KNOWN, residual=fit.residual)
+    shape, inverse, _ = _action_shape(_reach((5.0,), 1))
+    assert shape is not None
+    assert inverse is not None
+    held = _HeldBarrier(
+        model=model,
+        barrier=_ceiling,
+        dt=_DT,
+        alpha=1.0,
+        delta=jnp.asarray(0.0),
+        inverse=jnp.asarray(inverse),
+        width=_ChannelWidth.build(ChannelSensitivity.from_fit(fit), 1, shape, 1.5, jnp.float64),
+        multipliers=jnp.zeros((30, 2)),
+        weight=jnp.asarray(1.0),
+        backoff=jnp.asarray(0.0),
+        curvature=jnp.zeros(1),
+    )
+
+    def task(u: Array) -> Array:
+        return total_cost(model, jnp.zeros(1), u.reshape(30, 1), _DT, _COST)
+
+    def margins(u: Array) -> Array:
+        us = u.reshape(30, 1)
+        return -held.shortfall(rollout(model, jnp.zeros(1), us, _DT)[:-1], us).ravel()
+
+    value, slope = jax.jit(task), jax.jit(jax.grad(task))
+    margin, margin_slope = jax.jit(margins), jax.jit(jax.jacobian(margins))
+    found = minimize(
+        lambda u: float(value(jnp.asarray(u))),
+        np.zeros(30),
+        jac=lambda u: np.asarray(slope(jnp.asarray(u))),
+        method="SLSQP",
+        bounds=[(-5.0, 5.0)] * 30,
+        constraints=[
+            {
+                "type": "ineq",
+                "fun": lambda u: np.asarray(margin(jnp.asarray(u))),
+                "jac": lambda u: np.asarray(margin_slope(jnp.asarray(u))),
+            }
+        ],
+        options={"ftol": 1e-14, "maxiter": 2000},
+    )
+    assert float(np.min(np.asarray(margin(jnp.asarray(found.x))))) > -1e-8
+    return float(found.fun)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_orthant_rounds_rest_the_unused_actions_on_the_kink_at_slsqp_s_cost(seed: int) -> None:
+    """On these logs SLSQP's plan spends at most three actions and rests the rest on zero, the
+    kink of the tube's ``||D^+ u||``. The diagonal and Newton rounds never reach it, each action
+    crossing and recrossing zero: they end ``max_iterations``, the diagonal ones 0.17 %, 1.5 % and
+    0.32 % above SLSQP's cost, Newton's 0.69 %, 0.21 % and 0.52 %, every step certified. The
+    orthant rounds stop an action there as on a side of the box, and converge 6e-8, 8e-8 and 4e-8
+    above SLSQP's cost, which holds the columns with no back-off, every step certified. SLSQP
+    stops on its iteration limit or a failed line search, which moves its cost by 1e-10 between
+    starts; the fifth of a percent asked is far above both."""
+    plan = _held_on_an_unstable_drift(seed, 10_000, "halved", "orthant")
+
+    assert plan.solver_status == "converged"
+    assert plan.stationarity_status == "within"
+    assert plan.safety is not None
+    assert plan.safety.certified_steps == 30
+    assert int(np.sum(np.asarray(plan.actions) == 0.0)) >= 20
+    assert plan.task_cost <= 1.002 * _slsqp_on_the_held_columns(seed)
+
+
+@pytest.mark.parametrize("seed", [1, 2])
+def test_a_larger_budget_leaves_the_orthant_plan_no_costlier(seed: int) -> None:
+    """Under the halved rounds the plan at 100 000 steps was certified on 27 steps of 30 on log 2,
+    where 10 000 steps certified all 30. The orthant rounds converge within either budget, so the
+    larger one changes neither the plan's cost nor its certified steps."""
+    small = _held_on_an_unstable_drift(seed, 10_000, "halved", "orthant")
+    large = _held_on_an_unstable_drift(seed, 100_000, "halved", "orthant")
+
+    assert small.solver_status == large.solver_status == "converged"
+    assert large.task_cost <= small.task_cost
+    assert large.safety is not None
+    assert small.safety is not None
+    assert large.safety.certified_steps >= small.safety.certified_steps
+
+
+def test_the_orthant_plan_s_first_order_check_reads_the_kink_by_its_subdifferential() -> None:
+    """The plan's first-order check reads the gradient of the held condition's norm, which is
+    masked to zero on its kink, one element of its subdifferential: at the orthant rounds' plan,
+    whose unused actions rest on zero, that reads about 0.7, some 1e5 times its tolerance, so the
+    rounds never ended ``converged``. Read by the whole subdifferential, with the rounds' own
+    multipliers, it is within the tolerance."""
+    plan = _held_on_an_unstable_drift(1, 10_000, "halved", "orthant")
+    problem = plan._problem
+    assert problem is not None
+    assert problem.kinked
+
+    masked, tolerance, _, _ = _diagnostics(replace(problem, kinked=False), plan.actions)
+
+    assert masked is not None
+    assert masked > 1e3 * tolerance
+    assert plan.stationarity is not None
+    assert plan.stationarity <= tolerance
