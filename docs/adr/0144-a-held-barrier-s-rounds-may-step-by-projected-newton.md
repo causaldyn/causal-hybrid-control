@@ -3,6 +3,8 @@
 **Status:** accepted, 2026-10-27. Adds an opt-in solve to the barrier rounds of ADR 0102.
 Amended 2026-11-06: an opt-in rule for how the same rounds share their budget and grow their
 penalty, `outer="safeguarded"`, measured on the same corpus (last section); the default stays.
+Amended 2026-11-07: an opt-in solve that takes the radius norm's kink at the barrier's centre by its
+sides, `inner="orthant"`, measured on the same corpus (last section); the default stays.
 
 ## Context
 
@@ -158,3 +160,121 @@ So the rule moves results users rely on beyond rounding, in both directions, and
 certifies fewer leading steps: by the contract rule above it ships opt-in, and the default stays
 `"halved"`. It is not a candidate for the default: what holds those plans short of the optimum is
 the kink, not the outer rule.
+
+## Amended 2026-11-07: the kink at the barrier's centre
+
+**Where the kink enters.** Under a radius, a held step reads its action through
+`N_k = ||D^+ (u_k - c)||` twice: in its own condition's spread, `a + <w, u_k> - d N_k`, and in the
+deviation tube (ADR 0119), `e_{k+1} = ||dF/dx|| e_k + ||dF/dc|| Delta_k N_k`, which every later next
+state's room reads. Both rise with `N_k`, so an action off `c` pays in its own step and in every
+later one, and the optimum can rest an action exactly on `c`. On the three logs of the unstable
+drift above, SLSQP's plan rests 27, 27 and 29 of its 30 actions there.
+
+**Why neither solve converges there.** The rollout's derivative masks the norm at zero, so it
+reads no slope on `c` and a slope of `w |D^+|` of either sign beside it. With one lever the norm is
+linear on each side, so its second derivative is zero off `c`: Newton's quadratic model has no
+term that holds an action on `c`, its step crosses it, and the line search halves it. The diagonal
+descent's iterates step across `c` the same way; none of the three default plans had an action
+within 1e-9 of it. And the first-order check reads the same masked derivative: a plan that rests
+an action on `c` misses by what the rest of the gradient pushes there. A prototype that took
+Newton's step on the cut box below but kept that check landed within 1e-7 of SLSQP's cost on all
+three logs and still read stationarity 0.65 to 0.78 against a tolerance of 1.4e-6, so its rounds
+never stopped on their own rule and the status read `max_iterations`.
+
+**Decision: `causal_plan(inner="orthant")`**, and `RecedingHorizon.inner`, `InnerSolve` gaining
+the value: Newton's rounds with the kink taken by its sides, the orthant-wise rule (Andrew & Gao
+2007, ICML) on Bertsekas' projected Newton step.
+
+- **Where it applies.** A step with one lever, under a radius or a sensitivity model, and a model
+  that takes the action it is given. With several levers the norm of a vector is not linear on any
+  orthant, and a model that sets part of its action from the state is not covered: both, and a
+  barrier with no radius, step as `"newton"` does, bit for bit.
+- **The cut box.** At each Newton step an action off `c` keeps to its side: its box is cut at `c`.
+  An action on `c` leaves it only toward a side where the round falls: right where
+  `dF/du + w |D^+| < 0`, left where `dF/du - w |D^+| > 0`, with `dF/du` the round's derivative at
+  the norm held fixed and `w >= 0` its derivative in the norm. Otherwise it is held on `c` as a
+  bound, where zero is in the round's subdifferential along it. Within one cut box the round is
+  smooth, and Newton's step converges there.
+- **Reading `dF/du` and `w` with no change to the shared terms.** The centre becomes a variable per
+  step, `C`. The norm reads `u - C` alone, so the derivatives in `u` and in `C` sum to `dF/du` at the
+  norm held fixed, and the derivative in `C` times `u - C` is `-w N`. On `c` the norm has no
+  direction, so both are read at a centre moved by 4 eps times the largest of `|c|`, the box's
+  finite sides and the actions: the one-sided slopes, within that share of the slopes at the kink.
+  The condition, the tube, the audit and the penalty are the library's own, unchanged.
+- **The first-order check reads the kink by its subdifferential.** With the rounds' multipliers,
+  an action on `c` misses by what is left of its push once `w |D^+|` is taken off, and a side of
+  the box takes off a push outward as before. The plan's stationarity is the smaller of this miss
+  and the masked one: each is an upper bound on the least residual. The rounds' stopping rule reads
+  the same check.
+
+On the three logs, 10 000 steps under the halved rule:
+
+| log | SLSQP | default rounds | `inner="newton"` | `inner="orthant"` |
+|---|---:|---:|---:|---:|
+| 0 | 76.012813 | +0.17 %, `max_iterations` | +0.69 %, `max_iterations` | +6.3e-8, `converged` in 91 steps |
+| 1 | 65.204394 | +1.54 %, `max_iterations` | +0.21 %, `max_iterations` | +8.0e-8, `converged` in 2 814 steps |
+| 2 | 50.995133 | +0.32 %, `max_iterations` | +0.52 %, `max_iterations` | +4.2e-8, `converged` in 1 880 steps |
+
+Each plan is certified on all 30 steps. The orthant plans rest 27, 27 and 29 actions exactly on
+zero, as SLSQP's do, at stationarity 1.4e-11, 8.8e-15 and 1.9e-13. SLSQP holds the columns with no
+back-off, the rounds 1e-6 inside them. The safeguarded rule gives the same three plans, and at
+100 000 steps both rules give the same plans on logs 1 and 2, in the same steps.
+
+On the oscillator under a velocity floor with one lever at `gamma = 2`, where no optimal action
+rests on the kink, the orthant rounds land on Newton's plan, 4.2278682, in 1 025 steps against
+1 089. At `gamma = 1`, with two levers, and on the SIR plan they are Newton's rounds, bit for bit.
+
+## Why opt-in, again
+
+Every held plan of the corpus above, now 240 (the misspecification tests hold more logs), was
+solved as its test asked and with `inner="orthant"`; 227 are in its scope (13 hold a support model
+or linear rows):
+
+| | plans | what moved |
+|---|---|---|
+| identical | 31 | |
+| within 1e-9 relative | 5 | |
+| cheaper, the same certified steps | 90 | 28 `converged` both ways by at most 5.8e-7; 57 `max_iterations` → `converged`, by up to 81 % (a coarse-step plan) and 3.7 % on the misspecification plans; 3 `max_iterations` both ways; 2 `infeasible` both ways |
+| more certified leading steps | 6 | all `max_iterations` → `converged`: 11 → 12 and 10 → 12 on the integrator, 29 → 30 on a log of the unstable drift, 28 → 30 on log 2 above (three tests) |
+| costlier, the same certified steps | 95 | 89 `converged` both ways by at most 7.5e-7; 4 `max_iterations` → `converged` by at most 5.8e-7; 2 `max_iterations` both ways by 5.4 %, at a budget of 10 steps |
+| fewer certified leading steps | 0 | |
+
+Statuses: 147 `converged` both ways, 67 `max_iterations` → `converged`, 7 `max_iterations` both
+ways, 6 `infeasible` both ways, none worse. Descent steps: 1 549 757 → 188 638. Of the 98 plans
+with one lever under a radius, 52 rest an action on the centre.
+
+The counterexamples to "every plan moves toward the optimum":
+
+- **The 89 converged plans that cost more**, by 1e-9 to 7.5e-7 relative. Both ends meet the
+  tolerance; the orthant plans' stationarity is at most 3.4e-10 where the default's reached 1.4e-6.
+  They move `gamma*` with them on 59 of the 89. This is the move Newton made in the first table.
+- **Two oscillator plans at a budget of 10 steps** (the rounds' shared budget and the projection
+  tests) end `max_iterations` either way, 4.21603 → 4.44480, 5.4 % costlier. They hold no radius,
+  so there is no kink: they are Newton's steps on a budget too small for its rounds.
+- **The longer prefixes** are all moves toward the plan the rounds hold, but five of the six cost
+  more (by 0.27 % to 0.96 %), being held on more steps: log 2 above certified 28 of 30 at 50.50846
+  under the safeguarded rule and 30 of 30 at 50.99514.
+
+So by the contract rule the orthant rounds ship opt-in, as Newton's did. They are the candidate
+for the default on plans with one lever under a radius: of those 98, all end `converged`, 61 of
+them where the default rounds ended `max_iterations`, none is certified on fewer steps, and none at
+the same steps costs more than 5.5e-7 more.
+
+**Alternatives.**
+
+- **A proximal step on the norm in the diagonal descent**, as ADR 0078 takes the radius' norm, with
+  the norm's weight read by the same split. Exact zeros appeared, but the rounds' descents still
+  ran out of their shares on the round's conditioning: +0.10 %, +0.58 % and +0.73 % above SLSQP's
+  cost on the three logs, the last worse than the default's +0.32 %.
+- **A smoothed norm, `sqrt(N^2 + eps^2)`, with `eps -> 0`.** Not exact at any finite `eps`, and
+  the smoothing would have to enter the condition and the tube the audit shares. ADR 0119 tried
+  it at `tau = 1e-3` under the diagonal descent: the rounds still ended on their budget, which it
+  read as the kink not being what stops them. Under the diagonal descent both stop it, as the
+  proximal prototype above shows; under Newton's step the kink alone does: the same rounds end
+  `max_iterations` without the cut box and `converged` with it.
+- **Several levers a step.** A group norm's kink is a point in `m` dimensions, not a sign: a block
+  proximal step or a second-order cone step would be needed. Not built; no test plan reaches it.
+
+**Limits.** `CausalPlan.shadow_prices` and the decision weight still read the masked derivative:
+an action on the kink is a free action there, and what its push leaves shows in their residual.
+`prescribe` passes no `inner`: its held plans keep the default rounds.
