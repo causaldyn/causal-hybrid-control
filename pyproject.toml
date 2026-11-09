@@ -208,4 +208,4 @@ include = ["src/chc"]
 [tool.ty.rules]
 # the optional bring-your-own-env adapters (econml / dowhy / tigramite / lightgbm / catboost) are
 # intentionally uninstalled; their imports are lazy and ImportError-guarded, not bugs to flag
-unresolved-import = "ignore"
+import-not-found = "ignore"
