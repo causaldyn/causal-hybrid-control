@@ -25,3 +25,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      # init, analyze and upload-sarif are one release: CodeQL refuses a workflow whose steps use
+      # different versions of it, so one PR per step is one red PR per step.
+      codeql-action:
+        patterns: ["github/codeql-action*"]
