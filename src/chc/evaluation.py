@@ -310,7 +310,9 @@ def fit_logger(x: ArrayLike, u: ArrayLike) -> AffinePolicy:
     design = np.hstack([xs, np.ones((xs.shape[0], 1))])
     if xs.shape[0] <= design.shape[1]:
         raise ValueError(f"{xs.shape[0]} rows cannot fit {design.shape[1]} coefficients per action")
-    coef, *_ = np.linalg.lstsq(design, us, rcond=None)
+    # astype, not a cast: numpy's stubs type lstsq on float input as floating[Any] before 2.5, the
+    # numpy Python 3.11 gets, so the float64 promise is made true of the value.
+    coef = np.linalg.lstsq(design, us, rcond=None)[0].astype(np.float64, copy=False)
     residual = us - design @ coef
     covariance = residual.T @ residual / (xs.shape[0] - design.shape[1])
     return AffinePolicy(coef[:-1].T, coef[-1], _sym(covariance))
@@ -1557,7 +1559,7 @@ def _logged_plant(x: _Array, u: _Array) -> LinearGaussianPlant:
         raise ValueError(
             f"{u.shape[0]} transitions cannot fit {design.shape[1]} coefficients per state"
         )
-    coef, *_ = np.linalg.lstsq(design, x[1:], rcond=None)
+    coef = np.linalg.lstsq(design, x[1:], rcond=None)[0].astype(np.float64, copy=False)
     residual = x[1:] - design @ coef
     noise = _sym(residual.T @ residual / (u.shape[0] - design.shape[1]))
     return LinearGaussianPlant(coef[:n].T, coef[n:-1].T, coef[-1], noise)

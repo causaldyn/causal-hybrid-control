@@ -1270,7 +1270,7 @@ def test_damping_injection_rate_adds_the_port_dissipation(seed: int, kappa: floa
             2.0 * step
         )
         loss = gradient @ dissipation @ gradient
-        expected = -loss - kappa * float(output @ output)
+        expected = -float(loss) - kappa * float(output @ output)
         assert float(measured) == pytest.approx(expected, rel=0.0, abs=_difference_error(velocity))
         assert expected <= -float(loss) <= 0.0
 

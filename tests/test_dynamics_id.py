@@ -1996,7 +1996,9 @@ def test_rows_repeated_and_clustered_by_their_original_read_the_original_error()
     assert rows.channel_error is not None
     assert rows.channel_error / original.channel_error == pytest.approx(0.25, abs=0.002)
     assert clustered.channel_error == pytest.approx(original.channel_error, rel=1e-6, abs=0.0)
-    assert clustered.residual.channel == pytest.approx(original.residual.channel, abs=1e-7)
+    assert clustered.residual.channel == pytest.approx(
+        np.asarray(original.residual.channel), abs=1e-7
+    )
 
 
 @pytest.mark.parametrize("integrator", ["euler", "rk4"])
