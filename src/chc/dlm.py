@@ -1532,7 +1532,9 @@ def _unit_filter(
     return gains, priors, covs, back, roots
 
 
-def _path_covariance(back: _Array, smoothed: _Array, cs: list[int], times: _Array) -> _Array:
+def _path_covariance(
+    back: _Array, smoothed: _Array, cs: list[int], times: NDArray[np.intp]
+) -> _Array:
     """``Cov(theta_s[cs], theta_t[cs])`` for ``s`` and ``t`` in the sorted ``times``, shaped
     ``(times, cs, times, cs)``, from the smoothed covariances and
     ``Cov(theta_s, theta_t) = B_s Cov(theta_(s+1), theta_t)`` for ``s < t``."""
@@ -1731,7 +1733,9 @@ def constrained_sample(  # noqa: C901, PLR0912, PLR0915
         smoothed_cov[t] = _sym(
             full_cov[t] + full_back[t] @ (smoothed_cov[t + 1] - full_prior[t + 1]) @ full_back[t].T
         )
-    starts = [np.concatenate([[0], 1 + np.flatnonzero(w[:, j, j] > 0.0)]) for j in cs]
+    starts: list[NDArray[np.intp]] = [
+        np.concatenate([[0], 1 + np.flatnonzero(w[:, j, j] > 0.0)]) for j in cs
+    ]
     times = np.unique(np.concatenate(starts))
     step = np.concatenate(starts)
     which = np.repeat(np.arange(len(cs)), [run.size for run in starts])

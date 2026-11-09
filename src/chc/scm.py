@@ -262,7 +262,7 @@ def _conformal_p_value(outcomes: Outcomes, treated_unit: int, n_pre: int, effect
     """Chernozhukov, Wüthrich and Zhu's p-value for the constant ``effect``, over moving blocks: the
     absolute residuals after treatment summed, against the same sum over each cyclic shift of the
     residuals in time."""
-    residual = np.abs(_conformal_residual(outcomes, treated_unit, n_pre, effect))
+    residual: Vector = np.abs(_conformal_residual(outcomes, treated_unit, n_pre, effect))
     n_periods = residual.size
     windows = np.lib.stride_tricks.sliding_window_view(np.tile(residual, 2), n_periods - n_pre)
     statistic = windows[n_pre : n_pre + n_periods].sum(axis=1)  # [0] is the periods as observed

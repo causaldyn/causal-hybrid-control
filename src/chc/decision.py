@@ -5702,7 +5702,9 @@ def _box_corners(
         lo, hi = terms.mean_action - reach, terms.mean_action + reach
     else:
         lo, hi = (np.asarray(end, dtype=np.float64).reshape(-1) for end in box)
-    ends = [np.unique([low, high]) for low, high in zip(lo, hi, strict=True)]
+    ends = [
+        np.unique(np.array([low, high], dtype=np.float64)) for low, high in zip(lo, hi, strict=True)
+    ]
     return np.stack(np.meshgrid(*ends, indexing="ij"), axis=-1).reshape(-1, lo.size)
 
 
