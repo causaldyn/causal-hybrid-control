@@ -194,9 +194,12 @@ Qed.
 
 (* ===== (H) THE O(1) TERM THE CONSTANT-CAP LAW DROPPED ===== *)
 
-(* Under a CONSTANT cap the stopping round is n = s/kap, so the remaining horizon inside the
-   bracket is itself a function of the mass and the root stops being a square root. Writing
-   w = i0 + c*s, the balance a(i0 + c s)^2 = k c (t - s/kap) is a QUADRATIC in w,
+(* Under a CONSTANT cap, reading the stopping round as the continuous n = s/kap makes the
+   remaining horizon inside the bracket a function of the mass, and the root stops being a square
+   root. This is a RELAXATION: the round that delivers s is an integer, and
+   validation/capped_exploration_schedule.mac STEP 9 puts the exact mass between the roots of
+   (He) at the horizons t - 1 and t. Writing w = i0 + c*s, the relaxed balance
+   a(i0 + c s)^2 = k c (t - s/kap) is a QUADRATIC in w,
 
        a*w^2 + (k/kap)*w = k*c*t + k*i0/kap                                                 (He)
 
@@ -229,8 +232,9 @@ Proof.
   rewrite Hsq. field. exact Hkap.
 Qed.
 
-(* So the cap-free form is an UPPER bound on the mass at every horizon: it over-states, never
-   under-states, which is why shipping it as the target made the policy aim past the optimum. *)
+(* So the cap-free form is an UPPER bound on the relaxed mass at every horizon, and so on the
+   exact mass, which lies at or below it: it over-states, never under-states, which is why shipping
+   it as the target made the policy aim past the optimum. *)
 Lemma the_cap_free_form_overstates_the_mass :
   forall a k c kap s we w0,
     0 < a -> 0 <= k -> 0 < c -> 0 < kap -> 0 <= s -> 0 <= we -> 0 <= w0 ->

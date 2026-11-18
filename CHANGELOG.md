@@ -5,6 +5,31 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
 experimental may change in any minor release (`docs/api/index.md`).
 
+## [Unreleased]
+
+### Fixed
+
+- **`CappedExplorationPolicy.predicted_mass` is the optimum where the balance skips a round
+  boundary.** `_self_consistent_mass` returned the balance `sqrt(K (T - n)/(A c)) - I0/c` of the
+  first round `n` whose prefix sum reaches it, also where that balance lies below the mass the
+  fill delivers before round `n`. There the cost falls up to that boundary and rises after it, so
+  the boundary is the optimum. At `A = 1`, `K = 4`, `c = 1`, `I0 = 1`, `T = 3` and `cap = 3/2` it
+  read `1` against the optimum `3/2`, and at the defaults, `T = 10**5` and `cap = 0.01` it read
+  `60.729756` where the policy stops at `60.73`. `exploration_mass`, `cost` and the schedule were
+  already the optimum and do not move.
+- **The constant-cap quadratic is documented as a relaxation, not as the stopping mass.**
+  `capped_exploration_policy` called the root of `A w^2 + (K/cap) w = K c T + K I0/cap` the exact
+  mass and `S*/cap` the exact block length. The quadratic reads the stopping round as `S/cap`, but
+  the round that delivers `S` is the integer `ceil(S/cap)`, and the exact mass lies between the
+  quadratic's roots at the horizons `T - 1` and `T` (`validation/capped_exploration_schedule.mac`
+  STEP 9). With the item above's `A`, `K`, `c`, `I0` and `T`, at `cap = 100` the optimum is
+  `sqrt(8) - 1 = 1.828427` and the root is `2.449928`; at `cap = 4/5` the optimum is the schedule
+  `(4/5, 1/5, 0)` at cost `83/9`, and the root is `1.321825`. The ceiling `K/(2 A c cap)` on what the cap-free form over-states holds
+  for the relaxation; the exact mass's gap can pass it at a finite horizon, `0.635674` against
+  `0.02` at `cap = 100`. Tests that compared the mass with the root to within one cap now check
+  that bracket, and a new test checks the mass against a brute-force minimum over the box of
+  per-round actions on horizons up to five.
+
 ## [1.3.0] — 2026-11-07
 
 Two opt-in settings, the directional DLM form under sign constraints, the marketplace default

@@ -9,7 +9,8 @@
    The answer is that n* was never the invariant.  The first-order condition depends on the cap
    schedule ONLY through the exploration MASS already delivered, so what is cap-independent is
 
-       S* = sqrt(K T / (A c)) - I0/c        <- the optimal total exploration, whatever the caps
+       S* = sqrt(K T / (A c)) - I0/c        <- the optimal total exploration at n << T, whatever
+                                               the caps; STEPS 7 and 9 give what it drops
 
    and the schedule only decides how many rounds it takes to deliver it:
 
@@ -132,8 +133,10 @@ print("        1.8e-15 on the mass, with the active block length equal on the no
 
 print("=== STEP 7: the O(1) term the closed form dropped, and where the cap enters the MASS ===")$
 
-/* Under a CONSTANT cap kap the stopping round is n = S/kap, so the remaining horizon in STEP 2's
-   bracket is itself a function of the mass and the root stops being a square root. */
+/* Under a CONSTANT cap kap, reading the stopping round as the continuous n = S/kap makes the
+   remaining horizon in STEP 2's bracket a function of the mass, and the root stops being a
+   square root.  This is a RELAXATION: the round that delivers S is the integer ceil(S/kap), and
+   STEP 9 puts the exact mass between this root at the horizons T - 1 and T. */
 root : A*(I0 + c*S)^2 - K*c*(T - S/kap)$
 quad : A*w^2 + (K/kap)*w - K*c*T - K*I0/kap$
 print("STEP 7a A(I0+cS)^2 - Kc(T - S/kap) in w = I0 + cS, minus a quadratic in w =",
@@ -144,25 +147,26 @@ print("STEP 7b the positive root is w =", wpos)$
 print("STEP 7c the quadratic at that root =",
       ratsimp( radcan( subst(w = wpos, quad) ) ), " (0)")$
 
-Sex : ratsimp( (wpos - I0)/c )$
+Srelax : ratsimp( (wpos - I0)/c )$
 S56 : sqrt(K*T/(A*c)) - I0/c$                 /* the constant-cap closed form */
 So1 : S56 - K/(2*A*c*kap)$                    /* ... with the missing O(1) term put back */
 
-print("STEP 7d taylor(S56 - Sexact, T, inf, 1) =", taylor(S56 - Sex, T, inf, 1))$
+print("STEP 7d taylor(S56 - Srelax, T, inf, 1) =", taylor(S56 - Srelax, T, inf, 1))$
 print("        the leading entry is a CONSTANT, not a vanishing remainder: S56 over-states")$
-print("        the mass by K/(2 A c kap) at EVERY horizon, however long")$
+print("        the relaxed mass by K/(2 A c kap) at EVERY horizon, however long")$
 print("STEP 7e residual of that constant against K/(2 A c kap) =",
-      ratsimp( radcan( limit( S56 - Sex, T, inf ) - K/(2*A*c*kap) ) ), " (0)")$
+      ratsimp( radcan( limit( S56 - Srelax, T, inf ) - K/(2*A*c*kap) ) ), " (0)")$
 
 coef : (4*A^(3/2)*I0*sqrt(K)*sqrt(c)*kap + sqrt(A)*K^(3/2)*sqrt(c))/(8*A^2*c^2*kap^2)$
-print("STEP 7f with the O(1) term restored, taylor(So1 - Sexact, T, inf, 1) =",
-      taylor(So1 - Sex, T, inf, 1))$
+print("STEP 7f with the O(1) term restored, taylor(So1 - Srelax, T, inf, 1) =",
+      taylor(So1 - Srelax, T, inf, 1))$
 print("STEP 7g residual against -(K + 4 A I0 kap) sqrt(K/(A c)) / (8 A c kap^2 sqrt(T)) =",
-      ratsimp( radcan( ratdisrep(taylor(So1 - Sex, T, inf, 1)) + coef/sqrt(T) ) ), " (0)")$
+      ratsimp( radcan( ratdisrep(taylor(So1 - Srelax, T, inf, 1)) + coef/sqrt(T) ) ), " (0)")$
 print("        and that coefficient rewritten is", ratsimp(radcan(coef)))$
 
 print("STEP 7h so the MASS is cap-free only to LEADING order.  The cap enters at O(1) as")$
-print("        -K/(2 A c kap) and again at O(1/sqrt(T)) as 1/kap^2, and nowhere else.  A tighter")$
+print("        -K/(2 A c kap) and again at O(1/sqrt(T)) as 1/kap^2, and in the relaxation nowhere")$
+print("        else; the integer round moves the exact mass at O(1/sqrt(T)) too (STEP 9).  A tighter")$
 print("        cap stops at a SMALLER mass, and the error S56 makes is the whole of that")$
 print("        O(1) term -- which is why the certificate ships the fixed point rather than the")$
 print("        closed form: at T = 4000 with caps that open late the closed form runs 25% high")$
@@ -197,3 +201,75 @@ cost_part : float(subst(dflt, A*(3/10 + x) + K*(1/I0 + 1/(I0 + c*3/10)
 print("STEP 8e T = 50, cap = 0.3: one saturated round, then x =", xpart, " ; cost",
       subst([x = xpart], cost_part), " against the whole block of two rounds",
       float(subst(dflt, A*6/10 + K*(1/I0 + 1/(I0 + c*3/10) + 48/(I0 + c*6/10)))))$
+
+/* ===== STEP 9: the exact stopping mass reads the INTEGER round, between two relaxations ===== */
+
+print("=== STEP 9: the exact mass is the integer round's, between the relaxation at T - 1 and T ===")$
+/* The greedy fill of a mass S that round n delivers, (n - 1) kap < S <= n kap under a constant cap,
+   explores at the cap on rounds 1 .. n - 1, partly on round n, and not after it.  Its cost along
+   the fill is convex in S, smooth inside a round, and its slope jumps UP at every boundary, since
+   one round fewer is left after it.  So the optimum is the balance of the first round n whose
+   prefix sum reaches it where it falls inside round n, and the boundary it skips otherwise:
+   chc.regret._self_consistent_mass. */
+Fn : A*S + K*'sum(1/(I0 + c*(t - 1)*kap), t, 1, n) + K*(T - n)/(I0 + c*S)$
+print("STEP 9a dF/dS on round n, residual against A - K c (T - n)/(I0 + c S)^2 =",
+      ratsimp(diff(Fn, S) - (A - K*c*(T - n)/(I0 + c*S)^2)), " (0)")$
+g(Tq, w) := A*w^2 + (K/kap)*w - K*c*Tq - K*I0/kap$   /* STEP 7's quadratic at horizon Tq */
+inside : ratsimp(subst(w = I0 + c*S, g(T, w) - (A*w^2 - K*c*(T - n))))$
+print("STEP 9b at a balance A (I0 + c S)^2 = K c (T - n), the quadratic g_T(I0 + c S) =", inside,
+      "; residual against K c (S/kap - n) =", ratsimp(inside - K*c*(S/kap - n)), " (0)")$
+print("STEP 9c on round n, S/kap - n is in (-1, 0], so g_T(w) is in (-K c, 0]; and",
+      "g_T(w) + K c - g_(T-1)(w) =", ratsimp(g(T, w) + K*c - g(T - 1, w)), " (0)")$
+print("STEP 9d dg/dw =", diff(g(T, w), w), " > 0 for w > 0, so w_(T-1) < w <= w_T: the exact mass")$
+print("        lies between the relaxation's roots at the horizons T - 1 and T, not on the root at T")$
+kink : ratsimp(subst(w = I0 + c*(n - 1)*kap, g(T, w) - (A*w^2 - K*c*(T - n + 1))))$
+print("STEP 9e at a skipped boundary S = (n - 1) kap, g_T(w) - [A w^2 - K c (T - n + 1)] =", kink,
+      " (0); the slopes beside it, A w^2 <= K c (T - n + 1) and A w^2 >= K c (T - n), put g_T in",
+      "[-K c, 0], the same bracket")$
+wT : (-K/kap + sqrt(K^2/kap^2 + 4*A*(K*c*T + K*I0/kap)))/(2*A)$
+print("STEP 9f the relaxation's mass moves by dS/dT; residual against K/(2 A w + K/kap) =",
+      ratsimp(radcan(diff(wT, T)/c - K/(2*A*wT + K/kap))), " (0).  It is below kap and below",
+      "K/(2 A w), and w grows with T, so the bracket is narrower than both at w = w_(T-1)")$
+
+/* Three instances at A = 1, K = 4, c = 1, I0 = 1, T = 3, each optimum checked against a grid of
+   the fill's masses; validation/capped_exploration_t3.smt2 certifies the cap 4/5 one over the box. */
+cost3(v) := block([s : 0, tot : 0], for t : 1 thru 3 do (tot : tot + 4/(1 + s) + v[t], s : s + v[t]),
+                  tot)$
+fill3(m, kp) := [min(m, kp), min(max(m - kp, 0), kp), min(max(m - 2*kp, 0), kp)]$
+relaxS(Tq, kp) := (-4/kp + sqrt(16/kp^2 + 4*(4*Tq + 4/kp)))/2 - 1$
+gridmin(f, hi, steps) := block([best : bfloat(f(0)), v],
+                               for j : 1 thru steps do (v : bfloat(f(hi*j/steps)),
+                                                        if v < best then best : v),
+                               best)$
+verdict(label, ok) := print(label, if ok then "(ok)" else "(FAIL)")$
+
+S100 : sqrt(8) - 1$   /* cap 100: round 1 balances, A w^2 = K c (T - 1) = 8, far inside the cap */
+print("STEP 9g cap 100: exact mass", S100, "=", bfloat(S100), ", cost", ratsimp(cost3(fill3(S100, 100))),
+      "; the relaxation's root", bfloat(relaxS(3, 100)), ", at T - 1", bfloat(relaxS(2, 100)))$
+verdict("STEP 9g no mass on the fill costs less (3001 masses on [0, 3])",
+        is(gridmin(lambda([m], cost3(fill3(m, 100)) - cost3(fill3(S100, 100))), 3, 3000) >= 0))$
+verdict("STEP 9g relaxS(2) < exact <= relaxS(3)",
+        is(bfloat(relaxS(2, 100)) < bfloat(S100) and bfloat(S100) <= bfloat(relaxS(3, 100))))$
+over : sqrt(12) - sqrt(8)$   /* S56 - exact: S56 = sqrt(K T/(A c)) - I0/c = sqrt(12) - 1 */
+print("STEP 9g the cap-free form over-states it by", over, "=", bfloat(over),
+      "against the relaxation's ceiling K/(2 A c kap) =", 4/(2*100))$
+verdict("STEP 9g ... and by no more than the ceiling plus sqrt(K T/(A c)) - sqrt(K (T - 1)/(A c))",
+        is(bfloat(over) > 4/200 and bfloat(over) <= bfloat(4/200 + sqrt(12) - sqrt(8))))$
+
+print("STEP 9h cap 4/5: round 2 balances, A w^2 = K c (T - 2) = 4, so the mass is 1, the schedule",
+      fill3(1, 4/5), ", cost", cost3(fill3(1, 4/5)), "; the relaxation's root", bfloat(relaxS(3, 4/5)))$
+verdict("STEP 9h the cost is 83/9", is(cost3(fill3(1, 4/5)) = 83/9))$
+verdict("STEP 9h no mass on the fill costs less (2401 masses on [0, 12/5])",
+        is(gridmin(lambda([m], cost3(fill3(m, 4/5)) - 83/9), 12/5, 2400) >= 0))$
+verdict("STEP 9h relaxS(2) < 1 <= relaxS(3)",
+        is(bfloat(relaxS(2, 4/5)) < 1 and 1 <= bfloat(relaxS(3, 4/5))))$
+
+print("STEP 9i cap 3/2: round 1 balances at", bfloat(S100), "> 3/2 and round 2 at 1 < 3/2, so the",
+      "balance skips the boundary 3/2 and the optimum is the boundary, cost", cost3(fill3(3/2, 3/2)))$
+verdict("STEP 9i round 1's slope at 3/2 < 0 < round 2's",
+        is(1 - 8/(1 + 3/2)^2 < 0 and 0 < 1 - 4/(1 + 3/2)^2))$
+verdict("STEP 9i the cost is 87/10", is(cost3(fill3(3/2, 3/2)) = 87/10))$
+verdict("STEP 9i no mass on the fill costs less (4501 masses on [0, 9/2])",
+        is(gridmin(lambda([m], cost3(fill3(m, 3/2)) - 87/10), 9/2, 4500) >= 0))$
+verdict("STEP 9i relaxS(2) <= 3/2 <= relaxS(3)",
+        is(bfloat(relaxS(2, 3/2)) <= 3/2 and 3/2 <= bfloat(relaxS(3, 3/2))))$

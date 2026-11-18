@@ -1117,9 +1117,11 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_the_leading_form_
     # validation/capped_exploration_schedule.mac STEP 7,
     # validation/capped_exploration_o1.gp, proofs/capped_exploration_schedule.v section (H).
     # The constant-cap sqrt(K T/(A c)) - I0/c is the root of the first-order condition with the
-    # REMAINING horizon held at the full T. Under a constant cap the stopping round is S/cap, so
-    # the remaining horizon is a function of the mass and the root solves a QUADRATIC in
-    # w = I0 + c S. What that form drops is therefore a CONSTANT, not a vanishing remainder.
+    # REMAINING horizon held at the full T. Under a constant cap, reading the stopping round as the
+    # continuous S/cap makes the remaining horizon a function of the mass, and the root solves a
+    # QUADRATIC in w = I0 + c S. What that form drops is therefore a CONSTANT, not a vanishing
+    # remainder. The quadratic is a RELAXATION: the round that delivers S is the integer
+    # ceil(S/cap), and the exact mass lies between its roots at T - 1 and T (STEP 9).
 
     b, rr, xt, sigma, i0, eta = 1.0, 0.5, 1.0, 0.7, 1.0, 0.6
     curvature = b * b + rr
@@ -1128,7 +1130,7 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_the_leading_form_
     info_rate = eta / sigma**2
     aa, kk, cc = curvature, numerator, info_rate
 
-    def exact(horizon: float, cap: float) -> float:
+    def relaxed(horizon: float, cap: float) -> float:
         # A w^2 + (K/cap) w = K c T + K I0/cap, solved for the positive root
         q = kk / cap
         w = (-q + np.sqrt(q * q + 4.0 * aa * (kk * cc * horizon + kk * i0 / cap))) / (2.0 * aa)
@@ -1139,9 +1141,9 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_the_leading_form_
 
     constant = kk / (2.0 * aa * cc)  # the dropped term is this over the cap
 
-    # 1. the quadratic root is what _self_consistent_mass finds. Its fixed point is the
-    #    same balance discretised on integer rounds, so the two may differ by the mass one round
-    #    delivers and by no more than that
+    # 1. the quadratic root brackets what _self_consistent_mass finds: its fixed point reads the
+    #    same balance on the integer round, so it lies above the root at T - 1 and at most at the
+    #    root at T, a bracket narrower than one round's mass and than K/(2 A w) (STEP 9d, 9f)
     cap = 0.01
     for horizon in (10**4, 10**5, 10**6):
         caps = np.full(horizon, cap)
@@ -1153,10 +1155,12 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_the_leading_form_
             info_rate=info_rate,
             prior_info=i0,
         )
-        assert fixed == pytest.approx(exact(horizon, cap), abs=cap)
+        below, above = relaxed(horizon - 1, cap), relaxed(horizon, cap)
+        assert below < fixed <= above * (1.0 + 1e-12)
+        assert above - below < min(cap, kk / (2.0 * aa * (i0 + cc * below)))
 
     # 2. the gap to the leading form converges to K/(2 A c cap) -- a CONSTANT, over 5 decades of T
-    gaps = [leading_form(t) - exact(t, cap) for t in (10**4, 10**5, 10**6, 10**7, 10**8)]
+    gaps = [leading_form(t) - relaxed(t, cap) for t in (10**4, 10**5, 10**6, 10**7, 10**8)]
     assert gaps[-1] == pytest.approx(constant / cap, rel=1e-3)
     # ... and it is a ceiling, not just a limit: proofs/capped_exploration_schedule.v
     #     the_overstatement_never_exceeds_the_cap_term, approached strictly from below
@@ -1166,7 +1170,7 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_the_leading_form_
     #    STEP 7g derives -- four decades, so the rate is read off a curve and not a pair
     coefficient = (kk + 4.0 * aa * i0 * cap) * np.sqrt(kk / (aa * cc)) / (8.0 * aa * cc * cap**2)
     tail = [
-        (leading_form(t) - constant / cap - exact(t, cap)) * np.sqrt(t)
+        (leading_form(t) - constant / cap - relaxed(t, cap)) * np.sqrt(t)
         for t in (10**5, 10**6, 10**7, 10**8)
     ]
     assert tail[-1] == pytest.approx(-coefficient, rel=1e-4)
@@ -1175,16 +1179,16 @@ def test_a_constant_cap_shifts_the_stopping_mass_by_a_constant_the_leading_form_
     # 4. the cap enters the mass ONLY through that constant, so a tighter actuator is exactly
     #    where the leading form over-states -- inversely in the cap, and unboundedly
     horizon = 4000
-    overstatement = {k: leading_form(horizon) - exact(horizon, k) for k in (0.3, 0.1, 0.03, 0.01)}
+    overstatement = {k: leading_form(horizon) - relaxed(horizon, k) for k in (0.3, 0.1, 0.03, 0.01)}
     assert all(v <= constant / k for k, v in overstatement.items())
     assert overstatement[0.01] / overstatement[0.1] == pytest.approx(10.0, rel=0.1)
     # ... 0.5% of the mass at cap 0.3 and 17% at cap 0.01, on the same horizon
-    assert overstatement[0.3] / exact(horizon, 0.3) < 0.01
-    assert overstatement[0.01] / exact(horizon, 0.01) > 0.15
+    assert overstatement[0.3] / relaxed(horizon, 0.3) < 0.01
+    assert overstatement[0.01] / relaxed(horizon, 0.01) > 0.15
 
-    # 5. the policy's own mass agrees with the quadratic, not with the leading form
+    # 5. the policy's own mass sits in the quadratic's bracket, not on the leading form
     policy = capped_exploration_policy(horizon=10**5, cap=cap)
-    assert policy.predicted_mass == pytest.approx(exact(10**5, cap), abs=cap)
+    assert relaxed(10**5 - 1, cap) < policy.predicted_mass <= relaxed(10**5, cap) * (1.0 + 1e-12)
     assert abs(policy.predicted_mass - leading_form(10**5)) > 1.9
 
 

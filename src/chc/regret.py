@@ -568,9 +568,9 @@ class CappedExplorationPolicy:
     at most one round below its cap.
 
     When the cap VARIES or a total ``budget`` is imposed, the invariant is not the block length but
-    :attr:`exploration_mass`: the first-order condition sees the cap only through the mass already
-    delivered, so the optimal mass is cap-free and the schedule decides only how many rounds it
-    takes to deliver it (``validation/capped_exploration_schedule.mac``).
+    :attr:`exploration_mass`: the first-order condition sees the cap level nowhere, only the mass
+    already delivered and the rounds left after the round that delivers it, so the schedule moves
+    the mass only through that round (``validation/capped_exploration_schedule.mac``).
     """
 
     cap: float  # the constant cap; for a schedule, the mean over the block that was chosen
@@ -581,7 +581,9 @@ class CappedExplorationPolicy:
     excess: float  # cost - uncapped_floor: additive, and logarithmic in T
     predicted_excess: float  # (K/(2 c cap)) ln T, the derived leading form of that excess
     exploration_mass: float  # sum of the caps actually used -- what the stopping rule is about
-    predicted_mass: float  # the self-consistent stopping mass; it does not know the cap SCHEDULE
+    # the optimal mass of the greedy fill with the budget left out, read off the first-order
+    # condition: its root on the round that delivers it, or the round boundary the root skips
+    predicted_mass: float
     budget_binds: bool  # True when the budget, not the caps, is what stopped the block
     # the exploration in the block's last round: its cap, or less where the optimum fills that
     # round only partly -- the one unsaturated round the exchange argument allows
@@ -641,23 +643,29 @@ def _self_consistent_mass(
     info_rate: float,
     prior_info: float,
 ) -> float:
-    """The stopping mass written against the REMAINING horizon rather than the whole one.
+    """The exact optimal mass of the greedy fill of ``caps``, read off its first-order condition.
 
-    The first-order condition of ``validation/capped_exploration_schedule.mac`` STEP 2 is
-    ``A (I0 + c S)^2 = K c (T - n)`` with ``n`` the round on which the greedy fill delivers ``S``
-    -- so the target mass and the round that reaches it are defined together, and only the prefix
-    sums of the caps connect them. The cap-free ``sqrt(K T/(A c)) - I0/c`` is this at ``n << T``;
-    it runs 25% high as soon as the caps open late, which a schedule is free to do. At a CONSTANT
-    cap the gap to it is not asymptotic at all but the exact constant ``K/(2 A c cap)``, derived
-    in :func:`capped_exploration_policy`.
+    Along the fill the cost is convex in the mass ``S`` it delivers, smooth inside each round and
+    kinked between rounds: on the round ``n`` that delivers ``S`` its slope is
+    ``A - K c (T - n)/(I0 + c S)^2`` (``validation/capped_exploration_schedule.mac`` STEP 9a), and
+    the slope jumps up at every round boundary. So the optimum is the balance
+    ``S(n) = sqrt(K (T - n)/(A c)) - I0/c`` of the first round ``n`` whose prefix sum reaches it,
+    where that balance falls inside round ``n``, and otherwise the prefix sum before round ``n``:
+    there the balance skips the boundary, and the cost falls up to it and rises after it. The
+    round enters as an INTEGER. At a constant cap the quadratic of
+    :func:`capped_exploration_policy` reads it as ``S/cap``, a continuous relaxation, and this mass
+    lies between that quadratic's roots at the horizons ``T - 1`` and ``T`` (STEP 9d), in general
+    below the root at ``T``. The cap-free ``sqrt(K T/(A c)) - I0/c`` is the balance at ``n << T``;
+    it runs 25% high as soon as the caps open late, which a schedule is free to do.
 
     The mass ``S(n)`` falls with ``n`` and the round that reaches it rises with the mass, so
     ``reach(S(n)) - n`` is strictly decreasing: the balance round is the smallest ``n`` whose mass
-    the fill reaches by round ``n``, found by bisection. It is the fixed point where one exists and
-    otherwise the lower side of the round boundary the balance straddles. Iterating the map is not
-    enough: it converges only while its slope is below one, and a tight cap or a prefix of zero
-    caps makes the fixed point repelling (``T = 41`` at ``cap = 0.01`` read a mass of 0 against the
-    balance's ``0.167``).
+    the fill reaches by round ``n``, found by bisection. Iterating the map is not enough: it
+    converges only while its slope is below one, and a tight cap or a prefix of zero caps makes the
+    fixed point repelling (``T = 41`` at ``cap = 0.01`` read a mass of 0 against the balance's
+    ``0.167``). Where the balance skips a boundary, the balance of round ``n`` lies below the
+    optimum: at ``A = 1``, ``K = 4``, ``c = 1``, ``I0 = 1``, ``T = 3`` and ``cap = 3/2`` it is
+    ``1``, and the optimum is the boundary ``3/2`` (STEP 9i).
     """
     prefix = np.cumsum(caps)
 
@@ -672,7 +680,8 @@ def _self_consistent_mass(
             lo = mid + 1
         else:
             hi = mid
-    return mass_for(lo)
+    boundary = float(prefix[lo - 2]) if lo > 1 else 0.0  # the mass delivered before round lo
+    return max(mass_for(lo), boundary)
 
 
 def _greedy_fill(caps: NDArray[np.float64], budget: float | None) -> NDArray[np.float64]:
@@ -716,8 +725,9 @@ def capped_exploration_policy(  # noqa: C901, PLR0912, PLR0915
     ``T = 10``, ``cap = 3`` one round at the cap costs ``4.72`` against ``0.74`` for none.
 
     The price of the cap is ADDITIVE and LOGARITHMIC, not a constant factor. The optimal block
-    length is ``n* = sqrt(K T/(A c))/cap`` TO LEADING ORDER -- exactly it is ``S*/cap``, smaller
-    by the constant derived below -- and at it the leading term is ``2 sqrt(A K T/c)``,
+    length is ``n* = sqrt(K T/(A c))/cap`` TO LEADING ORDER -- exactly it is ``ceil(S*/cap)`` for
+    the exact mass ``S*`` derived below, smaller by a constant -- and at it the leading term is
+    ``2 sqrt(A K T/c)``,
     which with ``K = A (du*/db)^2`` and ``c = eta/sigma^2`` is EXACTLY the uncapped constant
     ``c_causal sqrt(T)`` (``capped_leading_term_is_the_uncapped_floor``). What is left over is the
     harmonic sum, ``(K/(2 c cap)) ln T + O(1)`` -- so the ratio to the uncapped floor tends to 1
@@ -747,29 +757,45 @@ def capped_exploration_policy(  # noqa: C901, PLR0912, PLR0915
 
         ``A (I0 + c S)^2 = K c (T - n)``,  with ``n`` the round the prefix sum delivers ``S``
 
-    and is free of the cap LEVEL while the round that reaches it is not. It is not free of the
-    horizon: ``n`` sits inside its own condition, so ``predicted_mass`` is a fixed point rather
-    than a closed form, and the cap-free ``sqrt(K T/(A c)) - I0/c`` is the ``n << T`` limit -- 25%
-    high as soon as the caps open late.
+    where that root falls inside round ``n``. Where it skips a round boundary, the optimum is the
+    boundary: the cost falls up to it and rises after it (STEP 9). The cap LEVEL enters only
+    through the round that reaches the mass. The mass is not free of the horizon: ``n`` sits inside
+    its own condition, so ``predicted_mass`` is a fixed point over the integer round rather than a
+    closed form, and the cap-free ``sqrt(K T/(A c)) - I0/c`` is the ``n << T`` limit -- 25% high
+    as soon as the caps open late.
 
-    Under a CONSTANT cap that fixed point has a closed form, and it says what the cap-free form
-    drops. The stopping round is ``n = S/cap``, so the remaining horizon is itself a function of
-    the mass and the condition becomes a QUADRATIC in ``w = I0 + c S``,
+    Under a CONSTANT cap a continuous RELAXATION of that fixed point has a closed form, and it says
+    what the cap-free form drops. Reading the stopping round as ``n = S/cap``, not as the integer
+    round that delivers ``S``, makes the remaining horizon a function of the mass and the condition
+    a QUADRATIC in ``w = I0 + c S``,
 
         ``A w^2 + (K/cap) w = K c T + K I0/cap``
 
     whose cap-free counterpart is the same balance with the horizon held at the full ``T``,
     ``A w0^2 = K c T``. Subtracting the two kills ``T`` entirely and leaves
-    ``A (w0^2 - w^2) = K c S/cap``, so the cap-free form OVER-states the mass at every finite
-    horizon -- never under-states it -- by ``(w0 - w)/c <= K/(2 A c cap)``, a CONSTANT rather than
-    a vanishing remainder (``proofs/capped_exploration_schedule.v`` section (H)). At the defaults
-    and ``cap = 0.01`` the ceiling is ``2.016``, approached strictly from below as
-    ``1.834, 1.959, 1.998, 2.011, 2.015`` over ``T = 1e4 .. 1e8``, the remainder decaying like
-    ``(K + 4 A I0 cap) sqrt(K/(A c)) / (8 A c cap^2 sqrt(T))`` (STEP 7 of
+    ``A (w0^2 - w^2) = K c S/cap``, so the cap-free form OVER-states the relaxation's mass at
+    every finite horizon -- never under-states it -- by ``(w0 - w)/c <= K/(2 A c cap)``, a
+    CONSTANT rather than a vanishing remainder (``proofs/capped_exploration_schedule.v`` section
+    (H)). At the defaults and ``cap = 0.01`` the ceiling is ``2.016``, approached strictly from
+    below as ``1.834, 1.959, 1.998, 2.011, 2.015`` over ``T = 1e4 .. 1e8``, the remainder decaying
+    like ``(K + 4 A I0 cap) sqrt(K/(A c)) / (8 A c cap^2 sqrt(T))`` (STEP 7 of
     ``validation/capped_exploration_schedule.mac``, confirmed to 60 digits by
     ``validation/capped_exploration_o1.gp``). It is the TIGHT actuator the omission hurts: at
     ``T = 4000`` the over-statement is ``0.5%`` of the mass at ``cap = 0.3`` and ``17%`` at
     ``cap = 0.01``.
+
+    The relaxation is not the optimum. The round that delivers ``S`` is ``ceil(S/cap)``, up to one
+    round after ``S/cap``, so the exact mass -- ``predicted_mass``, and ``exploration_mass`` where
+    no budget binds -- lies between the quadratic's roots at the horizons ``T - 1`` and ``T``
+    (STEP 9d): below the root at ``T`` by less than ``cap``, and by less than ``K/(2 A w)`` with
+    ``w`` the root at ``T - 1`` (STEP 9f). At ``A = 1``, ``K = 4``, ``c = 1``, ``I0 = 1``,
+    ``T = 3`` the optimum at ``cap = 100`` is one partial round of ``sqrt(8) - 1 = 1.828427``
+    against the root's ``2.449928``, and at ``cap = 4/5`` the schedule ``(4/5, 1/5, 0)``, mass
+    ``1`` at cost ``83/9``, against the root's ``1.321825`` (STEP 9g, 9h). So the ceiling above
+    is the relaxation's. The cap-free form over-states the exact mass by at least the relaxation's
+    gap and by less than ``K/(2 A c cap) + sqrt(K T/(A c)) - sqrt(K (T - 1)/(A c))``, whose last
+    two terms vanish like ``1/sqrt(T)``: the limit is the same constant, but at a finite horizon
+    the gap can pass it, ``0.635674`` against a ceiling of ``0.02`` at ``cap = 100`` above.
 
     A budget does not interact with the caps either: below the
     root the objective is strictly decreasing in the mass, so a binding budget is spent in full, as

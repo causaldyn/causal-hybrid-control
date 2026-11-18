@@ -57,7 +57,7 @@ FORMAL_LINKS = {
         "cites": ("capped_exploration_schedule.mac",),
         "tests": (
             "test_self_consistent_mass_is_the_remaining_horizon_balance",
-            "test_self_consistent_mass_at_a_constant_cap_is_the_quadratic_root",
+            "test_self_consistent_mass_at_a_constant_cap_lies_between_two_quadratic_roots",
             "test_self_consistent_mass_finds_the_balance_at_a_tight_cap",
             "test_self_consistent_mass_of_a_dead_prefix_is_the_shifted_problems",
         ),
@@ -366,7 +366,9 @@ def _balance_crossing(caps, horizon):
     """Smallest round n whose balance mass S(n) the greedy fill reaches by round n, by a full scan.
 
     ``S(n) = sqrt(K (T - n)/(A c)) - I0/c`` falls with n and the round reaching it rises with S, so
-    ``reach(S(n)) - n`` is strictly decreasing: this n is the fixed point when one exists.
+    ``reach(S(n)) - n`` is strictly decreasing: this n is the fixed point when one exists. When
+    none does, S(n) lies at or below the mass the fill delivers before round n, the boundary the
+    balance skips, and that boundary is returned beside it.
     """
     a, k, c, i0 = _exploration_constants()
     prefix = np.r_[np.cumsum(caps), np.inf]
@@ -374,8 +376,8 @@ def _balance_crossing(caps, horizon):
         mass = max(math.sqrt(k * (horizon - n) / (a * c)) - i0 / c, 0.0)
         reached = int(np.flatnonzero(prefix >= mass)[0]) + 1
         if reached <= n:
-            previous = max(math.sqrt(k * (horizon - n + 1) / (a * c)) - i0 / c, 0.0)
-            return n, mass, previous, reached == n
+            boundary = float(prefix[n - 2]) if n > 1 else 0.0
+            return n, mass, boundary, reached == n
     raise AssertionError("the balance never crosses")
 
 
@@ -391,15 +393,16 @@ def _scm(caps, horizon):
 def test_self_consistent_mass_is_the_remaining_horizon_balance(
     horizon: int, seed: int, lo: float
 ) -> None:
-    """capped_exploration_schedule.mac STEP 2: A (I0 + c S)^2 = K c (T - n), n reaching S."""
+    """capped_exploration_schedule.mac STEP 2, 9: A (I0 + c S)^2 = K c (T - n), n reaching S, or
+    the round boundary that balance skips."""
     caps = np.random.default_rng(seed).uniform(lo, 0.3, horizon)
     mass = _scm(caps, horizon)
-    _, balanced, previous, exact = _balance_crossing(caps, horizon)
+    _, balanced, boundary, exact = _balance_crossing(caps, horizon)
     if exact:
         assert mass == pytest.approx(balanced, rel=1e-12, abs=1e-15)
     else:
-        # no round balances exactly: the balance straddles the boundary between n - 1 and n
-        assert any(mass == pytest.approx(s, rel=1e-12, abs=1e-15) for s in (balanced, previous))
+        # no round balances: the cost falls up to the boundary into round n and rises after it
+        assert mass == pytest.approx(boundary, rel=1e-12, abs=1e-15)
 
 
 def test_self_consistent_mass_finds_the_balance_at_a_tight_cap() -> None:
@@ -423,20 +426,22 @@ def test_self_consistent_mass_of_a_dead_prefix_is_the_shifted_problems() -> None
 
 @settings(max_examples=25, deadline=None)
 @given(horizon=st.integers(2000, 200_000), cap=st.floats(0.005, 0.5))
-def test_self_consistent_mass_at_a_constant_cap_is_the_quadratic_root(
+def test_self_consistent_mass_at_a_constant_cap_lies_between_two_quadratic_roots(
     horizon: int, cap: float
 ) -> None:
-    """capped_exploration_schedule.mac STEP 7: A w^2 + (K/cap) w = K c T + K I0/cap."""
+    """capped_exploration_schedule.mac STEP 7, 9d: the root of A w^2 + (K/cap) w = K c T + K I0/cap
+    reads the stopping round as S/cap, a relaxation; the integer round puts the exact mass above
+    the root at T - 1 and at most at the root at T."""
     a, k, c, i0 = _exploration_constants()
     mass = _self_consistent_mass(
         np.full(horizon, cap), horizon=horizon, curvature=a, numerator=k, info_rate=c, prior_info=i0
     )
-    w = (-(k / cap) + math.sqrt((k / cap) ** 2 + 4.0 * a * (k * c * horizon + k * i0 / cap))) / (
-        2.0 * a
-    )
-    # the fixed point sits on an integer round, so it may miss the continuous root by one round's
-    # worth of horizon: dS/dn = -K/(2 A w)
-    assert abs(mass - (w - i0) / c) <= k / (2.0 * a * w) + 1e-9
+
+    def relaxed(t: int) -> float:
+        q = k / cap
+        return ((-q + math.sqrt(q * q + 4.0 * a * (k * c * t + k * i0 / cap))) / (2.0 * a) - i0) / c
+
+    assert relaxed(horizon - 1) * (1.0 - 1e-12) <= mass <= relaxed(horizon) * (1.0 + 1e-12)
 
 
 @settings(max_examples=30, deadline=None)
@@ -527,7 +532,10 @@ def test_capped_policy_block_tends_to_the_floor_and_the_taper_does_not() -> None
 def test_capped_policy_cap_free_mass_overstates_by_at_most_the_cap_term(
     horizon: int, documented: float
 ) -> None:
-    """capped_exploration_schedule.v (H): 0 <= S56 - S* <= K/(2 A c cap), the gap rising to it."""
+    """capped_exploration_schedule.v (H): the relaxation's gap S56 - S_relax is at most
+    K/(2 A c cap) and rises to it. The exact mass lies below S_relax by less than K/(2 A w)
+    (capped_exploration_schedule.mac STEP 9f), a sliver of the tail at cap 0.01, so here its gap
+    stays under the ceiling too; at cap 100 it does not (test_capped_stopping_mass.py)."""
     a, k, c, i0 = _exploration_constants()
     cap = 0.01
     pol = capped_exploration_policy(horizon=horizon, cap=cap)
