@@ -5,6 +5,7 @@ type: software
 authors:
   - given-names: Ilia
     family-names: Gradina
+    affiliation: "Independent Researcher"
     email: ilia.gradina@gmail.com
     orcid: "https://orcid.org/0009-0008-0911-8765"
 repository-code: "https://github.com/causaldyn/causal-hybrid-control"
