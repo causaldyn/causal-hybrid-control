@@ -94,8 +94,10 @@ dev = [
 ]
 viz = ["matplotlib>=3.8"]
 notebooks = [
-    "jupyterlab>=4.0",
-    "nbconvert>=7",
+    # both pull soupsieve, whose advisory fixes need Python 3.11.5: below it the lock would keep a
+    # vulnerable soupsieve, so the group runs no Jupyter there
+    "jupyterlab>=4.0 ; python_full_version >= '3.11.5'",
+    "nbconvert>=7 ; python_full_version >= '3.11.5'",
     "ipykernel>=6",
     "jupytext>=1.16",
     "matplotlib>=3.8",
