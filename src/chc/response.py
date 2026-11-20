@@ -476,7 +476,7 @@ class Envelope(Saturation):
     # equinox declares a module's fields writable to a type checker, as it passes no frozen_default,
     # but freezes them after __init__; a property is how it documents implementing an AbstractVar
     @property
-    def scale(self) -> Array:  # ty: ignore[invalid-property-type-override]
+    def scale(self) -> Array:  # ty: ignore[incompatible-property-override]
         return self.curve.scale
 
     def standard(self, z: Array) -> Array:
