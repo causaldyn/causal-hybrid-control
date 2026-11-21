@@ -1334,7 +1334,8 @@ def test_the_normalisation_bias_is_the_ratio_estimators_first_order_term_in_clos
     """Two steps from a fixed start ``x0 = 1/2``, ``x1 = 0.7 x0 + u0 + w``, ``w ~ N(0, 1/5)``:
     ``E_b[W_t^2 c_t]`` and ``E_b[W_t^2]`` integrated in Maxima over ``(u0, x1, u1)`` as Gaussians
     in exact rationals, ``-sum_t (E_b[W_t^2 c_t] - J_t E_b[W_t^2]) / 50`` is
-    0.00612466700915665051027033354429. No recursion enters that route."""
+    0.00612466700915665051027033354429 (``validation/normalised_weights_bias.mac`` N2, which N1
+    precedes with the ratio's first order itself). No recursion enters that route."""
     plant = _scalar_plant(0.7, 1.0, 0.2)
     logger = _scalar_policy(0.3, 0.1, 1.0)
     plan = AffineSchedule(np.array([[[0.2]], [[0.4]]]), np.array([[-0.3], [0.2]]), [[0.64]])

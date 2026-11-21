@@ -30,6 +30,11 @@ experimental may change in any minor release (`docs/api/index.md`).
   0.96 % and 0.94 % of the candidates that are not parents entered, and 26.2 % and 26.8 % of the
   graphs of 300 and 1000 steps held a false edge, where Fisher's `z` read 26.4 % and 27.0 % on the
   same series. The docstring's 26 % and 27 % stand.
+- `PlanEvaluation.normalisation_bias`'s closed form has its derivation in the repository,
+  `validation/normalised_weights_bias.mac`: the ratio's first-order bias checked exactly on a
+  two-point law, and the two-step number `tests/test_evaluation.py` pins, 0.006124667009156650510,
+  as one Gaussian integral over the path in exact rationals. `value` stays the self-normalised
+  estimate, with no bias-corrected field (ADR 0155).
 
 ## [1.3.1] — 2026-11-18
 
