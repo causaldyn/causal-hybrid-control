@@ -173,7 +173,10 @@ _BARRIER_BACKOFF = 1e-6  # how far inside the condition the solve aims, relative
 _BARRIER_ROUNDS = 30
 _ROUND_STEPS = 333  # a safeguarded round's share: the default 10 000 steps over _BARRIER_ROUNDS
 _PENALTY_GROWTH = 10.0  # applied when a round fails to halve the shortfall
-_PENALTY_RANGE = 1e8  # how far the penalty may grow past its start before the rounds give up
+# How many times the penalty may grow, to 1e8 times its start, before the rounds give up: a count,
+# since the start times seven chained growths, compared with the start times 1e8, is equal to it in
+# exact arithmetic, and rounding decided whether an eighth growth was taken
+_PENALTY_GROWTHS = 8
 _DESCENT_TOL = 1e-14  # the share of the cost at the guess a step must buy: the descents' default
 _LOOSE_TOL = 1e-9  # a barrier round's ``tol`` while the last one ended short of the condition
 _RESTORE_STEPS = 20  # Gauss-Newton projections onto the held condition before it is given up
@@ -2064,7 +2067,10 @@ def causal_plan(
             concave envelope it may start from; it used to cap each of up to 31 descents. The
             solver status reads ``converged`` only where the rounds hold the condition and the
             plan's :attr:`~CausalPlan.stationarity_status` reads ``within``; ``infeasible`` where
-            the rounds' penalty reached its ceiling with some step still short of the condition.
+            the rounds' penalty reached its ceiling with some step still short of the condition
+            after a round that stopped on its own rule, at a plan whose stationarity is within its
+            tolerance as well, and ``no_progress`` where that plan's is not: a stall of the rounds,
+            not a sign of the condition.
         warm_start: the ``(horizon, m)`` actions the descent starts from, zeros when omitted --
             typically the last plan shifted one step, which :class:`chc.mpc.RecedingHorizon` passes
             along with the barrier's multipliers. It is projected onto the box and the rows before
@@ -2118,13 +2124,15 @@ def causal_plan(
             halve, its share run out or not, Birgin & Martinez's rule (2014) as they state it.
             Where every round runs out of its share, the halved rule never moves the penalty: on
             an unstable drift held under a :class:`ChannelSensitivity` it stayed at its start over
-            all 15 rounds, where the safeguarded rule grew it 7 times. It is not the default
-            because it is not better plan by plan: of 218 plans held at a barrier in the library's
-            planning tests it moved 98, 27 to a cheaper plan at the same certified steps, 62 to a
-            costlier one (by up to 43 %), 5 within 1e-9, and 4 to fewer certified leading steps,
-            two of them from 12 to 7 and ``infeasible`` where the halved rounds certified all 12;
-            18 plans that converged under the halved rule ended ``max_iterations``. Without a
-            barrier there are no rounds, and it changes nothing.
+            all 15 rounds, where the safeguarded rule grew it seven or eight times, as the
+            rounding of the path goes (ADR 0156). It is not the default because it is not better
+            plan by plan: of 293 plans held at a barrier in the library's planning tests it moved
+            138, 40 to a cheaper plan at the same certified steps, 73 to a costlier one (by up to
+            43 %), 7 within 1e-9, 2 to more certified leading steps and 16 to fewer, two of them
+            from 12 to 8 where the halved rounds certified all 12; 18 plans that converged under
+            the halved rule ended ``max_iterations``, and 8 that ended ``max_iterations`` stalled
+            at the penalty's ceiling, ``no_progress``. Without a barrier there are no rounds, and
+            it changes nothing.
 
     Raises:
         ValueError: if an uncertainty penalty is given without a support model, which would
@@ -2464,6 +2472,11 @@ def _plan(  # noqa: C901, PLR0912, PLR0915
             constraints=constraints,
         )
     actions, status, iterations = solve.actions, solve.status, solve.iterations
+    if first is not None and status == "no_progress":
+        # the answer is where the relaxed descent stopped, and it stopped for its own reason; a
+        # barrier's rounds from there report their own status, ``no_progress`` among them
+        solve = replace(solve, status=first.solver_status)
+        status = solve.status
     held = None
     if barrier is not None:
         actions, status, iterations, multipliers, held = _hold_barrier(
@@ -2488,9 +2501,6 @@ def _plan(  # noqa: C901, PLR0912, PLR0915
 
     if first is not None:
         iterations += first.solver_iterations
-        if status == "no_progress":
-            # the answer is where the relaxed descent stopped, and it stopped for its own reason
-            status = first.solver_status
 
     tube = _error_tube(
         rate, model_error, covariance, persistence, dt, horizon, integrator=_integrator(model)
@@ -2725,16 +2735,17 @@ def _hold_barrier(  # noqa: C901, PLR0912, PLR0915
     ``converged``, whether or not the budget cut the round's descent: the descent stopping short
     of a stationary point read ``converged`` with a residual 28 times its tolerance on a SIR plant,
     and under the deviation tube a round the budget cut at a stationary point left a plan under a
-    ``gamma = 2`` floor ``max_iterations``. They stop as well where ``rho`` would pass
-    ``_PENALTY_RANGE`` times its start, ``infeasible`` if some step still falls short of the
-    condition itself, the back-off aside, and ``max_iterations`` otherwise, once
-    ``_BARRIER_ROUNDS`` are spent, or once their descents on one set of held next states have
-    taken ``steps`` between them. ``rho`` grows only on a round whose descent stopped on its own
-    rule and whose measure is beyond half the back-off: grown on rounds the budget cut, it reached
-    3e6 on a feasible oscillator, where a round's descent stepped to a plan 134% above the
-    optimum. ``outer="safeguarded"`` grows it on those rounds too, each given a fixed share of
-    ``steps`` instead of half of what is left (:func:`_rounds`); there the oscillator's plan ends
-    within 4% of the optimum at 3, 10 and 30 steps.
+    ``gamma = 2`` floor ``max_iterations``. They stop as well where ``rho``, grown
+    ``_PENALTY_GROWTHS`` times, to 1e8 times its start, would grow again: ``infeasible`` if some
+    step still falls short of the condition itself, the back-off aside, and the plan's
+    stationarity is within its tolerance, ``no_progress`` if it is not (:func:`_rounds`), and
+    ``max_iterations`` otherwise; once ``_BARRIER_ROUNDS`` are spent, or once their descents on
+    one set of held next states have taken ``steps`` between them. ``rho`` grows only on a round
+    whose descent stopped on its own rule and whose measure is beyond half the back-off: grown on
+    rounds the budget cut, it reached 3e6 on a feasible oscillator, where a round's descent
+    stepped to a plan 134% above the optimum. ``outer="safeguarded"`` grows it on those rounds
+    too, each given a fixed share of ``steps`` instead of half of what is left (:func:`_rounds`);
+    there the oscillator's plan ends within 4% of the optimum at 3, 10 and 30 steps.
 
     ``c`` carries a back-off of ``_BARRIER_BACKOFF`` times the condition's largest term at
     ``start``, so the rounds settle inside the condition: an active step solved exactly sits on it,
@@ -2884,7 +2895,7 @@ def _hold_barrier(  # noqa: C901, PLR0912, PLR0915
         _, shortfall = _barrier_state(model, x0, actions, dt, held)
         excess = np.asarray(shortfall, dtype=np.float64) + backoff
     status: SolverStatus = start.status
-    iterations, rounds, weight = start.iterations, 0, math.nan
+    iterations, rounds, weight, grown = start.iterations, 0, math.nan, 0
     measure = math.inf
     multipliers = np.zeros_like(excess) if multipliers is None else multipliers
     problem = _PlanProblem(
@@ -2945,8 +2956,7 @@ def _hold_barrier(  # noqa: C901, PLR0912, PLR0915
             task = abs(float(np.asarray(start.cost_history)[-1]))
             level = task if 0.0 < task < math.inf else 1.0
             weight = 10.0 * level / (0.5 * float(np.sum(np.maximum(excess, 0.0) ** 2)))
-            ceiling = weight * _PENALTY_RANGE
-        actions, status, taken, rounds, weight, measure, excess, multipliers, held = _rounds(
+        actions, status, taken, rounds, weight, grown, measure, excess, multipliers, held = _rounds(
             model,
             x0,
             dt,
@@ -2959,7 +2969,7 @@ def _hold_barrier(  # noqa: C901, PLR0912, PLR0915
             excess,
             multipliers,
             weight,
-            ceiling,
+            grown,
             backoff,
             steps=steps,
             budget=steps - spent,
@@ -3129,7 +3139,7 @@ def _rounds(  # noqa: C901
     excess: NDArray[np.float64],
     multipliers: NDArray[np.float64],
     weight: float,
-    ceiling: float,
+    grown: int,
     backoff: float,
     *,
     steps: int,
@@ -3147,14 +3157,16 @@ def _rounds(  # noqa: C901
     int,
     int,
     float,
+    int,
     float,
     NDArray[np.float64],
     NDArray[np.float64],
     _HeldBarrier,
 ]:
     """:func:`_hold_barrier`'s augmented-Lagrangian rounds on the columns ``held`` holds: the
-    actions, the status, the descent steps taken, the rounds, the penalty, the measure, the
-    excess, the multipliers and the condition they end with.
+    actions, the status, the descent steps taken, the rounds, the penalty, how many times it has
+    grown since its start (``grown`` of them before these rounds), the measure, the excess, the
+    multipliers and the condition they end with.
 
     The rounds' descents take at most ``budget`` steps between them, each one compiled for
     ``steps`` and given half of what is left, so one stalled round leaves the next ones a share: a
@@ -3178,7 +3190,15 @@ def _rounds(  # noqa: C901
     100 000-step plan ended 27 steps short of the budget, which then went to the next states'
     rounds, and the plan cost 1.9% more than at 10 000 steps. A cut round at the penalty's ceiling
     stops them ``max_iterations``, not ``infeasible``: its shortfall says nothing of whether the
-    condition can be met."""
+    condition can be met.
+
+    A round at the ceiling that stopped on its own rule, some step still short of the condition,
+    stops them ``infeasible`` only where the plan's stationarity is within its tolerance as well,
+    read as for ``converged``, and ``no_progress`` where it is not. The descent stops where no
+    step buys its share of the round's objective, which the penalty at its ceiling inflates: on
+    that drift a round at a shortfall of 14 took no step at all, at a stationarity 6e5 times its
+    tolerance, and read ``infeasible`` of a condition SLSQP meets at every step. That is a stall,
+    not a sign of the condition."""
     status: SolverStatus = "max_iterations"
     iterations, rounds = 0, 0
     measure, previous = math.inf, math.inf
@@ -3257,14 +3277,16 @@ def _rounds(  # noqa: C901
         if exhausted and not safeguarded:  # neither a solve nor a sign of the condition
             pass
         elif measure > 0.5 * previous and not within:
-            if weight * _PENALTY_GROWTH > ceiling:
+            if grown == _PENALTY_GROWTHS:
                 # short of the audit's condition, not the aim, after a round that was solved
                 if not exhausted and float(np.max(excess)) > backoff:
-                    status = "infeasible"
+                    stationary = _stationary(problem, held, actions, multipliers)
+                    status = "infeasible" if stationary else "no_progress"
                 break
             weight *= _PENALTY_GROWTH
+            grown += 1
         previous = measure
-    return actions, status, iterations, rounds, weight, measure, excess, multipliers, held
+    return actions, status, iterations, rounds, weight, grown, measure, excess, multipliers, held
 
 
 def _stationary(

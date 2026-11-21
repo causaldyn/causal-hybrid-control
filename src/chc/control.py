@@ -1204,10 +1204,13 @@ that moves the plan by the projection's error alone.
 ``max_iterations`` means the budget ran out first, so the answer is wherever the descent happened to
 be. ``no_progress`` means not one step was accepted, so the result *is* the caller's initial guess
 -- which is either an already-optimal guess or a badly scaled problem, and
-:attr:`SolverResult.stationarity` is what tells the two apart. ``infeasible`` is the barrier
-rounds' of :func:`chc.plan.causal_plan` alone: their penalty reached its ceiling with the condition
-still failing at some step, the sign of a condition no admissible plan meets, not a proof of one;
-:attr:`chc.plan.CausalPlan.safety` audits the plan returned.
+:attr:`SolverResult.stationarity` is what tells the two apart; from the barrier rounds of
+:func:`chc.plan.causal_plan` it means their penalty reached its ceiling with the condition still
+failing at some step and the plan's first-order check beyond its tolerance: the rounds stalled,
+which says nothing of the condition. ``infeasible`` is those rounds' alone: their penalty reached
+its ceiling with the condition still failing at some step and the plan's first-order check within
+its tolerance, as ``converged`` requires, the sign of a condition no admissible plan meets, not a
+proof of one; :attr:`chc.plan.CausalPlan.safety` audits the plan returned.
 
 The status deliberately does not claim optimality. A stalled line search is a statement about steps,
 not about gradients, and on an ill-scaled instance the two come apart; the stationarity residual is

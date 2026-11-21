@@ -5,6 +5,35 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
 experimental may change in any minor release (`docs/api/index.md`).
 
+## [Unreleased]
+
+### Changed
+
+- **A held barrier reads `infeasible` only at a first-order point.** `causal_plan`'s barrier rounds
+  read `infeasible` where their penalty reached its ceiling with some step still short of the
+  condition after a round that stopped on its own rule, whatever the plan's first-order check
+  said. That round's descent stops where no step buys its share of an objective the penalty
+  inflates, so a stall read as a condition no plan meets: on an unstable drift held under a
+  `ChannelSensitivity` with `outer="safeguarded"`, a round at a shortfall of 14 took no step, at
+  a stationarity of 0.87 against a tolerance of 1.4e-6, and read `infeasible` of a condition
+  SLSQP meets at every step. The rounds now read `infeasible` there only where the plan's
+  stationarity is within its tolerance, as `converged` requires, and `no_progress` where it is
+  not: the rounds stalled, which says nothing of the condition (ADR 0156). On a model holding a
+  curve that starts convex the plan keeps that status, not the relaxed plan's. Of 293 plans held
+  at a barrier in the library's planning tests, six move from `infeasible` to `no_progress`, five
+  of them the same plan as before, and no status moves to or from `converged`; under
+  `outer="safeguarded"` the two integrator plans that read `infeasible` on 7 certified steps of 12
+  now read `no_progress` on 8. A true infeasibility can move as well: on a position held at
+  relative degree 2, the lockfile's jax ends `no_progress`, jax 0.4.30 `infeasible`, and the
+  audit certifies no step either way.
+- **The rounds' penalty ceiling is a count of growths.** They gave up where the penalty times ten
+  would pass 1e8 times its start, which compared seven chained growths with a product equal to
+  them in exact arithmetic, so rounding decided between seven growths and eight: 25 and 19 of 44
+  start states near zero on that drift. The rounds now grow the penalty eight times, to 1e8 times
+  its start, wherever the ceiling stops them. Of the 293 plans it moves three: that position, by
+  24 descent steps, and two start states of the drift, one certified on 29 steps of 30 where it
+  was on 28, at a cost 0.56 % higher, the other 0.10 % cheaper.
+
 ## [1.3.1] — 2026-11-18
 
 ### Fixed

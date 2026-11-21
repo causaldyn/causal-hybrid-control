@@ -240,10 +240,11 @@ def test_a_fit_without_a_least_squares_channel_has_no_sensitivity() -> None:
 
 
 def _held_on_an_unstable_drift(
-    seed: int, steps: int, outer: OuterRule, inner: InnerSolve = "diagonal"
+    seed: int, steps: int, outer: OuterRule, inner: InnerSolve = "diagonal", start: float = 0.0
 ) -> CausalPlan:
     """The plan held to ``x <= 1`` under the fit's own sensitivity at ``Gamma = 1.5``, on a log of
-    an unstable drift, 0.5, whose lever follows the hidden confounder at that level."""
+    an unstable drift, 0.5, whose lever follows the hidden confounder at that level, from the
+    state ``start``."""
     fit = _confounded_fit(seed, 1.5, -3.0, drift=0.5)
     model = HybridDynamics(known=_KNOWN, residual=fit.residual)
     barrier = BarrierConstraint(
@@ -251,7 +252,7 @@ def _held_on_an_unstable_drift(
     )
     return causal_plan(
         model,
-        jnp.zeros(1),
+        jnp.zeros(1) + start,
         _COST,
         _DT,
         30,
@@ -264,17 +265,31 @@ def _held_on_an_unstable_drift(
     )
 
 
+# Start states a few ulps from zero. The safeguarded rounds on log 2 are chaotic in their last
+# bits: from a start moved by 1e-16 to 7e-8 they end either within the back-off, once the budget is
+# spent, or at a far point, where the next states joined with the penalty at its ceiling and its
+# rounds stop there. Which way one goes turns on its rounding, which differs between CPU classes and
+# dependency versions, so a rule asserted on one start alone can go unexercised on one runner and
+# be read on another's path. About half of these end at the far point on any one of them.
+_STARTS = (0.0, -7e-16, 3e-15, -7e-15, 1e-14, 7e-14, -3e-12, 1e-11, -1e-9)
+
+
+@pytest.mark.parametrize("start", _STARTS)
 def test_safeguarded_rounds_grow_the_penalty_where_every_round_runs_out_of_its_share(
-    caplog: pytest.LogCaptureFixture,
+    start: float, caplog: pytest.LogCaptureFixture
 ) -> None:
     """On this log every halved round runs out of its share, and grows no penalty: it stayed at
     its start over all 15 rounds while the shortfall stopped falling. The safeguarded rounds grow
     it after every round whose measure fails to halve, its share run out or not, here first after
-    the second round, which ran out of its share. It then reaches its ceiling, and a round cut
-    there ends the rounds ``max_iterations``: read ``infeasible``, as after a solved round, it
-    called a condition SLSQP meets at every step infeasible."""
+    the second round, which ran out of its share. Where the rounds stop at the penalty's ceiling,
+    the status reads their last round: one its share cut ends them ``max_iterations``, since its
+    shortfall says nothing of the condition, which SLSQP meets at every step here; only a round
+    that stopped on its own rule ends them ``infeasible``, or ``no_progress`` where the plan is
+    not a first-order point. Read ``infeasible`` after a cut round, as after a solved one, the
+    rounds called that condition infeasible on a runner whose rounding ended them at the far
+    point. They never converge on this log."""
     with caplog.at_level(logging.DEBUG, logger="chc.plan"):
-        plan = _held_on_an_unstable_drift(2, 10_000, "safeguarded")
+        plan = _held_on_an_unstable_drift(2, 10_000, "safeguarded", start=start)
     rounds = [
         (float(record.penalty), int(record.descent_steps))  # type: ignore[attr-defined]
         for record in caplog.records
@@ -283,7 +298,9 @@ def test_safeguarded_rounds_grow_the_penalty_where_every_round_runs_out_of_its_s
     grown = [k for k in range(len(rounds) - 1) if rounds[k + 1][0] > rounds[k][0]]
     assert grown
     assert rounds[grown[0]][1] == _ROUND_STEPS
-    assert plan.solver_status == "max_iterations"
+    assert plan.solver_status != "converged"
+    if plan.solver_status in ("infeasible", "no_progress"):
+        assert rounds[-1][1] < _ROUND_STEPS  # not a round its full share cut
     assert plan.safety is not None
     assert plan.safety.certified_steps > 0
 

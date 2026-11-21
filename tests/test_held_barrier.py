@@ -8,6 +8,7 @@ change of variables and Lawson & Hanson's least-distance program, one NNLS call.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import math
 import warnings
@@ -451,8 +452,9 @@ def test_a_capacity_barrier_holds_on_a_nonlinear_epidemic() -> None:
     assert float(jnp.max(plan.trajectory[:, 1])) <= 0.1
 
 
-def test_an_unreachable_barrier_is_reported_by_the_audit_rather_than_raised() -> None:
-    """Position is relative degree 2 here: at the first step no action moves the condition."""
+def _unreachable_plan() -> CausalPlan:
+    """Position, relative degree 2, held at ``x >= 0`` from ``x = 1``: at the first step no action
+    moves the condition, which no plan then meets."""
     plant = HybridDynamics(
         known=LinearDynamics(jnp.array([[-0.5, 1.0], [0.0, -0.3]]), jnp.array([[0.0], [1.0]])),
         residual=ZeroResidual(2),
@@ -463,7 +465,7 @@ def test_an_unreachable_barrier_is_reported_by_the_audit_rather_than_raised() ->
         Qf=jnp.diag(jnp.array([5.0, 1.0])),
         x_target=jnp.zeros(2),
     )
-    plan = causal_plan(
+    return causal_plan(
         plant,
         jnp.array([1.0, 0.0]),
         cost,
@@ -471,15 +473,61 @@ def test_an_unreachable_barrier_is_reported_by_the_audit_rather_than_raised() ->
         12,
         -5.0,
         5.0,
-        # the default budget, which the rounds share: the penalty reaches its ceiling at 1237 steps
+        # the default budget, which the rounds share: the penalty reaches its ceiling at 1261 steps
         # in all here and at 8089 under jax 0.4.30, whose rounds each run to their share
         steps=10_000,
         barrier=BarrierConstraint(lambda x: x[0], alpha=0.2),
     )
+
+
+def test_an_unreachable_barrier_is_reported_by_the_audit_rather_than_raised() -> None:
+    """At the first step no action moves the condition. The rounds stop at the penalty's ceiling,
+    and read that ``infeasible`` only where the plan there is a first-order point as well,
+    ``no_progress`` where it is not: the lockfile's jax stops them at a stationarity 5e4 times
+    its tolerance, jax 0.4.30 within it. The audit says what holds either way."""
+    plan = _unreachable_plan()
     assert plan.safety is not None
-    assert plan.solver_status == "infeasible"  # the penalty's ceiling, not the steps, stopped it
+    # the penalty's ceiling, not the steps, stopped it
+    stationary = plan.stationarity_status == "within"
+    assert plan.solver_status == ("infeasible" if stationary else "no_progress")
     assert plan.safety.certified_steps == 0
     assert np.isnan(plan.safety.step_gamma_star[0])  # no radius and no action certifies step 0
+
+
+def test_the_rounds_give_up_after_a_count_of_penalty_growths(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The rounds give up once the penalty has grown tenfold ``_PENALTY_GROWTHS`` times, to 1e8
+    times its start. They compared the start grown seven times, times ten, with the start times
+    1e8: equal in exact arithmetic, so rounding decided whether an eighth growth was taken, and
+    here on the lockfile's jax it was not."""
+    with caplog.at_level(logging.DEBUG, logger="chc.plan"):
+        _unreachable_plan()
+    penalties = [
+        float(record.penalty)  # type: ignore[attr-defined]
+        for record in caplog.records
+        if getattr(record, "chc_event", None) == "barrier_round"
+    ]
+    grown = sum(later > earlier for earlier, later in itertools.pairwise(penalties))
+    assert grown == 8
+    assert penalties[-1] / penalties[0] == pytest.approx(1e8, rel=1e-12, abs=0.0)
+
+
+def test_rounds_at_the_ceiling_off_a_first_order_point_read_a_stall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At the penalty's ceiling, some step still short after a round that stopped on its own
+    rule, the rounds read ``infeasible`` only where the plan is a first-order point as well. That
+    round's descent stops where no step buys its share of an objective the penalty inflates: at a
+    far point of a condition SLSQP meets at every step (``tests/test_channel_sensitivity.py``'s
+    unstable drift) a round took no step at a stationarity 6e5 times its tolerance and read
+    ``infeasible``. With the plan read as off a first-order point, the same rounds here read
+    ``no_progress``, which says nothing of the condition; the audit still reports it."""
+    monkeypatch.setattr(plan_module, "_stationary", lambda *_: False)
+    plan = _unreachable_plan()
+    assert plan.solver_status == "no_progress"
+    assert plan.safety is not None
+    assert plan.safety.certified_steps == 0
 
 
 @pytest.mark.parametrize("pinned", [0, 1])
