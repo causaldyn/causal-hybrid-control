@@ -1,0 +1,107 @@
+/* The robustness value is a partial R^2, whatever the noise's variance
+   (chc.causal.sensitivity_analysis).
+
+   Cinelli and Hazlett (2020): with D the action and Y the outcome, each less its fit on the
+   covariates, a confounder Z whose partial R^2s are R2dz with D and R2yz with Y given D moves the
+   short regression's estimate b by
+       |b - b_long| = sqrt(R2yz R2dz / (1 - R2dz)) |Y_perp| / |D_perp|,
+   Y_perp the short regression's residual and D_perp the action's own part. That is least squares'
+   algebra, true of any sample, with no assumption on the noise. The robustness value RV_q is the
+   R^2 equal on both sides that moves b by q |b|.
+
+   R1  RV_q = (sqrt(f^4 + 4 f^2) - f^2)/2 with f = q |b| |D_perp| / |Y_perp| solves
+       RV / sqrt(1 - RV) = f, and f = q |t| / sqrt(dof) for the classical t alone:
+       t = b |D_perp| / (|Y_perp| / sqrt(dof)).
+   R2  The confounder Z = a e_d + e_y + c e_n, e_d and e_y the unit D_perp and Y_perp and e_n a unit
+       vector orthogonal to both and to the covariates, with a^2 = 1/(1 - R) and c^2 = (1 - R)/R,
+       has both partial R^2s R, and the long regression's estimate is b - a |Y_perp|/((1 + c^2)
+       |D_perp|): b less R/sqrt(1 - R) |Y_perp|/|D_perp|, the formula's move.
+   R3  On eight rows whose noise grows with the action, in exact rationals and 60-digit bfloats:
+       at R = RV_1 from the classical t the long regression's estimate is 0 to 1e-40, at RV_(1/2)
+       it is b/2; at the RV the HC3 t would read it is not. tests/test_causal.py pins the library's
+       RV on these rows to R3's value.
+   Maxima is the source of truth. */
+display2d : false$
+ratprint : false$
+fpprec : 60$
+assume(f > 0, R > 0, R < 1, ny > 0, nd > 0)$
+
+/* ---------- R1 ---------- */
+rv(f) := (sqrt(f^4 + 4*f^2) - f^2)/2$
+r1 : ratsimp(radcan(rv(f)^2 - f^2*(1 - rv(f))))$
+print("R1 RV^2 - f^2 (1 - RV):", r1, if r1 = 0 then "(PASS)" else "(FAIL)")$
+/* the root is the one in (0, 1): RV < 1 since sqrt(f^4 + 4 f^2) < f^2 + 2, and RV > 0 */
+r1b : ratsimp((f^2 + 2)^2 - (f^4 + 4*f^2))$
+print("R1 (f^2 + 2)^2 - (f^4 + 4 f^2):", r1b, if r1b = 4 then "(PASS: RV < 1)" else "(FAIL)")$
+/* t = b nd / (ny / sqrt(dof)) gives q |t| / sqrt(dof) = q b nd / ny */
+r1c : ratsimp(q*(b*nd/(ny/sqrt(dof)))/sqrt(dof) - q*b*nd/ny)$
+print("R1 q t / sqrt(dof) - q b |D_perp| / |Y_perp|:", r1c, if r1c = 0 then "(PASS)" else "(FAIL)")$
+
+/* ---------- R2 ---------- */
+/* in the orthonormal (e_d, e_y, e_n): D_perp = nd e_d, the outcome less its covariate fit
+   b nd e_d + ny e_y, Z = (a, 1, c); the long fit on (D_perp, Z) leaves a residual orthogonal to
+   both, which fixes Z's coefficient g and the action's */
+a2 : 1/(1 - R)$
+c2 : (1 - R)/R$
+r2dz : ratsimp(a2/(a2 + 1 + c2))$
+r2yz : ratsimp(1/(1 + c2))$
+print("R2 partial R^2 with D:", r2dz, if ratsimp(r2dz - R) = 0 then "(PASS)" else "(FAIL)")$
+print("R2 partial R^2 with Y given D:", r2yz, if ratsimp(r2yz - R) = 0 then "(PASS)" else "(FAIL)")$
+sol : solve([b*nd = bl*nd + g*a, 1*(ny - g*1) + c*(0 - g*c) = 0], [bl, g])$
+moved : ratsimp(b - subst(sol[1], bl))$
+want : a*ny/((1 + c^2)*nd)$
+print("R2 b - b_long less a |Y_perp| / ((1 + c^2) |D_perp|):", ratsimp(moved - want),
+      if ratsimp(moved - want) = 0 then "(PASS)" else "(FAIL)")$
+formula : ratsimp(radcan(subst([a = 1/sqrt(1 - R), c = sqrt((1 - R)/R)], want)
+                         - R/sqrt(1 - R)*ny/nd))$
+print("R2 the move less R / sqrt(1 - R) |Y_perp| / |D_perp|:", formula,
+      if formula = 0 then "(PASS)" else "(FAIL)")$
+
+/* ---------- R3 ---------- */
+xs : [1, -2, 3, 0, -1, 2, -3, 1]$
+us : [2, 1, -1, 3, 0, -2, 1, 4]$
+es : [1/10, -1/5, 3/10, -9/5, 1/20, 7/5, -1/2, 13/5]$  /* largest where |u| is */
+ys : makelist(9/10*xs[i] + 4/5*us[i] + es[i], i, 1, 8)$
+colv(l) := transpose(matrix(l))$
+ones : makelist(1, i, 1, 8)$
+ols(design, y) := invert(transpose(design) . design) . transpose(design) . y$
+X : addcol(colv(xs), colv(us), colv(ones))$
+coef : ols(X, colv(ys))$
+b : coef[2, 1]$
+yperp : colv(ys) - X . coef$
+W : addcol(colv(xs), colv(ones))$
+dperp : colv(us) - W . ols(W, colv(us))$
+dof : 8 - 3$
+norm2(v) := (transpose(v) . v)$
+s2 : norm2(yperp)/dof$
+tcl : b/sqrt(s2/norm2(dperp))$
+/* HC3 on (x, u, 1) */
+gram : invert(transpose(X) . X)$
+lev : makelist(row(X, i) . gram . transpose(row(X, i)), i, 1, 8)$
+meat : sum(transpose(row(X, i)) . row(X, i) * (yperp[i, 1]/(1 - lev[i]))^2, i, 1, 8)$
+thc3 : b/sqrt((gram . meat . gram)[2, 2])$
+print("R3 b:", b, " classical t:", bfloat(tcl), " HC3 t:", bfloat(thc3))$
+/* e_n: a vector orthogonal to x, u, y and the constant */
+A : addcol(colv(xs), colv(us), colv(ys), colv(ones))$
+w : colv(makelist(i^2, i, 1, 8))$
+en : w - A . ols(A, w)$
+unitv(v) := bfloat(v/sqrt(norm2(v)))$
+long_b(Rv) := block([zc, L],
+  zc : sqrt(1/(1 - Rv))*unitv(dperp)*signum(b) + unitv(yperp) + sqrt((1 - Rv)/Rv)*unitv(en),
+  L : addcol(colv(xs), colv(us), zc, colv(ones)),
+  ols(L, bfloat(colv(ys)))[2, 1])$
+rvq(t, q) := bfloat(rv(q*abs(t)/sqrt(dof)))$
+rv1 : rvq(tcl, 1)$
+rvh : rvq(tcl, 1/2)$
+rvr : rvq(thc3, 1)$
+print("R3 RV_1 from the classical t:", rv1)$
+print("R3 RV_1/2 from the classical t:", rvh)$
+print("R3 RV_1 from the HC3 t:", rvr)$
+l1 : long_b(rv1)$
+lh : long_b(rvh)$
+lr : long_b(rvr)$
+print("R3 long estimate at RV_1:", l1, if abs(l1) < 1b-40 then "(PASS: 0)" else "(FAIL)")$
+print("R3 long estimate at RV_1/2 less b/2:", lh - b/2,
+      if abs(lh - b/2) < 1b-40 then "(PASS)" else "(FAIL)")$
+print("R3 long estimate at the HC3 t's RV_1, over b:", lr/b,
+      if abs(lr/b) > 1/10 then "(PASS: not 0, so not the R^2 that moves it to 0)" else "(FAIL)")$

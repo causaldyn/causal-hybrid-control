@@ -96,7 +96,9 @@ tilted law is the one the certificate's recursion already carries forward for `E
 checks of it, neither through that recursion:
 
 - Two steps from a fixed start, integrated in Maxima over `(u_0, x_1, u_1)` as Gaussians in exact
-  rationals: 0.00612466700915665051..., which the library's recursion gives to 3e-16.
+  rationals: 0.00612466700915665051..., which the library's recursion gives to 3e-16
+  (`validation/normalised_weights_bias.mac`, which also checks the ratio's first order exactly on
+  a two-point law).
 - Independent episodes where the model is the plant, `x' = a x + u + N(0, 0.25)`, the same logger
   and plan smoothed by `tau = 0.8`: over 10 000 to 20 000 simulated logs each, the mean error and
   the first order were -0.0140 +- 0.0057 and -0.0165 (`a = 0.6`, five steps, 50 episodes),

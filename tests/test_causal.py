@@ -833,6 +833,68 @@ def test_the_sensitivity_reads_hc3_by_default_and_warns_of_nothing() -> None:
     assert default["robustness_value"] == classical["robustness_value"]
 
 
+def _unit(vector: np.ndarray) -> np.ndarray:
+    return vector / np.linalg.norm(vector)
+
+
+def _residual(columns: list[np.ndarray], target: np.ndarray) -> np.ndarray:
+    design = np.column_stack([*columns, np.ones(target.shape[0])])
+    return target - design @ np.linalg.lstsq(design, target, rcond=None)[0]
+
+
+@pytest.mark.parametrize(("q", "at_the_hc3_t"), [(1.0, 0.4591), (0.5, 0.7295)])
+def test_the_robustness_value_is_the_r2_that_moves_the_estimate_whatever_the_noise(
+    q: float, at_the_hc3_t: float
+) -> None:
+    """Under ``robust=True``, on a log whose noise grows with the action, a confounder whose two
+    partial ``R^2``s are the reported value moves the estimate by ``q`` of itself: least squares'
+    algebra, which holds whatever the noise, so the value reads the classical ``t``
+    (``validation/robustness_value_ovb.mac`` R1, R2). At the value the HC3 ``t``, half the
+    classical one here, would give, it leaves 0.46 of the estimate where ``q = 1`` and 0.73 where
+    ``q = 1/2``. The confounder is ``a e_d + e_y + c e_n``, each a unit vector: the action's own
+    part, the outcome's residual, and a direction orthogonal to both and to the covariates, with
+    ``a^2 = 1/(1 - R)`` and ``c^2 = (1 - R)/R``."""
+    data = {k: np.asarray(v) for k, v in _heteroskedastic(np.random.default_rng(4), 150).items()}
+    x, z, u, y = data["x"], data["z"], data["u"], data["x_next"]
+    report = sensitivity_analysis(_heteroskedastic(np.random.default_rng(4), 150), ("z",), q)
+    effect = report["effect"]
+    own, left = _residual([x, z], u), _residual([x, z, u], y)
+    other = _unit(_residual([x, z, u, y], np.random.default_rng(5).normal(size=150)))
+
+    def moved(r2: float) -> float:
+        confounder = np.sign(effect) * _unit(own) / np.sqrt(1.0 - r2) + _unit(left)
+        confounder += np.sqrt((1.0 - r2) / r2) * other
+        design = np.column_stack([x, u, z, confounder, np.ones(150)])
+        return float(np.linalg.lstsq(design, y, rcond=None)[0][1])
+
+    f = q * abs(effect) / report["std_error"] / np.sqrt(150 - 4)
+    hc3_value = 0.5 * (np.sqrt(f**4 + 4.0 * f**2) - f**2)
+
+    assert moved(report["robustness_value"]) == pytest.approx(
+        (1.0 - q) * effect, rel=0.0, abs=1e-12 * abs(effect)
+    )
+    assert moved(hc3_value) == pytest.approx(at_the_hc3_t * effect, rel=1e-3, abs=0.0)
+
+
+def test_the_robustness_value_is_maxima_s_on_eight_rows_whose_noise_grows_with_the_action() -> None:
+    """``validation/robustness_value_ovb.mac`` R3's rows, ``x_next = 0.9 x + 0.8 u + e`` with ``e``
+    largest where ``|u|`` is: the reported value at ``q = 1`` and ``q = 1/2`` is Maxima's, under
+    either error."""
+    x = [1.0, -2.0, 3.0, 0.0, -1.0, 2.0, -3.0, 1.0]
+    u = [2.0, 1.0, -1.0, 3.0, 0.0, -2.0, 1.0, 4.0]
+    e = [0.1, -0.2, 0.3, -1.8, 0.05, 1.4, -0.5, 2.6]
+    data = {
+        "x": jnp.asarray(x),
+        "u": jnp.asarray(u),
+        "x_next": jnp.asarray([0.9 * a + 0.8 * b + c for a, b, c in zip(x, u, e, strict=True)]),
+    }
+    maxima = {1.0: 0.731772070602317613258562553382, 0.5: 0.499699798677014648426418479811}
+    for q, value in maxima.items():
+        for robust in (True, False):
+            read = sensitivity_analysis(data, (), q, robust=robust)["robustness_value"]
+            assert read == pytest.approx(value, rel=1e-12, abs=0.0)
+
+
 def test_the_refutation_fails_a_right_model_at_about_its_alpha() -> None:
     """Each check's change against its own sampling error, Bonferroni over the three: the shares
     of the effect it read before, 10 % and 15 %, failed this right model 48.5 % of the time."""

@@ -1,0 +1,81 @@
+/* The first-order bias of weights normalised to mean one (chc.evaluation's "pdis",
+   PlanEvaluation.normalisation_bias).
+
+   N1  A ratio of means: from n independent draws of (w, c) with E[w] = 1 and E[w c] = R, the
+       estimate sum(w c)/sum(w) has E = R - (E[w^2 c] - R E[w^2])/n + O(1/n^2) (Cochran, Sampling
+       Techniques, 1977, section 6.8). Checked exactly on a two-point law, where the expectation
+       is a finite sum: n (E - R) tends to -(E[w^2 c] - R E[w^2]) = -2/3 with an error of O(1/n).
+   N2  Per-decision weights sum the ratios step by step, so the bias is
+       -sum_t (E_b[W_t^2 c_t] - J_t E_b[W_t^2]) / n. On the two steps tests/test_evaluation.py
+       reads, x0 = 1/2, x1 = 7/10 x0 + u0 + w with w ~ N(0, 1/5), the logger u ~ N(3/10 x + 1/10, 1),
+       the plan u0 ~ N(1/5 x0 - 3/10, 16/25) and u1 ~ N(2/5 x1 + 1/5, 16/25), the cost
+       x^2 + u^2/5 a step and n = 50, each E_b is one Gaussian integral over the path (u0, x1, u1),
+       its square completed in exact rationals, with no recursion over the steps: the bias is
+       0.00612466700915665051027033354429, the number the test pins against the library's
+       recursion.
+   Maxima is the source of truth. */
+display2d : false$
+ratprint : false$
+fpprec : 50$
+
+/* ---------- N1 ---------- */
+p : 1/4$
+w1 : 2$
+w2 : (1 - p*w1)/(1 - p)$
+c1 : 3$
+c2 : 1$
+R : p*w1*c1 + (1 - p)*w2*c2$
+m2 : p*w1^2 + (1 - p)*w2^2$
+m2c : p*w1^2*c1 + (1 - p)*w2^2*c2$
+first : -(m2c - R*m2)$
+print("N1 E[w] =", p*w1 + (1 - p)*w2, " R =", R, " the first-order coefficient:", first)$
+expected(n) := sum(bfloat(binomial(n, k)*p^k*(1 - p)^(n - k)
+                          *(k*w1*c1 + (n - k)*w2*c2)/(k*w1 + (n - k)*w2)), k, 0, n)$
+gap(n) := n*(expected(n) - R) - first$
+g1 : gap(200)$
+g2 : gap(400)$
+g3 : gap(800)$
+print("N1 n (E - R) less the coefficient at n = 200, 400, 800:", g1, g2, g3)$
+print("N1 n times that gap:", 200*g1, 400*g2, 800*g3,
+      if abs(800*g3 - 400*g2) < abs(400*g2 - 200*g1) and abs(800*g3 - 400*g2) < 1/100*abs(800*g3)
+      then "(PASS: the gap is O(1/n), so the coefficient is the first order's)" else "(FAIL)")$
+
+/* ---------- N2 ---------- */
+/* exp(L) integrated over z, L quadratic in z: A = -L's Hessian, b its gradient at 0, c its value
+   there. The integral is exp(c + b'A^-1 b/2) (2 pi)^(d/2) / sqrt(det A), and a moment under the
+   tilted law is N(A^-1 b, A^-1)'s. Maxima's integrate over a cost times exp(.) in a free x1 stops
+   on an internal error, so the square is completed here instead, over the whole path at once. */
+logphi(u, m, v) := -(u - m)^2/(2*v) - log(2*%pi*v)/2$
+x0 : 1/2$
+lb(u, x) := logphi(u, 3/10*x + 1/10, 1)$
+lp0(u) := logphi(u, 1/5*x0 - 3/10, 16/25)$
+lp1(u, x) := logphi(u, 2/5*x + 1/5, 16/25)$
+lt(x1, u0) := logphi(x1, 7/10*x0 + u0, 1/5)$
+gaussian(L, z) := block([d, origin, A, b, c, S],
+  d : length(z),
+  origin : map("=", z, makelist(0, i, 1, d)),
+  A : -genmatrix(lambda([i, j], diff(L, z[i], 1, z[j], 1)), d, d),
+  b : transpose(matrix(makelist(subst(origin, diff(L, z[i])), i, 1, d))),
+  c : subst(origin, L),
+  S : invert(A),
+  [exp(c + (transpose(b) . S . b)/2)*(2*%pi)^(d/2)/sqrt(determinant(A)), S . b, S])$
+entry(M, i, j) := if matrixp(M) then M[i, j] else M$
+/* W_0^2 under the logger: the plan's density squared over the logger's, at u0 */
+g0 : gaussian(2*lp0(u0) - lb(u0, x0), [u0])$
+e0 : g0[1]$
+e0c : e0*(x0^2 + (entry(g0[3], 1, 1) + entry(g0[2], 1, 1)^2)/5)$
+/* W_1^2 under the logger: both steps' ratios squared, the move to x1 between them */
+g1 : gaussian(2*lp0(u0) - lb(u0, x0) + lt(x1, u0) + 2*lp1(u1, x1) - lb(u1, x1), [u0, x1, u1])$
+e1 : g1[1]$
+e1c : e1*((g1[3][2, 2] + g1[2][2, 1]^2) + (g1[3][3, 3] + g1[2][3, 1]^2)/5)$
+/* the plan's own costs: J_0 at x0, J_1 over x1 ~ N(7/10 x0 + m0, 1/5 + 16/25) */
+m0 : 1/5*x0 - 3/10$
+j0 : x0^2 + (m0^2 + 16/25)/5$
+mx1 : 7/10*x0 + m0$
+vx1 : 1/5 + 16/25$
+j1 : (mx1^2 + vx1) + ((2/5*mx1 + 1/5)^2 + (2/5)^2*vx1 + 16/25)/5$
+bias : -((e0c - j0*e0) + (e1c - j1*e1))/50$
+print("N2 E_b[W_0^2] =", bfloat(e0), " E_b[W_1^2] =", bfloat(e1))$
+print("N2 the bias:", bfloat(bias),
+      if abs(bfloat(bias) - 0.00612466700915665051027033354429b0) < 1b-30
+      then "(PASS: the test's pinned number)" else "(FAIL)")$

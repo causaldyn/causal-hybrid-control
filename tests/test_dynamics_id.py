@@ -9,6 +9,7 @@ import dataclasses
 import functools
 import importlib
 import itertools
+import logging
 import math
 import warnings
 from collections.abc import Callable
@@ -2656,6 +2657,34 @@ def test_periods_are_refused_unless_whole_numbers_one_a_transition_without_clust
         fit_causal_residual(
             _known, data, 0.1, **CLUSTERED, clusters=np.arange(50) % 5, periods=np.arange(50)
         )
+
+
+def test_periods_no_two_of_which_are_one_step_apart_are_read_with_a_warning(caplog) -> None:
+    """A weekly log's periods counted in days, 0, 7, 14, ...: the fit reads them as steps, its
+    cosines over a span seven times the log's, and a WARNING names the least spacing. The channel
+    is the steps' fit's, its error not. Steps with gaps, of which some two are one step apart, are
+    read without one, and so are the steps themselves."""
+    data = _clustered_log(200)
+    caplog.set_level("WARNING", logger="chc.dynamics_id")
+
+    def spacing_records() -> list[logging.LogRecord]:
+        return [r for r in caplog.records if getattr(r, "chc_event", None) == "fit_period_spacing"]
+
+    days = fit_causal_residual(_known, data, 0.1, **CLUSTERED, periods=7 * np.arange(200))
+    (record,) = spacing_records()
+    caplog.clear()
+    steps = fit_causal_residual(_known, data, 0.1, **CLUSTERED, periods=np.arange(200))
+    gapped = fit_causal_residual(
+        _known, data, 0.1, **CLUSTERED, periods=np.arange(200) + 3 * (np.arange(200) // 10)
+    )
+
+    assert record.levelno == logging.WARNING
+    assert record.least_spacing == 7
+    assert "the least spacing is 7" in record.getMessage()
+    assert spacing_records() == []
+    np.testing.assert_array_equal(days.residual.channel, steps.residual.channel)
+    assert days.channel_error != steps.channel_error
+    assert gapped.channel_error != steps.channel_error
 
 
 def test_one_unit_s_influence_square_is_its_projections_on_cosines_squared() -> None:
