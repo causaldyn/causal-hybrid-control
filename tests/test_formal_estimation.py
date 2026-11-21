@@ -79,6 +79,13 @@ from chc.switchback import BlockDesign, Horizon, _kernel, randomisation_interval
 from chc.zones import ZoneMarketSystem
 
 FORMAL_LINKS = {
+    "chc.causal.sensitivity_analysis": {
+        "cites": ("robustness_value_ovb.mac",),
+        "tests": (
+            "test_causal.py::test_the_robustness_value_is_the_r2_that_moves_the_estimate_whatever_the_noise",
+            "test_causal.py::test_the_robustness_value_is_maxima_s_on_eight_rows_whose_noise_grows_with_the_action",
+        ),
+    },
     "chc.delay.delay_design_loss": {
         "cites": ("delay_ball.mac",),
         "tests": (
