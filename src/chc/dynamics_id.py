@@ -1505,7 +1505,7 @@ def solve_channel_moment(
     return coeffs.T.reshape(state_residual.shape[1], action_residual.shape[1], n_features)
 
 
-def fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
+def fit_causal_residual(
     known: Dynamics,
     data: dict[str, Array],
     dt: float,
@@ -1858,6 +1858,65 @@ def fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
             that are not one finite number a transition, and on ``times=None`` where ``known``
             reads the time. On ``clusters`` that hold a missing or a masked label.
     """
+    return _fit_causal_residual(
+        known,
+        data,
+        dt,
+        adjust_for=adjust_for,
+        instrument=instrument,
+        unconfounded=unconfounded,
+        degree=degree,
+        channel_degree=channel_degree,
+        nuisance_degree=nuisance_degree,
+        nuisance_knots=nuisance_knots,
+        folds=folds,
+        ridge=ridge,
+        seed=seed,
+        integrator=integrator,
+        drivers=drivers,
+        weights=weights,
+        influence=influence,
+        clusters=clusters,
+        periods=periods,
+        times=times,
+        held=(),
+    )
+
+
+def _fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
+    known: Dynamics,
+    data: dict[str, Array],
+    dt: float,
+    *,
+    adjust_for: tuple[str, ...],
+    instrument: str | None,
+    unconfounded: bool,
+    degree: int,
+    channel_degree: int | None,
+    nuisance_degree: int,
+    nuisance_knots: int | Literal["auto"] | None,
+    folds: int,
+    ridge: float,
+    seed: int,
+    integrator: Integrator,
+    drivers: tuple[str, ...],
+    weights: Callable[[Array], Array] | None,
+    influence: bool,
+    clusters: np.ndarray | Array | None,
+    periods: ArrayLike | None,
+    times: ArrayLike | None,
+    held: tuple[str, ...],
+) -> CausalDynamicsFit:
+    """:func:`fit_causal_residual`, whose drift regression also holds the push of each column
+    ``held`` names, as it holds the adjustment set's, while the nuisances do not read them: the
+    channel's moment is the one without them, and the drift reads its slope with their push held.
+
+    The dither check's instrumented fit holds the plan's adjustment set so
+    (:func:`chc.decision.prescribe`). Its moment conditions on the states alone; were its drift to
+    leave out a covariate that leans on the state, as a persistent one does, the drift would read
+    that lean into its slope while the plan's fit holds the covariate's push, and the two fits
+    would estimate two drifts under the true graph.
+    """
     if integrator not in ("euler", "rk4"):
         raise ValueError(f"integrator={integrator!r} is neither 'euler' nor 'rk4'")
     _refuse_reread("covariate", adjust_for, _ACTION_AND_OUTCOME)
@@ -1885,7 +1944,7 @@ def fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
         raise ValueError(f"channel_degree must be a non-negative integer; got {channel_degree}")
     shifter = () if instrument is None else (instrument,)
     ends = tuple(f"{name}_next" for name in drivers)
-    data = _real_entries(data, ("x", "u", "x_next", *adjust_for, *drivers, *ends, *shifter))
+    data = _real_entries(data, ("x", "u", "x_next", *adjust_for, *held, *drivers, *ends, *shifter))
     x, u, x_next = data["x"], data["u"], data["x_next"]
     if clusters is not None and periods is not None:
         raise ValueError(
@@ -1925,14 +1984,15 @@ def fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
         if knot_count is None
         else _nuisance_sieve(covariates, nuisance_degree, knot_count, powers)
     )
-    # The covariates that are not drivers join the drift in the nuisances' basis, held over the
-    # step, about their mean on the log, and leave the returned field afterwards. A push the drift
-    # regression leaves out moves the drift by its lean on the state and widens the drift's error
-    # by its spread, under either integrator; under ``rk4`` the drift reaches the channel as well,
-    # through RK4's growth factor.
+    # The covariates that are not drivers, and the columns ``held`` names, join the drift in the
+    # nuisances' basis, held over the step, about their mean on the log, and leave the returned
+    # field afterwards. A push the drift regression leaves out moves the drift by its lean on the
+    # state and widens the drift's error by its spread, under either integrator; under ``rk4`` the
+    # drift reaches the channel as well, through RK4's growth factor.
     pushes = _held_pushes(
         jnp.concatenate(
-            [x[:, :0], *[data[name] for name in adjust_for if name not in drivers]], axis=1
+            [x[:, :0], *[data[name] for name in (*adjust_for, *held) if name not in drivers]],
+            axis=1,
         ),
         nuisance_degree,
         knot_count,

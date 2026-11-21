@@ -75,6 +75,7 @@ from chc.dynamics_id import (
     _channel_design,
     _cosines,
     _degrees_of_freedom,
+    _fit_causal_residual,
     _logged_relations,
     _LoggedRelations,
     _nuisance_inputs,
@@ -3461,7 +3462,7 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
             dt=dt,
             states=states,
             levers=lever_names,
-            adjusted=bool(resolved.covariates),
+            covariates=resolved.covariates,
             folds=folds,
             seed=seed,
             integrator=integrator,
@@ -4845,7 +4846,7 @@ def _check_dither_contrast(
     dt: float,
     states: tuple[str, ...],
     levers: tuple[str, ...],
-    adjusted: bool,
+    covariates: tuple[str, ...],
     folds: int,
     seed: int,
     integrator: Integrator,
@@ -4856,36 +4857,41 @@ def _check_dither_contrast(
 ) -> DitherCheck:
     """``fit``'s channel against the one ``draws`` instrument given the states alone, on the same
     transitions, groups and nuisances, priced at ``plan`` (:class:`DitherCheck`). ``refit`` fits
-    ``fit`` again, keeping its influence. ``adjusted``: whether ``fit`` conditioned on more than the
-    states."""
+    ``fit`` again, keeping its influence. ``covariates``: the adjustment set ``fit`` conditioned on,
+    whose push the instrumented fit's drift holds as ``fit``'s does, though its moment does not
+    read them."""
     if not fit.identified:
         raise DecisionError(
             "dither with an asserted empty adjustment set: the plan's fit was handed no word that "
             "the levers are unconfounded, so it keeps no influence to contrast; name the "
             "covariates, or give a graph that proves the effect identified with nothing to adjust"
         )
-    data, _ = _transitions(panel, states=states, levers=levers, adjust_for=draws)
+    data, _ = _transitions(panel, states=states, levers=levers, adjust_for=(*covariates, *draws))
     draw = jnp.concatenate([data[name] for name in draws], axis=1)
-    instrumented = fit_causal_residual(
+    # keyed apart from the panel's names, which may be "draw"
+    held = {f"held {index}": data[name] for index, name in enumerate(covariates)}
+    instrumented = _fit_causal_residual(
         base,
-        {
-            "x": data["x"],
-            "u": data["u"],
-            "x_next": data["x_next"],
-            "draw": draw,
-        },
+        {"x": data["x"], "u": data["u"], "x_next": data["x_next"], "draw": draw, **held},
         dt,
+        adjust_for=(),
         instrument="draw",
-        folds=folds,
-        seed=seed,
-        integrator=integrator,
-        clusters=clusters,
-        periods=periods,
+        unconfounded=False,
+        degree=fit.residual.degree,
+        channel_degree=fit.residual.channel_degree,
         nuisance_degree=_NUISANCE_DEGREE,
         nuisance_knots=nuisance_knots,
+        folds=folds,
         ridge=_RIDGE,
-        times=times,
+        seed=seed,
+        integrator=integrator,
+        drivers=(),
+        weights=None,
         influence=True,
+        clusters=clusters,
+        periods=periods,
+        times=times,
+        held=tuple(held),
     )
     relevance = (
         ()
@@ -4908,7 +4914,7 @@ def _check_dither_contrast(
         )
     contrast, own = _contrast(plan, reference, instrumented, None)
     share = contrast.noise / own if own > 0.0 else 0.0
-    void = not adjusted and _set_by_states_and_draw(data["x"], data["u"], draw)
+    void = not covariates and _set_by_states_and_draw(data["x"], data["u"], draw)
     rejected = not void and contrast.p_value <= _DITHER_ALPHA
     (_log.warning if rejected else _log.info)(
         "the plan's channel is not the one the logged draw instruments"
