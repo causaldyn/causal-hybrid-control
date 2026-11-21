@@ -299,7 +299,10 @@ def discover_lagged_parents(
     about that rate, so a graph of many candidates holds a false edge far more often; on three
     states and one control over three lags, 31 of whose 36 candidate edges are not parents, about
     1 % of those 31 entered at ``alpha=0.01``, and 26 % of 500 graphs of 300 steps and 27 % of 500
-    of 1000 steps held at least one false edge.
+    of 1000 steps held at least one false edge (``scripts/bench_discovery_false_edges.py``:
+    0.96 % and 0.94 % entered, SE 0.08 points, and 26.2 % and 26.8 % of the graphs, SE 2.0
+    points). Fisher's ``z``, up to 1.1.0, read 0.97 % and 0.95 %, and 26.4 % and 27.0 %, on the
+    same series.
 
     Raises:
         ValueError: where ``series`` is not ``(T, d_state)``, a value is not finite, or

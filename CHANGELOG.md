@@ -25,6 +25,11 @@ experimental may change in any minor release (`docs/api/index.md`).
   (`validation/robustness_value_ovb.mac`). On 150 rows whose noise grew with the action, a
   confounder built at the reported value moved the estimate to nothing at `q = 1`; one built at
   the value the HC3 `t` would give left 0.46 of it. No number moves.
+- `discover_lagged_parents`' false-edge figures are re-measured on the exact partial-correlation
+  `t` that 1.2.0 adopted, by a script that reads them, `scripts/bench_discovery_false_edges.py`:
+  0.96 % and 0.94 % of the candidates that are not parents entered, and 26.2 % and 26.8 % of the
+  graphs of 300 and 1000 steps held a false edge, where Fisher's `z` read 26.4 % and 27.0 % on the
+  same series. The docstring's 26 % and 27 % stand.
 
 ## [1.3.1] — 2026-11-18
 
