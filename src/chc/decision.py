@@ -956,6 +956,21 @@ class DitherCheck:
     (``validation/dither_hausman.mac``): a small draw pays for the instrument's variance, and a
     draw of a tenth of the logger's spread needs about fifty times the transitions of one as large.
 
+    The check's power sits below that closed form's one-degree power, for two measured reasons
+    (``scripts/bench_dither_power.py``). At ``a = 0.9``, ``b = 0.5``, ``d = s = sg = 1``, 100 units
+    over 5 transitions and a 5-step plan, the closed form at the fixed alternative rejects at 5 %
+    0.64 of the logs at ``c = 0.15`` and 0.975 at ``c = 0.27``. On 400 logs at each, the channel's
+    contrast kept the closed form's mean and standard error within 3 %, and the channel's level
+    alone, studentised by that standard error, rejected 0.60 and 0.99 (Monte Carlo standard errors
+    0.025 and 0.005). First, the check prices the difference in the plan's regret over four
+    parameters, the channel's two and the drift's two, and only the level carries the bias: with
+    the difference's covariance over the logs in place of a read, it rejected 0.54 and 0.905.
+    Second, it reads that covariance off its one log, as the largest of three reads (two ways, the
+    units alone, the 5 periods alone at their CR1 factor), and reads ``tr(W S)`` 1.4 to 1.6 times
+    high on average: it rejected 0.39 and 0.875, and at ``c = 0`` it rejected 0.025 where the
+    covariance over the logs rejected 0.045. The second cost is the price of the check's margin on
+    its size.
+
     ``"void"``: the logger read nothing but the states and its draw, and the plan's fit conditions
     on the states alone: the levers are, to rounding, the nuisances' polynomial of the states plus
     a linear map of the draw. The two fits then draw the channel from one variation, the draw's,

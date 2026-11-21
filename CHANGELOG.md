@@ -18,6 +18,17 @@ experimental may change in any minor release (`docs/api/index.md`).
   stops at `tol`, so no iterate, log or plan moves a bit. `SharedStateMarket` reads the flag in
   place of its own floor of the same value (ADR 0156).
 
+### Documentation
+
+- `DitherCheck` and ADR 0139 say why the check's power sits below the one-degree closed form
+  (0.39 and 0.875 against 0.64 and 0.975 at `c = 0.15` and `0.27`). On 400 logs each the
+  contrast followed the closed form, and the channel's level alone rejected 0.60 and 0.99. Priced
+  in the plan's regret over all four parameters, with their covariance known, the test rejected
+  0.54 and 0.905. Reading that covariance off the one log, as the largest of three reads, reads
+  `tr(W S)` 1.4 to 1.6 times high and takes the rest. That read keeps the size at 0.025 where the
+  known covariance gives 0.045. `scripts/bench_dither_power.py` measures each step, and
+  `validation/dither_hausman.mac` STEP 5d gives the contrast's closed-form standard error.
+
 ## [1.3.1] — 2026-11-18
 
 ### Fixed
