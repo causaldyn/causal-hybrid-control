@@ -210,7 +210,8 @@ def test_every_linked_test_reaches_its_object() -> None:
     with the private helpers of its file it calls, names the object (or imports it under another
     name). A module is reached through any name of its ``__all__``; a class or helper through
     ``via``, a function of its module whose source names it (the function that returns the class,
-    the caller of the helper)."""
+    the caller of the helper), or a tuple of them, each one's source naming the next and the last
+    one's naming the object (a public function and the private one that does its work)."""
     unreached: dict[str, tuple[str, ...]] = {}
     for target, (path, entry) in links().items():
         tests = entry.get("tests", ())
@@ -221,11 +222,12 @@ def test_every_linked_test_reaches_its_object() -> None:
         else:
             names = [leaf]
         if "via" in entry:
-            via = getattr(module, entry["via"])
-            assert re.search(rf"\b{re.escape(leaf)}\b", inspect.getsource(via)), (
-                f"{target}: {entry['via']} does not name {leaf}"
-            )
-            names.append(entry["via"])
+            hops = (entry["via"],) if isinstance(entry["via"], str) else entry["via"]
+            for hop, named in zip(hops, (*hops[1:], leaf), strict=True):
+                assert re.search(
+                    rf"\b{re.escape(named)}\b", inspect.getsource(getattr(module, hop))
+                ), f"{target}: {hop} does not name {named}"
+            names.append(hops[0])
         if tests and not any(_reaches(path, test, names) for test in tests):
             unreached[target] = tests
     assert not unreached, unreached

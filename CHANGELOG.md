@@ -66,6 +66,21 @@ experimental may change in any minor release (`docs/api/index.md`).
   not, and `lag` and `delay` do not move. A sharply identified lag no longer returns `lo == hi`.
   `DelayOscillationTask`'s delay-aware arm designs for the minimax over the wider interval, 0.769 of
   the delay, and its regret moves from 0.007 to 0.11 against the oracle's cost of 0.57. ADR 0158.
+- **`prescribe(dither=)`'s check no longer rejects a right graph for a covariate that persists.**
+  The instrumented fit conditioned on the states alone, its drift included, while the plan's fit
+  holds the adjustment set's push in its drift. A covariate that persists leans on the state,
+  since its past pushed it, so the instrumented drift read that lean into its slope, and the
+  contrast priced the gap between the two drifts as a miss. Under `rk4` the drift also moved the
+  instrumented channel, through RK4's growth factor. On `x' = 0.9 x + 0.5 u + 0.8 w + e`,
+  `u = w + eta`, with `w` AR(0.9) and held by the graph, the lean is 0.154 of `w`'s push over five
+  transitions a unit (`validation/dither_persistence.mac`), and the contrast rejected the right
+  graph on 57 of 200 logs at 5 %. The instrumented fit's drift now holds the adjustment set's push,
+  as the plan's fit's does, and its moment still reads the states alone: 1 of 200. On
+  causaldyn-bench's persistent-confounder world, 200 panels a persistence, the true graph's
+  rejection at 5 % reads 0.035, 0.010, 0.040 and 0.030 at a persistence of 0, 0.5, 0.8 and 0.95,
+  against 0.000, 0.000, 0.085 and 0.265 before. The plan, its fit and its certificate do not move.
+  The check's p-value, cost, noise and share move wherever the adjustment set is not empty
+  (ADR 0159). `prescribe(dither=)` stays experimental.
 
 ### Documentation
 

@@ -1,13 +1,14 @@
 """prescribe(dither=): the plan's channel against the one the logged draw instruments.
 
 The plant is ``x' = 0.9 x + 0.5 u + c w + e``, its logger ``u = d w + eta``: ``w`` the column a
-graph may leave out, ``eta`` the logged draw, all drawn afresh. The check adds a fit and a reading;
-it moves nothing the plan was made from.
+graph may leave out, ``eta`` the logged draw, all drawn afresh, or ``w`` AR(``persistence``) of unit
+variance. The check adds a fit and a reading; it moves nothing the plan was made from.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 
 import numpy as np
 import pytest
@@ -20,13 +21,18 @@ EMPTY = CausalGraph.from_edges([("incentive", "x")])  # says nothing confounds t
 LEVER = Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.05)
 
 
-def _logs(c: float, d: float, seed: int, units: int = 100, periods: int = 6) -> Panel:
+def _logs(
+    c: float, d: float, seed: int, units: int = 100, periods: int = 6, persistence: float = 0.0
+) -> Panel:
     rng = np.random.default_rng(seed)
     x = rng.normal(0.0, 1.0, units)
+    # drawn only where the column persists, so the stream of a fresh one is the one it always was
+    w = rng.standard_normal(units) if persistence else np.zeros(units)
     names = ("unit", "time", "x", "incentive", "promo", "draw", "rule")
     rows: dict[str, list[np.ndarray]] = {name: [] for name in names}
     for t in range(periods):
-        w, eta, e = rng.standard_normal((3, units))
+        fresh, eta, e = rng.standard_normal((3, units))
+        w = persistence * w + math.sqrt(1.0 - persistence**2) * fresh
         u = d * w + eta
         for name, value in zip(
             names, (np.arange(units), np.full(units, t), x, u, w, eta, 0.5 * x), strict=True
@@ -108,6 +114,33 @@ def test_the_adjusted_graph_is_tested_not_void() -> None:
     check = _prescribe(CONFOUNDED, TRUE, dither="draw").dither_check
     assert check.status == "tested"
     assert check.contrast is not None
+    assert check.contrast.p_value > 0.05
+
+
+@pytest.mark.parametrize("integrator", ["euler", "rk4"])
+def test_a_persistent_covariate_the_graph_holds_leaves_both_fits_one_drift(integrator) -> None:
+    """A promotion AR(0.9) that the logger reads and that pushes the state leans on the state, since
+    its past pushed it: over these logs' five transitions a unit the drift's slope on the state
+    alone reads 0.154 of its push beside the true -0.1 (``validation/dither_persistence.mac``). The
+    plan's fit holds the promotion's push in its drift; up to 1.3.1 the instrumented fit held
+    nothing, read that lean, and the contrast rejected the true graph at p = 0 on every seed
+    0 to 2, under either integrator. It holds the adjustment set's push as the plan's fit does,
+    so both read one drift, and the contrast is left the channels' difference."""
+    result = _prescribe(
+        _logs(c=0.8, d=1.0, seed=2, units=400, persistence=0.9),
+        TRUE,
+        dither="draw",
+        integrator=integrator,
+    )
+    check = result.dither_check
+    assert isinstance(check, DitherCheck)
+    assert check.status == "tested"
+    assert check.contrast is not None
+    planned = np.asarray(result.model_fit.residual.drift)
+    instrumented = np.asarray(check.instrumented.residual.drift)
+    assert planned[0, 1] == pytest.approx(-0.1, abs=0.02)
+    # the lean is 0.154; what is left is the channels' sampling difference
+    assert abs(instrumented[0, 1] - planned[0, 1]) < 0.01
     assert check.contrast.p_value > 0.05
 
 

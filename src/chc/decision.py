@@ -75,6 +75,7 @@ from chc.dynamics_id import (
     _channel_design,
     _cosines,
     _degrees_of_freedom,
+    _fit_causal_residual,
     _logged_relations,
     _LoggedRelations,
     _nuisance_inputs,
@@ -955,6 +956,20 @@ class DitherCheck:
     noncentrality grows by ``c^2 s^2 / (sg^2 (d^2 + s^2))`` a transition
     (``validation/dither_hausman.mac``): a small draw pays for the instrument's variance, and a
     draw of a tenth of the logger's spread needs about fifty times the transitions of one as large.
+
+    The two fits differ in what identifies the channel and in nothing else: the instrumented fit's
+    moment reads the states alone, and its drift holds the adjustment set's push, as the plan's
+    fit's does. A covariate that persists leans on the state, since its past pushed it, and a
+    drift on the states alone reads that lean into its slope: on the plant above at ``a = 0.9``,
+    ``b = 0.5``, ``c = 0.8``, ``d = s = sg = 1``, with ``w`` AR(0.9) and held by the graph, 0.154
+    of ``w``'s push over five transitions a unit (``validation/dither_persistence.mac``). Up to
+    1.3.1 the instrumented drift held nothing, and there the contrast rejected the right graph on
+    57 of 200 logs of 100 units at 5 %; holding the push, on 1. Under ``"rk4"`` that drift also
+    reached the channel, through RK4's growth factor (ADR 0159). On causaldyn-bench's
+    persistent-confounder world under ``"rk4"``, 400 units over 12 periods, the right graph's
+    contrast rejects at 5 % 0.035, 0.010, 0.040 and 0.030 of 200 panels at a persistence of 0, 0.5,
+    0.8 and 0.95 (0.000, 0.000, 0.085 and 0.265 up to 1.3.1): at most the level, and below it
+    beyond the Monte Carlo error at 0.5, where it rejects 0.09 at 10 % and 0.18 at 20 %.
 
     The check's power sits below that closed form's one-degree power, for two measured reasons
     (``scripts/bench_dither_power.py``). At ``a = 0.9``, ``b = 0.5``, ``d = s = sg = 1``, 100 units
@@ -2554,8 +2569,10 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
         dither: the column, or columns, holding the random draw the logger added to the levers,
             logged: drawn apart from everything the plant reads, at most given the states. Given,
             the channel is fitted a second time, with the draw as its instrument and the states
-            as its only covariates, never the adjustment set, which may hold a column the levers
-            move; and the plan's channel is read against it in the plan's own regret
+            as its moment's only covariates, never the adjustment set, which may hold a column
+            the levers move; its drift holds the adjustment set's push, as the plan's fit's does,
+            so the two fits differ in what identifies the channel alone (ADR 0159); and the
+            plan's channel is read against it in the plan's own regret
             (:class:`DitherCheck`, *experimental*). :attr:`Prescription.dither_check` holds the
             result, a rejection at 5 % is logged as a warning and named in the report. It reports;
             the plan, its fit and its certificate are those without it, bit for bit. A draw
@@ -3476,7 +3493,7 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
             dt=dt,
             states=states,
             levers=lever_names,
-            adjusted=bool(resolved.covariates),
+            covariates=resolved.covariates,
             folds=folds,
             seed=seed,
             integrator=integrator,
@@ -4860,7 +4877,7 @@ def _check_dither_contrast(
     dt: float,
     states: tuple[str, ...],
     levers: tuple[str, ...],
-    adjusted: bool,
+    covariates: tuple[str, ...],
     folds: int,
     seed: int,
     integrator: Integrator,
@@ -4871,36 +4888,41 @@ def _check_dither_contrast(
 ) -> DitherCheck:
     """``fit``'s channel against the one ``draws`` instrument given the states alone, on the same
     transitions, groups and nuisances, priced at ``plan`` (:class:`DitherCheck`). ``refit`` fits
-    ``fit`` again, keeping its influence. ``adjusted``: whether ``fit`` conditioned on more than the
-    states."""
+    ``fit`` again, keeping its influence. ``covariates``: the adjustment set ``fit`` conditioned on,
+    whose push the instrumented fit's drift holds as ``fit``'s does, though its moment does not
+    read them."""
     if not fit.identified:
         raise DecisionError(
             "dither with an asserted empty adjustment set: the plan's fit was handed no word that "
             "the levers are unconfounded, so it keeps no influence to contrast; name the "
             "covariates, or give a graph that proves the effect identified with nothing to adjust"
         )
-    data, _ = _transitions(panel, states=states, levers=levers, adjust_for=draws)
+    data, _ = _transitions(panel, states=states, levers=levers, adjust_for=(*covariates, *draws))
     draw = jnp.concatenate([data[name] for name in draws], axis=1)
-    instrumented = fit_causal_residual(
+    # keyed apart from the panel's names, which may be "draw"
+    held = {f"held {index}": data[name] for index, name in enumerate(covariates)}
+    instrumented = _fit_causal_residual(
         base,
-        {
-            "x": data["x"],
-            "u": data["u"],
-            "x_next": data["x_next"],
-            "draw": draw,
-        },
+        {"x": data["x"], "u": data["u"], "x_next": data["x_next"], "draw": draw, **held},
         dt,
+        adjust_for=(),
         instrument="draw",
-        folds=folds,
-        seed=seed,
-        integrator=integrator,
-        clusters=clusters,
-        periods=periods,
+        unconfounded=False,
+        degree=fit.residual.degree,
+        channel_degree=fit.residual.channel_degree,
         nuisance_degree=_NUISANCE_DEGREE,
         nuisance_knots=nuisance_knots,
+        folds=folds,
         ridge=_RIDGE,
-        times=times,
+        seed=seed,
+        integrator=integrator,
+        drivers=(),
+        weights=None,
         influence=True,
+        clusters=clusters,
+        periods=periods,
+        times=times,
+        held=tuple(held),
     )
     relevance = (
         ()
@@ -4923,7 +4945,7 @@ def _check_dither_contrast(
         )
     contrast, own = _contrast(plan, reference, instrumented, None)
     share = contrast.noise / own if own > 0.0 else 0.0
-    void = not adjusted and _set_by_states_and_draw(data["x"], data["u"], draw)
+    void = not covariates and _set_by_states_and_draw(data["x"], data["u"], draw)
     rejected = not void and contrast.p_value <= _DITHER_ALPHA
     (_log.warning if rejected else _log.info)(
         "the plan's channel is not the one the logged draw instruments"
