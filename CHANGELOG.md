@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
 experimental may change in any minor release (`docs/api/index.md`).
 
+## [Unreleased]
+
+### Documentation
+
+- `sensitivity_analysis`'s robustness value is shown to be the `R^2` that moves the estimate by
+  `q` of itself whatever the noise, so it reads the classical `t` under `robust=True` as well, by
+  design: the confounding's move is least squares' algebra, and no standard error enters it
+  (`validation/robustness_value_ovb.mac`). On 150 rows whose noise grew with the action, a
+  confounder built at the reported value moved the estimate to nothing at `q = 1`; one built at
+  the value the HC3 `t` would give left 0.46 of it. No number moves.
+
 ## [1.3.1] — 2026-11-18
 
 ### Fixed

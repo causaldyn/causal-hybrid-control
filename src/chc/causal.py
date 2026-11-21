@@ -293,7 +293,12 @@ def sensitivity_analysis(
     Where the variance is one, HC3's missed 4.8 %, 5.3 % and 4.8 % at 100, 200 and 1000 rows, and
     the classical one 5.0 %, 5.5 % and 4.9 %. The robustness value keeps the classical ``t``
     either way: Cinelli and Hazlett's closed form is the action's partial ``R^2`` with the
-    outcome, ``t^2 / (t^2 + dof)``, which holds for the classical ``t`` alone.
+    outcome, ``t^2 / (t^2 + dof)``, which holds for the classical ``t`` alone. The confounding
+    that moves the estimate is least squares' algebra and holds whatever the noise, so no
+    standard error enters it (``validation/robustness_value_ovb.mac``): on 150 rows whose noise
+    grew with the action, where HC3's error was 1.85 times the classical one, a confounder of the
+    reported value's ``R^2`` with both moved the estimate to nothing at ``q = 1``, and one of the
+    value the HC3 ``t`` would give left 0.46 of it.
 
     Raises:
         ValueError: if ``adjust_for`` names ``x``, ``u`` or ``x_next``, or a column twice. The
