@@ -3300,7 +3300,11 @@ def _circulant_band(
     if not np.allclose(weights, rebuilt, atol=tol, rtol=0.0):
         return None
     circular = np.minimum(shifts, m - shifts)
-    reached = circular[np.abs(row) > tol]
+    # The band is the support down to rounding, not down to ``tol``: an offset whose weight is
+    # below ``tol`` but above the rounding of the largest one still moves the objective, and a
+    # band that drops it solves a different matrix.
+    rounding = 64.0 * np.finfo(np.float64).eps * float(np.abs(row).max(initial=0.0))
+    reached = circular[np.abs(row) > rounding]
     band = int(reached.max()) if reached.size else 0
     return row[: band + 1].copy(), band
 
@@ -3518,7 +3522,8 @@ def optimal_fold_partition(  # noqa: C901, PLR0912, PLR0915
         if profile is not None and m > 2 * profile[1]:
             banded = _exact_banded_bisection(profile[0], profile[1], m)
     if banded is not None:
-        best_val, best = banded
+        best = banded[1]
+        best_val = objective(best)
         exhaustive, route = True, "banded-dp"
     elif exhaustive:
         for chosen in itertools.combinations(range(1, m), size - 1):

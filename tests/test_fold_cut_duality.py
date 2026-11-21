@@ -97,6 +97,22 @@ def test_the_band_is_set_by_the_truncation_not_by_m() -> None:
             assert profile[1] == 2 * dmax
 
 
+def test_a_shell_weight_below_the_old_cut_stays_in_the_band() -> None:
+    """A spillover of 1e-9 puts 6.25e-11 at offset 3, under the 1e-10 the band was once cut at: the
+    band keeps it (offset 4, at 1e-18, is below the rounding of 1.125 and drops), so the dynamic
+    program solves the matrix it is given and matches the enumeration."""
+    gammas, x, m = (1.0, 0.25, 1e-9), 0.125, 10
+    shells = cycle_shells(m, 2)
+    profile = _circulant_band(_fold_weight_matrix(shells, gammas, x))
+    assert profile is not None
+    assert profile[1] == 3
+    banded = optimal_fold_partition(shells, gammas, x, exhaustive_limit=0)
+    enumerated = optimal_fold_partition(shells, gammas, x, exhaustive_limit=10**6)
+    assert banded.route == "banded-dp"
+    assert enumerated.route == "enumeration"
+    assert banded.objective == pytest.approx(enumerated.objective, rel=1e-14, abs=0.0)
+
+
 def test_a_non_circulant_weight_falls_back_to_the_search() -> None:
     rng = np.random.default_rng(0)
     root = rng.normal(size=(30, 30))

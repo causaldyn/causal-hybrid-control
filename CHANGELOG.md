@@ -95,6 +95,13 @@ experimental may change in any minor release (`docs/api/index.md`).
   against 0.000, 0.000, 0.085 and 0.265 before. The plan, its fit and its certificate do not move.
   The check's p-value, cost, noise and share move wherever the adjustment set is not empty
   (ADR 0159). `prescribe(dither=)` stays experimental.
+- **`chc.research.regret.optimal_fold_partition`'s banded route solves the matrix it is given.**
+  The circulant's band was cut where a weight fell to `1e-10`, so a spillover weight below that
+  but above rounding left the band, and the dynamic program solved a truncated matrix and reported
+  its objective: on a 10-unit cycle with spillovers `(1, 0.25, 1e-9)` at `x = 0.125` it read
+  `12.000000000625` for a fold whose same-fold mass is `12.000000001625`, against the optimum
+  `12.000000001375`. The band now keeps every offset above the rounding of the largest weight, and
+  `objective` is the returned fold's mass on the full matrix.
 
 ### Documentation
 
