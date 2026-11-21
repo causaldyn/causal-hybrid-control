@@ -1,5 +1,6 @@
 """chc.irf: local projections recover the analytic impulse response; dropping z biases it."""
 
+import dataclasses
 import importlib
 import logging
 
@@ -238,20 +239,36 @@ def test_the_interval_covers_the_true_lag_across_seeds() -> None:
     assert covered >= 17  # nominal 0.95; measured 1.00 over 40 replications
 
 
-def test_the_interval_carries_the_peaks_spread_not_its_bias_on_an_off_grid_delay() -> None:
-    """The documented premise: a delay of 3.33 steps is read at the bin of 3, and a sharp peak never
-    leaves it, so the interval is the point 0.9 beside the true 1.0, not around it."""
-    task = DelayOscillationTask()
-    coarse, observed = task._log(0)
-    est = delay_estimate(
-        {"x": np.diff(observed), "u": coarse[:-1]},
-        horizon=12,
-        dt=task.dt * task.observe_every,
-        adjust_for=(),
-        n_resamples=100,
-    )
-    assert est.lo == est.hi == pytest.approx(0.9, abs=1e-12)
-    assert not est.lo <= task.tau <= est.hi
+def test_the_interval_bounds_an_off_grid_delay_on_either_side_of_its_step() -> None:
+    """A delay of 3.33 steps peaks at step 3 and one of 6.67 at step 7, on every resample, so the
+    interval is that step and half a step on each side, which holds the delay. Up to 1.3.1 it was
+    the step alone: 0.9 beside the true 1.0 and 2.1 beside 2.0, refined or not."""
+    for tau, step in ((1.0, 3), (2.0, 7)):
+        task = dataclasses.replace(DelayOscillationTask(), tau=tau)
+        coarse, observed = task._log(0)
+        width = task.dt * task.observe_every
+        for refine in (False, True):
+            est = delay_estimate(
+                {"x": np.diff(observed), "u": coarse[:-1]},
+                horizon=12,
+                dt=width,
+                adjust_for=(),
+                refine=refine,
+                n_resamples=100,
+            )
+            assert est.lo == pytest.approx((step - 0.5) * width, rel=1e-12, abs=0.0)
+            assert est.hi == pytest.approx((step + 0.5) * width, rel=1e-12, abs=0.0)
+            assert est.lo <= task.tau <= est.hi
+
+
+def test_an_effect_at_step_zero_has_an_interval_from_zero() -> None:
+    """Half a step below a peak at step 0 is a negative delay, which no causal effect has."""
+    rng = np.random.default_rng(0)
+    u = rng.standard_normal(400)
+    est = delay_estimate({"x": u + 0.1 * rng.standard_normal(400), "u": u}, 4, adjust_for=())
+    assert est.lag == 0.0
+    assert est.censored
+    assert (est.lo, est.hi) == (0.0, 0.5)
 
 
 def test_a_flat_irf_widens_the_interval_instead_of_inventing_a_mode() -> None:

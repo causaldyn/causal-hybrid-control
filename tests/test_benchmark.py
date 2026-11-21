@@ -336,8 +336,10 @@ def test_a_delay_blind_controller_walks_into_the_hopf() -> None:
     """Same cost, same grid search, only the assumed delay differs -- and one arm diverges."""
     results = {r.controller: r for r in DelayOscillationTask().run(0)}
     blind, aware, oracle = results["delay-blind"], results["delay-aware"], results["oracle"]
-    assert blind.regret > 1e3 * max(aware.regret, 1e-3)  # six orders, not a tuning difference
-    assert aware.regret < 0.05  # estimating the delay recovers essentially the oracle
+    assert blind.regret > 1e3 * max(aware.regret, 1e-3)  # five orders, not a tuning difference
+    # the design is the minimax over an interval that holds the delay, [0.75, 1.05], and pays
+    # 0.11 of regret for its width, where the blind arm diverges
+    assert aware.regret < 0.25 * oracle.cost
     assert oracle.regret == 0.0
 
 
@@ -378,8 +380,9 @@ def test_the_measured_oscillation_onset_matches_the_closed_form() -> None:
     assert 0.985 * boundary_gain < onset < boundary_gain
 
 
-def test_the_estimated_delay_is_biased_low_which_is_the_destabilising_side() -> None:
-    """The refinement's shrinkage has a sign, so more seeds do not average it away."""
+def test_the_delay_interval_holds_the_delay_so_its_design_stabilises_the_plant() -> None:
+    """Up to 1.3.1 the interval sat below the delay on every seed, the destabilising side, and the
+    design's ``stabilises_interval`` spoke of an interval the delay was not in."""
     task = DelayOscillationTask()
     designs = []
     for seed in range(6):
@@ -392,10 +395,11 @@ def test_the_estimated_delay_is_biased_low_which_is_the_destabilising_side() -> 
             refine=True,
             seed=seed,
         )
-        designs.append(robust_delay_design(max(estimate.lo, task.dt), estimate.hi).tau_design)
+        assert estimate.lo <= task.tau <= estimate.hi
+        design = robust_delay_design(max(estimate.lo, task.dt), estimate.hi)
+        assert design.stabilises_interval
+        designs.append(design.tau_design)
     ratios = np.array(designs) / task.tau
-    assert np.all(ratios < 1.0)  # every seed, not most -- the bias is deterministic in sign
-    assert np.ptp(ratios) < 0.05  # ...and small, so the run-to-run spread is not what carries it
-    # harmless only because chc.delay's ball tolerates a 76.6% shortfall on this side, against a
-    # realised worst of 7.7% -- a factor of 10. The same 7.7% bites on a plant with a tighter ball.
-    assert 1.0 - ratios.min() < 0.15 * (1.0 - STABILISING_RATIO_FLOOR)
+    # still short of the delay, now by the minimax: below the delay the loss rises linearly, above
+    # it as a square root (chc.delay.robust_delay_design), so the design leans to the short end
+    assert np.all((ratios > STABILISING_RATIO_FLOOR) & (ratios < 1.0))

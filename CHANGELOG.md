@@ -5,6 +5,25 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
 experimental may change in any minor release (`docs/api/index.md`).
 
+## [Unreleased]
+
+### Fixed
+
+- **`delay_estimate`'s `lo` and `hi` bound the delay, not only the response's peak.** They were a
+  percentile bootstrap interval of the peak's location, which carries the peak's spread and not its
+  distance from the delay: a delay between two samples peaks at the nearer one, up to half a step
+  from it, and on a sharp peak every resample peaks there too. On `DelayOscillationTask`'s log, a
+  delay of 3.33 steps, the interval was `[0.9, 0.9]` beside the true 1.0 (`[0.936, 0.959]` refined)
+  and held the delay on 0 of 400 seeds; at a delay of 6.67 steps, on 0 of 400 too. The ends are now
+  the whole steps the resampled peaks reach at the two percentiles, widened by half a step on each
+  side and cut at zero (`validation/delay_interval_resolution.mac`): `[0.75, 1.05]` there, which
+  held the delay on 400 of 400 seeds at both delays, refined or not, and on 200 of 200 at each of 15
+  delays from 3 to 4 steps and at 6.67. The premise, that the delay lies within half a step of the
+  step the response peaks at, is stated. The interval reads the whole step whether `refine` is on or
+  not, and `lag` and `delay` do not move. A sharply identified lag no longer returns `lo == hi`.
+  `DelayOscillationTask`'s delay-aware arm designs for the minimax over the wider interval, 0.769 of
+  the delay, and its regret moves from 0.007 to 0.11 against the oracle's cost of 0.57. ADR 0157.
+
 ## [1.3.1] — 2026-11-18
 
 ### Fixed

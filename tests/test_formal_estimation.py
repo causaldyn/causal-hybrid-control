@@ -226,6 +226,13 @@ FORMAL_LINKS = {
             "test_channel_move_effective_size_is_the_geometric_closed_form",
         ),
     },
+    "chc.irf.delay_estimate": {
+        "cites": ("delay_interval_resolution.mac",),
+        "tests": (
+            "test_a_held_pulse_read_over_each_step_peaks_within_half_a_step_of_its_delay",
+            "test_irf.py::test_the_interval_bounds_an_off_grid_delay_on_either_side_of_its_step",
+        ),
+    },
     "chc.irf.peak_lag": {
         "cites": ("delay_estimate_bias.mac",),
         "tests": (
@@ -1430,6 +1437,27 @@ def test_peak_at_an_end_is_censored_and_a_plateau_reads_its_leading_pair() -> No
     assert peak_lag([0.1, 0.5, -2.0], refine=True) == (2.0, True)
     assert peak_lag([0.0, 0.0, 1.0, 1.0, 0.0], refine=True) == (2.5, False)
     assert peak_lag([0.0, 1.0, 1.0, 1.0, 0.0], refine=True) == (1.5, False)
+
+
+@settings(max_examples=60, deadline=None)
+@given(lag=st.integers(30, 330))
+def test_a_held_pulse_read_over_each_step_peaks_within_half_a_step_of_its_delay(lag: int) -> None:
+    """delay_interval_resolution.mac: a transport lag of c steps, its input held over a step and
+    its outcome read as the change over each step, peaks at c rounded and its vertex lies within a
+    sixth of a step of c. Simulated on 30 plant steps a sample, as DelayOscillationTask logs."""
+    every = 30
+    held = np.zeros(14 * every)
+    held[:every] = 1.0
+    delayed = np.concatenate([np.zeros(lag), held])[: held.size]
+    response = delayed.reshape(-1, every).mean(axis=1)
+    c = lag / every
+    step, censored = peak_lag(response)
+    assert not censored
+    assert abs(c - step) <= 0.5
+    vertex, _ = peak_lag(response, refine=True)
+    assert abs(c - vertex) <= 1.0 / 6.0 + 1e-12
+    mean = float(np.arange(response.size) @ response / response.sum())
+    assert mean == pytest.approx(c, rel=1e-12, abs=0.0)
 
 
 # ------------------------------------------------------------------------------ chc.pathway

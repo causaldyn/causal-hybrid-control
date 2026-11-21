@@ -182,13 +182,12 @@ class DelayEstimate:
     ``peak_response`` keeps its sign, so an effect that arrives negative is visible as such even
     though the peak is located on ``|beta|``.
 
-    ``lo`` and ``hi`` are a bootstrap interval of the peak's location: they carry its sampling
-    spread and not its bias, so they bound the delay only to the resolution of the sampling grid. A
-    delay that falls between two samples is read at a bin -- up to half a step from it when the
-    effect splits across two bins -- or, refined, with :func:`peak_lag`'s bias, and a sharp peak
-    gives ``lo == hi`` beside the delay, not around it. On
-    :class:`chc.research.benchmark.DelayOscillationTask`'s log, a delay of 3.33 steps, the interval
-    held the true delay on none of 10 seeds: 0.9 of it at the integer peak, 0.94-0.95 refined.
+    ``lo`` and ``hi`` bound the delay: the bootstrap interval of the whole step the response peaks
+    at, widened by half a step on each side and cut at zero. A delay between two samples peaks at
+    the nearer one, up to half a step from it, and every resample peaks there too, so the bootstrap
+    alone carries the peak's spread and not that distance. The half step holds under the premise
+    :func:`delay_estimate` states. ``lag`` and ``delay``, refined or not, lie within half a step of
+    the whole step the full sample peaks at.
 
     ``censored`` marks a peak sitting on an end of the horizon, where the delay is not identified:
     the true peak may lie anywhere beyond the window, so the number is a bound on the delay and must
@@ -294,9 +293,9 @@ def delay_estimate(
     a delayed plant is persistent by construction -- but the peak is a location statistic, invariant
     to a common rescaling of the IRF, and the block bootstrap below already handles the serial
     dependence non-parametrically. Measured over 40 replications at ``phi in {0.98, 0.999, 1.0}``,
-    coverage of a nominal 95% interval was 0.95-1.00 with and without augmentation and the widths
-    agreed to 3%. So the default matches :func:`local_projection_irf`, and the option is offered
-    rather than imposed.
+    coverage of the peak's nominal 95% interval, before the half steps below were added to it, was
+    0.95-1.00 with and without augmentation and the widths agreed to 3%. So the default matches
+    :func:`local_projection_irf`, and the option is offered rather than imposed.
 
     The interval is a **moving-block** percentile bootstrap over the aligned projection rows, refit
     and re-peaked on every resample, with block length ``lags + horizon + 1``. Blocks, because a
@@ -307,15 +306,32 @@ def delay_estimate(
 
     A flat or noise-dominated IRF is not rejected and not smoothed over: the peak wanders across the
     horizon under resampling and the interval comes back wide, which is the honest report. A sharply
-    identified lag goes the other way and returns ``lo == hi``: the resampled peak never moves off
-    its bin, which is the correct interval for a delay that is an exact multiple of ``dt``.
+    identified lag goes the other way: the resampled peak never leaves its step, and the interval is
+    that step and half a step on each side, which holds one whole number of steps.
 
-    It is an interval of the peak's location, not of the delay: a delay between two samples, or
-    the refined peak's bias, puts the peak off the delay, and the interval with it. On
-    :class:`chc.research.benchmark.DelayOscillationTask`'s log, a delay of 3.33 steps, it covered
-    the true delay in 0 of 10 seeds, with ``refine`` and without (:class:`DelayEstimate`).
+    **The half step is what makes the interval bound the delay, not only the peak.** The interval's
+    ends are the percentiles of the resampled peaks' whole steps, each a step some resample peaked
+    at, widened by half a step on each side and cut at zero, since no causal effect arrives before
+    its cause. The premise: the delay lies within half a step of the step the response peaks at.
+    It holds for a delay of whole steps, and for a transport lag of ``c`` steps seen through an
+    input held over each step and an outcome read as its change over the step: the samples of the
+    response are then the hat ``1 - |h - c|``, whose largest sample is at ``c`` rounded, up to half
+    a step from it (``validation/delay_interval_resolution.mac``). The same two samples are also
+    the response of a plant whose effect arrives split between two whole steps, largest at the step
+    of the larger share, so the data cannot place the delay closer than the half step without a
+    premise about the response's shape inside a step. An outcome read at instants under a held
+    input peaks up to a whole step late, and the half step does not cover that.
 
-    ``refine`` is forwarded to :func:`peak_lag`; read its warning before turning it on.
+    On :class:`chc.research.benchmark.DelayOscillationTask`'s log, a delay of 3.33 steps that peaks
+    at step 3, the interval without the half step held the delay on 0 of 400 seeds, with ``refine``
+    and without; with it, on 400 of 400, and on 400 of 400 at a delay of 6.67 steps, which peaks
+    at step 7.
+
+    ``refine`` moves ``lag`` and ``delay`` off the whole step through :func:`peak_lag`; read its
+    warning before turning it on. The interval reads the whole step either way: the refined peak is
+    off the delay by up to a sixth of a step on the hat and by up to half a step on a one-sided
+    response, and on that log the sixth is more than its spread: an interval of the refined peak
+    held the delay on none of those seeds either.
 
     Whether a fitted model's plant reads its lever late at all is
     :func:`chc.dynamics_id.lag_check`'s question: the fit's residual against its earlier levers.
@@ -348,15 +364,17 @@ def delay_estimate(
     for draw in range(n_resamples):
         starts = rng.integers(0, n - block + 1, size=n_blocks)
         index = (starts[:, None] + offsets[None, :]).ravel()[:n]
-        draws[draw] = peak_lag(_irf_from_rows(design[index], targets[index]), refine)[0]
+        draws[draw] = peak_lag(_irf_from_rows(design[index], targets[index]))[0]
 
     alpha = (1.0 - level) / 2.0
-    lo, hi = np.quantile(draws, [alpha, 1.0 - alpha])
+    # whole-step peaks, so the ends are draws, never a value between two steps
+    lo = max(float(np.quantile(draws, alpha, method="lower")) - 0.5, 0.0)
+    hi = float(np.quantile(draws, 1.0 - alpha, method="higher")) + 0.5
     return DelayEstimate(
         lag=lag,
         delay=lag * dt,
-        lo=float(lo) * dt,
-        hi=float(hi) * dt,
+        lo=lo * dt,
+        hi=hi * dt,
         censored=censored,
         peak_response=float(irf[round(lag)]),
         irf=irf,
