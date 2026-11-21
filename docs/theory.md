@@ -179,6 +179,7 @@ failures, when the tests were first written (names relative to `chc`):
 | `convex_port_hamiltonian.v` | `residual._critical_points`, `residual.convex_energy_certificate` | `test_formal_fields.py` |
 | `delay_ball.mac` | `delay.delay_design_loss` | `test_formal_estimation.py` |
 | `delay_estimate_bias.mac` | `irf.peak_lag` | `test_formal_estimation.py` |
+| `delay_interval_resolution.mac` | `irf.delay_estimate` | `test_formal_estimation.py, test_irf.py` |
 | `delay_margin.mac` | `delay.delay_margin` | `test_formal_estimation.py` |
 | `delayed_exposure_gate.mac` | `regret.delayed_network_certificate` | `test_formal_regret_b.py` |
 | `delayed_network_exposure.mac` | `regret.delayed_network_certificate` | `test_formal_regret_b.py` |

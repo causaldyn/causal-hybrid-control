@@ -860,10 +860,14 @@ class DelayOscillationTask:
     the row uninformative. That is also the case ``peak_lag(refine=True)`` exists for, so this task
     turns it on; it recovers ``0.947`` of a true ``1.0`` where the integer argmax can only say
     ``0.900``. The residual 5.3% is not noise -- it is the parabola's documented shrinkage, which
-    for a fraction ``f = 1/3`` predicts ``0.950``.
-    (5) The estimate lands **below** the truth, which by ``chc.delay.delay_ball`` is the
-    destabilising direction. It is harmless here only because that ball has 76% of relative slack;
-    on a plant with a tighter one the same 5.3% would matter.
+    for a fraction ``f = 1/3`` predicts ``0.950``. The interval does not read the refined peak: it
+    is the peak's step and half a step on each side, ``[0.75, 1.05]``, which holds the delay.
+    (5) The design lands **below** the truth, at ``0.769`` of it, which by ``chc.delay.delay_ball``
+    is the destabilising direction: the minimax over the interval leans to its short end, where
+    the loss rises linearly rather than as a square root. The interval holds the delay, so the
+    design stabilises the true plant with the rest of it. The width costs regret, ``0.11`` against
+    the oracle's ``0.57``; up to 1.3.1 the interval was ``[0.935, 0.958]``, beside the delay, and
+    the arm paid ``0.007``.
 
     The oracle's gain is the best of the grid: on its 400 gains the cost has one minimum, at
     0.7175, and 20 001 gains between that one's neighbours find 0.7199, 1.6e-5 cheaper, less than
