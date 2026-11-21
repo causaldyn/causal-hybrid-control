@@ -7,6 +7,16 @@ experimental may change in any minor release (`docs/api/index.md`).
 
 ## [Unreleased]
 
+### Changed
+
+- **`fit_causal_residual` warns where no two of its `periods` are one step apart.** Periods are
+  whole numbers of steps, and the cosines read every step of the span, a step no transition
+  starts in holding no score. Periods counted in a finer unit than the step, as days of a weekly
+  log, were read silently as a span that many times longer; the fit now logs a WARNING naming the
+  least spacing (`chc_event` `fit_period_spacing`). It does not refuse: a log in steps whose
+  transitions are never adjacent is read correctly so. A log with gaps of which some two periods
+  are one step apart reads without it, and no number moves.
+
 ### Documentation
 
 - `sensitivity_analysis`'s robustness value is shown to be the `R^2` that moves the estimate by

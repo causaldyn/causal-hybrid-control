@@ -1823,7 +1823,11 @@ def fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
             on ADR 0075's draws); where the noise is drawn afresh, the cosines' interval is 11 %
             wider. On three units of one
             cluster over 200 periods, which share a shock AR(0.9) and half their lever AR(0.7),
-            it covered 0.692 row by row and 0.934 by the period sums (ADR 0075).
+            it covered 0.692 row by row and 0.934 by the period sums (ADR 0075). Periods no two
+            of which are one step apart are read as given, each step between them holding no
+            score, and the fit logs a WARNING naming their least spacing: periods counted in a
+            finer unit than the step, as days of a weekly log, stretch the span the cosines read
+            by it.
         times: each transition's start time, ``N`` finite numbers, where ``known`` reads the time:
             the known physics is called, and each step is taken, from there. ``None`` starts every
             transition at ``t = 0``, which is right for a ``known`` that does not read the time and
@@ -2661,7 +2665,9 @@ def _start_times(times: ArrayLike, x: Array) -> Array:
 
 def _period_codes(periods: ArrayLike, rows: int) -> np.ndarray:
     """Each transition's period as steps from the log's first: whole numbers, one a transition,
-    two periods at least."""
+    two periods at least. Where no two of them are one step apart, a WARNING names the least
+    spacing: the cosines read every step of the span, a step no transition starts in holding no
+    score, and periods counted in a finer unit than the step stretch that span by the spacing."""
     steps = np.asarray(periods)
     if steps.shape != (rows,):
         raise ValueError(
@@ -2674,6 +2680,17 @@ def _period_codes(periods: ArrayLike, rows: int) -> np.ndarray:
         raise ValueError(
             "periods name one period: the cosines read the scores' dependence across the "
             "periods, and the sum of one period's leaves no spread across them to read"
+        )
+    least = int(np.diff(np.unique(steps)).min())
+    if least > 1:
+        _log.warning(
+            "no two of the periods are one step apart, the least spacing is %d: periods are "
+            "whole numbers of steps, and the cosines read the steps between as holding no score; "
+            "periods counted in a finer unit than the step, as days of a weekly log, stretch the "
+            "span the cosines read %d-fold, so give them in steps",
+            least,
+            least,
+            extra={"chc_event": "fit_period_spacing", "least_spacing": least},
         )
     return (steps - steps.min()).astype(np.int64)
 
