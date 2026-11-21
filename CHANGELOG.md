@@ -7,6 +7,20 @@ experimental may change in any minor release (`docs/api/index.md`).
 
 ## [Unreleased]
 
+### Added
+
+- **`Prescription.evaluate(interval="jackknife")`**, opt-in: both intervals read from the jackknife
+  over the units in place of the bootstrap's draws. Each unit is left out in turn and the
+  evaluation run again on the rest, each leave-out certified against `min_effective` scaled to the
+  windows it keeps; the spread is CV3 about the estimate and the interval Student's `t` with the
+  units less one (MacKinnon, Nielsen and Webb 2023), `degrees_of_freedom` the units less one,
+  `bootstrap` None, `settings.interval` in the record. A leave-out the certificate refuses refuses
+  the evaluation. On 2000 panels of 30 units of ten windows it covered 0.938 and 0.919 for the
+  plan's value on the two-state market and the one-state unit where the bootstrap covered 0.917
+  and 0.895, and 0.944 and 0.944 for the difference against 0.923 and 0.924, 1.08 to 1.13 times as
+  wide: the best of twelve readings measured, and still short of 0.95 for the value. The default
+  is unchanged. `chc.evaluation.UnitInterval` names the two readings. *Experimental* (ADR 0160).
+
 ### Changed
 
 - **A held barrier reads `infeasible` only at a first-order point.** `causal_plan`'s barrier rounds
@@ -108,6 +122,14 @@ experimental may change in any minor release (`docs/api/index.md`).
   `tr(W S)` 1.4 to 1.6 times high and takes the rest. That read keeps the size at 0.025 where the
   known covariance gives 0.045. `scripts/bench_dither_power.py` measures each step, and
   `validation/dither_hausman.mac` STEP 5d gives the contrast's closed-form standard error.
+- `Prescription.evaluate` states its unit bootstrap's coverage at 30 units of ten windows on 2000
+  panels a plant: 0.917 and 0.895 for the plan's value on the two-state market and the one-state
+  unit (Monte Carlo SE 0.006 to 0.007), 0.923 and 0.924 for the difference, the draws' spread 0.89
+  to 0.93 of the estimate's. The 500 panels it quoted, 0.914 and 0.880, are the first 500 of these,
+  reproduced to the bit. Student's `t` with the units less one, CR2 with it, the bootstrap-t and
+  the wild cluster bootstrap restricted to the value tested (Rademacher's and Webb's weights) were
+  measured on the same panels beside the corrections it named; none restored 0.95 for the plan's
+  value on either plant. Docs only; no value moves. Since 0.19.0.
 
 ## [1.3.1] — 2026-11-18
 

@@ -111,6 +111,7 @@ __all__ = [
     "LoggerComparison",
     "PlanEvaluation",
     "UnitBootstrap",
+    "UnitInterval",
     "certify_evaluation",
     "evaluate_plan",
     "fit_logger",
@@ -120,6 +121,9 @@ _log = logging.getLogger(__name__)
 
 EvaluationMethod = Literal["dr", "mis", "fqe", "pdis"]
 BootstrapReading = Literal["complete", "conditional", "inconclusive"]
+UnitInterval = Literal["bootstrap", "jackknife"]
+"""How :meth:`chc.decision.Prescription.evaluate` reads its intervals over the units: from draws
+of them with replacement, or from the jackknife that leaves each out in turn."""
 
 _Array = NDArray[np.float64]
 
@@ -365,7 +369,9 @@ class PlanEvaluation:
     :meth:`chc.decision.Prescription.evaluate` the interval is normal too, its spread read from a
     bootstrap over the units the episodes came from (``bootstrap``) rather than across episodes;
     on one unit's episodes it is Student's ``t`` with ``degrees_of_freedom`` the cosines the
-    episodes' influences were read across their time by, and ``bootstrap`` is ``None``.
+    episodes' influences were read across their time by, and ``bootstrap`` is ``None``; under its
+    ``interval="jackknife"`` it is Student's ``t`` with ``degrees_of_freedom`` the units less one,
+    its spread read from the jackknife over them, and ``bootstrap`` is ``None``.
 
     ``"pdis"`` normalises each step's weights to mean one, which makes its estimate a ratio, biased
     at order ``1 / n``. ``normalisation_bias`` is that order's bias under the model, for
@@ -393,7 +399,8 @@ class PlanEvaluation:
     # interval and ``interval`` were read from: filled by
     # :meth:`chc.decision.Prescription.evaluate`, which knows each episode's unit, and None from
     # :func:`evaluate_plan`, which takes its episodes as independent; on one unit's episodes
-    # ``versus_logger`` is read across their time as ``interval`` is, and ``bootstrap`` is None
+    # ``versus_logger`` is read across their time as ``interval`` is, and ``bootstrap`` is None;
+    # under the jackknife over the units both are read from it, and ``bootstrap`` is None
     versus_logger: LoggerComparison | None = None
     bootstrap: UnitBootstrap | None = None
     # "pdis": the first-order bias of its weights' normalisation under the model; None otherwise
@@ -2044,9 +2051,12 @@ def _evaluate_by_unit(
     resamples: int,
     seed: int,
     max_refused: float = 0.05,
+    interval: UnitInterval = "bootstrap",
 ) -> PlanEvaluation:
     """:func:`evaluate_plan` by ``"pdis"`` on the episodes ``x``, ``u`` of ``units``, beside the
-    plan against the logger on them, both intervals read from a bootstrap over the units.
+    plan against the logger on them, both intervals read from a bootstrap over the units, or under
+    ``interval="jackknife"`` from the jackknife over them (:func:`_jackknifed`), which reads no
+    draw and leaves ``resamples``, ``seed`` and ``max_refused`` unread.
 
     A unit's episodes are dependent through its state, so a draw takes as many units as there are,
     with replacement, and every episode of a unit drawn. Every step that reads the episodes runs
@@ -2061,7 +2071,8 @@ def _evaluate_by_unit(
 
     Raises:
         InfeasibleEvaluation: when the certificate refuses the episodes, or refuses all draws but
-            one, which leaves no spread to read.
+            one, which leaves no spread to read, or under the jackknife the episodes without one
+            of the units.
     """
     evaluation = _evaluate_plan(
         {"x": x, "u": u},
@@ -2077,6 +2088,21 @@ def _evaluate_by_unit(
     n, m = x.shape[-1], u.shape[-1]
     stages = _StageCost.steps(cost, n, m, plan.horizon)
     labels, members = np.unique(units, return_inverse=True)
+    if interval == "jackknife":
+        return _jackknifed(
+            evaluation,
+            x,
+            u,
+            labels,
+            members,
+            plan,
+            plant=plant,
+            stages=stages,
+            logger=logger,
+            smoothing=smoothing,
+            model_error=model_error,
+            min_effective=min_effective,
+        )
     rng = np.random.default_rng(seed)
     draws: list[tuple[float, float]] = []
     refusal: EvaluationCertificate | None = None
@@ -2156,6 +2182,97 @@ def _evaluate_by_unit(
                 accepted / resamples,
                 max_refused,
                 reading,
+            ),
+        )
+    )
+
+
+def _jackknifed(
+    evaluation: PlanEvaluation,
+    x: _Array,
+    u: _Array,
+    labels: NDArray[Any],
+    members: NDArray[np.int64],
+    plan: AffineSchedule,
+    *,
+    plant: Callable[[_Array, _Array], LinearGaussianPlant],
+    stages: tuple[_StageCost, ...],
+    logger: AffinePolicy | None,
+    smoothing: float | None,
+    model_error: float,
+    min_effective: float,
+) -> PlanEvaluation:
+    """``evaluation``, the plan's on every episode of the units ``labels``, with both intervals
+    read from the jackknife over the units, and the plan against the logger beside it.
+
+    Each unit is left out in turn with every episode of it, and every step that reads the episodes
+    runs again on the rest, as on a draw of the bootstrap: the model, the logger unless it is
+    given, the initial law, the smoothing, the certificate and both values. The certificate asks
+    of each leave-out the share of effective episodes it asked of the panel, ``min_effective``
+    scaled by the share of the episodes left, so a panel near its edge is not refused for being
+    one unit smaller. The spread is the jackknife's CV3, ``sqrt((G - 1) / G sum_g (v_g - v)^2)``
+    over the ``G`` leave-outs' values ``v_g`` about the estimate ``v``, and each interval is its
+    estimate plus or minus Student's ``t`` with ``G - 1`` degrees of freedom times it, widened by
+    the plan's model correction as :func:`evaluate_plan` widens its own: what MacKinnon, Nielsen
+    and Webb (*J. Econometrics* 232, 2023) advise with few clusters. It is at least the spread
+    about the leave-outs' mean, the jackknife's variance that Efron and Stein (*Ann. Statist.* 9,
+    1981) prove conservative in expectation for any statistic symmetric in independent units. The
+    difference's leave-outs are the difference within each. ``degrees_of_freedom`` is ``G - 1``;
+    ``bootstrap`` stays None.
+
+    Raises:
+        InfeasibleEvaluation: when the certificate refuses the episodes without one of the units:
+            the jackknife reads every leave-out, and one fewer is no jackknife.
+    """
+    n, m = x.shape[-1], u.shape[-1]
+    left_out = np.empty((labels.size, 2))
+    for k, label in enumerate(labels):
+        rows = np.flatnonzero(members != k)
+        xs, us = x[rows], u[rows]
+        model = plant(xs, us)
+        fitted = (
+            logger
+            if logger is not None
+            else fit_logger(xs[:, :-1].reshape(-1, n), us.reshape(-1, m))
+        )
+        certificate = _episode_certificate(
+            xs,
+            model,
+            fitted,
+            plan,
+            stages,
+            smoothing,
+            model_error,
+            min_effective * rows.size / x.shape[0],
+        )
+        if not certificate.certified:
+            raise InfeasibleEvaluation(
+                replace(
+                    certificate,
+                    reason=f"the certificate refused the episodes without unit {label}, and the "
+                    f"jackknife reads every unit's absence; {certificate.reason}",
+                )
+            )
+        weighted, _, _, correction = _episode_estimate(
+            xs, us, model, fitted, plan, stages, certificate.smoothing
+        )
+        value = weighted - correction
+        left_out[k] = value, value - _logged_cost(xs, us, stages)
+    logged = _logged_cost(x, u, stages)
+    difference = evaluation.value - logged
+    dof = labels.size - 1
+    estimates = np.array([evaluation.value, difference])
+    spread = np.sqrt(dof / labels.size * np.sum((left_out - estimates) ** 2, axis=0))
+    quantile = float(student.ppf(0.975, dof))
+    widened = model_error * abs(evaluation.model_correction)
+    half, half_difference = (quantile * float(deviation) + widened for deviation in spread)
+    return _warn_of_bias(
+        replace(
+            evaluation,
+            interval=(evaluation.value - half, evaluation.value + half),
+            degrees_of_freedom=float(dof),
+            versus_logger=LoggerComparison(
+                logged, difference, (difference - half_difference, difference + half_difference)
             ),
         )
     )

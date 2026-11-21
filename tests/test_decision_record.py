@@ -1031,12 +1031,40 @@ def test_a_prescription_s_evaluation_goes_to_json() -> None:
         "n_resamples": 20,
         "seed": 3,
         "max_refused": 0.05,
+        "interval": "bootstrap",
         "panel_sha256": panel.provenance.data_sha256,
         "clusters": None,
         "plan_sha256": _plan_digest(made.to_json()),
     }
     check = evaluation.logger_check
     assert (record["logger_check"] is None) == (check is None)
+
+
+def test_an_evaluation_by_the_jackknife_over_the_units_says_so_in_its_record() -> None:
+    """``interval="jackknife"`` reads Student's ``t`` with the units less one, no bootstrap, and
+    the record's settings name it; an interval of another name is refused before anything runs."""
+    panel = _market(zones=60)
+    made = prescribe(
+        panel,
+        levers=[Lever("incentive", lo=-2.0, hi=2.0, unit_cost=0.1)],
+        target=Target("supply", value=0.5),
+        adjustment=CausalGraph.from_edges([("incentive", "supply")]),
+        horizon=3,
+        dt=DT,
+        tolerance=0.5,
+        integrator="rk4",
+    )
+    evaluation = made.evaluate(panel, model_error=0.5, min_effective=30.0, interval="jackknife")
+    record = evaluation.to_json()
+    by_draws = made.evaluate(panel, model_error=0.5, min_effective=30.0, n_resamples=20)
+
+    assert (evaluation.bootstrap, evaluation.degrees_of_freedom) == (None, 59.0)
+    assert (record["bootstrap"], record["degrees_of_freedom"]) == (None, 59.0)
+    assert record["settings"]["interval"] == "jackknife"
+    assert evaluation.value == by_draws.value
+    assert evaluation.interval != by_draws.interval
+    with pytest.raises(DecisionError, match="interval must be one of"):
+        made.evaluate(panel, interval="wild")  # ty: ignore[invalid-argument-type]
 
 
 def _plan_digest(record: dict[str, Any]) -> str:
