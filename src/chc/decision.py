@@ -957,6 +957,20 @@ class DitherCheck:
     (``validation/dither_hausman.mac``): a small draw pays for the instrument's variance, and a
     draw of a tenth of the logger's spread needs about fifty times the transitions of one as large.
 
+    The two fits differ in what identifies the channel and in nothing else: the instrumented fit's
+    moment reads the states alone, and its drift holds the adjustment set's push, as the plan's
+    fit's does. A covariate that persists leans on the state, since its past pushed it, and a
+    drift on the states alone reads that lean into its slope: on the plant above at ``a = 0.9``,
+    ``b = 0.5``, ``c = 0.8``, ``d = s = sg = 1``, with ``w`` AR(0.9) and held by the graph, 0.154
+    of ``w``'s push over five transitions a unit (``validation/dither_persistence.mac``). Up to
+    1.3.1 the instrumented drift held nothing, and there the contrast rejected the right graph on
+    57 of 200 logs of 100 units at 5 %; holding the push, on 1. Under ``"rk4"`` that drift also
+    reached the channel, through RK4's growth factor (ADR 0157). On causaldyn-bench's
+    persistent-confounder world under ``"rk4"``, 400 units over 12 periods, the right graph's
+    contrast rejects at 5 % 0.035, 0.010, 0.040 and 0.030 of 200 panels at a persistence of 0, 0.5,
+    0.8 and 0.95 (0.000, 0.000, 0.085 and 0.265 up to 1.3.1): at most the level, and below it
+    beyond the Monte Carlo error at 0.5, where it rejects 0.09 at 10 % and 0.18 at 20 %.
+
     ``"void"``: the logger read nothing but the states and its draw, and the plan's fit conditions
     on the states alone: the levers are, to rounding, the nuisances' polynomial of the states plus
     a linear map of the draw. The two fits then draw the channel from one variation, the draw's,
@@ -2540,8 +2554,10 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
         dither: the column, or columns, holding the random draw the logger added to the levers,
             logged: drawn apart from everything the plant reads, at most given the states. Given,
             the channel is fitted a second time, with the draw as its instrument and the states
-            as its only covariates, never the adjustment set, which may hold a column the levers
-            move; and the plan's channel is read against it in the plan's own regret
+            as its moment's only covariates, never the adjustment set, which may hold a column
+            the levers move; its drift holds the adjustment set's push, as the plan's fit's does,
+            so the two fits differ in what identifies the channel alone (ADR 0157); and the
+            plan's channel is read against it in the plan's own regret
             (:class:`DitherCheck`, *experimental*). :attr:`Prescription.dither_check` holds the
             result, a rejection at 5 % is logged as a warning and named in the report. It reports;
             the plan, its fit and its certificate are those without it, bit for bit. A draw

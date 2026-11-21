@@ -2,6 +2,8 @@
 
 ``validation/dither_hausman.mac`` derives the adjusted channel's bias under an omitted fresh
 confounder, the contrast's null variance and its noncentrality, and the void case;
+``validation/dither_persistence.mac`` the lean a drift on the states alone reads of a covariate
+that persists, which the instrumented fit's drift holds;
 ``validation/dither_covariance.mac`` derives the matrix geometric mean, its value, the binding
 case at forty digits and the white dither's search bound. The tests that read them on the float code
 live beside the code they test.
@@ -11,12 +13,20 @@ from __future__ import annotations
 
 FORMAL_LINKS = {
     "chc.decision.DitherCheck": {
-        "cites": ("confounded_log_equivalence.mac", "dither_hausman.mac"),
+        "cites": (
+            "confounded_log_equivalence.mac",
+            "dither_hausman.mac",
+            "dither_persistence.mac",
+        ),
         "tests": (
             "test_dither_check.py::test_a_planted_confounder_is_rejected",
             "test_dither_check.py::test_a_logger_of_the_state_and_its_draw_alone_is_void",
+            "test_dither_check.py::"
+            "test_a_persistent_covariate_the_graph_holds_leaves_both_fits_one_drift",
             "misspecification/test_misspec_dither.py::test_size_on_a_graph_that_is_right",
             "misspecification/test_misspec_dither.py::test_power_on_a_confounder_the_graph_omits",
+            "misspecification/test_misspec_dither_persistence.py::"
+            "test_size_on_a_graph_that_holds_a_persistent_covariate",
         ),
     },
     "chc.experiment.dither_covariance": {
