@@ -5,7 +5,17 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
 experimental may change in any minor release (`docs/api/index.md`).
 
-## [Unreleased]
+## [1.4.0] — 2026-11-21
+
+A public status moves, so a minor release. A held barrier's rounds read `infeasible` only at a
+first-order point and `no_progress` where they stalled, and their penalty's ceiling is an exact
+count of growths. Fixes whose numbers move, each with its size below: `delay_estimate`'s `lo` and
+`hi` hold the delay; `prescribe(dither=)`'s check holds the adjustment set's push in its
+instrumented drift, so its p-value, cost, noise and share move wherever that set is not empty;
+`fixed_point` reads a float32 solve at its rounding as converged; the banded fold design solves
+the matrix it is given. One opt-in, experimental: `Prescription.evaluate(interval="jackknife")`.
+`fit_causal_residual` warns on periods no two of which are one step apart. The rest is
+documentation, each item with its measurement.
 
 ### Added
 
@@ -8855,6 +8865,7 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[1.4.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.4.0
 [1.3.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.3.1
 [1.3.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.3.0
 [1.2.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.2.0
