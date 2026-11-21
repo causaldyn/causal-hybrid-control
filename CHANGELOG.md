@@ -7,6 +7,20 @@ experimental may change in any minor release (`docs/api/index.md`).
 
 ## [Unreleased]
 
+### Added
+
+- **`Prescription.evaluate(interval="jackknife")`**, opt-in: both intervals read from the jackknife
+  over the units in place of the bootstrap's draws. Each unit is left out in turn and the
+  evaluation run again on the rest, each leave-out certified against `min_effective` scaled to the
+  windows it keeps; the spread is CV3 about the estimate and the interval Student's `t` with the
+  units less one (MacKinnon, Nielsen and Webb 2023), `degrees_of_freedom` the units less one,
+  `bootstrap` None, `settings.interval` in the record. A leave-out the certificate refuses refuses
+  the evaluation. On 2000 panels of 30 units of ten windows it covered 0.938 and 0.919 for the
+  plan's value on the two-state market and the one-state unit where the bootstrap covered 0.917
+  and 0.895, and 0.944 and 0.944 for the difference against 0.923 and 0.924, 1.08 to 1.13 times as
+  wide: the best of twelve readings measured, and still short of 0.95 for the value. The default
+  is unchanged. `chc.evaluation.UnitInterval` names the two readings. *Experimental* (ADR 0158).
+
 ### Documentation
 
 - `Prescription.evaluate` states its unit bootstrap's coverage at 30 units of ten windows on 2000

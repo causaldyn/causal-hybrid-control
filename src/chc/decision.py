@@ -89,6 +89,7 @@ from chc.evaluation import (
     LinearGaussianPlant,
     LoggerCheck,
     PlanEvaluation,
+    UnitInterval,
     _evaluate_across_time,
     _evaluate_by_unit,
     _logger_check_json,
@@ -1241,6 +1242,7 @@ class Prescription:
         n_resamples: int = 200,
         seed: int = 0,
         max_refused: float = 0.05,
+        interval: UnitInterval = "bootstrap",
     ) -> PlanEvaluation:
         """The schedule's expected cost over its horizon, estimated from ``panel`` before it is
         deployed, beside the cost of the policy that logged the panel:
@@ -1312,6 +1314,22 @@ class Prescription:
         to the value tested, with Rademacher's or Webb's weights, each left the plan's interval
         short of 0.95 on both plants.
 
+        ``interval="jackknife"`` reads both intervals from the jackknife over the units in place of
+        the draws: each unit is left out in turn and the evaluation run again on the rest, as on a
+        draw, each leave-out certified against ``min_effective`` scaled to the windows it keeps; a
+        leave-out it refuses refuses the evaluation. The spread is CV3, the leave-outs' about the
+        estimate, and each interval is Student's ``t`` with the units less one times it, widened by
+        the model's correction (MacKinnon, Nielsen and Webb, *J. Econometrics* 232, 2023):
+        :attr:`PlanEvaluation.degrees_of_freedom` is the units less one, ``bootstrap`` is ``None``,
+        and ``n_resamples``, ``seed`` and ``max_refused`` are not read. It runs one evaluation a
+        unit. On the 30-unit panels above it covered 0.938 and 0.919, the difference's 0.944 and
+        0.944, 1.08 to 1.13 times as wide as the bootstrap's; on 750 panels of 60 units, where the
+        bootstrap covered 0.932 and 0.900, the difference's 0.936 and 0.933, it covered 0.943 and
+        0.924, the difference's 0.956 and 0.948; and on 1000 panels of 60 units of ten windows of
+        a loop that keeps 98 % of its slower mode a step, 0.923 where the bootstrap covered 0.913.
+        It narrows the shortfall, the misses still where the estimate reads low, and does not close
+        it (ADR 0158).
+
         Near the certificate's edge a draw whose units start wider or weigh heavier than the
         panel's is refused, so the draws read are the narrow side of the spread: the intervals
         are then conditional on certification, and :attr:`~chc.evaluation.UnitBootstrap.reading`
@@ -1364,7 +1382,8 @@ class Prescription:
         Raises:
             NotIdentifiedError: if the effect is not identified, so there is no plan.
             DecisionError: on a ``time_zero`` other than ``"calendar"`` and ``"unit"``; fewer than
-                two resamples; a ``max_refused`` outside ``[0, 1)``; a plan made against driver
+                two resamples; a ``max_refused`` outside ``[0, 1)``; an ``interval`` other than
+                ``"bootstrap"`` and ``"jackknife"``; a plan made against driver
                 forecasts, whose plant changes with the step; a plan with a lever that follows its
                 logged rule of the state, which no open-loop schedule carries; a plan whose levers
                 were logged on a column outside its state, or whose record does not say; a
@@ -1372,7 +1391,7 @@ class Prescription:
                 keeps it at another level; or a logger that leaves a lever no spread given the
                 state.
             InfeasibleEvaluation: when the evaluation's certificate refuses, on the panel or on
-                every draw but one.
+                every draw but one, or under the jackknife on the panel without one of its units.
             PanelError: when a state's or a lever's column of ``panel`` does not hold real
                 numbers, as :func:`prescribe` refuses it.
         """
@@ -1387,6 +1406,10 @@ class Prescription:
             raise DecisionError(
                 f"max_refused={max_refused}: the share of refused draws above which the intervals "
                 "are inconclusive lies in [0, 1)"
+            )
+        if interval not in get_args(UnitInterval):
+            raise DecisionError(
+                f"interval must be one of {get_args(UnitInterval)}, got {interval!r}"
             )
         plan = self.plan
         if plan is None:
@@ -1520,6 +1543,7 @@ class Prescription:
                 resamples=n_resamples,
                 seed=seed,
                 max_refused=max_refused,
+                interval=interval,
             )
         if held:
             evaluation = _priced(evaluation, held_cost)
@@ -1537,6 +1561,7 @@ class Prescription:
                 "n_resamples": int(n_resamples),
                 "seed": int(seed),
                 "max_refused": float(max_refused),
+                "interval": interval,
                 "panel_sha256": panel.provenance.data_sha256,
                 "clusters": clusters,
                 "plan_sha256": _plan_sha256(self.to_json()),

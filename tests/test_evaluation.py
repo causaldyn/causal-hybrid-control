@@ -1313,6 +1313,122 @@ def test_the_bootstrap_counts_the_draws_it_read_and_says_whether_they_are_condit
         assert other.versus_logger == result.versus_logger
 
 
+def test_the_jackknife_leaves_each_unit_out_and_reads_cv3_on_t_of_the_units_less_one() -> None:
+    """Replayed by hand: each unit left out in turn is handed to ``evaluate_plan`` with a plant
+    fitted to the rest, its logger fitted, its smoothing chosen and ``min_effective`` scaled to the
+    windows kept. The spread is CV3 about the estimate on every unit, the interval Student's ``t``
+    with the units less one times it, the plan's model correction added as ``evaluate_plan`` adds
+    it; the difference's leave-outs are the difference within each. No draw is read."""
+    logger = AffinePolicy(LOGGER.gain, LOGGER.offset, np.eye(1))
+    x, u, units = _unit_windows(MARKET, logger, 12, 6, 5, np.random.default_rng(61))
+
+    def plant(xs: np.ndarray, us: np.ndarray) -> LinearGaussianPlant:
+        """The market's step fitted by least squares to the episodes given."""
+        z = np.concatenate([xs[:, :-1], us, np.ones_like(us)], axis=-1).reshape(-1, 4)
+        y = xs[:, 1:].reshape(-1, 2)
+        fit = np.linalg.lstsq(z, y, rcond=None)[0]
+        noise = np.cov(y - z @ fit, rowvar=False)
+        return LinearGaussianPlant(fit[:2].T, fit[2:3].T, fit[3], noise)
+
+    def logged(xs: np.ndarray, us: np.ndarray) -> float:
+        stage = np.einsum("eti,ij,etj->et", xs[:, :-1], Q, xs[:, :-1])
+        return float(np.mean(np.sum(0.5 * (stage + np.einsum("eti,ij,etj->et", us, R, us)), 1)))
+
+    def read(rows: np.ndarray) -> tuple[float, float, float]:
+        xs, us = x[rows], u[rows]
+        drawn = evaluate_plan(
+            {"x": xs, "u": us},
+            RAMP,
+            "pdis",
+            plant=plant(xs, us),
+            cost=COST,
+            model_error=0.5,
+            min_effective=5.0 * rows.size / units.size,
+        )
+        return drawn.value, drawn.value - logged(xs, us), drawn.model_correction
+
+    def jackknifed(resamples: int, seed: int) -> PlanEvaluation:
+        return _evaluate_by_unit(
+            x,
+            u,
+            units,
+            RAMP,
+            plant=plant,
+            cost=COST,
+            logger=None,
+            smoothing=None,
+            model_error=0.5,
+            min_effective=5.0,
+            resamples=resamples,
+            seed=seed,
+            interval="jackknife",
+        )
+
+    result = jackknifed(2, 0)
+    value, difference, correction = read(np.arange(units.size))
+    left_out = np.array([read(np.flatnonzero(units != k))[:2] for k in range(12)])
+    spread = np.sqrt(11 / 12 * np.sum((left_out - [value, difference]) ** 2, axis=0))
+    half = float(student.ppf(0.975, 11)) * spread + 0.5 * correction
+
+    comparison = result.versus_logger
+    assert comparison is not None
+    assert correction > 0.0
+    assert (result.bootstrap, result.degrees_of_freedom) == (None, 11.0)
+    assert result.value == pytest.approx(value, rel=1e-12, abs=0.0)
+    assert comparison.difference == pytest.approx(difference, rel=1e-12, abs=0.0)
+    for (lo, hi), centre, width in (
+        (result.interval, value, half[0]),
+        (comparison.interval, difference, half[1]),
+    ):
+        assert (lo + hi) / 2.0 == pytest.approx(centre, rel=1e-12, abs=0.0)
+        assert (hi - lo) / 2.0 == pytest.approx(width, rel=1e-9, abs=0.0)
+    assert jackknifed(200, 5) == result
+
+
+def test_the_jackknife_asks_each_leave_out_the_panels_share_and_refuses_on_any_refusal() -> None:
+    """The same panel at the certificate's edge, 12 units of eight windows. Asked for 0.95 of the
+    panel's effective windows, each leave-out is asked 0.95 of its own: each holds 0.99 to 1.01 of
+    the panel's share, so every one passes, where the panel's own threshold, a twelfth more than
+    their share, would refuse every one. At 0.999 a leave-out whose units start wider than the
+    panel's is refused, and with it the evaluation, naming the unit: the jackknife reads every
+    leave-out."""
+    logger = AffinePolicy(LOGGER.gain, LOGGER.offset, np.eye(1))
+    x, u, units = _unit_windows(MARKET, logger, 12, 8, 5, np.random.default_rng(51))
+
+    def effective(rows: np.ndarray) -> float:
+        starts = x[rows, 0]
+        initial = InitialLaw(starts.mean(axis=0), np.cov(starts, rowvar=False))
+        return certify_evaluation(
+            MARKET, logger, RAMP, "pdis", rows.size, smoothing=0.5, initial=initial
+        ).effective_samples
+
+    def jackknifed(min_effective: float) -> PlanEvaluation:
+        return _evaluate_by_unit(
+            x,
+            u,
+            units,
+            RAMP,
+            plant=lambda xs, us: MARKET,
+            cost=COST,
+            logger=logger,
+            smoothing=0.5,
+            model_error=0.0,
+            min_effective=min_effective,
+            resamples=2,
+            seed=0,
+            interval="jackknife",
+        )
+
+    edge = effective(np.arange(units.size))
+    shares = np.array([effective(np.flatnonzero(units != k)) for k in range(12)]) / (edge * 11 / 12)
+    assert 0.95 < shares.min() < 0.999
+    assert shares.max() * 11 / 12 < 0.95
+    assert jackknifed(0.95 * edge).degrees_of_freedom == 11.0
+    with pytest.raises(InfeasibleEvaluation, match="without unit") as refused:
+        jackknifed(0.999 * edge)
+    assert refused.value.certificate.samples == 88
+
+
 # ------------------------------------------------------------------- the normalisation's bias
 
 
