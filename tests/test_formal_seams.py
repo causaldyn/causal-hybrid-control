@@ -67,7 +67,7 @@ FORMAL_LINKS = {
     },
     "chc.dynamics_id._field_terms": {
         "cites": ("push_mean_variance.mac",),
-        "via": "fit_causal_residual",
+        "via": ("fit_causal_residual", "_fit_causal_residual"),
         "tests": (
             "test_field_terms_tube.py::test_the_field_s_error_is_the_delta_method_through_the_one_step_map",
         ),
