@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
 experimental may change in any minor release (`docs/api/index.md`).
 
+## [Unreleased]
+
+### Fixed
+
+- **`chc.games.fixed_point` reads a float32 solve at its rounding as converged.** `converged` was
+  `residual <= tol`, and the default `tol = 1e-6` is 8.4 float32 epsilons, below the rounding of a
+  relative residual: on the logs of `SharedStateMarket(seed=0..29)` 88 of 24,000 solves of the
+  drivers ended at up to 2.0e-6, 16.6 epsilons, and read False on drivers at the float64
+  equilibrium to rounding. The flag now reads the residual against `max(tol, 64 eps)`, `eps` the
+  solve's dtype's; in float64 that is `tol` for any `tol` from 1.4e-14 up. The iteration still
+  stops at `tol`, so no iterate, log or plan moves a bit. `SharedStateMarket` reads the flag in
+  place of its own floor of the same value (ADR 0156).
+
 ## [1.3.1] — 2026-11-18
 
 ### Fixed

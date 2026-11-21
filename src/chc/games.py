@@ -78,7 +78,14 @@ class EquilibriumSolution(eqx.Module):
 
     x: Array
     residual: Array  # ||x - T(x)|| / max(1, ||x||) at the returned point
-    converged: Array  # residual <= tol
+    converged: Array  # residual <= max(tol, _ROUNDING_ULPS epsilons of x's dtype)
+
+
+_ROUNDING_ULPS = 64
+"""Units of rounding of the solve's dtype at or below which a relative residual reads converged,
+whatever ``tol`` asks: in float32 the residual of a converged solve reached 16.6 of them, 2.0e-6,
+on the logs of ``SharedStateMarket(seed=0..29)``, above the default tolerance of 1e-6; in float64
+64 of them are 1.4e-14, and the tolerance binds."""
 
 
 def _relative_residual(step_gap: Array, scale: Array) -> Array:
@@ -159,12 +166,14 @@ def fixed_point(
 ) -> EquilibriumSolution:
     """Solve ``x = f(params, x)`` to a tolerance, differentiable in ``params`` (implicit, not tape).
 
-    ``tol`` is on the RELATIVE residual (see :func:`_relative_residual`). In float64 the default
-    sits far above the rounding floor; in float32 it does not: on the logs of
-    ``SharedStateMarket(seed=0..29)``, 400 blocks each and both payments, the logit congestion
-    solve's residual ended above 1e-6 on 88 of 24,000 blocks, at most 2.0e-6, 16.6 units of
-    rounding, and ``converged`` read False there. A caller that acts on the flag in float32 reads
-    the residual against that floor too, as :class:`chc.marketplace.SharedStateMarket` does.
+    ``tol`` is on the RELATIVE residual (see :func:`_relative_residual`). The iteration runs until
+    the residual is at most ``tol``, or for ``max_iter`` steps; ``converged`` reads it against
+    ``max(tol, 64 eps)``, ``eps`` the machine epsilon of ``x_init``'s dtype. In float64 that is
+    ``tol`` down to 1.4e-14. In float32 the residual of a solve that sits on the equilibrium cannot
+    fall below its own rounding: on the logs of ``SharedStateMarket(seed=0..29)``, 400 blocks each
+    and both payments, the logit congestion solve ended above 1e-6 on 88 of 24,000 blocks, at most
+    2.0e-6, 16.6 epsilons: read against ``tol`` alone, the flag was False on all of them. The
+    returned ``x`` does not depend on the floor: such a solve iterates to ``max_iter`` as before.
     Reverse-mode only: ``custom_vjp`` defines no JVP, so ``jax.jacfwd`` through the solve will fail.
     The gradient is the exact one at the fixed point, independent of how many iterations the forward
     solve took -- which is what makes the tolerance-based ``lax.while_loop`` usable at all, since
@@ -172,7 +181,8 @@ def fixed_point(
     """
     x = _solve(f, params, x_init, tol, max_iter)
     residual = _relative_residual(f(params, x) - x, x)
-    return EquilibriumSolution(x=x, residual=residual, converged=residual <= tol)
+    floor = _ROUNDING_ULPS * float(jnp.finfo(x.dtype).eps)
+    return EquilibriumSolution(x=x, residual=residual, converged=residual <= max(tol, floor))
 
 
 def softmax_congestion_equilibrium(

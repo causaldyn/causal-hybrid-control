@@ -105,15 +105,6 @@ _DITHER_STREAM = zlib.crc32(b"dither") | 1 << 31
 """The tag folded into a logged block's key for its dither's signs: at least ``2**31``, past the
 block's own children, so the published draws of the block do not move."""
 
-_SOLVE_TOL = 1e-6
-"""The relative residual :func:`chc.games.softmax_congestion_equilibrium` solves to by default."""
-
-_ROUNDING_ULPS = 64
-"""Units of rounding below which the market reads an equilibrium solve as converged, whatever its
-flag says: in float32 the residual of a converged solve reaches 16.6 of them, 2.0e-6, above the
-tolerance of 1e-6, on 88 of the 24,000 blocks of the logs of markets 0-29 (400 blocks each, both
-payments); in float64 the tolerance binds."""
-
 _BISECTION_STEPS = 64
 """Bisection steps for the per-driver logging policy's total: past float64's resolution."""
 
@@ -177,19 +168,19 @@ class SharedStateMarket:
         read 11.43 rides where the equilibrium completes 12.
 
         Raises:
-            RuntimeError: where the solve's relative residual ends above its tolerance of 1e-6,
-                or above ``_ROUNDING_ULPS`` units of rounding where that is more, inside a trace
-                too (``equinox.error_if``): the drivers it would return are not an equilibrium.
+            RuntimeError: where the solve ends unconverged (:func:`chc.games.fixed_point`: its
+                relative residual above 1e-6, or above 64 epsilons of its dtype where that is
+                more), inside a trace too (``equinox.error_if``): the drivers it would return are
+                not an equilibrium.
         """
         kappa = self.beta * self.congestion
         damping = 0.5 if kappa < 6.0 else congestion_damping(self.beta, self.congestion)
         solved = softmax_congestion_equilibrium(
             attract, u, self.congestion, self.mass, self.beta, damping=damping
         )
-        floor = max(_SOLVE_TOL, _ROUNDING_ULPS * float(jnp.finfo(solved.x.dtype).eps))
         return eqx.error_if(
             solved.x,
-            solved.residual > floor,
+            jnp.logical_not(solved.converged),
             f"the market's equilibrium solve did not converge at damping {damping:.3g}"
             f" (beta*congestion = {kappa:.3g}): its drivers are not an equilibrium",
         )

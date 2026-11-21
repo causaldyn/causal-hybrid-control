@@ -1,5 +1,6 @@
 """Game primitives: simplex projection, certified congestion equilibrium, Stackelberg allocation."""
 
+import importlib
 import math
 
 import jax
@@ -24,6 +25,13 @@ from chc.research.games import (
     equilibrium_monotonicity_certificate,
     equilibrium_transfer_certificate,
 )
+
+# Public as jax.enable_x64 from jax 0.8.0; the floor, 0.4.30, has only jax.experimental.enable_x64,
+# which later releases deprecate.
+if hasattr(jax, "enable_x64"):
+    enable_x64 = jax.enable_x64
+else:  # pragma: no cover - the lowest supported jax
+    enable_x64 = importlib.import_module("jax.experimental").enable_x64
 
 
 @pytest.fixture(scope="module")
@@ -71,6 +79,41 @@ def test_equilibrium_reports_failure_instead_of_returning_a_non_equilibrium() ->
     assert not bool(solution.converged)
     assert float(solution.residual) > 0.1  # relative: the absolute gap is 3.2 on a mass of 6
     assert congestion_contraction_modulus(25.0, 8.0) < 0.0  # and the certificate refuses it
+
+
+def test_a_float32_solve_at_its_rounding_reads_converged() -> None:
+    """In float32 a relative residual stops a few epsilons above zero, 1.2e-7 each: on the 400
+    blocks ``SharedStateMarket(seed=7)`` logs with a dither of 0.3, nine solves of the drivers ended
+    at 8.6 to 14.4 epsilons, above the default tolerance of 1e-6, and ``converged`` read False on
+    drivers within 7.3 epsilons of the float64 equilibrium. The flag reads the residual against 64
+    epsilons of the dtype where that is more than ``tol``. A solve that 2-cycles still reads False.
+    """
+    market = SharedStateMarket(seed=7)
+    with enable_x64(False):
+        logs = market.generate_logs(400, jax.random.key(12), dither=0.3)
+        base_demand, base_attract = market._base()
+        attract = base_attract * logs["demand"] / base_demand
+
+        def solve(a: jnp.ndarray, u: jnp.ndarray, tol: float = 1e-6):
+            return softmax_congestion_equilibrium(
+                a, u, market.congestion, market.mass, market.beta, tol=tol
+            )
+
+        solved = jax.vmap(solve)(attract, logs["u"])
+        cycling = softmax_congestion_equilibrium(
+            jnp.array([1.0, 0.5, 0.2]), jnp.zeros(3), congestion=8.0, mass=6.0, beta=25.0
+        )
+    assert solved.x.dtype == cycling.x.dtype == jnp.float32
+    floored = np.flatnonzero(np.asarray(solved.residual) > 1e-6)
+    assert floored.size > 0  # the float64 default is out of float32's reach on this log
+    assert bool(jnp.all(solved.converged))
+    assert not bool(cycling.converged)
+    exact = jax.vmap(lambda a, u: solve(a, u, 1e-14).x)(
+        jnp.asarray(attract[floored], jnp.float64), jnp.asarray(logs["u"][floored], jnp.float64)
+    )
+    drivers = np.asarray(solved.x[floored], np.float64)
+    error = np.linalg.norm(drivers - np.asarray(exact), axis=1) / np.linalg.norm(exact, axis=1)
+    assert np.max(error) <= 16 * float(jnp.finfo(jnp.float32).eps)
 
 
 _ATTRACT = jnp.array([1.0, 0.5, 0.2, -0.4])
