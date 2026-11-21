@@ -1304,10 +1304,13 @@ class Prescription:
         with it, so the misses fall where it reads low: on panels of 60 units of five windows,
         no draw refused, the plan's interval covered 0.925 on a two-state market (800 panels) and
         0.902 on one state (757 panels), the difference's 0.945 and 0.916. On 30 units of ten
-        windows they covered 0.914 and 0.880 (500 panels), the difference's 0.916 and 0.928, and
-        the draws' spread read 0.83 to 0.87 of the estimate's. A BCa interval over units, a log or
-        square-root transform of the cost, Hall's skewness correction and the logged policy's
-        fitted influence each left one of these four short of 0.95.
+        windows they covered 0.917 and 0.895 (2000 panels, Monte Carlo SE 0.006 to 0.007), the
+        difference's 0.923 and 0.924, and the draws' spread read 0.89 to 0.93 of the estimate's.
+        A BCa interval over units, a log or square-root transform of the cost, Hall's skewness
+        correction, the logged policy's fitted influence, Student's ``t`` with the units less one
+        (0.928 and 0.908), CR2 with it, the bootstrap-t, and the wild cluster bootstrap restricted
+        to the value tested, with Rademacher's or Webb's weights, each left the plan's interval
+        short of 0.95 on both plants.
 
         Near the certificate's edge a draw whose units start wider or weigh heavier than the
         panel's is refused, so the draws read are the narrow side of the spread: the intervals

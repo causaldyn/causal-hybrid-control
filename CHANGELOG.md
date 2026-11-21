@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
 experimental may change in any minor release (`docs/api/index.md`).
 
+## [Unreleased]
+
+### Documentation
+
+- `Prescription.evaluate` states its unit bootstrap's coverage at 30 units of ten windows on 2000
+  panels a plant: 0.917 and 0.895 for the plan's value on the two-state market and the one-state
+  unit (Monte Carlo SE 0.006 to 0.007), 0.923 and 0.924 for the difference, the draws' spread 0.89
+  to 0.93 of the estimate's. The 500 panels it quoted, 0.914 and 0.880, are the first 500 of these,
+  reproduced to the bit. Student's `t` with the units less one, CR2 with it, the bootstrap-t and
+  the wild cluster bootstrap restricted to the value tested (Rademacher's and Webb's weights) were
+  measured on the same panels beside the corrections it named; none restored 0.95 for the plan's
+  value on either plant. Docs only; no value moves. Since 0.19.0.
+
 ## [1.3.1] — 2026-11-18
 
 ### Fixed
