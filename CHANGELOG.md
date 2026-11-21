@@ -17,6 +17,17 @@ experimental may change in any minor release (`docs/api/index.md`).
   transitions are never adjacent is read correctly so. A log with gaps of which some two periods
   are one step apart reads without it, and no number moves.
 
+### Fixed
+
+- **`chc.games.fixed_point` reads a float32 solve at its rounding as converged.** `converged` was
+  `residual <= tol`, and the default `tol = 1e-6` is 8.4 float32 epsilons, below the rounding of a
+  relative residual: on the logs of `SharedStateMarket(seed=0..29)` 88 of 24,000 solves of the
+  drivers ended at up to 2.0e-6, 16.6 epsilons, and read False on drivers at the float64
+  equilibrium to rounding. The flag now reads the residual against `max(tol, 64 eps)`, `eps` the
+  solve's dtype's; in float64 that is `tol` for any `tol` from 1.4e-14 up. The iteration still
+  stops at `tol`, so no iterate, log or plan moves a bit. `SharedStateMarket` reads the flag in
+  place of its own floor of the same value (ADR 0157).
+
 ### Documentation
 
 - `sensitivity_analysis`'s robustness value is shown to be the `R^2` that moves the estimate by
@@ -35,6 +46,14 @@ experimental may change in any minor release (`docs/api/index.md`).
   two-point law, and the two-step number `tests/test_evaluation.py` pins, 0.006124667009156650510,
   as one Gaussian integral over the path in exact rationals. `value` stays the self-normalised
   estimate, with no bias-corrected field (ADR 0155).
+- `DitherCheck` and ADR 0139 say why the check's power sits below the one-degree closed form
+  (0.39 and 0.875 against 0.64 and 0.975 at `c = 0.15` and `0.27`). On 400 logs each the
+  contrast followed the closed form, and the channel's level alone rejected 0.60 and 0.99. Priced
+  in the plan's regret over all four parameters, with their covariance known, the test rejected
+  0.54 and 0.905. Reading that covariance off the one log, as the largest of three reads, reads
+  `tr(W S)` 1.4 to 1.6 times high and takes the rest. That read keeps the size at 0.025 where the
+  known covariance gives 0.045. `scripts/bench_dither_power.py` measures each step, and
+  `validation/dither_hausman.mac` STEP 5d gives the contrast's closed-form standard error.
 
 ## [1.3.1] — 2026-11-18
 

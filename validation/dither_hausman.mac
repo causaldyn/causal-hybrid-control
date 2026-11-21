@@ -25,7 +25,8 @@
      STEP 5  numbers: a draw of a tenth of the logger's spread against one as large, at d = sg = 1,
              needs 50.5 times the transitions; the calibration test's plant, a = 9/10, b = 1/2,
              d = s = sg = 1 on 500 transitions, its noncentrality and the one-degree power at the
-             two confounders it plants.
+             two confounders it plants; and the contrast's mean and standard error over those 500
+             transitions that scripts/bench_dither_power.py studentises by.
 
    Run: timeout 300 maxima --very-quiet -Q -b validation/dither_hausman.mac */
 
@@ -101,3 +102,12 @@ for cc in [3/20, 27/100] do block([nl : float(500*subst(append(plant, [c = cc]),
 print("STEP 5c the test's planted c = 27/100 has 500 lambda/n of",
       float(500*subst(append(plant, [c = 27/100]), lam1)), "at the fixed alternative",
       verdict(float(500*subst(append(plant, [c = 27/100]), lam1)) > 15))$
+/* the difference is the instrumented channel less the adjusted one, so its mean is -beta0; at the
+   fixed alternative its variance a transition is V1, which at d = s = sg = 1 is (2 + 5 c^2)/4 */
+V1plant : ratsimp(subst(plant, V1))$
+print("STEP 5d n Var(difference) at d = s = sg = 1:", V1plant,
+      verdict(ratsimp(V1plant - (2 + 5*c^2)/4) = 0 and ratsimp(subst(c = 0, V1plant) - subst(plant, V0)) = 0))$
+for case in [[0, 0.03162277660168379], [3/20, 0.0325], [27/100, 0.03438386249390839]] do
+  block([cc : case[1], se : float(sqrt(subst(c = case[1], V1plant)/500))],
+    print("STEP 5d c =", cc, ": mean", float(-subst(append(plant, [c = cc]), beta0)), ", standard error",
+          se, verdict(abs(se - case[2]) < 1e-15)))$

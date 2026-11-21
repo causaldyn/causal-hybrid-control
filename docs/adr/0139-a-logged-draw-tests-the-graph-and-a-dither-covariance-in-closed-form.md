@@ -9,7 +9,8 @@ rows now hold those. The stream: log `r`, for `r` from 0 to 399, is
 `numpy.random.default_rng(r)`, which draws the 100 units' first states and then, each of the 6
 periods, the confounder, the logged draw and the plant's noise together as
 `standard_normal((3, 100))`, with `d = 1`, the empty graph and float64; the first 60 and 40 of its
-logs give the old rows back.
+logs give the old rows back. Amended 2026-11-21: why those two rows sit below the one-degree
+closed form is measured, after the table below.
 
 ## Context
 
@@ -93,6 +94,34 @@ weight. It has no answer for a dither that moves several levers together.
   | `c = 0.5` | 20 | 1.0 | 1.000 |
   | `c = 0.8` | 10 | 1.0 | 1.000 |
   | `c = 1.2` | 10 | 0.9 | 1.000 |
+
+  Why the `c = 0.15` and `c = 0.27` rows sit below the closed form was measured on the same 400
+  logs (`scripts/bench_dither_power.py`). Each log's contrast was tested four more ways at 5 %,
+  each step one change towards the check:
+
+  | Test | `c = 0` | `c = 0.15` | `c = 0.27` |
+  |---|---|---|---|
+  | One-degree closed form at the fixed alternative (`dither_hausman.mac` STEP 5b) | 0.05 | 0.64 | 0.975 |
+  | The channel's level alone, by the closed form's standard error (STEP 5d) | 0.0525 | 0.600 | 0.990 |
+  | The same, by its spread over the logs | 0.045 | 0.600 | 0.990 |
+  | The plan's regret over all four parameters, by their covariance over the logs | 0.045 | 0.5425 | 0.905 |
+  | The same, by the check's read at its mean over the logs | 0.025 | 0.3275 | 0.810 |
+  | The check, by its own read | 0.025 | 0.3925 | 0.875 |
+
+  The Monte Carlo standard errors are at most 0.025. The contrast follows the closed form: its
+  level averaged -0.0732 and -0.1338 against -0.075 and -0.135, with a spread of 0.0326 and 0.0339
+  against 0.0325 and 0.0344, and the three other parameters averaged within one standard error of
+  zero. Two costs separate the closed form from the check:
+  - **The regret metric.** The check prices the difference over the channel's level and slope
+    and the drift's two parameters, weighed by the plan's regret. Only the level carries the bias.
+    With the covariance known, that costs 0.06 at `c = 0.15` and 0.085 at `c = 0.27`.
+  - **The read.** The check reads the covariance off its one log, as the largest of three reads:
+    two ways (chosen on about 22 % of the logs), the units alone (52 %) and the 5 periods alone
+    at their CR1 factor (26 %). On average that reads `tr(W S)` 1.42, 1.58 and 1.58 times its
+    spread over the logs, at the three `c`. It costs 0.15 and 0.03, and it halves the size. The
+    read's spread from log to log does not cost power: at its mean the check rejects less.
+
+  The read is the check's margin on its size. Its price is the power that the table shows.
 
   The test's power is in the plan's regret metric, not in the channel's own distance. A stronger
   confounder moves the plan as well as the channel, so power is not monotone in `c` on one log: on
