@@ -22,8 +22,8 @@ experimental may change in any minor release (`docs/api/index.md`).
   curve that starts convex the plan keeps that status, not the relaxed plan's. Of 293 plans held
   at a barrier in the library's planning tests, six move from `infeasible` to `no_progress`, five
   of them the same plan as before, and no status moves to or from `converged`; under
-  `outer="safeguarded"` the two integrator plans that read `infeasible` on 7 certified steps of 12
-  now read `no_progress` on 8. A true infeasibility can move as well: on a position held at
+  `outer="safeguarded"`, 13 of the 100 plans of the misspecification barrier tests do, among them
+  two integrator plans that read `infeasible` on 7 certified steps of 12 and now `no_progress` on 8. A true infeasibility can move as well: on a position held at
   relative degree 2, the lockfile's jax ends `no_progress`, jax 0.4.30 `infeasible`, and the
   audit certifies no step either way.
 - **The rounds' penalty ceiling is a count of growths.** They gave up where the penalty times ten

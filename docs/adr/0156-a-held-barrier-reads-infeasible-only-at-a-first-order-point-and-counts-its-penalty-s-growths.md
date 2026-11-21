@@ -101,6 +101,13 @@ certified steps, 73 to a costlier one (by up to 43 %), 7 within 1e-9, 2 to more 
 `infeasible` now end on 8, `no_progress`, at a stationarity of 0.84: the eighth growth moved them
 (13 093 descent steps where they took 9 370), and the rule read the stall.
 
+The misspecification barrier tests, 100 plans, each solved under `"safeguarded"` by both rules:
+13 move from `infeasible` to `no_progress`, 10 of them the same plan, at a stationarity of 0.62
+to 1.0; nothing else changes status. The count moves 8 distinct plans there, two of them to more
+certified steps (7 to 8 above, 10 to 11) and one to fewer, 27 to 26 at a cost 0.59 % lower:
+under the safeguarded rule the eighth growth is not a gain plan by plan either, only the growth
+the stated ceiling allows.
+
 ## The far point: an open item
 
 The diagnosis proposed that a round's objective and the shortfall read after it differ, since a
