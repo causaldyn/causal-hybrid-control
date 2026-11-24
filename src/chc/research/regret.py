@@ -193,7 +193,10 @@ def regret_scaling(
     makes that visible. It shrinks to 0 as ``eps`` does; ``ce_explicit_constant_certificate`` gives
     the explicit radius ``rho`` inside which it is 0 by construction, and a safeguarded policy
     (fall back to a known stabilising gain when the checkable Lyapunov test fails) is what restores
-    an unconditional finite expectation.
+    an unconditional finite expectation. Jedra and Proutiere (AISTATS 2022, Theorem 1) prove an
+    expected regret of ``O(sqrt(T) log T)`` for a certainty-equivalent policy with such a fallback,
+    switched by the growth of the state's energy rather than by a Lyapunov test, and with the
+    gain's norm capped; the Lyapunov-test variant is not proved here.
 
     WHY MEDIANS. Under a Gaussian model error the mean regret is infinite even conditional on
     stability: the spectral radius of the closed loop has a positive density at 1, where the regret
@@ -419,7 +422,9 @@ def information_lower_bound_certificate(
 
     and ``van_trees_action_floor`` is that floor. On the REGRET it is a floor only once multiplied
     by a curvature no draw of ``b`` falls below: the prior's least, ``rr`` on a prior over the
-    whole line. Multiplied by the curvature at one point, ``(b^2+rr)``, it is a LOCAL floor, whose
+    whole line. That is the device Lee, Ziemann, Tsiamis, Sandberg and Matni use on the excess cost
+    of an LQ controller designed from data (CDC 2023; arXiv 2303.15637 v1, eq. (9) and Lemma 2.2).
+    Multiplied by the curvature at one point, ``(b^2+rr)``, it is a LOCAL floor, whose
     limit is ``C sigma^2/V_id``: the SAME constant, with the unbiasedness hypothesis and the delta
     method both deleted, but not a bound at a finite prior width. There a Bayes estimator, which
     weighs its error by the curvature at each draw, beats it: at a prior ``N(3, 1)``, ``rr = 0.5``
@@ -5177,9 +5182,11 @@ def bandit_causal_certificate(
     so cumulative regret grows like ``log T`` (sublinear); a **confounded** one has err^2 -> beta^2
     (systematic), a per-round floor, so cumulative regret is linear in ``T``. The doubling
     ratio ``cum(T)/cum(T/2)`` separates them: ``-> 1`` (log) vs ``-> 2`` (linear). Scope: the
-    ``O(log T)`` rate is specific to this scalar, persistently-identified setting -- NOT universal
-    for adaptive control, where uninformative systems admit ``sqrt(T)`` lower bounds
-    (Simchowitz-Foster; Ziemann et al.). The content is the deconfounded-vs-confounded separation.
+    ``O(log T)`` rate needs a persistently-identified setting -- Jedra and Proutiere (AISTATS 2022,
+    Theorem 3) prove it in expectation for matrix LQ control with only ``B`` unknown and
+    ``K* K*'`` positive definite -- and is NOT universal for adaptive control, where uninformative
+    systems admit ``sqrt(T)`` lower bounds (Simchowitz-Foster; Ziemann and Sandberg, IEEE TAC
+    2025). The content is the deconfounded-vs-confounded separation.
     """
     coeff = xt**2 * (rr - b_true**2) ** 2 / (rr + b_true**2) ** 3  # per-round regret / error^2
     half = n_rounds // 2  # last two checkpoints are T/2 and T, an exact horizon doubling

@@ -105,11 +105,14 @@ def certainty_equivalence_gap(
 
     Read as ``x0' D x0``, where ``D = P_K_hat - P*`` solves the Lyapunov equation
     ``D = (A - B K_hat)' D (A - B K_hat) + dK' (R + B' P* B) dK`` with ``dK = K_hat - K*``
-    (derived in ``validation/ce_gap_cost_difference.mac``). The forcing is positive semi-definite,
-    so the gap is a sum of non-negative terms and keeps its relative accuracy as it shrinks. The
-    difference of the two costs, each of order ``x0' P* x0``, loses every digit once the gap falls
-    below ``eps x0' P* x0``: on a 3-state plant with each entry of ``B`` off by ``1e-8`` it read
-    ``0.0`` against a true ``2.15e-16``, and ``-4.4e-15`` against ``3.1e-15`` at ``3.8e-8``.
+    (derived in ``validation/ce_gap_cost_difference.mac``): the cost-difference lemma of Fazel, Ge,
+    Kakade and Mesbahi (ICML 2018; Lemma 10 of the supplementary material and of arXiv 1801.05039
+    v3) at ``K = K*``, where the advantage's cross term vanishes. The forcing is positive
+    semi-definite, so the gap is a sum of non-negative terms and keeps its relative accuracy as it
+    shrinks. The difference of the two costs, each of order ``x0' P* x0``, loses every digit once
+    the gap falls below ``eps x0' P* x0``: on a 3-state plant with each entry of ``B`` off by
+    ``1e-8`` it read ``0.0`` against a true ``2.15e-16``, and ``-4.4e-15`` against ``3.1e-15`` at
+    ``3.8e-8``.
     """
     k_hat, _ = dlqr(a_hat, b_hat, q, r)
     k_star, p_star = dlqr(a, b, q, r)
@@ -490,7 +493,8 @@ def adaptive_exploration_certificate(
     ``Theta(T)``; the static ``v*`` (:func:`optimal_exploration_certificate`) over-explores.
     SCOPE: the ``t^{-1/2}`` schedule,
     ``sqrt(T)`` rate and van-Trees ``sqrt(T)`` lower bounds are KNOWN in adaptive LQR
-    (Ziemann-Sandberg; Wagenmaker et al.); the FULL minimax constant is no longer open --
+    (Ziemann and Sandberg, IEEE TAC 2025, arXiv 2201.01680; Wagenmaker et al.); the FULL minimax
+    constant is no longer open --
     :func:`minimax_exploration_certificate` proves it over ALL policies and shows this schedule pays
     a factor sqrt(2) over that floor. Conditions: ``m0=O(1)``; exploitation adds no identifying
     information; exploration information is linear in ``v_t`` (else greedy need not be
