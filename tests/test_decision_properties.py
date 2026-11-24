@@ -202,10 +202,14 @@ def test_to_json_round_trips_through_the_stdlib(lo: float, width: float, target:
 # ---- provenance: a fingerprint of the data, not of how the dictionary was typed ----
 
 
+# `deadline=None`: each example builds three panels, and building one reads the installed version
+# from package metadata on disk. On a loaded CI runner one example took 509 ms against the 200 ms
+# default and passed on replay: a measurement of the runner, not of the fingerprint.
 @given(
     values=st.lists(finite(-10.0, 10.0), min_size=6, max_size=60),
     reverse=st.booleans(),
 )
+@settings(deadline=None)
 def test_fingerprint_ignores_column_order_and_notices_a_changed_value(
     values: list[float], reverse: bool
 ) -> None:
