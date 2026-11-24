@@ -148,3 +148,43 @@ resM : expand( bfloat(lhsM - rhsM) )$
 print("STEP 8 matrix identity residual (max |entry| over kk1, kk2 free) =",
       lmax(map(lambda([x], abs(float(subst([kk1 = 3, kk2 = -2], x)))), flatten(args(resM)))),
       " (0 up to the precision of P: EXACT for every gain, with no smallness anywhere)")$
+
+print("=== STEP 9: where the CE gain first fails, EXACTLY, on three scalar plants ===")$
+/* The certificate's empirical radius is the least |dB| at which a CE gain fails to stabilise the
+   TRUE plant: no gain exists, or |a - b khat| >= 1.  On a scalar plant every crossing of
+   a - b khat(bh) = sg, sg = +-1, is a root of one polynomial: the crossing fixes the model's
+   Riccati root linearly, ph = (a - sg) r/(a b bh - (a - sg) bh^2), and ph must solve the DARE.
+   The DARE's two roots multiply to -q r/bh^2 < 0, so a crossing is a real root with ph > 0, and
+   realroots (Sturm sequences) finds them all.  Where |a| >= 1, bh = 0 is the other failure: there
+   (a, bh) is not stabilisable.  The first unstable radius on a side is the nearest failure there. */
+fpprec : 40$
+dare_s(a, bh, q, r, p) := bh^2*p^2 + (r*(1 - a^2) - q*bh^2)*p - q*r$
+failures(a, b, q, r) := block([out : [], ph, rts],
+  for sg in [1, -1] do
+    if a - sg # 0 then (
+      ph : (a - sg)*r/(a*b*bh - (a - sg)*bh^2),
+      rts : map(rhs, realroots(num(ratsimp(dare_s(a, bh, q, r, ph))), 10^-45)),
+      for x in rts do
+        if x # 0 and subst(bh = x, a*b*bh - (a - sg)*bh^2) # 0 and subst(bh = x, ph) > 0
+        then out : cons(x, out)),
+  if abs(a) >= 1 then out : cons(0, out),
+  out)$
+pstab_s(a, bh, q, r) := block([c1 : r*(1 - a^2) - q*bh^2],
+  (-c1 + sqrt(c1^2 + 4*bh^2*q*r))/(2*bh^2))$
+g_true(a, b, q, r, bh) := block([ph : pstab_s(a, bh, q, r)], a - b*a*bh*ph/(r + bh^2*ph))$
+for pl in [["A", 1, 1, 1, 1], ["B", 6/5, 1/2, 1, 1], ["C", 1/2, 1, 1, 1/10]] do block(
+  [nm : pl[1], a : pl[2], b : pl[3], q : pl[4], r : pl[5], fs, side, radius : inf],
+  fs : failures(a, b, q, r),
+  print("STEP 9", nm, ": a, b, q, r =", a, b, q, r, "  failures at bh =", map(bfloat, fs)),
+  for s in [1, -1] do (
+    side : inf,
+    for x in fs do if s*(x - b) > 0 and abs(x - b) < side then side : abs(x - b),
+    if side = inf then print("   side", s, ": the loop never fails")
+    else block([half, past],
+      radius : min(radius, side),
+      half : bfloat(abs(g_true(a, b, q, r, b + s*side/2))),
+      past : bfloat(abs(g_true(a, b, q, r, b + s*side*(1 + 10^-6)))),
+      print("   side", s, ": first failure at |dB| =", bfloat(side),
+            "  |a - b khat| halfway there =", half, " just past it =", past,
+            if half < 1 and past >= 1 then "(stable before, unstable after)" else "(FAIL)"))),
+  print("STEP 9", nm, ": the first unstable radius |dB| =", bfloat(radius)))$

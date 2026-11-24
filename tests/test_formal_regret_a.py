@@ -114,6 +114,7 @@ FORMAL_LINKS = {
         "tests": (
             "test_ce_constants_are_the_ones_the_riccati_solution_defines",
             "test_ce_controller_inside_the_ball_contracts_and_obeys_the_constant",
+            "test_ce_empirical_radius_is_the_first_unstable_radius",
         ),
     },
     "chc.research.regret.cluster_fold_leakage_certificate": {
@@ -871,6 +872,34 @@ def test_ce_controller_inside_the_ball_contracts_and_obeys_the_constant(plant: i
         contraction = np.linalg.norm(p_half @ a_cl @ p_half_inv, 2) ** 2
         assert contraction <= cert.lyapunov_ceiling
         assert cost(k_hat) - j_star <= cert.c_const * float(np.sum(db**2))
+
+
+# ce_explicit_constants.mac STEP 9: on a scalar plant (a, b, q, r) the least |dB| at which the
+# certainty-equivalent gain fails to stabilise the true plant, from every real root of the crossing
+# polynomial; at a = 1 it is the b_hat = 0 at which (a, b_hat) is not stabilisable
+_FIRST_UNSTABLE = [
+    ((1.0, 1.0, 1.0, 1.0), 1.0),
+    ((1.2, 0.5, 1.0, 1.0), 0.4136180159557311),
+    ((0.5, 1.0, 1.0, 0.1), 1.084193354877458),
+]
+
+
+@pytest.mark.parametrize(("plant", "first_unstable"), _FIRST_UNSTABLE)
+def test_ce_empirical_radius_is_the_first_unstable_radius(
+    plant: tuple[float, float, float, float], first_unstable: float
+) -> None:
+    """ce_explicit_constants.mac STEP 9: the radius is bisected, not read off the multiples.
+
+    The default multiples read 10, 4 and 4 times ``rho`` on these plants, the first multiple past
+    the radius, where the radius is 4.5, 3.3 and 2.3 times it. The third plant's loop fails only
+    for ``|dB|`` from 1.084 to 1.891 on its failing side, so no multiple from 10 up sees it fail.
+    """
+    a, b, q, r = (np.array([[v]]) for v in plant)
+    cert = ce_explicit_constant_certificate(
+        a_mat=a, b_mat=b, q_mat=q, r_mat=r, x0=np.array([1.0]), n_dirs=40
+    )
+    assert abs(cert.empirical_radius - first_unstable) <= 1e-6 * cert.rho
+    assert cert.conservatism == pytest.approx(first_unstable / cert.rho, rel=0.0, abs=1e-6)
 
 
 # ---------------------------------------------------------------- cluster fold leakage

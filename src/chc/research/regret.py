@@ -16,7 +16,7 @@ it is called.
 from __future__ import annotations
 
 import itertools
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import cache
 from math import comb, factorial, lgamma
@@ -4133,6 +4133,43 @@ def delayed_network_certificate(  # noqa: C901, PLR0915
     )
 
 
+_RADIUS_TOLERANCE = 1e-6  # the width, in units of rho, the empirical radius is bisected to
+
+
+def _ce_destabilises(
+    a_mat: Matrix, b_mat: Matrix, q_mat: Matrix, r_mat: Matrix, x0: Vector, db: Matrix
+) -> bool:
+    """The sweep's failure at ``B + db``: no CE gain exists, or the true loop's cost under it is
+    infinite."""
+    try:
+        k_hat = dlqr(a_mat, b_mat + db, q_mat, r_mat)[0]
+    except (np.linalg.LinAlgError, ValueError):
+        return True
+    return not np.isfinite(closed_loop_cost(a_mat, b_mat, k_hat, q_mat, r_mat, x0))
+
+
+def _least_failing_radius(
+    fails: Callable[[np.ndarray], bool], directions: list[np.ndarray], start: float, width: float
+) -> float:
+    """The least radius along ``directions`` at which ``fails`` holds, to within ``width``.
+
+    ``start`` is a radius some direction is known to fail at, the first failing multiple of a sweep,
+    which brackets the least one from above only. Each direction that fails at the least radius
+    known so far is bisected between the origin, where none fails, and that radius. The failing
+    end is kept, so the result is a radius at which a direction was seen to fail.
+    """
+    radius = start
+    for direction in directions:
+        if not fails(radius * direction):
+            continue
+        lo, hi = 0.0, radius
+        while hi - lo > width:
+            mid = 0.5 * (lo + hi)
+            lo, hi = (lo, mid) if fails(mid * direction) else (mid, hi)
+        radius = hi
+    return radius
+
+
 @dataclass(frozen=True)
 class CeExplicitConstantCurve:
     """End-to-end: the certified ball, the explicit constant, and how conservative both are."""
@@ -4155,8 +4192,9 @@ class CeExplicitConstantCurve:
     worst_lyapunov: Vector  # worst ||P^(-1/2)(A-BKhat)'P(A-BKhat)P^(-1/2)||
     lyapunov_ceiling: float  # (1 - theta/2)^2: the certified ceiling inside the ball
     unstable_fraction: Vector  # fraction of draws whose CE controller destabilises the TRUE plant
-    # smallest swept ||dB|| at which any draw destabilises; where none does, the largest swept, a
-    # lower bound on it
+    # the least ||dB|| at which a drawn direction destabilises, bisected along each destabilising
+    # draw's direction to within 1e-6 rho of where it starts to; where no draw destabilises, the
+    # largest swept, a lower bound on it
     empirical_radius: float
     # empirical_radius / rho: how much the certificate gives away; a lower bound where no draw
     # destabilised
@@ -4202,7 +4240,13 @@ def ce_explicit_constant_certificate(  # noqa: PLR0915
 
     The sweep runs past the ball on purpose: the certificate must be able to exhibit the failure it
     protects against, so ``unstable_fraction`` has to become positive at large multiples of ``rho``
-    or the ball is not doing any work. ``conservatism`` records the price of the guarantee. Note
+    or the ball is not doing any work. ``conservatism`` records the price of the guarantee, and
+    ``empirical_radius`` is bisected for it: the first multiple at which a draw fails brackets the
+    radius from above only, and on three scalar plants it read 10, 4 and 4 times ``rho`` where the
+    loop first fails at 4.5, 3.3 and 2.3 times it (``validation/ce_explicit_constants.mac`` STEP 9).
+    Each failing draw's direction is bisected from the true plant out to the least radius a draw
+    is known to fail at, wherever it fails there as well. The directions are sampled, so the
+    reading is an upper bound on the least destabilising ``||dB||``, as any failing draw is. Note
     that ``worst_gap`` beyond the ball is a maximum over the FINITE draws only -- once
     ``unstable_fraction > 0`` the true worst case is ``+inf`` and the comparison against ``bound``
     there is vacuous, which is exactly why the guarantee is stated on ``rho`` and not on the sweep.
@@ -4268,6 +4312,7 @@ def ce_explicit_constant_certificate(  # noqa: PLR0915
     mults = np.asarray(multiples, dtype=np.float64)
     j_star = closed_loop_cost(a_mat, b_mat, k_star, q_mat, r_mat, x0)
     gaps, lyaps, unst = (np.zeros(mults.size) for _ in range(3))
+    failing: list[np.ndarray] = []  # each destabilising draw's direction, of unit length
     for i, mult in enumerate(mults):
         d = rho * mult
         bad = 0
@@ -4278,6 +4323,7 @@ def ce_explicit_constant_certificate(  # noqa: PLR0915
                 k_hat = gain(u)
             except (np.linalg.LinAlgError, ValueError):
                 bad += 1  # DEFECT 3: an unstabilisable draw is a failure, not a sample to drop
+                failing.append(u / d)
                 continue
             a_cl = a_mat - b_mat @ k_hat
             m = p_half_inv.T @ (a_cl.T @ p_mat @ a_cl) @ p_half_inv
@@ -4285,12 +4331,22 @@ def ce_explicit_constant_certificate(  # noqa: PLR0915
             gap = closed_loop_cost(a_mat, b_mat, k_hat, q_mat, r_mat, x0) - j_star
             if not np.isfinite(gap):
                 bad += 1
+                failing.append(u / d)
                 continue
             gaps[i] = max(gaps[i], gap)
         unst[i] = bad / n_dirs
 
     hit = np.flatnonzero(unst > 0.0)
-    empirical = float(mults[hit[0]] * rho) if hit.size else float(mults[-1] * rho)
+    empirical = (
+        _least_failing_radius(
+            lambda db: _ce_destabilises(a_mat, b_mat, q_mat, r_mat, x0, db),
+            failing,
+            float(mults[hit[0]] * rho),
+            _RADIUS_TOLERANCE * rho,
+        )
+        if hit.size
+        else float(mults[-1] * rho)
+    )
     return CeExplicitConstantCurve(
         eta,
         theta,

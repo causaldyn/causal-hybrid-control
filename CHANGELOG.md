@@ -7,6 +7,21 @@ experimental may change in any minor release (`docs/api/index.md`).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ce_explicit_constant_certificate`'s `empirical_radius` is bisected, not read off its
+  multiples.** It was `rho` times the first multiple of the sweep, 0.25, 1, 4, 10, 20, 40 or 80,
+  at which a draw destabilised the true plant, which brackets the first unstable radius from above
+  only, by up to the step to the next multiple. On the scalar plants `(a, b, q, r)` =
+  `(1, 1, 1, 1)`, `(1.2, 0.5, 1, 1)` and `(0.5, 1, 1, 0.1)` it read 10, 4 and 4 times `rho` where
+  the loop first fails at 4.518, 3.277 and 2.327 times it (`validation/ce_explicit_constants.mac`
+  STEP 9, every real root of the crossing polynomial); the third plant's loop is stable again past
+  1.891, so no multiple from 10 up sees it fail. Each failing draw's direction is now bisected from
+  the true plant to the least radius known to fail, to `1e-6 rho`, and the failing end kept; the
+  three plants read their exact radii to that width. On the defaults `empirical_radius` moves from
+  1.10418 to 0.859676 and `conservatism` from 20 to 15.571; every other field is bit-identical
+  (ADR 0162).
+
 ### Documentation
 
 - **`chc.reachability`'s `valid_cbf` reads the barrier condition at the grid's nodes, and says
