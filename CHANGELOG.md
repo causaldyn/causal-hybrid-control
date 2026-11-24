@@ -9,6 +9,21 @@ experimental may change in any minor release (`docs/api/index.md`).
 
 ### Added
 
+- **`fit_causal_residual(nuisance_choice="score")`**, opt-in, experimental: the three nuisance
+  sieves of ADR 0120 read by the logs of the out-of-fold mean squares of the action's residual and
+  of the moment's score, the target's residual less its fit on the action's, each column in its own
+  units (`validation/sieve_choice_score.mac`). The default reads the target's own residual over
+  its variance, where the channel times the action's noise drowns a push the polynomial misses:
+  on `x' = -7 x + 8 u + 3 tanh(2 z)` it chose the spline on 28 of 60 logs, the score's rule on 60,
+  and the channel's root mean square miss fell from 0.029 to 0.00083 under Euler and from 0.045 to
+  0.0012 under RK4. On ADR 0120's designs no scatter moved by more than 1.4 of its paired errors.
+  The default, `"prediction"`, is unchanged (ADR 0165). ADR 0165 also measures the media-mix
+  plant's 1.07 against its true nuisances: the polynomial misses them, 0.70 of the sales row's
+  noise variance and 0.27 of the spend's, yet its channel scattered 0.989 times the oracle's,
+  because its misfit of the spend's clipped mean stays in the action's residual as variation the
+  moment reads; the spline, which holds it, pays the estimation's 6 to 7 % and wins none of it
+  back.
+
 - **`fit_lift(ar_estimate="median_unbiased")`**, opt-in, experimental: the AR(1) coefficient of
   each test's noise read off its exact law (Andrews 1993, carried to the fit's residual maker) in
   place of iterated least squares, which reads low. The least-squares coefficient of the

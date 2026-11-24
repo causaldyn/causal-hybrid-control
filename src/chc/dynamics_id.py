@@ -627,11 +627,17 @@ def _chosen_sieve(
     folds: int,
     ridge: float,
     seed: int,
+    rule: Literal["prediction", "score"] = "prediction",
+    states: Array | None = None,
+    channel_degree: int = 0,
 ) -> tuple[int | None, bool]:
     """The nuisances' sieve, as the knots and whether a splined covariate keeps its powers past
     the first: the spline with them, the spline without them, or the polynomial alone, knots
     ``None``, whichever's cross-fitted residuals of ``target`` and ``action`` are the smaller,
-    each column's mean square over its variance, summed; the first of these on a tie.
+    each column's mean square over its variance, summed; the first of these on a tie. Under
+    ``rule="score"`` the residuals read are the action's and the moment's score, each column's
+    mean square in its own units (:func:`_score_misfit`, ``states`` and ``channel_degree`` the
+    channel's design).
 
     Beside its spline a covariate's power holds its shape where the spline does, between the
     knots, so the power's coefficient is read off the rows past the outer knots alone, where the
@@ -667,6 +673,12 @@ def _chosen_sieve(
             seed=seed,
             features=features,
         )
+        if rule == "score":
+            assert states is not None  # the score's design reads the states
+            error.append(
+                _score_misfit(target, action, target_res, action_res, states, channel_degree)
+            )
+            continue
         error.append(
             sum(
                 float(jnp.sum(residual**2) / jnp.maximum(rows * jnp.var(column), 1e-300))
@@ -677,6 +689,43 @@ def _chosen_sieve(
             )
         )
     return candidates[int(np.argmin(error))]
+
+
+def _score_misfit(
+    target: Array,
+    action: Array,
+    target_res: Array,
+    action_res: Array,
+    states: Array,
+    channel_degree: int,
+) -> float:
+    """The sum of the logs of the out-of-fold mean squares of the action's residual and of the
+    moment's score, the target's residual less its least-squares fit on the action's in the
+    channel's design, column by column; a column of ``target`` or ``action`` that moves by
+    rounding alone is left out, and no mean square is read below its column's rounding.
+
+    With nuisances linear in their target, ``S y`` and ``S u``, and ``y = C u + g + e``, the
+    score is ``(I - S)(g + e)``: the sieve's residual of the part of the rate the action does
+    not move. The target's own mean square is ``C^2`` times the action's, the score's, and twice
+    their cross product, so read over the target's variance a misfit of ``g`` counts for its
+    share of a variance the action's noise fills; read in its own units it counts against the
+    score's noise. Each log here is ``log(1 + r^2)`` above its column's noise, ``r`` the
+    nuisance's misfit over that noise, and the sum of the two is at least ``2 log(1 + r_m r_g)``,
+    whose product times ``sqrt(N)`` bounds the moment's bias in its own errors under
+    homoskedastic noise (``validation/sieve_choice_score.mac``)."""
+    regressor = _channel_design(action_res, states, channel_degree)
+    score = target_res - regressor @ _units.least_squares(regressor, target_res)
+    floor = _units.ROUNDING * float(jnp.finfo(target.dtype).eps)
+    total = 0.0
+    for residuals, columns in ((score, target), (action_res, action)):
+        _, rounding = _units.spread_and_rounding(columns)
+        size = _units.root_mean_square(columns)
+        for index in range(columns.shape[1]):
+            if bool(rounding[index]):
+                continue
+            mean_square = float(jnp.mean(residuals[:, index] ** 2))
+            total += math.log(max(mean_square, (floor * float(size[index])) ** 2))
+    return total
 
 
 def _held_pushes(columns: Array, degree: int, knots: int | None, powers: bool = True) -> Array:
@@ -1517,6 +1566,7 @@ def fit_causal_residual(
     channel_degree: int | None = None,
     nuisance_degree: int = 2,
     nuisance_knots: int | Literal["auto"] | None = "auto",
+    nuisance_choice: Literal["prediction", "score"] = "prediction",
     folds: int = 2,
     ridge: float = 1e-6,
     seed: int = 0,
@@ -1642,7 +1692,8 @@ def fit_causal_residual(
             smooth nuisance shrinks as its knots grow, so the moment's second-order bias shrinks
             faster than its error. The spline with a covariate's powers
             past the first, the spline without them, or the polynomial alone is read, whichever
-            predicts the other fold the better (:func:`_chosen_sieve`): beside a spline the powers
+            predicts the other fold the better (:func:`_chosen_sieve`, under the default
+            ``nuisance_choice``): beside a spline the powers
             are read off the rows past the outer knots alone, and on heavy tails a row of the
             other fold far out read them at the power of its distance; without them a quadratic
             nuisance is a line there. On the plant above, ``"auto"`` left a bias of 0.0021, 0.0003
@@ -1672,6 +1723,22 @@ def fit_causal_residual(
             of linear logs with ``t(3)`` covariates, and a log the known physics solves exactly
             read a ratio of two roundings. Under a weight ``exp(-x)`` that reading passed three
             on 23 %, so a weighted fit is not checked.
+        nuisance_choice: what the three sieves are chosen on. ``"prediction"``, the default,
+            reads each nuisance's out-of-fold mean square over its column's variance, summed.
+            ``"score"`` reads the logs of the out-of-fold mean squares of the action's residual
+            and of the moment's score, the target's residual less its least-squares fit on the
+            action's in the channel's design, each column in its own units (ADR 0165). The
+            target's residual holds the channel times the action's noise, and beside it a push
+            the polynomial misses can be small in the target's units and large in the score's.
+            On ``x' = -7 x + 8 u + 3 tanh(2 z)``, RK4 at ``dt = 0.1``, ``u = -z + 0.5 a``, noise
+            ``1e-3`` and 1000 rows, the polynomial's channel error was 50 to 55 times the
+            spline's on average; ``"prediction"`` chose the spline on 28 of 60 logs and
+            ``"score"`` on 60, and the channel's root mean square miss fell from 0.029 to 0.00083
+            under ``euler`` and from 0.045 to 0.0012 under ``rk4``, both covering on 0.967. On
+            every design above, and on the quadratic pushes under ``rk4``, the two choices agreed
+            on 84 to 100 % of the logs and the channel's scatter moved by at most 1.4 of its
+            paired Monte Carlo errors.
+            Experimental: it may change or be withdrawn in any release.
         folds: cross-fitting folds. ``1`` fits the nuisances on the same rows it residualises.
             That is *not* biased for the default nuisances and should not be sold as such:
             residualising ``y`` and ``u`` by the same linear projection whose span contains the
@@ -1873,6 +1940,7 @@ def fit_causal_residual(
         channel_degree=channel_degree,
         nuisance_degree=nuisance_degree,
         nuisance_knots=nuisance_knots,
+        nuisance_choice=nuisance_choice,
         folds=folds,
         ridge=ridge,
         seed=seed,
@@ -1910,6 +1978,7 @@ def _fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
     periods: ArrayLike | None,
     times: ArrayLike | None,
     held: tuple[str, ...],
+    nuisance_choice: Literal["prediction", "score"] = "prediction",
 ) -> CausalDynamicsFit:
     """:func:`fit_causal_residual`, whose drift regression also holds the push of each column
     ``held`` names, as it holds the adjustment set's, while the nuisances do not read them: the
@@ -1923,6 +1992,8 @@ def _fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
     """
     if integrator not in ("euler", "rk4"):
         raise ValueError(f"integrator={integrator!r} is neither 'euler' nor 'rk4'")
+    if nuisance_choice not in ("prediction", "score"):
+        raise ValueError(f"nuisance_choice={nuisance_choice!r} is neither 'prediction' nor 'score'")
     _refuse_reread("covariate", adjust_for, _ACTION_AND_OUTCOME)
     _refuse_reread("driver", drivers, _TRANSITION)
     twice = sorted({name for name in drivers if drivers.count(name) > 1})
@@ -1981,6 +2052,9 @@ def _fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
             folds=folds,
             ridge=ridge,
             seed=seed,
+            rule=nuisance_choice,
+            states=x,
+            channel_degree=channel_degree,
         )
     )
     sieve = (
@@ -2554,6 +2628,7 @@ def _fit_causal_residual(  # noqa: C901, PLR0912, PLR0915
             folds=folds,
             ridge=ridge,
             seed=seed,
+            nuisance_choice=nuisance_choice,
             clusters=codes,
             periods=steps,
             channel_scale=float(
@@ -2597,6 +2672,7 @@ def _spline_shift(
     folds: int,
     ridge: float,
     seed: int,
+    nuisance_choice: Literal["prediction", "score"],
     clusters: np.ndarray | None,
     periods: np.ndarray | None,
     channel_scale: float,
@@ -2633,6 +2709,9 @@ def _spline_shift(
         folds=folds,
         ridge=ridge,
         seed=seed,
+        rule=nuisance_choice,
+        states=x,
+        channel_degree=channel_degree,
     )
     if knots is None:
         return 0.0, floor

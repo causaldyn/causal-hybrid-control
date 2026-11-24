@@ -144,6 +144,10 @@ FORMAL_LINKS = {
         "cites": ("paired_score_shift.mac",),
         "tests": ("test_the_spline_shift_reads_the_move_against_its_own_error",),
     },
+    "chc.dynamics_id._score_misfit": {
+        "cites": ("sieve_choice_score.mac",),
+        "tests": ("test_the_score_misfit_reads_the_rate_the_action_does_not_move",),
+    },
     "chc.dynamics_id.omitted_confounder_bound": {
         "cites": ("omitted_confounder_bound.mac",),
         "tests": (
@@ -905,6 +909,50 @@ def test_the_spline_shift_reads_the_move_against_its_own_error(
     assert len(read) == 30
     squares = [(moved / spread) ** 2 for moved, spread in read]
     assert 0.4 < float(np.mean(squares)) < 1.6
+
+
+def test_the_score_misfit_reads_the_rate_the_action_does_not_move() -> None:
+    """``sieve_choice_score.mac``: the cross-fitted nuisances are linear in their target, so the
+    target's residual less the channel times the action's is the sieve's residual of the rate
+    the action does not move, and the target's mean square is the channel's square times the
+    action's, the score's, and twice their cross product. ``_score_misfit`` is the sum of the
+    logs of the action's and the score's mean squares, the score fitted on the action's residual;
+    each log is at least the noise's, and the sum at least twice ``log(1 + r_m r_g)``."""
+    rng = np.random.default_rng(7)
+    rows, channel = 600, 1.7
+    z = rng.normal(size=(rows, 1))
+    x = rng.normal(size=(rows, 1))
+    noise_u, noise_e = 0.4, 0.05
+    u = np.tanh(2.0 * z) + noise_u * rng.normal(size=(rows, 1))
+    free = -0.5 * x + np.sin(2.0 * z)
+    y = channel * u + free + noise_e * rng.normal(size=(rows, 1))
+    covariates = jnp.asarray(np.concatenate([x, z], axis=1))
+    options = {"degree": 2, "folds": 2, "ridge": 1e-6, "seed": 0}
+    y_res, u_res, _, _ = dynamics_id._cross_fit_residuals(
+        jnp.asarray(y), jnp.asarray(u), covariates, **options
+    )
+    free_res, _, _, _ = dynamics_id._cross_fit_residuals(
+        jnp.asarray(y - channel * u), jnp.asarray(u), covariates, **options
+    )
+    scale = float(jnp.sqrt(jnp.mean(jnp.asarray(y) ** 2)))
+    assert float(jnp.max(jnp.abs(y_res - channel * u_res - free_res))) < 1e-10 * scale
+    score = y_res - channel * u_res
+    parts = channel**2 * jnp.sum(u_res**2) + 2 * channel * jnp.sum(u_res * score)
+    assert float(jnp.sum(y_res**2)) == pytest.approx(
+        float(parts + jnp.sum(score**2)), rel=1e-12, abs=0.0
+    )
+    misfit = dynamics_id._score_misfit(
+        jnp.asarray(y), jnp.asarray(u), y_res, u_res, jnp.asarray(x), 0
+    )
+    fitted = float(jnp.sum(u_res * y_res) / jnp.sum(u_res**2))
+    by_hand = math.log(float(jnp.mean((y_res - fitted * u_res) ** 2))) + math.log(
+        float(jnp.mean(u_res**2))
+    )
+    assert misfit == pytest.approx(by_hand, rel=1e-12, abs=0.0)
+    r_m = math.sqrt(max(float(jnp.mean(u_res**2)) / noise_u**2 - 1.0, 0.0))
+    r_g = math.sqrt(max(float(jnp.mean((y_res - fitted * u_res) ** 2)) / noise_e**2 - 1.0, 0.0))
+    excess = misfit - math.log(noise_u**2) - math.log(noise_e**2)
+    assert excess >= 2.0 * math.log1p(r_m * r_g) - 1e-12
 
 
 # --------------------------------------------------------------------------- chc.experiment

@@ -1,0 +1,51 @@
+/* What the nuisances' sieve choice reads under nuisance_choice="score":
+   chc.dynamics_id._score_misfit.
+
+   The nuisances are linear smoothers: out of fold, the target's and the action's predictions are
+   S y and S u with one matrix S set by the covariates. On a partially linear log,
+   y = C u + g + e, the action u = m + v.
+
+   STEP 1  the target's residual is the channel times the action's plus the score:
+           (I - S) y - C (I - S) u = (I - S)(g + e), whatever S is
+   STEP 2  so the target's mean square is C^2 times the action's, twice their cross product, and
+           the score's: a misfit of g reaches the target's mean square beside C^2 times the
+           action's noise, and a criterion that divides it by the target's variance weighs it by
+           the score's share of that variance
+   STEP 3  (1 + a^2)(1 + b^2) = (1 + a b)^2 + (a - b)^2: the sum of the logs of the two mean
+           squares, each over its own noise, is at least 2 log(1 + a b), a and b the two
+           nuisances' misfits over their noise, whose product times sqrt(N) bounds the moment's
+           bias in its own errors
+   STEP 4  Cauchy-Schwarz, the bias bound's step: Lagrange's identity at three rows
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/sieve_choice_score.mac */
+
+linel : 110$
+display2d : false$
+ratprint : false$
+
+verdict(x) := if x = 0 then "(PASS)" else "(FAIL)"$
+
+/* STEP 1 and 2 at three rows, S a full symbolic matrix */
+S : genmatrix(lambda([i, j], s[i, j]), 3, 3)$
+u : matrix([u1], [u2], [u3])$
+g : matrix([g1], [g2], [g3])$
+e : matrix([e1], [e2], [e3])$
+y : C*u + g + e$
+I3 : ident(3)$
+yres : (I3 - S) . y$
+ures : (I3 - S) . u$
+score : yres - C*ures$
+step1 : expand(score - (I3 - S) . (g + e))$
+print("STEP 1  (I-S)y - C(I-S)u - (I-S)(g+e):", step1, verdict(step1 . step1))$
+sq(w) := expand((transpose(w) . w))$
+step2 : expand(sq(yres) - (C^2 * sq(ures) + 2*C*expand(transpose(ures) . score) + sq(score)))$
+print("STEP 2  |y_res|^2 - (C^2 |u_res|^2 + 2C u_res.score + |score|^2):", step2, verdict(step2))$
+
+/* STEP 3 */
+step3 : expand((1 + a^2)*(1 + b^2) - (1 + a*b)^2 - (a - b)^2)$
+print("STEP 3  (1+a^2)(1+b^2) - (1+ab)^2 - (a-b)^2:", step3, verdict(step3))$
+
+/* STEP 4 */
+lagrange : expand((a1^2 + a2^2 + a3^2)*(b1^2 + b2^2 + b3^2) - (a1*b1 + a2*b2 + a3*b3)^2
+                  - ((a1*b2 - a2*b1)^2 + (a1*b3 - a3*b1)^2 + (a2*b3 - a3*b2)^2))$
+print("STEP 4  Lagrange's identity:", lagrange, verdict(lagrange))$

@@ -266,6 +266,7 @@ failures, when the tests were first written (names relative to `chc`):
 | `regret_bound_rows.mac` | `plan._row_bound`, `plan.plan_regret_bound` | `test_formal_control.py, test_formal_seams.py` |
 | `response_curves.mac` | `response` | `test_formal_estimation.py` |
 | `rk4_rollout.mac` | `uncertainty.linear_rollout_bound`, `uncertainty.time_varying_rollout_bound` | `test_formal_control.py` |
+| `sieve_choice_score.mac` | `dynamics_id._score_misfit` | `test_formal_estimation.py` |
 | `space_time_folds.mac` | `regret.space_time_fold_certificate` | `test_formal_regret_c.py` |
 | `space_time_folds.v` | `regret.space_time_fold_certificate` | `test_formal_regret_c.py` |
 | `spectral_circulant.mac` | `residual.SpectralResidual`, `toeplitz.circulant_symbol`, `transport.advection_diffusion_symbol` | `test_formal_fields.py` |

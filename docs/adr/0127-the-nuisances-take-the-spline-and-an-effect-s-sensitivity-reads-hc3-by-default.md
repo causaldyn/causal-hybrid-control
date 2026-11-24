@@ -1,6 +1,7 @@
 # ADR 0127 — The nuisances take the spline, and an effect's sensitivity reads HC3, by default
 
-**Status:** accepted, 2026-10-21. Amends ADR 0106, ADR 0107 and ADR 0120.
+**Status:** accepted, 2026-10-21. Amends ADR 0106, ADR 0107 and ADR 0120. Amended 2026-11-25 by
+ADR 0165: the media-mix plant's 1.07 measured against its true nuisances.
 
 ## Context
 

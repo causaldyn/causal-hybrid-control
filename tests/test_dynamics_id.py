@@ -4105,6 +4105,79 @@ def test_the_spline_sieve_scatters_no_wider_than_the_polynomial_on_heavy_tails(p
     assert abs(np.mean(spline) - truth) < 3.0 * np.std(spline, ddof=1) / np.sqrt(len(spline))
 
 
+def _tanh_push_log(seed: int) -> dict[str, jax.Array]:
+    """1000 rows of ``x' = -7 x + 8 u + 3 tanh(2 z)`` held over a step of 0.1 and stepped by RK4,
+    exactly in closed form, on a lever ``u = -z + 0.5 a``, with noise ``1e-3``: the push is
+    outside the polynomial's span, and the noise is small beside it."""
+    rng = np.random.default_rng(seed)
+    z = rng.normal(size=(1000, 1))
+    u = -z + 0.5 * rng.normal(size=(1000, 1))
+    x = rng.normal(size=(1000, 1))
+    step = -0.7
+    growth = 1 + step + step**2 / 2 + step**3 / 6 + step**4 / 24
+    gain = 1 + step / 2 + step**2 / 6 + step**3 / 24
+    x_next = growth * x + 0.1 * gain * (8.0 * u + 3.0 * np.tanh(2.0 * z))
+    x_next = x_next + 1e-3 * rng.normal(size=(1000, 1))
+    data = {"x": x, "u": u, "z": z, "x_next": x_next}
+    return {name: jnp.asarray(column) for name, column in data.items()}
+
+
+def test_the_score_choice_takes_the_spline_a_tanh_push_needs() -> None:
+    """The target's out-of-fold residual holds the channel times the action's noise, 2.9 here,
+    and beside it the push the polynomial misses moves the default criterion less than the
+    spline's columns cost: on 60 such logs it chose the spline on 28. The moment's score is the
+    rate the action does not move, whose noise is 0.01, and read in its own units the miss is
+    plain: ``nuisance_choice="score"`` chose the spline on 60 of 60. On this log the default
+    reads the polynomial, and the score's choice cuts the channel's error 47 times."""
+    data = _tanh_push_log(0)
+    covariates = jnp.concatenate([data["x"], data["z"]], axis=1)
+    rate = (data["x_next"] - data["x"]) / 0.1
+    options = {"degree": 2, "knots": 10, "folds": 2, "ridge": 1e-6, "seed": 0}
+    assert _chosen_sieve(covariates, rate, data["u"], **options) == (None, True)
+    scored = _chosen_sieve(
+        covariates, rate, data["u"], rule="score", states=data["x"], channel_degree=0, **options
+    )
+    assert scored[0] == 10
+    options = {"adjust_for": ("z",), "channel_degree": 0}
+    default = fit_causal_residual(_ZERO, data, 0.1, **options)
+    score = fit_causal_residual(_ZERO, data, 0.1, nuisance_choice="score", **options)
+    assert default.channel_error is not None
+    assert score.channel_error is not None
+    assert score.channel_error < default.channel_error / 20.0
+    step = -0.7
+    truth = 8.0 * (1 + step / 2 + step**2 / 6 + step**3 / 24)
+    assert abs(float(score.residual.channel.ravel()[0]) - truth) < 3.0 * score.channel_error
+    with pytest.raises(ValueError, match="nuisance_choice"):
+        fit_causal_residual(_ZERO, data, 0.1, nuisance_choice="scores", **options)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("log", ["normal quadratic", "t5 quadratic", "t3 linear"])
+def test_the_score_choice_keeps_the_sieve_where_the_spline_misses(log: str) -> None:
+    """Where a spline sieve misses what the polynomial holds, the score's choice reads the sieve
+    the default's does: on the quadratic logs above the polynomial, and on the ``t(3)`` log whose
+    confounder lies at -18 of its scales not the spline with the powers."""
+    if log == "t3 linear":
+        data = _heavy_tailed_log(64, 500)
+        covariates = jnp.concatenate([data["x"], data["z0"], data["z1"]], axis=1)
+        knots = 8
+    else:
+        confounder = {
+            "normal quadratic": lambda rng: rng.normal(size=(1000, 1)),
+            "t5 quadratic": lambda rng: rng.standard_t(5, size=(1000, 1)),
+        }[log]
+        data = _quadratic_log(5, confounder)
+        covariates = jnp.concatenate([data["x"], data["z"]], axis=1)
+        knots = 10
+    rate = (data["x_next"] - data["x"]) / 0.1
+    options = {"degree": 2, "knots": knots, "folds": 2, "ridge": 1e-6, "seed": 0}
+    default = _chosen_sieve(covariates, rate, data["u"], **options)
+    scored = _chosen_sieve(
+        covariates, rate, data["u"], rule="score", states=data["x"], channel_degree=0, **options
+    )
+    assert scored == default
+    assert scored != (knots, True)
+
+
 def test_the_spline_sieve_on_a_linear_plant_reads_the_polynomial_s_channel() -> None:
     """Where the polynomial holds the truth, the spline adds columns and nothing else: the two
     fits read one channel, a fraction of an error apart."""

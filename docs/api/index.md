@@ -66,13 +66,14 @@ on the zone plant, for the response curves `response` in the plans they warm-sta
 the geo world `geo_world` in the geo models scored on it. They may change or be withdrawn in
 any minor release. Pin an exact version if you depend on one.
 
-99 entries in modules of other tiers are experimental on the same terms, for the same
+100 entries in modules of other tiers are experimental on the same terms, for the same
 reason. An entry is a name, `Class.member` for a field or a method, `function(argument=)` for an
 argument, or a value or key in quotes:
 
 - `chc.dynamics_id`: `fit_causal_residual(weights=)`, `solve_channel_moment(weights=)`,
-  `fit_causal_residual(influence=)`, `CausalDynamicsFit.influence`, `CausalDynamicsFit.representer`,
-  `nuisance_shift`, `CausalDynamicsFit.unmoved`, `CausalDynamicsFit.moment_residual`,
+  `fit_causal_residual(influence=)`, `fit_causal_residual(nuisance_choice=)`,
+  `CausalDynamicsFit.influence`, `CausalDynamicsFit.representer`, `nuisance_shift`,
+  `CausalDynamicsFit.unmoved`, `CausalDynamicsFit.moment_residual`,
   `CausalDynamicsFit.instrument_relevance`, `CausalDynamicsFit.instrument_rank`,
   `omitted_confounder_bound`, `OmittedConfounderBound`, `persistence_check`, `PersistenceCheck`,
   `interference_check`, `InterferenceCheck`, `lag_check`, `LagCheck`, `channel_region`,
