@@ -519,7 +519,7 @@ class DelayBallCertificate:
     where the loop *actually* changes behaviour: the derivation is confirmed when the bracket
     straddles 1. The dynamics-error ball of
     :func:`chc.research.regret.ce_explicit_constant_certificate` came from a Lyapunov *sufficient*
-    condition and ran 15.5x conservative; this one comes from the exact characteristic equation,
+    condition and runs 23.3x conservative; this one comes from the exact characteristic equation,
     so the bracket is tight to the sweep grid and there is no slack to report.
     """
 

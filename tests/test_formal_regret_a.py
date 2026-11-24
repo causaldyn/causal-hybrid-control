@@ -22,8 +22,10 @@ from chc.regret import (
     _self_consistent_mass,
     adaptive_exploration_certificate,
     capped_exploration_policy,
+    dlqr,
 )
 from chc.research.regret import (
+    _gain_bound,
     asymmetric_control_improvement,
     bandit_causal_certificate,
     causal_vs_predictive_certificate,
@@ -110,11 +112,19 @@ FORMAL_LINKS = {
         ),
     },
     "chc.research.regret.ce_explicit_constant_certificate": {
-        "cites": ("c2_end_to_end.v", "ce_explicit_constants.mac", "ce_explicit_constants.v"),
+        "cites": (
+            "c2_end_to_end.v",
+            "ce_explicit_constants.mac",
+            "ce_explicit_constants.v",
+            "ce_gain_perturbation.mac",
+        ),
         "tests": (
             "test_ce_constants_are_the_ones_the_riccati_solution_defines",
             "test_ce_controller_inside_the_ball_contracts_and_obeys_the_constant",
             "test_ce_empirical_radius_is_the_first_unstable_radius",
+            "test_ce_gain_bound_holds_over_the_ball_and_is_lost_past_it",
+            "test_ce_gain_bound_holds_where_a_sampled_supremum_falls_short",
+            "test_ce_gain_bound_radius_is_the_derivation_s_on_scalar_plants",
         ),
     },
     "chc.research.regret.cluster_fold_leakage_certificate": {
@@ -813,10 +823,42 @@ _PLANTS = [
 ]
 
 
+# wider than the two above: dB has 4 and 6 entries, where a few hundred random directions rarely
+# come near the worst one; the second has two inputs
+_WIDE_PLANTS = [
+    (
+        np.array(
+            [
+                [0.9, 0.2, 0.0, 0.0],
+                [0.0, 1.05, 0.1, 0.0],
+                [0.0, 0.0, 0.95, 0.2],
+                [0.1, 0.0, 0.0, 0.8],
+            ]
+        ),
+        np.array([[0.5], [0.0], [1.0], [0.25]]),
+    ),
+    (
+        np.array([[1.0, 0.1, 0.0], [0.0, 0.95, 0.1], [0.0, 0.0, 0.9]]),
+        np.array([[0.5, 0.0], [1.0, 0.2], [0.0, 1.0]]),
+    ),
+]
+
+
 def _riccati(a, b, q, r):
     p = solve_discrete_are(a, b, q, r)
     k = np.linalg.solve(r + b.T @ p @ b, b.T @ p @ a)
     return k, p
+
+
+def _gain_derivative(a, b, q, r, h=1e-6):
+    """The norm of dK/dB, Frobenius' on both sides, and its top direction, by central differences
+    of SciPy's Riccati solution."""
+    columns = []
+    for unit in np.eye(b.size):
+        step = h * unit.reshape(b.shape)
+        columns.append((_riccati(a, b + step, q, r)[0] - _riccati(a, b - step, q, r)[0]) / (2 * h))
+    _, sing, right = np.linalg.svd(np.column_stack([c.ravel() for c in columns]))
+    return float(sing[0]), right[0].reshape(b.shape)
 
 
 @pytest.mark.parametrize("plant", range(len(_PLANTS)))
@@ -840,9 +882,12 @@ def test_ce_constants_are_the_ones_the_riccati_solution_defines(plant: int) -> N
         np.linalg.norm(p_sqrt @ b, 2) / math.sqrt(ev[0]), rel=1e-9, abs=0.0
     )
     assert cert.identity_residual < 1e-9 * float(np.max(np.abs(p)))
+    # on both plants the margin binds, not the radius at which the gain bound exists
+    assert cert.rho < cert.bound_radius
     assert cert.rho == pytest.approx(
-        cert.theta / (2.0 * cert.beta_b * max(cert.l_k_local, cert.l_k_ball)), rel=1e-12, abs=0.0
+        cert.theta / (2.0 * cert.beta_b * cert.l_k_ball), rel=1e-12, abs=0.0
     )
+    assert cert.l_k_local == pytest.approx(_gain_derivative(a, b, q, r)[0], rel=1e-6, abs=0.0)
 
 
 @pytest.mark.parametrize("plant", range(len(_PLANTS)))
@@ -890,16 +935,117 @@ def test_ce_empirical_radius_is_the_first_unstable_radius(
 ) -> None:
     """ce_explicit_constants.mac STEP 9: the radius is bisected, not read off the multiples.
 
-    The default multiples read 10, 4 and 4 times ``rho`` on these plants, the first multiple past
-    the radius, where the radius is 4.5, 3.3 and 2.3 times it. The third plant's loop fails only
-    for ``|dB|`` from 1.084 to 1.891 on its failing side, so no multiple from 10 up sees it fail.
+    The default multiples read 10, 10 and none at all on these plants, where the radius is 4.83,
+    5.73 and 4.56 times ``rho``. The third plant's loop fails only for ``|dB|`` from 1.084 to
+    1.891 on its failing side, 4.56 to 7.95 times ``rho``, which 4 and 10 straddle: 6 is added so
+    a multiple lands in it.
     """
     a, b, q, r = (np.array([[v]]) for v in plant)
     cert = ce_explicit_constant_certificate(
-        a_mat=a, b_mat=b, q_mat=q, r_mat=r, x0=np.array([1.0]), n_dirs=40
+        a_mat=a,
+        b_mat=b,
+        q_mat=q,
+        r_mat=r,
+        x0=np.array([1.0]),
+        multiples=(0.25, 1.0, 4.0, 6.0, 10.0, 20.0, 40.0, 80.0),
+        n_dirs=40,
     )
     assert abs(cert.empirical_radius - first_unstable) <= 1e-6 * cert.rho
     assert cert.conservatism == pytest.approx(first_unstable / cert.rho, rel=0.0, abs=1e-6)
+
+
+# ce_gain_perturbation.mac STEP 5: rho on the scalar plants, where the bound stops existing before
+# the margin binds, so rho is the radius at which the majorant loses its root
+_GAIN_BOUND_RHO = [
+    ((1.0, 1.0, 1.0, 1.0), 0.2068899924014089),
+    ((1.2, 0.5, 1.0, 1.0), 0.07223864507819493),
+    ((0.5, 1.0, 1.0, 0.1), 0.2378185780530786),
+]
+
+
+@pytest.mark.parametrize(("plant", "rho"), _GAIN_BOUND_RHO)
+def test_ce_gain_bound_radius_is_the_derivation_s_on_scalar_plants(
+    plant: tuple[float, float, float, float], rho: float
+) -> None:
+    """ce_gain_perturbation.mac STEP 5: the bound, rebuilt in bfloat, stops at the same radius."""
+    a, b, q, r = (np.array([[v]]) for v in plant)
+    cert = ce_explicit_constant_certificate(
+        a_mat=a, b_mat=b, q_mat=q, r_mat=r, x0=np.array([1.0]), multiples=(0.5,), n_dirs=4
+    )
+    assert cert.rho == pytest.approx(rho, rel=1e-9, abs=0.0)
+    assert cert.bound_radius == cert.rho
+    assert cert.l_k_ball * cert.rho < cert.theta / (2.0 * cert.beta_b)
+
+
+def _all_plants() -> list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    square = [(a, b, np.eye(2), r) for a, b, r in _PLANTS]
+    wide = [(a, b, np.eye(b.shape[0]), np.eye(b.shape[1])) for a, b in _WIDE_PLANTS]
+    scalar = [tuple(np.array([[v]]) for v in plant) for plant, _ in _GAIN_BOUND_RHO]
+    return square + wide + scalar
+
+
+@pytest.mark.parametrize("plant", range(len(_all_plants())))
+def test_ce_gain_bound_holds_over_the_ball_and_is_lost_past_it(plant: int) -> None:
+    """ce_gain_perturbation.mac: ``||Khat - K||_F <= e(delta)`` at every ``||dB||_F <= delta``,
+    with ``e(delta)/delta`` nondecreasing, so ``l_k_ball = e(rho)/rho`` holds over the ball; no
+    bound exists past ``bound_radius``."""
+    a, b, q, r = _all_plants()[plant]
+    cert = ce_explicit_constant_certificate(
+        a_mat=a, b_mat=b, q_mat=q, r_mat=r, x0=np.ones(b.shape[0]), multiples=(0.5,), n_dirs=4
+    )
+    # the certificate's own Riccati solution: rho may sit at the bound's edge
+    k, p = dlqr(a, b, q, r)
+    bound = _gain_bound(a, b, r, k, p)
+    rng = np.random.default_rng(31 + plant)
+    radii = cert.bound_radius * np.array([0.05, 0.25, 0.5, 0.75, 0.9, 1.0])
+    slopes = [bound.bound(float(d)) / d for d in radii]
+    assert all(np.isfinite(slopes))
+    assert np.all(np.diff(slopes) >= 0.0)
+    assert cert.l_k_ball == pytest.approx(bound.bound(cert.rho) / cert.rho, rel=1e-12, abs=0.0)
+    assert cert.l_k_local == pytest.approx(bound.j, rel=1e-12, abs=0.0)
+    assert cert.l_k_local < cert.l_k_ball
+    for d in radii:
+        # a scalar dB has two directions, both taken
+        draws = (
+            [np.ones(b.shape), -np.ones(b.shape)]
+            if b.size == 1
+            else rng.normal(size=(200, *b.shape))
+        )
+        worst = 0.0
+        for draw in draws:
+            db = d * draw / np.linalg.norm(draw)
+            worst = max(worst, float(np.linalg.norm(_riccati(a, b + db, q, r)[0] - k)))
+        assert worst <= bound.bound(float(d))
+    assert not np.isfinite(bound.bound(1.01 * cert.bound_radius))
+
+
+@pytest.mark.parametrize("plant", range(len(_WIDE_PLANTS)))
+def test_ce_gain_bound_holds_where_a_sampled_supremum_falls_short(plant: int) -> None:
+    """ce_gain_perturbation.mac: along the derivative's top direction, which random directions
+    rarely meet once ``dB`` has a few entries, the gain error at ``rho`` is within
+    ``l_k_ball rho``, the loop contracts to the ceiling, and the regret is within ``C ||dB||^2``."""
+    a, b = _WIDE_PLANTS[plant]
+    n, m = b.shape
+    q, r, x0 = np.eye(n), np.eye(m), np.ones(n)
+    cert = ce_explicit_constant_certificate(
+        a_mat=a, b_mat=b, q_mat=q, r_mat=r, x0=x0, multiples=(0.5,), n_dirs=4
+    )
+    k, p = _riccati(a, b, q, r)
+    norm, top = _gain_derivative(a, b, q, r)
+    w, v = np.linalg.eigh(p)
+    p_half, p_half_inv = v @ np.diag(np.sqrt(w)) @ v.T, v @ np.diag(1.0 / np.sqrt(w)) @ v.T
+
+    def cost(gain):
+        return float(x0 @ solve_discrete_lyapunov((a - b @ gain).T, q + gain.T @ r @ gain) @ x0)
+
+    for sign in (1.0, -1.0):
+        db = sign * cert.rho * top
+        k_hat = _riccati(a, b + db, q, r)[0]
+        assert np.linalg.norm(k_hat - k) <= cert.l_k_ball * cert.rho
+        contraction = np.linalg.norm(p_half @ (a - b @ k_hat) @ p_half_inv, 2) ** 2
+        assert contraction <= cert.lyapunov_ceiling
+        assert cost(k_hat) - cost(k) <= cert.c_const * float(np.sum(db**2))
+    assert cert.l_k_local == pytest.approx(norm, rel=1e-6, abs=0.0)
 
 
 # ---------------------------------------------------------------- cluster fold leakage

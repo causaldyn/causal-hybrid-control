@@ -392,10 +392,11 @@ def test_ce_explicit_constants_certify_a_ball_and_a_constant() -> None:
     assert 0.0 < curve.theta < 1.0
     assert curve.rho > 0.0
     assert curve.c_const > 0.0
-    # (3) THE CITED HYPOTHESIS, MEASURED. Uniform validity of the gain map's Lipschitz constant on
-    # the ball (Konstantinov et al.; Sun) is the one citation left on the control side, so the sup
-    # over the certified ball is measured against the derivative rather than assumed.
-    assert curve.l_k_ball <= 1.2 * curve.l_k_local
+    # (3) THE LIPSCHITZ CONSTANT, BOUNDED. A bound over the whole ball cannot read below the
+    # derivative, nor be so loose that the ball it buys is a speck: on the defaults the margin, not
+    # the bound's existence, sets rho.
+    assert curve.l_k_local < curve.l_k_ball < 2.0 * curve.l_k_local
+    assert curve.rho < curve.bound_radius
     # (4) INSIDE the ball: the Lyapunov certificate holds, nothing destabilises, the bound binds.
     inside = curve.radius_multiples <= 1.0
     assert (curve.worst_lyapunov[inside] <= curve.lyapunov_ceiling).all()

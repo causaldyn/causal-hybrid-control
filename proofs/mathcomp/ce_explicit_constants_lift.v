@@ -24,8 +24,9 @@
    Cited, not proved. Eigenvalue and norm constants (lo, hi, ||R_K||, the contraction modulus)
    enter as the quadratic-form inequalities they denote, because MathComp's spectral theorem is
    stated over algebraically closed fields only. The gain perturbation bound ||K^ - K|| <= L_K d --
-   uniform validity of L_K on the ball (Konstantinov-Petkov-Christov-Angelova 1993; Sun 1998) --
-   enters as the hypothesis on the gain gap, as in the scalar file. The continuous-time
+   uniform validity of L_K on the ball, which the certificate computes from a non-local bound in
+   the manner of Konstantinov-Petkov-Christov 1993 and Sun 1998 (validation/ce_gain_perturbation.mac)
+   -- enters as the hypothesis on the gain gap, as in the scalar file. The continuous-time
    conjugate time is the escape time of a Riccati ODE, which is analysis, and stays in Maxima. *)
 
 Set Warnings "-notation-overridden,-ambiguous-paths".
@@ -478,10 +479,10 @@ apply: le_trans (ler_wpM2r h2th hq) _.
 by rewrite le_eqVlt; apply/orP; left; apply/eqP; field.
 Qed.
 
-(* THE THEOREM, composed with the cited Lipschitz hypothesis |dK| <= L_K |dB| (Konstantinov et al.
-   1993; Sun 1998), entering as g <= ||R_K|| (L_K d)^2. The finite-horizon regret-to-go of the
-   certainty-equivalent gain is at most C d^2 with the scalar shadow's constant
-   C = 2 kappa_P ||R_K|| L_K^2 |x0|^2 / theta, at EVERY horizon T. *)
+(* THE THEOREM, composed with the Lipschitz hypothesis |dK| <= L_K |dB| (the certificate's L_K
+   bounds it, validation/ce_gain_perturbation.mac), entering as g <= ||R_K|| (L_K d)^2. The
+   finite-horizon regret-to-go of the certainty-equivalent gain is at most C d^2 with the scalar
+   shadow's constant C = 2 kappa_P ||R_K|| L_K^2 |x0|^2 / theta, at EVERY horizon T. *)
 Theorem ce_regret_explicit_bound_matrix (Khat : 'M[R]_(m, n)) (xs : nat -> 'cV[R]_n)
     (lo hi rkn lk d theta : R) :
   0 < lo -> 0 <= rkn -> 0 < theta -> theta <= 1 ->

@@ -16,10 +16,11 @@
    Honest scope, as in c2_end_to_end.v and van_trees.v: Stdlib has no matrices, so the scalar shadow
    of each matrix step is proved here and the matrix statements are verified numerically in
    validation/ce_explicit_constants.mac (STEP 7-8, DARE residual 2.0e-40 at 60 digits) and in the
-   ce_explicit_constant_certificate sweep. The ONE remaining citation on the control side is uniform
-   validity of the gain map's Lipschitz constant on the ball (Konstantinov-Petkov-Christov-Angelova
-   1993; Sun 1998), taken as a hypothesis (l_k) and certified numerically on the ball, exactly as the
-   clustered CLT stays cited in c2_end_to_end.v.
+   ce_explicit_constant_certificate sweep. The gain map's Lipschitz constant on the ball enters as a
+   hypothesis (l_k), exactly as the clustered CLT stays cited in c2_end_to_end.v. The certificate
+   computes it from a non-local perturbation bound in the manner of Konstantinov-Petkov-Christov
+   (1993) and Sun (1998), valid at every point of the ball, derived and checked in
+   validation/ce_gain_perturbation.mac and not proved here.
 
    Parameterisation. The proofs are stated in s with s^2 = 1 - eta rather than in sqrt(1 - eta), so
    every goal stays polynomial and nra stays in scope. theta := 1 - s. *)

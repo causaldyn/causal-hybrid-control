@@ -21,6 +21,23 @@ experimental may change in any minor release (`docs/api/index.md`).
   three plants read their exact radii to that width. On the defaults `empirical_radius` moves from
   1.10418 to 0.859676 and `conservatism` from 20 to 15.571; every other field is bit-identical
   (ADR 0162).
+- **`ce_explicit_constant_certificate`'s Lipschitz constant is a bound over the ball, not a
+  sample.** `rho` and `C` rest on `||Khat - K|| <= L_K ||dB||` at every `dB` of the ball, and
+  `L_K` was a maximum over sampled directions, which can only fall short of the supremum. On four
+  plants with three or four states it did: along the top direction of the gain's derivative the
+  ratio at the certified `rho` exceeded it, 1.822 against 1.760 on a 4-state plant and 0.855
+  against 0.727 on a 3-state, 2-input one. `L_K` now comes from a non-local perturbation bound on
+  the gain in the manner of Konstantinov, Petkov and Christov (1993) and Sun (1998): the first two
+  Taylor terms computed as operators, the remainder held below the least positive root of a
+  polynomial majorant along `B + t dB` (`validation/ce_gain_perturbation.mac`). `l_k_local` is
+  the derivative's norm, computed; `l_k_ball` the bound at `rho` over `rho`; both Frobenius'. The
+  new field `bound_radius`, after `rho`, is the largest radius at which the bound exists, and
+  `rho` stops there; nothing sampled replaces it past that radius. On the defaults `rho` moves
+  from 0.055209 to 0.036939, `l_k_ball` from 0.5672 to 0.8478, `C` from 136.52 to 304.96,
+  `l_k_local` from 0.547654 to 0.547770, `empirical_radius` from 0.859676 to 0.859629 and
+  `conservatism` from 15.571 to 23.271. On the scalar plant `(0.5, 1, 1, 0.1)` the loop's failing
+  window, 4.56 to 7.95 times the new `rho`, falls between the default multiples, and
+  `conservatism` reads 80 (ADR 0164).
 
 ### Documentation
 

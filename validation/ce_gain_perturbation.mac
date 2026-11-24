@@ -1,0 +1,227 @@
+/* A NON-LOCAL BOUND on the certainty-equivalent gain's error over a whole ball ||dB||_F <= delta,
+   for ce_explicit_constant_certificate.  Maxima is the reference; the Python bound follows it.
+
+   Notation.  (K, P) solve the discrete LQR of the true plant (A, B, Q, R); A_cl := A - B K;
+   R_K := R + B'PB.  The model is Bh := B + D, its LQR (Kh, Ph), and E := Kh - K, X := Ph - P.
+   G := D K and Abar := A_cl - G = A - Bh K, the TRUE gain on the MODEL plant.
+   L0(Y) := Y - A_cl' Y A_cl, and L_D(Y) := Y - Abar' Y Abar = L0(Y) - D1(Y) - D2(Y) with
+   D1(Y) := -(G' Y A_cl + A_cl' Y G), D2(Y) := G' Y G.
+
+   The route.  U := P_K(Bh) - P, the cost of the true gain on the model plant less P, solves
+   L_D(U) = M := Abar'P Abar - A_cl'P A_cl, an equation with no unknown gain in it.  The model's
+   own optimum sits below it: V := U - X solves L_D(V) = E' Rh E >= 0 (STEP 4), the
+   cost-difference identity.  E is expanded EXACTLY to second order in D (STEP 1: E1, E2 are the
+   Taylor coefficients), and the remainder R3 := E - E1 - E2 satisfies an exact identity (STEP 2)
+   whose every term is third order, so its norm is bounded by a polynomial in ||R3|| with
+   nonnegative coefficients but the linear one.  Along B + t D, t in [0, 1], ||R3|| starts at 0,
+   moves continuously, and cannot reach a value where that polynomial is negative: it stays below
+   the polynomial's least positive root (STEP 5 evaluates it on three scalar plants). */
+
+print("=== STEP 1: E1 and E2 are the first two Taylor coefficients of the gain (scalar) ===")$
+F    : b^2*p^2 + (r*(1 - a^2) - q*b^2)*p - q*r$
+q_dare : p - a^2*p*r/(r + b^2*p)$
+kopt : a*b*p/(r + b^2*p)$
+dp1  : -diff(F, b)/diff(F, p)$
+dp2  : diff(dp1, b) + diff(dp1, p)*dp1$
+dk1  : diff(kopt, b) + diff(kopt, p)*dp1$
+dk2  : diff(dk1, b) + diff(dk1, p)*dp1$
+/* the scalar shadow of the matrix formulas, at d = 1 */
+acl : a - b*kopt$
+rk  : r + b^2*p$
+lyap(y) := y/(1 - acl^2)$
+u1  : lyap(-2*kopt*p*acl)$
+e1  : (p*acl - b*p*kopt + b*u1*acl)/rk$
+u2  : lyap(kopt^2*p - 2*kopt*u1*acl)$
+v2  : lyap(e1^2*rk)$
+r1  : 2*p*b + b^2*u1$
+e2  : (-p*kopt + b*(u2 - v2)*acl + u1*acl - b*u1*kopt - r1*e1)/rk$
+print("STEP 1a  e1 - dk/db =", ratsimp(subst([q = q_dare], e1 - dk1)), " (0)")$
+print("STEP 1b  e2 - (1/2) d2k/db2 =", ratsimp(subst([q = q_dare], e2 - dk2/2)), " (0)")$
+
+print("=== STEP 2: the remainder identity, n = 2, m = 1, every symbol free ===")$
+scalarmatrixp : false$  /* keep a 1 x 1 product a matrix, so [1, 1] reads its entry */
+A  : matrix([a11, a12], [a21, a22])$
+B  : matrix([b1], [b2])$
+D  : matrix([d1], [d2])$
+P  : matrix([p11, p12], [p12, p22])$
+X  : matrix([x11, x12], [x12, x22])$
+U1 : matrix([s11, s12], [s12, s22])$
+W2 : matrix([w11, w12], [w12, w22])$
+tr(m) := transpose(m)$
+rkm : r + (tr(B) . P . B)[1, 1]$
+K   : (tr(B) . P . A)/rkm$
+Bh  : B + D$
+Rh  : r + (tr(Bh) . (P + X) . Bh)[1, 1]$
+Kh  : (tr(Bh) . (P + X) . A)/Rh$
+E   : Kh - K$
+G   : D . K$
+Acl : A - B . K$
+Abar : Acl - G$
+N1  : tr(D) . P . Acl - tr(B) . P . G$
+N2  : -tr(D) . P . G$
+E1  : (N1 + tr(B) . U1 . Acl)/rkm$
+R1  : (tr(D) . P . B + tr(B) . P . D + tr(B) . U1 . B)[1, 1]$
+E2  : (N2 + tr(B) . W2 . Acl + tr(D) . U1 . Acl - tr(B) . U1 . G - R1*E1)/rkm$
+R3  : E - E1 - E2$
+W   : X - U1$
+dR  : (tr(D) . P . D + tr(B) . W . B + tr(D) . X . B + tr(B) . X . D + tr(D) . X . D)[1, 1]$
+print("STEP 2a  Rh - R_K - R1 - dR =", ratsimp(Rh - rkm - R1 - dR), " (0)")$
+print("STEP 2b  Rh E - (N1 + N2 + Bh' X Abar) =",
+      ratsimp(Rh*E - (N1 + N2 + tr(Bh) . X . Abar)), " (0: holds for EVERY X)")$
+print("STEP 2c  (R_K + R1) R3 - [B'(W - W2)A_cl - B'WG + D'W Abar - D'U1 G - R1 E2 - dR E] =",
+      ratsimp((rkm + R1)*R3 - (tr(B) . (W - W2) . Acl - tr(B) . W . G + tr(D) . W . Abar
+                               - tr(D) . U1 . G - R1*E2 - dR*E)),
+      " (0: every term on the right is third order once W - W2 is)")$
+
+print("=== STEP 3: U - U1 - U2 solves a Stein equation whose source is third order ===")$
+kill(Acl, G, Abar)$
+Acl : matrix([c11, c12], [c21, c22])$
+G   : matrix([g11, g12], [g21, g22])$
+Abar : Acl - G$
+U   : matrix([t11, t12], [t21, t22])$
+U2  : matrix([v11, v12], [v21, v22])$
+L0(y)  := y - tr(Acl) . y . Acl$
+LD(y)  := y - tr(Abar) . y . Abar$
+D1(y)  := -(tr(G) . y . Acl + tr(Acl) . y . G)$
+D2(y)  := tr(G) . y . G$
+Mf  : tr(Abar) . P . Abar - tr(Acl) . P . Acl$
+M1  : -(tr(G) . P . Acl + tr(Acl) . P . G)$
+M2  : tr(G) . P . G$
+U3  : U - U1 - U2$
+print("STEP 3a  L_D - (L0 - D1 - D2) =", expand(LD(U) - (L0(U) - D1(U) - D2(U))), " (0)")$
+print("STEP 3b  M - M1 - M2 =", expand(Mf - M1 - M2), " (0)")$
+print("STEP 3c  L0(U3) - D1(U2) - D2(U1 + U2) - (D1 + D2)(U3) - {[L_D(U) - M] - [L0(U1) - M1]",
+      "- [L0(U2) - M2 - D1(U1)]} =",
+      expand(L0(U3) - D1(U2) - D2(U1 + U2) - D1(U3) - D2(U3)
+             - ((LD(U) - Mf) - (L0(U1) - M1) - (L0(U2) - M2 - D1(U1)))),
+      " (0: with U, U1, U2 solving their equations, U3 = L0^-1[D1(U2) + D2(U1 + U2) + (D1 + D2)(U3)])")$
+
+print("=== STEP 4: V := U - X solves L_D(V) = E' Rh E, the cost-difference identity ===")$
+kill(Acl, G, Abar, U)$
+Qm  : matrix([q11, q12], [q12, q22])$
+U   : matrix([t11, t12], [t21, t22])$
+Acl : A - B . K$
+Abar : A - Bh . K$
+Mf  : tr(Abar) . P . Abar - tr(Acl) . P . Acl$
+ric_b  : Qm + tr(A) . P . A - (tr(A) . P . B) . (tr(B) . P . A)/rkm - P$
+Y   : P + X$
+ric_bh : Qm + tr(A) . Y . A - (tr(A) . Y . Bh) . (tr(Bh) . Y . A)/Rh - Y$
+LDf(y) := y - tr(Abar) . y . Abar$
+print("STEP 4  L_D(U - X) - Rh E'E - [L_D(U) - M] - Ric_Bh(P + X) + Ric_B(P) =",
+      ratsimp(LDf(U - X) - Rh*(tr(E) . E) - (LDf(U) - Mf) - ric_bh + ric_b),
+      " (0: with both Riccati equations solved and L_D(U) = M, L_D(V) = E'Rh E >= 0)")$
+
+print("=== STEP 5: the bound on three scalar plants, in bfloat, against the exact gain ===")$
+/* On a scalar plant every operator norm is an absolute value: the Stein inverse is
+   1/(1 - acl^2), t1 = 2|k acl| ell, nU = 2|k p acl| ell, qB = |b rk acl| ell, and j, hU, h2 are
+   |e1|, |u2|, |e2| at d = 1.  psi(eta) is built exactly as the Python bound builds it. */
+fpprec : 40$
+scalarmatrixp : true$
+kill(A, B, D, P, X, E, G, K, R1, U, U1, U2, W, W2, Acl, Abar)$
+pstab_s(a, b, q, r) := block([c1 : r*(1 - a^2) - q*b^2], (-c1 + sqrt(c1^2 + 4*b^2*q*r))/(2*b^2))$
+k_s(a, b, q, r) := block([p : pstab_s(a, b, q, r)], a*b*p/(r + b^2*p))$
+consts(a, b, q, r) := block([p, k, ac, rk, ell, u1, e1, u2, v2, r1, e2],
+  p : bfloat(pstab_s(a, b, q, r)), k : a*b*p/(r + b^2*p), ac : a - b*k, rk : r + b^2*p,
+  ell : 1/(1 - ac^2),
+  u1 : -2*k*p*ac*ell, e1 : (p*ac - b*p*k + b*u1*ac)/rk,
+  u2 : (k^2*p - 2*k*u1*ac)*ell, v2 : e1^2*rk*ell, r1 : 2*p*b + b^2*u1,
+  e2 : (-p*k + b*(u2 - v2)*ac + u1*ac - b*u1*k - r1*e1)/rk,
+  [p, k, ac, rk, ell, 2*abs(k*ac)*ell, abs(u1), abs(e1), abs(u2), abs(e2), abs(b*rk*ac)*ell])$
+psi(c, b, dl) := block([p, k, ac, rk, ell, t1, nu, j, hu, h2, qb, nk, tau, lv, u1, u2, u3, u, bh,
+                        abar, rhat, r1, ceta, emm, eps, v, dr, bvv, w, x, drh, sigma3],
+  [p, k, ac, rk, ell, t1, nu, j, hu, h2, qb] : c, nk : abs(k), b : abs(b), ac : abs(ac),
+  tau : t1*dl + ell*nk^2*dl^2,
+  if tau >= 1 then return(false),
+  lv : ell/(1 - tau), u1 : nu*dl, u2 : hu*dl^2,
+  u3 : (t1*dl*u2 + ell*nk^2*dl^2*(u1 + u2))/(1 - tau), u : u1 + u2 + u3,
+  bh : b + dl, abar : ac + nk*dl,
+  rhat : rk + 2*p*b*dl + p*dl^2 + bh^2*u, r1 : 2*p*b*dl + b^2*u1, ceta : rk - r1,
+  if ceta <= 0 then return(false),
+  emm : h2*dl^2 + eta, eps : j*dl + emm, v : lv*rhat*eps^2,
+  dr : 2*p*b*dl + p*dl^2 + bh^2*(u + v),
+  bvv : qb*emm*(eps + j*dl) + b*ac*(ell*dr + tau*lv*rhat)*eps^2,
+  w : u2 + u3 + v, x : u + v,
+  drh : p*dl^2 + b^2*w + (2*b*dl + dl^2)*x,
+  sigma3 : b*ac*u3 + bvv + (b*nk*dl + dl*abar)*w + nk*dl^2*u1 + r1*h2*dl^2 + drh*eps,
+  expand(sigma3 - ceta*eta))$
+/* the least positive root of a polynomial convex on eta >= 0 and positive at 0, or false */
+least_root(ps) := block([dps : diff(ps, eta), lo, hi, mid, top],
+  if subst(eta = 0, dps) >= 0 then return(false),
+  hi : 1b0, while subst(eta = hi, dps) < 0 do hi : 2*hi,
+  lo : 0b0, for i : 1 thru 200 do (mid : (lo + hi)/2, if subst(eta = mid, dps) < 0 then lo : mid else hi : mid),
+  top : hi,
+  if subst(eta = top, ps) >= 0 then return(false),
+  lo : 0b0, hi : top,
+  for i : 1 thru 200 do (mid : (lo + hi)/2, if subst(eta = mid, ps) > 0 then lo : mid else hi : mid),
+  hi)$
+ebound(c, b, dl) := block([ps : psi(c, b, dl), rt],
+  if ps = false then return(false), rt : least_root(ps),
+  if rt = false then false else c[8]*dl + c[10]*dl^2 + rt)$
+for pl in [["A", 1, 1, 1, 1], ["B", 6/5, 1/2, 1, 1], ["C", 1/2, 1, 1, 1/10]] do block(
+  [nm : pl[1], a : pl[2], b : pl[3], q : pl[4], r : pl[5], c, target, lo, hi, mid, e, ok, worst, gap,
+   coefs, rho, k0],
+  c : consts(a, b, q, r),
+  target : bfloat((1 - abs(c[3]))/(2*abs(b))),
+  ok(dl) := block([e : ebound(c, b, dl)], is(e # false) and is(e <= target)),
+  lo : 0b0, hi : bfloat(target/c[8]),
+  for i : 1 thru 120 do (mid : (lo + hi)/2, if ok(mid) then lo : mid else hi : mid),
+  rho : lo,
+  print("STEP 5", nm, ": a, b, q, r =", a, b, q, r, "  j =", c[8], "  h2 =", c[10]),
+  print("   rho =", rho, "  l_k_ball = e(rho)/rho =", ebound(c, b, rho)/rho,
+        "  target theta/(2 beta_B) =", target, "  e(rho) =", ebound(c, b, rho)),
+  print("   e(1/20) =", ebound(c, b, 1/20)),
+  coefs : makelist(coeff(psi(c, b, rho), eta, i), i, 2, 4),
+  print("   psi's coefficients of eta^2..eta^4 at rho:", coefs,
+        if every(lambda([x], x >= 0), coefs) then "(convex)" else "(FAIL)"),
+  k0 : bfloat(k_s(a, b, q, r)), worst : 0b0,
+  for f in [1/1000, 1/10, 1/4, 1/2, 3/4, 9/10, 1] do for s in [1, -1] do block([dl : rho*f],
+    gap : abs(bfloat(k_s(a, b + s*dl, q, r)) - k0)/ebound(c, b, dl),
+    worst : max(worst, gap)),
+  print("   max over |dB| in rho*{1e-3 .. 1}, both signs, of |khat - k|/bound =", worst,
+        if worst <= 1 then "(bound holds)" else "(FAIL)"))$
+
+print("=== STEP 6: STEPS 2 and 4 with a matrix R, n = 3 and m = 2, at an exact rational point ===")$
+/* STEP 2 had m = 1, where R_K, R1 and dR are scalars and commute.  With m = 2 they multiply E
+   from the left only, in the order the Python bound uses; the identities still hold exactly. */
+scalarmatrixp : false$
+zerop(mm) := every(lambda([x], is(ratsimp(x) = 0)), flatten(args(mm)))$
+verdict(mm) := if zerop(mm) then "(exact zero)" else "(FAIL)"$
+A  : matrix([1, 1/10, 0], [0, 19/20, 1/5], [1/7, 0, 9/10])$
+B  : matrix([1/2, 0], [1, 1/3], [0, 1])$
+D  : matrix([1/11, -1/13], [-1/17, 1/19], [1/23, 1/29])$
+P  : matrix([3, 1/2, 1/5], [1/2, 2, 1/3], [1/5, 1/3, 5/2])$
+X  : matrix([1/7, 1/9, -1/8], [1/9, -1/6, 1/10], [-1/8, 1/10, 1/5])$
+U1 : matrix([1/3, -1/5, 1/7], [-1/5, 1/4, 1/6], [1/7, 1/6, -1/2])$
+W2 : matrix([-1/4, 1/12, 1/9], [1/12, 1/5, -1/7], [1/9, -1/7, 1/3])$
+U  : matrix([2/3, 1/8, -1/5], [1/4, -1/3, 1/6], [1/9, 1/2, 1/7])$
+Qm : matrix([1, 1/4, 0], [1/4, 2, 1/6], [0, 1/6, 3/2])$
+Rm : matrix([1/2, 1/10], [1/10, 1])$
+rkm : Rm + tr(B) . P . B$
+K   : invert(rkm) . tr(B) . P . A$
+Bh  : B + D$
+Rh  : Rm + tr(Bh) . (P + X) . Bh$
+Kh  : invert(Rh) . tr(Bh) . (P + X) . A$
+E   : Kh - K$
+G   : D . K$
+Acl : A - B . K$
+Abar : Acl - G$
+N1  : tr(D) . P . Acl - tr(B) . P . G$
+N2  : -tr(D) . P . G$
+E1  : invert(rkm) . (N1 + tr(B) . U1 . Acl)$
+R1  : tr(D) . P . B + tr(B) . P . D + tr(B) . U1 . B$
+E2  : invert(rkm) . (N2 + tr(B) . W2 . Acl + tr(D) . U1 . Acl - tr(B) . U1 . G - R1 . E1)$
+R3  : E - E1 - E2$
+W   : X - U1$
+dR  : tr(D) . P . D + tr(B) . W . B + tr(D) . X . B + tr(B) . X . D + tr(D) . X . D$
+print("STEP 6a  Rh - R_K - R1 - dR:", verdict(Rh - rkm - R1 - dR))$
+print("STEP 6b  Rh E - (N1 + N2 + Bh' X Abar):", verdict(Rh . E - (N1 + N2 + tr(Bh) . X . Abar)))$
+print("STEP 6c  the remainder identity:",
+      verdict((rkm + R1) . R3 - (tr(B) . (W - W2) . Acl - tr(B) . W . G + tr(D) . W . Abar
+                                 - tr(D) . U1 . G - R1 . E2 - dR . E)))$
+Mf  : tr(Abar) . P . Abar - tr(Acl) . P . Acl$
+ric_b  : Qm + tr(A) . P . A - tr(A) . P . B . invert(rkm) . tr(B) . P . A - P$
+ric_bh : Qm + tr(A) . (P + X) . A - tr(A) . (P + X) . Bh . invert(Rh) . tr(Bh) . (P + X) . A
+         - (P + X)$
+LDf(y) := y - tr(Abar) . y . Abar$
+print("STEP 6d  the cost-difference identity:",
+      verdict(LDf(U - X) - tr(E) . Rh . E - (LDf(U) - Mf) - ric_bh + ric_b))$

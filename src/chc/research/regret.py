@@ -23,6 +23,7 @@ from math import comb, factorial, lgamma
 from typing import Any, Literal, cast
 
 import numpy as np
+from numpy.polynomial import Polynomial
 from numpy.polynomial.hermite_e import hermegauss, hermeval
 from numpy.typing import NDArray
 from scipy.integrate import quad, quad_vec
@@ -4170,6 +4171,190 @@ def _least_failing_radius(
     return radius
 
 
+def _least_root(psi: Polynomial) -> float:
+    """The least positive root of ``psi``, convex on ``[0, inf)`` and positive at 0, read from
+    above: ``psi`` is at most 0 at the value returned. ``inf`` where ``psi`` is nowhere negative,
+    since then no root holds the remainder below it."""
+    slope = psi.deriv()
+    top = 1.0
+    while psi(top) >= 0.0 and slope(top) < 0.0:
+        top *= 2.0
+    if psi(top) >= 0.0:  # the slope turned first, so the minimum lies in [0, top]
+        lo, hi = 0.0, top
+        for _ in range(64):
+            mid = 0.5 * (lo + hi)
+            lo, hi = (mid, hi) if slope(mid) < 0.0 else (lo, mid)
+        top = hi
+        if psi(top) >= 0.0:
+            return float("inf")
+    lo, hi = 0.0, top
+    for _ in range(64):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if psi(mid) > 0.0 else (lo, mid)
+    return hi
+
+
+def _largest_holding(holds: Callable[[float], bool], top: float) -> float:
+    """The largest radius in ``[0, top]`` at which ``holds``, which holds near 0 and, once it
+    fails, fails at every larger radius; to the width 64 halvings of ``top`` reach."""
+    if holds(top):
+        return top
+    lo, hi = 0.0, top
+    for _ in range(64):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if holds(mid) else (lo, mid)
+    return lo
+
+
+@dataclass(frozen=True)
+class _GainBound:
+    """A bound on ``||K(B + dB) - K(B)||_F`` that holds at every ``dB`` of ``||dB||_F <= delta``,
+    derived in the file :func:`ce_explicit_constant_certificate` cites.
+
+    The gain's first and second Taylor terms, ``E1`` and ``E2``, are linear and quadratic in
+    ``dB``: the norm of the first map's matrix is its norm, and that of the second's symmetric
+    bilinear form bounds it. The rest, ``E3``, obeys an exact identity whose terms are bounded by
+    norms, each a polynomial in ``||E3||`` with coefficients that grow with ``delta``. ``||E3||`` is
+    0 at ``dB = 0`` and moves continuously along ``B + t dB``, so it cannot pass a value where
+    ``remainder`` is negative: it stays below the polynomial's least positive root. Every norm on a
+    matrix is Frobenius'; each one on an operator is the one Frobenius induces, or a bound on it.
+    """
+
+    ell: float  # ||L0^-1||, L0(Y) = Y - A_cl' Y A_cl
+    t1: float  # ||dB -> L0^-1 D1||, D1(Y) = -(G' Y A_cl + A_cl' Y G), G = dB K
+    n_u1: float  # ||dB -> U1||: U, the true gain's cost on B + dB less P, to first order
+    j: float  # ||dB -> E1||: the derivative of the gain
+    h_u2: float  # ||dB -> U2||, a quadratic map: U to second order
+    h2: float  # ||dB -> E2||, a quadratic map
+    q_b: float  # ||(E, F) -> B' L0^-1(E' R_K F) A_cl||, a bilinear map
+    k: float  # ||K||
+    p: float  # ||P||
+    pb: float  # ||P B||
+    b: float  # ||B||
+    a_cl: float  # ||A_cl||
+    rk_min: float  # lmin(R_K)
+    rk: float  # ||R_K||
+
+    def domain(self) -> float:
+        """The radius at which ``tau`` reaches 1 or ``c_eta`` reaches 0, so no bound exists."""
+        curvature = self.ell * self.k**2
+        tau_one = 2.0 / (self.t1 + float(np.sqrt(self.t1**2 + 4.0 * curvature)))
+        return min(tau_one, self.rk_min / (2.0 * self.pb + self.b**2 * self.n_u1))
+
+    def remainder(self, delta: float) -> Polynomial | None:
+        """The bound on ``||R_K E3||`` less ``c_eta ||E3||``, as a polynomial in ``||E3||``; None
+        where the true gain's Stein operator on ``B + dB`` or ``R_K + R1`` may be singular."""
+        tau = self.t1 * delta + self.ell * self.k**2 * delta**2  # bounds ||L0^-1 (D1 + D2)||
+        r1 = 2.0 * self.pb * delta + self.b**2 * self.n_u1 * delta  # bounds ||R1||
+        c_eta = self.rk_min - r1
+        if tau >= 1.0 or c_eta <= 0.0:
+            return None
+        lv = self.ell / (1.0 - tau)  # bounds ||L_D^-1||
+        u1, u2 = self.n_u1 * delta, self.h_u2 * delta**2
+        u3 = (self.t1 * delta * u2 + self.ell * self.k**2 * delta**2 * (u1 + u2)) / (1.0 - tau)
+        u = u1 + u2 + u3  # bounds ||U||, and u3 bounds ||U - U1 - U2||
+        b_hat, a_bar = self.b + delta, self.a_cl + self.k * delta
+        r_hat = self.rk + 2.0 * self.pb * delta + self.p * delta**2 + b_hat**2 * u
+        jd = self.j * delta
+        past_e1 = self.h2 * delta**2 + Polynomial([0.0, 1.0])  # bounds ||E - E1||
+        e = jd + past_e1  # bounds ||E||
+        v = lv * r_hat * e**2  # bounds ||V||, V = U - X, X the Riccati solution's change
+        dr = 2.0 * self.pb * delta + self.p * delta**2 + b_hat**2 * (u + v)  # ||R_hat - R_K||
+        # ||B'(V - V2) A_cl||, V2 = L0^-1(E1' R_K E1): the bilinear part, read exactly, then the
+        # parts R_hat - R_K and L_D^-1 - L0^-1 add
+        bvv = (
+            self.q_b * past_e1 * (e + jd)
+            + self.b * self.a_cl * (self.ell * dr + tau * lv * r_hat) * e**2
+        )
+        w = u2 + u3 + v  # bounds ||X - U1||
+        dr2 = self.p * delta**2 + self.b**2 * w + (2.0 * self.b * delta + delta**2) * (u + v)
+        sigma = (
+            self.b * self.a_cl * u3
+            + bvv
+            + (self.b * self.k + a_bar) * delta * w
+            + self.k * delta**2 * u1
+            + r1 * self.h2 * delta**2
+            + dr2 * e
+        )
+        return sigma - c_eta * Polynomial([0.0, 1.0])
+
+    def bound(self, delta: float) -> float:
+        """A bound on ``||K(B + dB) - K(B)||_F`` over ``||dB||_F <= delta``; ``inf`` where none
+        exists."""
+        psi = self.remainder(delta)
+        if psi is None:
+            return float("inf")
+        return self.j * delta + self.h2 * delta**2 + _least_root(psi)
+
+
+def _gain_bound(
+    a_mat: Matrix, b_mat: Matrix, r_mat: Matrix, k_star: Matrix, p_mat: Matrix
+) -> _GainBound:
+    """The constants of :class:`_GainBound` at the plant ``(A, B)`` with LQR ``(K, P)``."""
+    n, m = b_mat.shape
+    a_cl = a_mat - b_mat @ k_star
+    rk = r_mat + b_mat.T @ p_mat @ b_mat
+    # L0^-1 on row-major vectors: vec(L Y M) = (L (x) M') vec(Y)
+    stein = np.linalg.inv(np.eye(n * n) - np.kron(a_cl.T, a_cl.T))
+
+    def lyap(y: np.ndarray) -> np.ndarray:
+        return (stein @ y.ravel()).reshape(n, n)
+
+    def u1(d: np.ndarray) -> np.ndarray:
+        g = d @ k_star
+        return lyap(-(g.T @ p_mat @ a_cl + a_cl.T @ p_mat @ g))
+
+    def e1(d: np.ndarray) -> np.ndarray:
+        n1 = d.T @ p_mat @ a_cl - b_mat.T @ p_mat @ d @ k_star
+        return np.linalg.solve(rk, n1 + b_mat.T @ u1(d) @ a_cl)
+
+    def u2(d: np.ndarray) -> np.ndarray:
+        g, w = d @ k_star, u1(d)
+        return lyap(g.T @ p_mat @ g - g.T @ w @ a_cl - a_cl.T @ w @ g)
+
+    def e2(d: np.ndarray) -> np.ndarray:
+        g, w, e = d @ k_star, u1(d), e1(d)
+        x2 = u2(d) - lyap(e.T @ rk @ e)
+        r1 = d.T @ p_mat @ b_mat + b_mat.T @ p_mat @ d + b_mat.T @ w @ b_mat
+        n2 = -d.T @ p_mat @ g + d.T @ w @ a_cl - b_mat.T @ w @ g
+        return np.linalg.solve(rk, n2 + b_mat.T @ x2 @ a_cl - r1 @ e)
+
+    units = [unit.reshape(n, m) for unit in np.eye(n * m)]
+
+    def norm(columns: list[np.ndarray]) -> float:
+        return float(np.linalg.norm(np.column_stack([c.ravel() for c in columns]), 2))
+
+    def quadratic(form: Callable[[np.ndarray], np.ndarray]) -> float:
+        # its symmetric bilinear form at every ordered pair of units: vec form(x) = F vec(x (x) x)
+        return norm(
+            [
+                form(x) if i == i2 else 0.25 * (form(x + y) - form(x - y))
+                for i, x in enumerate(units)
+                for i2, y in enumerate(units)
+            ]
+        )
+
+    d1 = [np.kron((d @ k_star).T, a_cl.T) + np.kron(a_cl.T, (d @ k_star).T) for d in units]
+    gains = [unit.reshape(m, n) for unit in np.eye(m * n)]
+    ev_rk = np.linalg.eigvalsh(rk)
+    return _GainBound(
+        ell=float(np.linalg.norm(stein, 2)),
+        t1=float(np.linalg.norm(np.hstack([stein @ op for op in d1]), 2)),
+        n_u1=norm([u1(d) for d in units]),
+        j=norm([e1(d) for d in units]),
+        h_u2=quadratic(u2),
+        h2=quadratic(e2),
+        q_b=norm([b_mat.T @ lyap(e.T @ rk @ f) @ a_cl for e in gains for f in gains]),
+        k=float(np.linalg.norm(k_star, 2)),
+        p=float(np.linalg.norm(p_mat, 2)),
+        pb=float(np.linalg.norm(p_mat @ b_mat, 2)),
+        b=float(np.linalg.norm(b_mat, 2)),
+        a_cl=float(np.linalg.norm(a_cl, 2)),
+        rk_min=float(ev_rk[0]),
+        rk=float(ev_rk[-1]),
+    )
+
+
 @dataclass(frozen=True)
 class CeExplicitConstantCurve:
     """End-to-end: the certified ball, the explicit constant, and how conservative both are."""
@@ -4179,11 +4364,15 @@ class CeExplicitConstantCurve:
     beta_b: float  # ||P^(1/2) B||/sqrt(lmin(P)): how hard the input channel pushes on that metric
     kappa_p: float  # lmax(P)/lmin(P): the P-metric-to-Euclidean conversion in the state energy
     rk_norm: float  # ||R + B'PB||: the curvature of the exact gain-gap quadratic form
-    l_k_local: float  # ||dK/dB|| measured at the plant (the derivative)
-    l_k_ball: (
-        float  # sup of ||dK||/||dB|| over the CERTIFIED ball -- the cited hypothesis, measured
-    )
-    rho: float  # theta/(2 beta_B L_K): the radius on which stabilisation is GUARANTEED
+    # ||dK||_F/||dB||_F to first order: the norm of the gain's derivative, computed, not sampled
+    l_k_local: float
+    # L_K: a BOUND on ||dK||_F/||dB||_F at every dB of the certified ball, the bound's value at rho
+    # over rho
+    l_k_ball: float
+    # the largest ||dB||_F on which the bound keeps beta_B ||dK|| within theta/2, so stabilisation
+    # is GUARANTEED; theta/(2 beta_B L_K) where the margin binds, less where bound_radius does
+    rho: float
+    bound_radius: float  # the largest ||dB||_F at which the bound exists: rho is at most this
     c_const: float  # 2 kappa_P ||R_K|| L_K^2 ||x0||^2 / theta: the explicit constant
     identity_residual: float  # max |LHS - RHS| of the exact gain-gap identity over random gains
     radius_multiples: Vector  # ||dB|| swept as multiples of rho
@@ -4194,10 +4383,11 @@ class CeExplicitConstantCurve:
     unstable_fraction: Vector  # fraction of draws whose CE controller destabilises the TRUE plant
     # the least ||dB|| at which a drawn direction destabilises, bisected along each destabilising
     # draw's direction to within 1e-6 rho of where it starts to; where no draw destabilises, the
-    # largest swept, a lower bound on it
+    # largest swept, which bounds it from below only if the loop, once failing, fails at every
+    # larger radius: a window of failing radii between two multiples goes unseen
     empirical_radius: float
-    # empirical_radius / rho: how much the certificate gives away; a lower bound where no draw
-    # destabilised
+    # empirical_radius / rho: how much the certificate gives away, with the same caveat where no
+    # draw destabilised
     conservatism: float
 
 
@@ -4213,7 +4403,8 @@ def ce_explicit_constant_certificate(  # noqa: PLR0915
     seed: int = 11,
 ) -> CeExplicitConstantCurve:
     """The finite-sample end-to-end constants (derived in
-    ``validation/ce_explicit_constants.mac``, proved in ``proofs/ce_explicit_constants.v``).
+    ``validation/ce_explicit_constants.mac``, proved in ``proofs/ce_explicit_constants.v``; the
+    bound on the gain over the ball derived in ``validation/ce_gain_perturbation.mac``).
 
     The order-transfer certificates took ``regret <= cc*||dB||^2`` as a HYPOTHESIS --
     ``c2_end_to_end.v`` quantifies over an arbitrary ``0 <= cc`` -- and cited Mania-Tu-Recht's LOCAL
@@ -4230,9 +4421,10 @@ def ce_explicit_constant_certificate(  # noqa: PLR0915
     triangle inequality bounds that: ``||P^(1/2)(A - B Khat)P^(-1/2)|| <= sqrt(1 - eta) + beta_B
     ||dK||``, so spending half the margin gives the certified ball
 
-        rho = theta/(2 beta_B L_K),   C = 2 kappa_P ||R_K|| L_K^2 ||x0||^2 / theta,
+        rho <= theta/(2 beta_B L_K),   C = 2 kappa_P ||R_K|| L_K^2 ||x0||^2 / theta,
 
-    with ``eta = lmin(Q + K'RK)/lmax(P)``, ``theta = 1 - sqrt(1 - eta)``. Inside ``rho`` the
+    with ``eta = lmin(Q + K'RK)/lmax(P)``, ``theta = 1 - sqrt(1 - eta)`` and ``||dK|| <= L_K
+    ||dB||`` at every ``dB`` of the ball, ``||dB||`` Frobenius' as in the sweep. Inside ``rho`` the
     certainty-equivalent gain provably stabilises the TRUE plant with the checkable Lyapunov
     certificate ``(A - B Khat)'P(A - B Khat) <= (1 - theta/2)^2 P``, and the regret is at most
     ``C ||dB||^2``. Composed with the clustered cross-fit rate ``||B_hat - B|| = O_p(a_G)`` of
@@ -4242,8 +4434,10 @@ def ce_explicit_constant_certificate(  # noqa: PLR0915
     protects against, so ``unstable_fraction`` has to become positive at large multiples of ``rho``
     or the ball is not doing any work. ``conservatism`` records the price of the guarantee, and
     ``empirical_radius`` is bisected for it: the first multiple at which a draw fails brackets the
-    radius from above only, and on three scalar plants it read 10, 4 and 4 times ``rho`` where the
-    loop first fails at 4.5, 3.3 and 2.3 times it (``validation/ce_explicit_constants.mac`` STEP 9).
+    radius from above only, and on three scalar plants it read 10, 10 and no multiple at all where
+    the loop first fails at 4.8, 5.7 and 4.6 times ``rho`` (``validation/ce_explicit_constants.mac``
+    STEP 9); the third fails only on a window of radii, 4.6 to 8.0 times ``rho``, between two
+    default multiples.
     Each failing draw's direction is bisected from the true plant out to the least radius a draw
     is known to fail at, wherever it fails there as well. The directions are sampled, so the
     reading is an upper bound on the least destabilising ``||dB||``, as any failing draw is. Note
@@ -4251,12 +4445,22 @@ def ce_explicit_constant_certificate(  # noqa: PLR0915
     ``unstable_fraction > 0`` the true worst case is ``+inf`` and the comparison against ``bound``
     there is vacuous, which is exactly why the guarantee is stated on ``rho`` and not on the sweep.
 
-    SCOPE: one citation remains on the control side -- uniform validity of the gain map's Lipschitz
-    constant on the ball (Konstantinov-Petkov-Christov-Angelova 1993; Sun 1998). It is not assumed
-    away: ``l_k_ball`` measures it over the certified ball against the derivative ``l_k_local``.
-    The measurement is a maximum over sampled perturbations, which can only fall short of the
-    supremum, and ``rho`` then reads wide and ``C`` low by the same factor: on the defaults, a
-    grid of 2001 directions at 50 radii read no larger, to 4e-7.
+    THE LIPSCHITZ CONSTANT IS BOUNDED, NOT SAMPLED (``validation/ce_gain_perturbation.mac``). A
+    non-local perturbation bound in the spirit of Konstantinov, Petkov and Christov (Kybernetika
+    1993) and Sun (Linear Algebra Appl. 1998), written for the gain rather than the Riccati
+    solution: the first two Taylor terms of ``Khat(B + dB) - K`` are computed exactly as operators
+    of ``dB``, and the remainder is held below the least positive root of a convex polynomial
+    majorant, which a continuity argument along ``B + t dB`` makes valid at every ``dB`` of the
+    radius, not just near it. The bound ``e(delta)`` on ``||dK||`` over the ball of radius
+    ``delta`` has ``e(delta)/delta`` nondecreasing, so ``l_k_ball = e(rho)/rho`` is a Lipschitz
+    constant for the whole ball, and ``l_k_local`` is the derivative's norm it tends to as the ball
+    shrinks. On the defaults the bound reads 0.848 against the derivative's 0.548, while 720
+    directions at ``rho`` read at most 0.560: the price of a guarantee over a sample. Where the
+    majorant has no root, the bound does not exist: ``bound_radius`` is the largest radius at
+    which it does, and ``rho`` stops there, below ``theta/(2 beta_B l_k_ball)``, on all three
+    scalar plants of the tests. The bound takes the computed ``P`` as exact: a Riccati solution
+    with a residual far above rounding, as on a plant near the edge of stabilisability, is outside
+    it.
     """
     a_mat = np.array([[1.0, 0.1], [0.0, 0.95]]) if a_mat is None else a_mat
     b_mat = np.array([[0.5], [1.0]]) if b_mat is None else b_mat
@@ -4281,24 +4485,17 @@ def ce_explicit_constant_certificate(  # noqa: PLR0915
     def gain(db: np.ndarray) -> Matrix:
         return dlqr(a_mat, b_mat + db, q_mat, r_mat)[0]
 
-    def sup_ratio(radius: float, n: int) -> float:
-        out = 0.0
-        for _ in range(n):
-            d = rng.normal(size=b_mat.shape)
-            d *= radius / float(np.linalg.norm(d))
-            try:
-                out = max(out, float(np.linalg.norm(gain(d) - k_star, 2)) / radius)
-            except (np.linalg.LinAlgError, ValueError):
-                continue  # (A, B + dB) unstabilisable: no CE gain exists to be Lipschitz about
-        return out
-
-    # The derivative, then the SUP over the ball rho_0 it induces: the cited uniform-Lipschitz
-    # hypothesis, measured rather than assumed. rho_0 breaks the circularity (rho needs L_K).
-    l_k_local = max(sup_ratio(s, 60) for s in (1e-7, 1e-6, 1e-5))
-    rho0 = theta / (2.0 * beta_b * l_k_local)
-    l_k_ball = max(sup_ratio(rho0 * f, 120) for f in (0.25, 0.5, 1.0))
-    rho = theta / (2.0 * beta_b * max(l_k_local, l_k_ball))
-    c_const = 2.0 * kappa_p * rk_norm * max(l_k_local, l_k_ball) ** 2 * float(x0 @ x0) / theta
+    # The ball is the largest radius at which the gain bound keeps beta_B ||dK|| within half the
+    # margin, inside the radius at which the bound exists at all. Both are monotone in the radius.
+    gain_bound = _gain_bound(a_mat, b_mat, r_mat, k_star, p_mat)
+    margin = theta / (2.0 * beta_b)
+    bound_radius = _largest_holding(
+        lambda d: bool(np.isfinite(gain_bound.bound(d))), gain_bound.domain()
+    )
+    rho = _largest_holding(lambda d: gain_bound.bound(d) <= margin, bound_radius)
+    l_k_local = gain_bound.j
+    l_k_ball = gain_bound.bound(rho) / rho
+    c_const = 2.0 * kappa_p * rk_norm * l_k_ball**2 * float(x0 @ x0) / theta
 
     # The identity is EXACT -- check it on gains far from optimal, not on a small neighbourhood.
     ident = 0.0
@@ -4356,6 +4553,7 @@ def ce_explicit_constant_certificate(  # noqa: PLR0915
         l_k_local,
         l_k_ball,
         rho,
+        bound_radius,
         c_const,
         ident,
         mults,
