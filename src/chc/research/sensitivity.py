@@ -45,7 +45,7 @@ The pipeline, estimate -> sensitivity radius -> robust control -> validation:
    :func:`barrier_reachability_gap` prices that certificate against the Hamilton-Jacobi answer it
    approximates: where the condition holds on *all* of ``{h >= 0}`` the reachable tube is that whole
    set, and where it only holds pointwise ``certified_but_unreachable`` says how much the per-step
-   reading over-promises -- a filter, not a proof.
+   reading over-promises -- a filter, not a proof. It reads both at the nodes of a grid.
 6. **Validation.** :func:`confounding_robust_control_benchmark` grounds it on a synthetic
    observational confounded marketplace and :func:`confounding_robust_tracking_benchmark` on a
    confounded dynamic plant in **closed loop**; :class:`ConfoundingRobustTask` carries the same

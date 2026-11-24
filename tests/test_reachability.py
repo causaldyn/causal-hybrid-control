@@ -1,7 +1,10 @@
 """HJ backward reachable tube under a set-identified effect (``chc.reachability``)."""
 
+import inspect
+import math
 from itertools import pairwise
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -10,6 +13,8 @@ from jax import Array
 import chc.reachability as reachability
 from chc.barrier import robust_barrier_margin
 from chc.reachability import (
+    BarrierReachabilityGap,
+    HigherOrderBarrierGap,
     ReachableTube,
     backward_reachable_tube,
     barrier_reachability_gap,
@@ -251,7 +256,7 @@ def test_hamiltonian_is_the_barrier_margin_with_a_solved_for_gradient(radius: fl
 
 
 def test_a_valid_barrier_certificate_makes_the_tube_the_whole_safe_set() -> None:
-    """The CBF theorem, executable: condition everywhere on ``{h >= 0}`` implies invariance."""
+    """The CBF theorem on the grid: the condition at every node of ``{h >= 0}``, the tube on all."""
     gap = barrier_reachability_gap(
         _supply_floor,
         _zone_drift,
@@ -314,6 +319,75 @@ def test_pointwise_certification_traps_a_relative_degree_two_barrier() -> None:
     assert loose.barrier_fraction == pytest.approx(tight.barrier_fraction)
     assert loose.reachable_fraction < tight.reachable_fraction
     assert loose.certified_but_unreachable > 10 * tight.certified_but_unreachable
+
+
+# validation/reachability_grid_blind.mac: a bump of radius 1/25 about the centre of the cell
+# [0, 1/10]^2 of a 21-node grid on [-1, 1]^2, deep enough to cut a hole in {h >= 0}
+_BUMP_CENTRE = jnp.array([0.05, 0.05])
+_BUMP_REACH = 0.04
+
+
+def _holed(x: Array) -> Array:
+    s = jnp.sum((x - _BUMP_CENTRE) ** 2) / _BUMP_REACH**2
+    inside = s < 1.0
+    bump = jnp.where(inside, jnp.exp(-1.0 / (1.0 - jnp.where(inside, s, 0.0))), 0.0)
+    return 1.0 - 4.0 * bump
+
+
+def _rightward(_: Array) -> Array:
+    return jnp.array([1.0, 0.0])
+
+
+def test_valid_cbf_reads_the_condition_at_the_grid_nodes_only() -> None:
+    """A barrier that meets the condition at every node and fails it between them reads valid.
+
+    ``h = 1 - 4 phi`` with ``phi`` a smooth bump inside one cell (reachability_grid_blind.mac):
+    at every node ``h`` and each of its derivatives are those of ``h = 1``, so every field, and
+    any Lipschitz margin read off the nodes, is the same as for ``h = 1``. Yet the residual is
+    negative between the nodes, and the drift carries a safe state into a hole in ``{h >= 0}``.
+    So ``valid_cbf`` is the condition at the nodes, and the documents say so.
+    """
+    common = {"lower": (-1.0, -1.0), "upper": (1.0, 1.0), "resolution": (21, 21)}
+    no_actuator = jnp.zeros((2, 1))
+    gap = barrier_reachability_gap(
+        _holed, _rightward, no_actuator, horizon=0.5, steps=50, alpha=1.0, **common
+    )
+    higher = higher_order_barrier_gap(
+        _holed, _rightward, no_actuator, horizon=0.5, steps=50, **common
+    )
+    assert gap.valid_cbf
+    assert gap.ok
+    assert gap.safe_fraction == gap.reachable_fraction == gap.barrier_fraction == 1.0
+    assert higher.valid_cbf
+    assert higher.ok
+    assert higher.working_fraction == 1.0
+
+    def residual(x: Array) -> Array:
+        margin = robust_hamiltonian(jax.grad(_holed)(x), _rightward(x), no_actuator, 1.0, 0.0)
+        return margin + _holed(x)
+
+    axis = jnp.linspace(-1.0, 1.0, 21)
+    nodes = jnp.stack(jnp.meshgrid(axis, axis, indexing="ij"), axis=-1).reshape(-1, 2)
+    # at every node h, its gradient and its Hessian are h = 1's, so the residual and its slope,
+    # which read nothing else of h, are too: a Lipschitz margin read there is zero
+    assert np.all(np.asarray(jax.vmap(_holed)(nodes)) == 1.0)
+    assert np.all(np.asarray(jax.vmap(jax.grad(_holed))(nodes)) == 0.0)
+    assert np.all(np.asarray(jax.vmap(jax.hessian(_holed))(nodes)) == 0.0)
+    assert np.all(np.asarray(jax.vmap(residual)(nodes)) == 1.0)
+    # between them it fails: STEP 2's 1 - (1636/9) exp(-4/3), -46.9, at the centre less w/2
+    between = _BUMP_CENTRE - jnp.array([_BUMP_REACH / 2.0, 0.0])
+    assert float(residual(between)) == pytest.approx(
+        1.0 - 1636.0 / 9.0 * math.exp(-4.0 / 3.0), rel=1e-12, abs=0.0
+    )
+    # and the flow leaves the set: from h = 1 at the centre less w to h = 1 - 4/e at the centre
+    start = _BUMP_CENTRE - jnp.array([_BUMP_REACH, 0.0])
+    assert float(_holed(start)) == 1.0
+    assert float(_holed(start + _BUMP_REACH * _rightward(start))) == pytest.approx(
+        1.0 - 4.0 / math.e, rel=1e-12, abs=0.0
+    )
+    for kind in (BarrierReachabilityGap, HigherOrderBarrierGap):
+        assert "at the grid's nodes" in (kind.__doc__ or "")
+        assert "EVERY" not in inspect.getsource(kind)
 
 
 def test_interpolation_reproduces_grid_values_and_scores_states_off_grid() -> None:

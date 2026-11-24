@@ -184,11 +184,12 @@ the same worst-case condition inside the solve instead of pricing it after.
 
 The **Hamilton–Jacobi** answer the barrier only approximates: `V(x,T) = max_u min_{ΔB} min_s
 h(ξ(s))` on a Lax–Friedrichs grid, with the identification radius as the adversary. It is the same
-robust-margin algebra as `barrier`, but `p = ∇V` is *solved for* rather than assumed. It turns the
-control-barrier theorem into an executable check (the condition on all of `{h ≥ 0}` implies the tube
-**is** `{h ≥ 0}`) and prices what pointwise certification misses. On a relative-degree-2 barrier the
-pointwise verdict is identical at every radius while the true tube shrinks (6.4 % of the grid
-certified and unreachable), so `certify_safety`'s per-step prefix is a filter, not a proof.
+robust-margin algebra as `barrier`, but `p = ∇V` is *solved for* rather than assumed. It checks the
+control-barrier theorem on the grid (the condition at every node of `{h ≥ 0}`, and the tube holding
+those nodes; neither is read between nodes) and prices what pointwise certification misses. On a
+relative-degree-2 barrier the pointwise verdict is identical at every radius while the true tube
+shrinks (6.4 % of the grid certified and unreachable), so `certify_safety`'s per-step prefix is a
+filter, not a proof.
 `uv run python scripts/reachability_demo.py`
 
 ## Regret guarantees

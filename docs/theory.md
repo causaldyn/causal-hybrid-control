@@ -260,6 +260,7 @@ failures, when the tests were first written (names relative to `chc`):
 | `planned_cost_bias.mac` | `plan.CausalPlan.planned_cost_bias` | `test_formal_control.py` |
 | `port_hamiltonian_lyapunov.v` | `residual.damping_injection_certificate` | `test_formal_fields.py` |
 | `predictive_tube.mac` | `plan.causal_plan`, `uncertainty._noise_tube` | `test_formal_control.py` |
+| `reachability_grid_blind.mac` | `reachability.BarrierReachabilityGap` | `test_reachability.py` |
 | `regret_bound_rows.mac` | `plan._row_bound`, `plan.plan_regret_bound` | `test_formal_control.py, test_formal_seams.py` |
 | `response_curves.mac` | `response` | `test_formal_estimation.py` |
 | `rk4_rollout.mac` | `uncertainty.linear_rollout_bound`, `uncertainty.time_varying_rollout_bound` | `test_formal_control.py` |

@@ -116,6 +116,12 @@ FORMAL_LINKS = {
             "test_plan_regret_bound_vanishes_at_the_box_optimum",
         ),
     },
+    "chc.reachability.BarrierReachabilityGap": {
+        "cites": ("reachability_grid_blind.mac",),
+        "tests": (
+            "test_reachability.py::test_valid_cbf_reads_the_condition_at_the_grid_nodes_only",
+        ),
+    },
     "chc.research.koopman.KoopmanModel": {
         "cites": ("koopman_discrete_closure.mac",),
         "tests": (

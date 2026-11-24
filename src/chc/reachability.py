@@ -30,7 +30,8 @@ the control term vanishes and the tube collapses at the drift's rate.
 Scope: a uniform 2-D grid with the standard Lax-Friedrichs scheme (Osher-Fedkiw; Mitchell's
 level-set toolbox). Two states because that is where a grid method is honest -- the cost is
 exponential in the dimension, and this exists to *calibrate* the barrier certificate on small
-problems, not to replace it on large ones.
+problems, not to replace it on large ones. Every verdict is read at the grid's nodes, and none is
+a claim about the points between them.
 """
 
 from __future__ import annotations
@@ -267,15 +268,23 @@ class BarrierReachabilityGap:
     point of ``{h >= 0}``, that set is forward invariant. Checking it at one state -- which is what
     :func:`chc.plan.certify_safety` does per step, and what any online safety filter does -- is a
     strictly weaker thing, and these fields separate the two.
+
+    Every field is read at the grid's nodes. ``valid_cbf`` is the theorem's hypothesis at the
+    nodes of ``{h >= 0}``, not on the set: between nodes it is blind, and so is the tube, solved on
+    the same nodes. A smooth bump inside one cell leaves the value and every derivative of ``h``
+    unchanged at every node, so it moves no field, nor any Lipschitz margin read off the nodes, yet
+    it can fail the condition inside the cell and cut a hole in ``{h >= 0}`` that the flow enters
+    (``validation/reachability_grid_blind.mac``). A claim about the points between nodes needs a
+    bound on the condition's slope over a cell, which the nodes do not hold.
     """
 
     safe_fraction: float  # grid fraction with h >= 0: the set the barrier is about
     reachable_fraction: float  # grid fraction with V(., T) >= 0: safe for T more seconds, truly
     barrier_fraction: float  # grid fraction where h >= 0 AND the pointwise condition holds
-    valid_cbf: bool  # the condition holds at EVERY point of {h >= 0}, so the theorem applies
+    valid_cbf: bool  # the condition holds at every node with h >= 0: the theorem's hypothesis there
     certified_but_unreachable: float  # pointwise-certified yet outside the tube -- the trap
     radius: float
-    ok: bool  # valid_cbf implies the tube must be all of {h >= 0}
+    ok: bool  # valid_cbf implies the tube holds the nodes with h >= 0, to within tolerance
 
 
 def barrier_reachability_gap(
@@ -299,11 +308,13 @@ def barrier_reachability_gap(
     >= -alpha*h``; the tube asks whether *any* controller holds ``h >= 0`` for ``horizon`` seconds
     against every effect matrix in the identified ball. The implication runs one way and only with a
     quantifier: if the condition holds at **every** point of ``{h >= 0}``, that set is invariant and
-    the tube must be all of it -- which is what ``ok`` checks. Pointwise the implication is simply
-    false, and ``certified_but_unreachable`` is how much of the grid it is false on: states where
-    the margin is satisfied right now, yet no controller survives the horizon. Relative degree
-    is the usual reason -- when ``B^T grad h == 0`` the condition degenerates into a statement about
-    the drift and stops seeing the actuator at all.
+    the tube must be all of it. ``valid_cbf`` reads that hypothesis at the grid's nodes and ``ok``
+    the conclusion at the same nodes, so a False ``ok`` is the grid's condition and the grid's tube
+    disagreeing; neither sees between the nodes (:class:`BarrierReachabilityGap`). Pointwise the
+    implication is simply false, and ``certified_but_unreachable`` is how much of the grid it is
+    false on: states where the margin is satisfied right now, yet no controller survives the
+    horizon. Relative degree is the usual reason -- when ``B^T grad h == 0`` the condition
+    degenerates into a statement about the drift and stops seeing the actuator at all.
 
     Args:
         alpha: the class-K gain of the barrier condition, matching :func:`chc.plan.certify_safety`.
@@ -366,15 +377,19 @@ class HigherOrderBarrierGap:
     because of the degeneracy) and certify the robust margin of ``psi1`` on the working set
     ``{h >= 0} & {psi1 >= 0}`` instead. ``B^T grad psi1`` is generically nonzero, so the radius
     is back in the verdict.
+
+    Every field is read at the grid's nodes, as :class:`BarrierReachabilityGap`'s are, and is
+    blind between them in the same way: ``valid_cbf`` is the HOCBF theorem's hypothesis at the
+    working set's nodes, not on the set.
     """
 
     safe_fraction: float  # grid fraction with h >= 0
     working_fraction: float  # {h >= 0} & {psi1 >= 0} -- the set the HOCBF theorem is about
     barrier_fraction: float  # working set where the second-order robust condition holds
-    valid_cbf: bool  # the condition holds at EVERY working-set point, so the theorem applies
+    valid_cbf: bool  # the condition holds at every working-set node: the theorem's hypothesis there
     certified_but_unreachable: float  # second-order-certified yet outside the tube
     radius: float
-    ok: bool  # valid_cbf implies the tube must contain the working set
+    ok: bool  # valid_cbf implies the tube holds the working set's nodes, to within tolerance
 
 
 def higher_order_barrier_gap(
@@ -402,8 +417,9 @@ def higher_order_barrier_gap(
     rule applies to the LIFTED channel: once ``radius * ||grad psi1|| >= ||B^T grad psi1||`` the
     verdict collapses to the drift's, now visibly rather than silently. If the condition holds
     everywhere on the working set, that set is forward invariant (Xiao & Belta's HOCBF argument
-    with the worst-case effect substituted), so the tube must contain it -- ``ok`` checks exactly
-    that and stays honest under Lax-Friedrichs erosion via ``tolerance``.
+    with the worst-case effect substituted), so the tube must contain it. ``valid_cbf`` reads the
+    condition at the working set's grid nodes, and ``ok`` checks the containment at the same nodes,
+    honest under Lax-Friedrichs erosion via ``tolerance``.
 
     Scope: PURE relative degree 2. Where ``B^T grad h != 0`` the true ``hdot`` has a control term
     that ``psi1`` drops, and this condition is a different certificate, not a sharper one -- use

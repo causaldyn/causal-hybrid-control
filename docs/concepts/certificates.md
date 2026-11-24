@@ -187,7 +187,8 @@ invariance follows only when the condition holds on the whole safe set.
 approximates, on the same robust-margin algebra, and prices the difference: where the condition
 holds on all of `{h >= 0}` the reachable tube *is* that set, and where it only holds pointwise,
 `certified_but_unreachable` says how much the per-step reading over-promises. A per-step certified
-prefix is a filter, not a proof.
+prefix is a filter, not a proof. Both are read at the nodes of a grid: `valid_cbf` is the
+condition at every node of `{h >= 0}`, and says nothing of the points between them.
 
 ## See it
 

@@ -81,10 +81,10 @@ def main() -> None:
 
     identified, unidentified = zone[1], zone[2]
     print(
-        f"\nWith the robust condition holding at every point of the safe set (valid CBF up to"
+        f"\nWith the robust condition holding at every node of the safe set (valid CBF up to"
         f" radius {identified.radius:.2f}), the reachable tube IS the safe set --"
         f" {identified.reachable_fraction:.3f} against {identified.safe_fraction:.3f}. That is the"
-        f" invariance the safety layer assumes, checked rather than assumed."
+        f" invariance the safety layer assumes, checked on the grid rather than assumed."
     )
     print(
         f"Past the zero-action threshold the certificate dies and the truth follows: at radius"
@@ -103,7 +103,8 @@ def main() -> None:
     print(
         f"So {loose.certified_but_unreachable:.1%} of the grid is certified by the pointwise"
         f" check and unreachable in truth. A per-step certified prefix is a filter, not a proof --"
-        f" the proof needs the condition on the whole set, which is what `valid_cbf` reports."
+        f" the proof needs the condition on the whole set, and `valid_cbf` reads it at the grid's"
+        f" nodes."
     )
 
 

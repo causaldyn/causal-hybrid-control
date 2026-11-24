@@ -5,6 +5,22 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
 experimental may change in any minor release (`docs/api/index.md`).
 
+## [Unreleased]
+
+### Documentation
+
+- **`chc.reachability`'s `valid_cbf` reads the barrier condition at the grid's nodes, and says
+  so.** `BarrierReachabilityGap` and `HigherOrderBarrierGap` said the condition held "at EVERY
+  point" of the set, so the theorem applied; both gaps evaluate it at the nodes of their grid only,
+  and solve the tube on the same nodes. No margin read off the nodes can make the claim true: on a
+  21-node grid a smooth bump of radius 1/25 inside one cell leaves the barrier's value, gradient
+  and Hessian at every node those of `h = 1`, and both gaps read `valid_cbf` and `ok` True, while
+  the condition's residual is -46.9 between nodes and the drift carries a state where `h = 1` into
+  a hole where `h = 1 - 4/e` (`validation/reachability_grid_blind.mac`). The fields, both
+  functions, the module, `chc.research.sensitivity`, `docs/modules.md`,
+  `docs/concepts/certificates.md` and `scripts/reachability_demo.py` now state the grid claim
+  (ADR 0161). No value moves.
+
 ## [1.4.0] — 2026-11-21
 
 A public status moves, so a minor release. A held barrier's rounds read `infeasible` only at a
