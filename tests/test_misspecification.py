@@ -710,3 +710,44 @@ def test_a_statistic_far_below_the_largest_weight_reads_its_tail(q: float) -> No
 def test_no_weight_is_a_point_mass_at_zero() -> None:
     assert _chi_square_mixture_survival(0.5, np.zeros(3)) == 0.0
     assert _chi_square_mixture_survival(0.0, np.zeros(3)) == 1.0
+
+
+@pytest.mark.parametrize(("first", "second"), [(1.0, -0.5), (1.0, -2.0), (3.0, -0.1), (0.25, -1.0)])
+def test_weights_of_both_signs_at_zero_give_the_f_law(first: float, second: float) -> None:
+    """``P(a X_1 - b X_2 <= 0) = P(X_1 / X_2 <= b / a) = (2 / pi) atan(sqrt(b / a))``, an
+    ``F(1, 1)`` law (validation/lift_rho_median_unbiased.mac STEP 3). The routine read only the
+    positive weight and returned 1."""
+    got = 1.0 - _chi_square_mixture_survival(0.0, np.array([first, second]))
+    assert got == pytest.approx(2.0 / math.pi * math.atan(math.sqrt(-second / first)), abs=1e-12)
+
+
+def _signed_tail(q: float, first: float, second: float) -> float:
+    """``P(first X_1 - second X_2 > q)``, both positive, by one integral over ``X_2 = t^2``."""
+    edge = math.sqrt(max(0.0, -q / second))
+    inside, _ = integrate.quad(
+        lambda t: (
+            math.sqrt(2.0 / math.pi)
+            * math.exp(-0.5 * t * t)
+            * stats.chi2.sf((q + second * t * t) / first, 1)
+        ),
+        edge,
+        np.inf,
+        epsabs=1e-14,
+        epsrel=1e-12,
+    )
+    return (float(stats.chi2.cdf(-q / second, 1)) if q < 0.0 else 0.0) + inside
+
+
+@pytest.mark.parametrize("q", [-3.0, -1.5, -0.2, 0.0, 0.7, 4.0])
+def test_weights_of_both_signs_give_the_convolution_s_tail(q: float) -> None:
+    got = _chi_square_mixture_survival(q, np.array([2.0, -0.5]))
+    assert got == pytest.approx(_signed_tail(q, 2.0, 0.5), rel=0.0, abs=1e-9)
+
+
+def test_many_weights_of_both_signs_read_the_drawn_law_without_overflow() -> None:
+    """Two hundred weights over nine decades: the product of their ``(1 + w^2 u^2)^(1/4)``
+    passes the largest float past ``u = 1000 / w_min``, where the integral runs on."""
+    rng = np.random.default_rng(20261124)
+    weights = rng.choice([-1.0, 1.0], 200) * np.exp(rng.uniform(np.log(1e-9), 0.0, 200))
+    drawn = np.mean(rng.standard_normal((20_000, 200)) ** 2 @ weights > 0.0)
+    assert _chi_square_mixture_survival(0.0, weights) == pytest.approx(drawn, abs=0.015)

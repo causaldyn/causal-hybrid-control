@@ -62,11 +62,12 @@ import numpy as np
 from jax import Array
 from jax.tree_util import PyTreeDef
 from numpy.typing import ArrayLike, NDArray
-from scipy import optimize, stats
+from scipy import linalg, optimize, stats
 
 from chc.barrier import barrier_gamma_star
 from chc.frames import _real_numbers
 from chc.response import Channel
+from chc.uncertainty import _chi_square_mixture_survival
 
 __all__ = [
     "GeoArm",
@@ -210,6 +211,9 @@ class LiftFit:
     # each test (Breusch-Godfrey's t on the fit's Jacobian); below 0.05 the fit logged a WARNING
     # that names serial="ar1". None with serial="ar1", and nan where nothing is left to read
     serial_p_value: float | None = None
+    # with ar_estimate="median_unbiased", the AR(1) coefficient's exact equal-tailed interval at
+    # `level`, an end at -0.99 or 0.99 open on that side; None otherwise
+    ar_interval: tuple[float, float] | None = None
 
     def interval(self, parameter: str) -> tuple[float, float]:
         """``parameter``'s interval, by its name in :attr:`parameters`."""
@@ -491,6 +495,7 @@ def fit_lift(  # noqa: C901, PLR0912, PLR0915
     *,
     level: float = 0.95,
     serial: Literal["independent", "ar1"] = "ar1",
+    ar_estimate: Literal["least_squares", "median_unbiased"] = "least_squares",
 ) -> LiftFit:
     """Fit ``channel`` to the tests' gaps by least squares, each parameter with a profile-likelihood
     interval. *Experimental.*
@@ -520,11 +525,29 @@ def fit_lift(  # noqa: C901, PLR0912, PLR0915
     test's run is short. Over another 200 such worlds it read -0.046, 0.286, 0.475 and 0.777 at 0,
     0.3, 0.5 and 0.8 (Monte Carlo SE 0.006 to 0.010); the check rejected the true channel on 7.0,
     5.0, 7.0 and 3.5% and the coefficient's interval held the truth in 95.0, 96.5, 98.0 and 97.0%
-    (Monte Carlo SE 1.5%). It is not corrected: Kendall's ``(1 + 3 rho) / T`` for a series' own
-    mean would add 0.21 at 0.8 where it reads 0.023 low, and the intervals above already carry the
-    bias. So the reading holds where the noise does not persist, at a degree of freedom. Each test
-    needs a run of periods for this to read anything: those tests had 16.
-    :attr:`LiftFit.ar_coefficient` is the estimate and :attr:`LiftFit.noise_sd` the innovations'.
+    (Monte Carlo SE 1.5%). ``ar_estimate="least_squares"``, the default, leaves it so: Kendall's
+    ``(1 + 3 rho) / T`` for a series' own mean would add 0.21 at 0.8 where it reads 0.023 low, and
+    the intervals above already carry the bias. So the reading holds where the noise does not
+    persist, at a degree of freedom. Each test needs a run of periods for this to read anything:
+    those tests had 16. :attr:`LiftFit.ar_coefficient` is the estimate and :attr:`LiftFit.noise_sd`
+    the innovations'.
+
+    ``ar_estimate="median_unbiased"`` reads ``rho`` off its exact law instead (Andrews 1993, carried
+    to the fit's residual maker; ``validation/lift_rho_median_unbiased.mac``). The statistic is the
+    least-squares coefficient of the independent fit's residuals ``r = M nu``, ``M`` the residual
+    maker of the fit's Jacobian, and its law at each ``rho`` is that of a quadratic form in the
+    noise with weights of both signs, which Imhof's (1961) inversion reads. ``rho`` is where that
+    law has the statistic as its median, and :attr:`LiftFit.ar_interval` the equal-tailed interval
+    at ``level`` its quantiles give; the gaps are then fitted once through the transform at
+    ``rho``. It is exact for a model linear in its parameters: on four tests of 16 periods and
+    three fitted columns, 2000 draws a coefficient, the median read 0.002, 0.305, 0.501 and 0.797 at
+    0, 0.3, 0.5 and 0.8, where the iterated least squares read 0.032, 0.027, 0.026 and 0.014 low,
+    and the 90% intervals held the truth in 89.95, 89.75, 90.7 and 90.3% (Monte Carlo SE 0.7%). On
+    a curve it is first-order: on 400 of the go-dark worlds above a coefficient, its median lay
+    0.016, 0.011, 0.007 and -0.002 off the truth, the default's -0.017, -0.018, -0.014 and -0.006,
+    the 90% intervals held the truth in 87.0, 88.7, 88.5 and 89.2% (Monte Carlo SE 1.5%), and the
+    coefficient's interval and the check moved by at most 1.3 points. Each step of its root-finder
+    takes one eigendecomposition of a square matrix with a row for every period of every test.
 
     ``"independent"`` reads each period's noise alone, and the fit tests the premise it reads: the
     residuals' lag-1 correlation within each test, by Breusch and Godfrey's regression of the
@@ -553,10 +576,11 @@ def fit_lift(  # noqa: C901, PLR0912, PLR0915
     Raises:
         TypeError: when ``channel`` is not a :class:`chc.response.Channel`.
         ValueError: on no tests, ``level`` outside ``(0, 1)``, ``serial`` neither
-            ``"independent"`` nor ``"ar1"``, a test with fewer periods of spend
-            before its readout than the kernel reads, fewer periods than parameters, a template
-            whose retention, scale or shape is not positive, or a gap whose slope in a parameter
-            is not finite.
+            ``"independent"`` nor ``"ar1"``, ``ar_estimate`` neither ``"least_squares"`` nor
+            ``"median_unbiased"``, or the latter without ``serial="ar1"``, a test with fewer
+            periods of spend before its readout than the kernel reads, fewer periods than
+            parameters, a template whose retention, scale or shape is not positive, or a gap whose
+            slope in a parameter is not finite.
         RuntimeError: when a solve does not converge within 10 000 evaluations, or the profile
             keeps finding points cheaper than the fit.
     """
@@ -571,6 +595,12 @@ def fit_lift(  # noqa: C901, PLR0912, PLR0915
         raise ValueError(f"level must lie in (0, 1), got {level}")
     if serial not in ("independent", "ar1"):
         raise ValueError(f"serial must be 'independent' or 'ar1', got {serial!r}")
+    if ar_estimate not in ("least_squares", "median_unbiased"):
+        raise ValueError(
+            f"ar_estimate must be 'least_squares' or 'median_unbiased', got {ar_estimate!r}"
+        )
+    if ar_estimate != "least_squares" and serial != "ar1":
+        raise ValueError("ar_estimate reads the AR(1) coefficient, so it needs serial='ar1'")
     reach = channel.kernel.length - 1
     for position, test in enumerate(tests):
         if test.treated.history < reach:
@@ -598,8 +628,15 @@ def fit_lift(  # noqa: C901, PLR0912, PLR0915
             + (" and an AR(1) coefficient" if serial == "ar1" else "")
         )
     best = problem.solve(start)
-    rho = 0.0
-    if serial == "ar1":
+    rho, ar_interval = 0.0, None
+    if ar_estimate == "median_unbiased":
+        sizes = tuple(test.treated.outcome.size for test in tests)
+        rho, ar_interval = _median_unbiased_ar(
+            problem.residual(best), problem.jacobian(best), sizes, level
+        )
+        problem = _Problem(layout, readouts, start, rho)
+        best = min(problem.solve(start), problem.solve(best), key=problem.cost)
+    elif serial == "ar1":
         for _ in range(_AR_ROUNDS):
             estimate = _ar_coefficient(layout.channel(best), tests)
             if abs(estimate - rho) <= _AR_TOLERANCE:
@@ -655,6 +692,7 @@ def fit_lift(  # noqa: C901, PLR0912, PLR0915
         tests=tests,
         ar_coefficient=rho,
         serial_p_value=serial_p,
+        ar_interval=ar_interval,
     )
 
 
@@ -710,6 +748,58 @@ def _ar_coefficient(channel: Channel, tests: tuple[LiftTest, ...]) -> float:
     if not lagged > 0.0:
         return 0.0
     return min(max(cross / lagged, -_AR_BOUND), _AR_BOUND)
+
+
+def _median_unbiased_ar(
+    residual: _Array, jacobian: _Array, sizes: tuple[int, ...], level: float
+) -> tuple[float, tuple[float, float]]:
+    """The AR(1) coefficient at which the least-squares one of the independent fit's residuals is
+    the median of its exact law, and the equal-tailed interval at ``level``, each kept within
+    ``_AR_BOUND`` of 0 (Andrews 1993).
+
+    The residuals are ``r = M nu`` to first order, ``M`` the residual maker of ``jacobian``, and the
+    statistic is ``r'Ar / r'Br``, ``A`` and ``B`` the lag-one products and the lagged squares within
+    each test. Its law at ``rho`` is ``P(nu' M (A - c B) M nu <= 0)``, the noise ``nu = L e`` with
+    ``L`` the inverse of the Prais-Winsten transform at ``rho``: a sum of ``chi2_1`` weighted by
+    the eigenvalues of ``L' M (A - c B) M L``, of either sign, which Imhof's inversion reads at 0.
+    It falls as ``rho`` rises, and each end is where it crosses its share.
+    """
+    count = residual.size
+    cross, lagged = np.zeros((count, count)), np.zeros((count, count))
+    at = 0
+    for size in sizes:
+        for period in range(at + 1, at + size):
+            cross[period, period - 1] = cross[period - 1, period] = 0.5
+            lagged[period - 1, period - 1] = 1.0
+        at += size
+    basis, singular, _ = np.linalg.svd(jacobian, full_matrices=False)
+    spanned = basis[:, singular > singular[0] * count * np.finfo(np.float64).eps]
+    maker = np.eye(count) - spanned @ spanned.T
+    spread = float(residual @ lagged @ residual)
+    statistic = float(residual @ cross @ residual) / spread if spread > 0.0 else 0.0
+    form = maker @ (cross - statistic * lagged) @ maker
+    lowest, highest = _ar_law(form, -_AR_BOUND, sizes), _ar_law(form, _AR_BOUND, sizes)
+
+    def crossing(share: float) -> float:
+        if lowest <= share:
+            return -_AR_BOUND
+        if highest >= share:
+            return _AR_BOUND
+        return float(
+            optimize.brentq(
+                lambda rho: _ar_law(form, rho, sizes) - share, -_AR_BOUND, _AR_BOUND, xtol=1e-10
+            )
+        )
+
+    tail = (1.0 - level) / 2.0
+    return crossing(0.5), (crossing(1.0 - tail), crossing(tail))
+
+
+def _ar_law(form: _Array, rho: float, sizes: tuple[int, ...]) -> float:
+    """``P(nu' form nu <= 0)`` where each test's ``sizes`` periods of noise ``nu`` are an AR(1) of
+    ``rho``, by Imhof's inversion at 0 (``validation/lift_rho_median_unbiased.mac``)."""
+    root = linalg.block_diag(*(np.linalg.inv(_whitened_numpy(np.eye(size), rho)) for size in sizes))
+    return 1.0 - _chi_square_mixture_survival(0.0, np.linalg.eigvalsh(root.T @ form @ root))
 
 
 def _tested_adstock(channel: Channel, tests: tuple[LiftTest, ...]) -> tuple[float, float]:

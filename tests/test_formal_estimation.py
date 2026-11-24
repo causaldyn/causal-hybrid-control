@@ -248,6 +248,26 @@ FORMAL_LINKS = {
             "test_peak_at_an_end_is_censored_and_a_plateau_reads_its_leading_pair",
         ),
     },
+    "chc.lift.fit_lift": {
+        "cites": ("lift_rho_median_unbiased.mac",),
+        "tests": (
+            "test_lift.py::test_median_unbiased_reads_the_rho_whose_law_has_the_statistic_as_its_median",
+        ),
+    },
+    "chc.lift._ar_law": {
+        "cites": ("lift_rho_median_unbiased.mac",),
+        "tests": (
+            "test_lift.py::test_the_ar_statistic_of_two_periods_is_a_cauchy_law_about_rho",
+            "test_lift.py::test_the_ar_statistic_s_law_through_a_residual_maker_is_maxima_s",
+        ),
+    },
+    "chc.uncertainty._chi_square_mixture_survival": {
+        "cites": ("lift_rho_median_unbiased.mac",),
+        "tests": (
+            "test_misspecification.py::test_weights_of_both_signs_at_zero_give_the_f_law",
+            "test_misspecification.py::test_weights_of_both_signs_give_the_convolution_s_tail",
+        ),
+    },
     "chc.pathway": {
         "cites": ("causal_pathway.mac", "causal_pathway.v"),
         "tests": (

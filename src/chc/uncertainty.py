@@ -1882,7 +1882,7 @@ def _noise_radius(covariance: NDArray[np.float64], widest: float = 0.0) -> float
 
 
 def _chi_square_mixture_survival(q: float, weights: NDArray[np.float64]) -> float:
-    """``P(sum_k weights_k chi2_1 > q)``, by Imhof's inversion.
+    """``P(sum_k weights_k chi2_1 > q)``, by Imhof's inversion; the weights of either sign.
 
     The integrand ``sin(theta(u)) / (u rho(u))`` decays like ``u^(-1 - k/2)`` and oscillates, and
     with one or two terms a plain rule on ``[0, inf)`` misses the tail badly (0.0036 against 0.00053
@@ -1892,22 +1892,32 @@ def _chi_square_mixture_survival(q: float, weights: NDArray[np.float64]) -> floa
     at a time past ``1000 / w_max``: where ``q`` is far below the largest weight, ``20 / omega`` is
     decades past the integrand's mass near 0, and one rule over the whole head missed that mass and
     read the survival 0.5 low (0.4992 for 0.9992 at ``q = 1e-6`` times a single weight).
+
+    At ``q = 0`` nothing oscillates: the head runs to ``1000`` over the smallest weight and one rule
+    takes the rest. With weights of both signs that is the law of a ratio of quadratic forms,
+    ``P(x'Ax / x'Bx > c) = P(x'(A - cB)x > 0)`` (``validation/lift_rho_median_unbiased.mac``: two
+    weights against the ``F(1, 1)`` closed form, and at ``q`` of either sign against the
+    convolution). Below ``q = 0`` it is one less the survival of ``-q`` under the negated weights.
     """
-    largest = float(np.max(weights, initial=0.0))
+    largest = float(np.max(np.abs(weights), initial=0.0))
     if largest <= 0.0:
         return 1.0 if q <= 0.0 else 0.0
-    weights = weights[weights > 1e-12 * largest]
-    if q <= 0.0:
+    weights = weights[np.abs(weights) > 1e-12 * largest]
+    if q <= 0.0 and weights.min() > 0.0:
         return 1.0
+    if q < 0.0:
+        return 1.0 - _chi_square_mixture_survival(-q, -weights)
     omega = 0.5 * q
 
+    # each factor is at most 1: with many weights their product underflows to 0 where the product
+    # of their inverses would overflow
     def amplitude(u: float) -> float:
-        return 1.0 / (u * float(np.prod((1.0 + (weights * u) ** 2) ** 0.25)))
+        return float(np.prod((1.0 + (weights * u) ** 2) ** -0.25)) / u
 
     def phase(u: float) -> float:
         return 0.5 * float(np.sum(np.arctan(weights * u)))
 
-    cut = 20.0 / omega
+    cut = 20.0 / omega if omega > 0.0 else 1000.0 / float(np.min(np.abs(weights)))
     edges, edge = [0.0], 1000.0 / largest
     while edge < cut:
         edges.append(edge)
@@ -1924,6 +1934,18 @@ def _chi_square_mixture_survival(q: float, weights: NDArray[np.float64]) -> floa
         )[0]
         for low, high in itertools.pairwise(edges)
     )
+    if omega == 0.0:
+        # in units of the cut: QUADPACK's map of [cut, inf) to (0, 1] has a scale of 1, and on
+        # weights -0.0038 and 0.75 it read -1.4e-13 for 1.8e-8 and warned
+        rest, _ = integrate.quad(
+            lambda s: math.sin(phase(cut * s)) * amplitude(cut * s) * cut,
+            1.0,
+            np.inf,
+            limit=2000,
+            epsabs=1e-13,
+            epsrel=1e-12,
+        )
+        return min(max(0.5 + (head + rest) / math.pi, 0.0), 1.0)
     cosine, _ = integrate.quad(
         lambda u: math.sin(phase(u)) * amplitude(u),
         cut,

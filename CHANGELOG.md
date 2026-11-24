@@ -7,6 +7,25 @@ experimental may change in any minor release (`docs/api/index.md`).
 
 ## [Unreleased]
 
+### Added
+
+- **`fit_lift(ar_estimate="median_unbiased")`**, opt-in, experimental: the AR(1) coefficient of
+  each test's noise read off its exact law (Andrews 1993, carried to the fit's residual maker) in
+  place of iterated least squares, which reads low. The least-squares coefficient of the
+  independent fit's residuals is a ratio of quadratic forms in the noise, whose law at each `rho`
+  Imhof's (1961) inversion reads; the estimate is the `rho` at which that law has the statistic as
+  its median, and `LiftFit.ar_interval` the exact equal-tailed interval at the fit's `level`
+  (`validation/lift_rho_median_unbiased.mac`). The gaps are then fitted once through the
+  Prais-Winsten transform at it. On a model linear in its parameters, four tests of 16 periods
+  and 2000 draws a coefficient, the median bias was +0.002, +0.005, +0.001 and -0.003 at 0, 0.3,
+  0.5 and 0.8 against the iterated reading's -0.032, -0.027, -0.026 and -0.014, and the 90%
+  intervals covered 0.8975 to 0.907. On `fit_lift`'s go-dark worlds, 400 a coefficient, where
+  the reading is first-order, the mean bias fell from -0.015..-0.025 to -0.007..+0.007 and the 90%
+  intervals covered 0.870 to 0.892 (Monte Carlo SE 0.015); the channel's intervals and the check
+  moved by at most 1.3 points. The default, `"least_squares"`, is unchanged (ADR 0163). The
+  library's Imhof inversion now reads weights of either sign; its callers, all with non-negative
+  weights, move by rounding only.
+
 ### Fixed
 
 - **`ce_explicit_constant_certificate`'s `empirical_radius` is bisected, not read off its

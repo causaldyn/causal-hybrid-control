@@ -221,6 +221,7 @@ failures, when the tests were first written (names relative to `chc`):
 | `interference_convexity.v` | `regret.interference_convexity_certificate` | `test_formal_regret_b.py` |
 | `interference_orthogonal.mac` | `regret.interference_orthogonal_certificate` | `test_formal_regret_b.py` |
 | `interference_regret.v` | `regret.interference_orthogonal_certificate`, `regret.interference_regret_certificate` | `test_formal_regret_b.py` |
+| `lift_rho_median_unbiased.mac` | `lift.fit_lift`, `lift._ar_law`, `uncertainty._chi_square_mixture_survival` | `test_formal_estimation.py` |
 | `lipschitz_rollout.mac` | `uncertainty.lipschitz_rollout_bound` | `test_formal_control.py` |
 | `lipschitz_rollout.v` | `uncertainty.confounding_robust_closed_loop_bound`, `uncertainty.constraint_margin`, `uncertainty.contractive_rollout_bound`, `uncertainty.lipschitz_rollout_bound`, `uncertainty.time_varying_rollout_bound` | `test_formal_control.py` |
 | `local_projection_bias.mac` | `switchback.read_switchback` | `test_formal_seams.py` |

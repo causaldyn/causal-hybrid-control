@@ -16,7 +16,15 @@ import numpy as np
 import pytest
 from scipy import optimize, stats
 
-from chc.lift import GeoArm, LiftTest, ObservationalCheck, check_observational, fit_lift
+from chc.lift import (
+    GeoArm,
+    LiftTest,
+    ObservationalCheck,
+    _ar_law,
+    _median_unbiased_ar,
+    check_observational,
+    fit_lift,
+)
 from chc.response import Channel, GeometricAdstock, MichaelisMenten, Tanh
 
 LENGTH = 6
@@ -520,6 +528,153 @@ def test_fit_lift_reads_the_noise_as_an_ar1_by_default(persistent) -> None:
     assert default.ar_coefficient == persistent.ar_coefficient
     assert default.dof == persistent.dof
     assert default.serial_p_value is None
+    assert default.ar_interval is None
     np.testing.assert_array_equal(default.estimate, persistent.estimate)
     np.testing.assert_array_equal(default.lower, persistent.lower)
     np.testing.assert_array_equal(default.upper, persistent.upper)
+
+
+# --- the AR(1) coefficient read median-unbiased -------------------------------------------------
+
+
+def _lag_forms(sizes: tuple[int, ...]) -> tuple[np.ndarray, np.ndarray]:
+    """``A`` and ``B`` of the statistic ``r'Ar / r'Br``: each test's residuals times their previous
+    one, and their previous one squared."""
+    count = sum(sizes)
+    cross, lagged = np.zeros((count, count)), np.zeros((count, count))
+    at = 0
+    for size in sizes:
+        for period in range(at + 1, at + size):
+            cross[period, period - 1] = cross[period - 1, period] = 0.5
+            lagged[period - 1, period - 1] = 1.0
+        at += size
+    return cross, lagged
+
+
+def _maker(jacobian: np.ndarray) -> np.ndarray:
+    return np.eye(jacobian.shape[0]) - jacobian @ np.linalg.pinv(jacobian)
+
+
+@pytest.mark.parametrize(("c", "rho"), [(0.0, 0.0), (0.3, 0.5), (-0.4, 0.8), (0.9, -0.6)])
+def test_the_ar_statistic_of_two_periods_is_a_cauchy_law_about_rho(c: float, rho: float) -> None:
+    """One test of two periods, nothing fitted: the statistic is ``nu_2 / nu_1 = rho + e / nu_1``,
+    and ``P(rho^ <= c) = 1/2 + atan((c - rho) / sqrt(1 - rho^2)) / pi``, whose median is ``rho``
+    (validation/lift_rho_median_unbiased.mac STEP 4)."""
+    cross, lagged = _lag_forms((2,))
+    expected = 0.5 + math.atan((c - rho) / math.sqrt(1.0 - rho**2)) / math.pi
+    assert _ar_law(cross - c * lagged, rho, (2,)) == pytest.approx(expected, rel=0.0, abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("columns", "sizes", "c", "rho", "expected"),
+    [
+        (((1.0, 2.0, 3.0),), (3,), -0.5, 0.0, 0.3918265520306073),
+        (((1.0, 2.0, 3.0),), (3,), -0.2, 0.5, 0.4791810654481946),
+        (((1.0, 2.0, 3.0),), (3,), 0.0, 0.5, 0.6627675837448571),
+        (((1.0, 2.0, 3.0),), (3,), 0.1, 0.8, 0.7531813034920687),
+        (((1.0,) * 8, (0.0, 1.0, 2.0, 3.0) * 2), (4, 4), 0.2, 0.5, 0.538209617198425),
+        (((1.0,) * 8, (0.0, 1.0, 2.0, 3.0) * 2), (4, 4), -0.1, -0.3, 0.8240074381292497),
+    ],
+)
+def test_the_ar_statistic_s_law_through_a_residual_maker_is_maxima_s(
+    columns: tuple[tuple[float, ...], ...],
+    sizes: tuple[int, ...],
+    c: float,
+    rho: float,
+    expected: float,
+) -> None:
+    """Maxima's values (validation/lift_rho_median_unbiased.mac STEPs 5 and 6): a ramp fitted to
+    one test of three periods leaves two weights, and the ``F(1, 1)`` closed form, exact; a
+    constant and a trend fitted to two tests of four leave six, read by Imhof's integral there."""
+    maker = _maker(np.array(columns).T)
+    cross, lagged = _lag_forms(sizes)
+    form = maker @ (cross - c * lagged) @ maker
+    assert _ar_law(form, rho, sizes) == pytest.approx(expected, rel=0.0, abs=1e-10)
+
+
+@pytest.fixture(scope="module")
+def unbiased():
+    return fit_lift(_world(0, persistence=0.5), START, ar_estimate="median_unbiased")
+
+
+def test_median_unbiased_reads_the_rho_whose_law_has_the_statistic_as_its_median(unbiased) -> None:
+    """The statistic is the least-squares AR(1) coefficient of the independent fit's residuals.
+    Its law, drawn 40 000 times through the residual maker of the NumPy model's Jacobian, has it
+    as its median at the estimate and as its 0.975 and 0.025 quantiles at the interval's ends; the
+    gaps are then fitted once through the Prais-Winsten transform there."""
+    tests = _world(0, persistence=0.5)
+    independent = fit_lift(tests, START, serial="independent")
+    gap = np.concatenate([test.difference for test in tests])
+    residual = gap - _oracle_gaps(tests, *independent.estimate)
+    sizes = tuple(test.difference.size for test in tests)
+    cross, lagged = _lag_forms(sizes)
+    statistic = (residual @ cross @ residual) / (residual @ lagged @ residual)
+    steps = 1e-6 * np.abs(independent.estimate)
+    jacobian = np.column_stack(
+        [
+            (
+                _oracle_gaps(tests, *(independent.estimate + step))
+                - _oracle_gaps(tests, *(independent.estimate - step))
+            )
+            / (2.0 * step[j])
+            for j, step in enumerate(np.diag(steps))
+        ]
+    )
+    maker = _maker(jacobian)
+    periods = np.arange(sizes[0])
+    normals = np.random.default_rng(20261124).standard_normal((sum(sizes), 40_000))
+
+    def law(rho: float) -> float:
+        covariance = rho ** np.abs(np.subtract.outer(periods, periods)) / (1.0 - rho**2)
+        root = np.kron(np.eye(len(sizes)), np.linalg.cholesky(covariance))
+        drawn = maker @ (root @ normals)
+        ratio = np.sum(drawn * (cross @ drawn), axis=0) / np.sum(drawn * (lagged @ drawn), axis=0)
+        return float(np.mean(ratio <= statistic))
+
+    lower, upper = unbiased.ar_interval
+    assert lower < unbiased.ar_coefficient < upper
+    assert law(unbiased.ar_coefficient) == pytest.approx(0.5, rel=0.0, abs=0.01)
+    assert law(lower) == pytest.approx(0.975, rel=0.0, abs=0.004)
+    assert law(upper) == pytest.approx(0.025, rel=0.0, abs=0.004)
+    form = maker @ (cross - statistic * lagged) @ maker
+    assert _ar_law(form, unbiased.ar_coefficient, sizes) == pytest.approx(0.5, rel=0.0, abs=1e-8)
+    assert unbiased.dof == 4 * 16 - 3 - 1
+    rho = unbiased.ar_coefficient
+    least = np.split(gap - _oracle_gaps(tests, *unbiased.estimate), len(tests))
+    whitened = np.concatenate([_whitened(r, rho) for r in least])
+    assert unbiased.noise_sd**2 == pytest.approx(
+        whitened @ whitened / unbiased.dof, rel=1e-8, abs=0.0
+    )
+
+
+def test_median_unbiased_reads_above_least_squares_on_the_same_gaps(unbiased) -> None:
+    """The least-squares reading of a residual's lag-one correlation reads low; the median-unbiased
+    one reads its law's median, which on these gaps lies above."""
+    least_squares = fit_lift(_world(0, persistence=0.5), START)
+    assert unbiased.ar_coefficient > least_squares.ar_coefficient
+    assert least_squares.ar_interval is None
+
+
+def test_median_unbiased_ends_at_the_bound_where_the_law_does_not_cross_inside_it() -> None:
+    """A ramp fitted to three periods leaves ``rho^ = -0.773`` below its law's median even at
+    ``rho = -0.99``, so the estimate and the lower end sit at the bound, the interval open there;
+    the upper end is where the law puts 0.05 below it, at 0.851."""
+    jacobian = np.array([[1.0], [2.0], [3.0]])
+    residual = np.array([-2.0 * 1.0 - 3.0 * -0.45, 1.0, -0.45])
+    estimate, (lower, upper) = _median_unbiased_ar(residual, jacobian, (3,), 0.9)
+    assert estimate == lower == -0.99
+    cross, lagged = _lag_forms((3,))
+    statistic = (residual @ cross @ residual) / (residual @ lagged @ residual)
+    maker = _maker(jacobian)
+    form = maker @ (cross - statistic * lagged) @ maker
+    assert _ar_law(form, -0.99, (3,)) < 0.5
+    assert -0.99 < upper < 0.99
+    assert _ar_law(form, upper, (3,)) == pytest.approx(0.05, rel=0.0, abs=1e-9)
+
+
+def test_median_unbiased_needs_the_ar1_reading() -> None:
+    tests = _world(0)
+    with pytest.raises(ValueError, match="needs serial='ar1'"):
+        fit_lift(tests, START, serial="independent", ar_estimate="median_unbiased")
+    with pytest.raises(ValueError, match="ar_estimate must be"):
+        fit_lift(tests, START, ar_estimate="median")  # type: ignore[arg-type]
