@@ -22,6 +22,16 @@ experimental may change in any minor release (`docs/api/index.md`).
   added and none changes meaning; a record written before it is refused by
   `Prescription.from_json`, which names `inputs.inner` (ADR 0144, amended).
 
+### Changed
+
+- **`chc.allocation` and `chc.decision` keep their engines in private packages.**
+  `chc._allocation` holds the curves' worth, the cutting planes, the branch and bound and the three
+  searches built on them; `chc._decision` holds the tube's reads and the record's JSON form. The
+  code moved verbatim. Every public class and function is defined where it was, so no import path,
+  `__module__`, signature, record field or number changes, and a record replays to the bit.
+  `allocation.py` is 2 272 lines where it was 4 296, `decision.py` 5 443 where it was 6 747.
+  `import chc` now also loads `chc._decision` and its two modules (ADR 0174).
+
 ### Deprecated
 
 - **A `GateConfig` whose rollback reads evidence and leaves `rollback_restart` unset emits a
