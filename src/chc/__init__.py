@@ -72,7 +72,7 @@ from chc import (
 )
 
 # isort: on
-from chc.barrier import robust_safety_filter
+from chc.barrier import QuadraticBarrier, exit_probability, robust_safety_filter
 from chc.causal import e_value, estimate_effect_dml, refute_effect, sensitivity_analysis
 from chc.control import LinearConstraint
 from chc.cost import QuadraticCost
@@ -191,6 +191,7 @@ __all__ = [
     "PeriodBudget",
     "PersistencePrior",
     "Provenance",
+    "QuadraticBarrier",
     "QuadraticCost",
     "RecedingHorizon",
     "SplitConformal",
@@ -216,6 +217,7 @@ __all__ = [
     "e_value",
     "estimate_effect_dml",
     "evaluate_plan",
+    "exit_probability",
     "fit_causal_residual",
     "minimax_action",
     "off_policy_value",

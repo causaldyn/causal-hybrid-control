@@ -1,0 +1,230 @@
+/* The K-step exit probability of a closed loop under a barrier met in expectation: Ville's
+   inequality on Kushner's supermartingale, as Cosner, Culbertson, Taylor and Ames state it (RSS
+   2023, Thm 5), and the bound against the exact exit probability of a linear-Gaussian loop.
+
+   Setting (chc.barrier.exit_probability). A closed loop x' = F(x) + w, the w independent of the
+   past with mean 0 and covariance S. A barrier h <= M on all of R^n, and alpha in (0, 1) and
+   delta <= M (1 - alpha) with E[h(x') | x] >= alpha h(x) + delta at every x. The exit probability
+   is P_u = P(min_{k <= K} h(x_k) < -gamma), gamma >= 0, from a known x_0 with h_0 = h(x_0). With
+   phi = M (1 - alpha) - delta >= 0:
+
+     delta <  -gamma (1 - alpha):  P_u <= (M - h_0)/(M + gamma) alpha^K
+                                          + phi/(M + gamma) sum_{i=1}^K alpha^(i-1),
+     delta >= -gamma (1 - alpha):  P_u <= 1 - (h_0 + gamma)/(M + gamma)
+                                          ((M alpha + gamma + delta)/(M + gamma))^K.
+
+     STEP 1  W_k = (M - h_k) th^k + phi sum_{i=k+1}^K th^i is a nonnegative supermartingale for
+             1 < th <= 1/alpha: the bound on its drift is th^k (M - h_k)(alpha th - 1).
+     STEP 2  lambda_k = (gamma + M - phi th/(th - 1)) th^k + phi th^(K+1)/(th - 1) gives
+             W_k - lambda_k = (-gamma - h_k) th^k, so W_k <= min_k lambda_k at every k keeps
+             h_k >= -gamma; lambda_k is monotone in k, so the min is lambda_0's or lambda_K's.
+     STEP 3  delta < -gamma (1 - alpha): th = 1/alpha, W_0 / lambda_K is the first closed form.
+     STEP 4  delta >= -gamma (1 - alpha): th = (M + gamma)/(M + gamma - phi) <= 1/alpha, where
+             lambda_k is flat, and W_0 / lambda_0 is the second.
+     STEP 5  Each th is the best in its range, at sample points; the two forms agree at
+             delta = -gamma (1 - alpha); delta = gamma = 0 gives 1 - alpha^K h_0/M.
+     STEP 6  A quadratic barrier h = M - (x - c)'P(x - c), P >= 0: E[h(x') | x] = h(F(x)) - tr(P S)
+             for any noise of mean 0 and covariance S. On an affine loop F x + f the margin
+             E[h(x') | x] - alpha h(x) is a quadratic in x, bounded below iff
+             Q = alpha P - F'P F >= 0 and q = F'P e (e = F c + f - c) is in Q's range, and its least
+             value is r0 - q'Q^+ q, r0 = (1 - alpha) M - tr(P S) - e'P e. Scalar in closed form; the
+             2-D loop of tests/test_exit_probability.py in exact rationals; the position-only
+             barrier on a double integrator is refused at every alpha.
+     STEP 7  The scalar loop x' = 0.6 x + w, w ~ N(0, 0.45^2), h = 1 - x^2, x_0 = 0: the exact
+             exit probability (K = 1 by erf, K = 2 by quadrature, K = 1..10 by Simpson's rule on
+             the survival recursion) under the bound at every K, and how far under.
+     STEP 8  An affine barrier h = 1 - x on the same loop meets the drift condition with
+             alpha = 0.6, delta = 0.4, but nothing bounds it above: read with M = h(x_0) the second
+             form claims P_u <= 0 against a positive exit probability. The bound needs M; a
+             half-space is read through a slab inside it, whose exit it cannot exceed.
+*/
+display2d : false$
+fpprec : 30$
+/* a check that fails stops the batch with "-- an error.", which validation/run_all.sh reads */
+vanishes(label, x) := if is(x = 0) then print(label, "= 0") else error(label, "is not zero:", x)$
+holds(label, ok) := if ok then print(label, "(holds)") else error(label, "does not hold")$
+near(label, x, y, tol) := if is(abs(x - y) <= tol) then print(label, x, "~", y)
+  else error(label, x, "is not within", tol, "of", y)$
+
+/* the two closed forms, and the Ville value W_0 / min(lambda_0, lambda_K) at a free th */
+outward(h0, K, a, M, d, g) := (M - h0)/(M + g)*a^K + (M*(1 - a) - d)/(M + g)*(1 - a^K)/(1 - a)$
+inward(h0, K, a, M, d, g) := 1 - (h0 + g)/(M + g)*((M*a + g + d)/(M + g))^K$
+ville(th, h0, K, a, M, d, g) := block([phi : M*(1 - a) - d, W0, l0, lK],
+  W0 : M - h0 + phi*th*(th^K - 1)/(th - 1),
+  l0 : g + M + phi*th*(th^K - 1)/(th - 1),
+  lK : (g + M)*th^K,
+  W0/min(l0, lK))$
+
+print("=== STEP 1: Kushner's process is a supermartingale for alpha th <= 1 ===")$
+/* T = th^k, TK = th^K; sum_{i=k+1}^K th^i = th (TK - T)/(th - 1), and from k + 1 it is
+   th (TK - th T)/(th - 1) */
+phi1 : M*(1 - a) - d$
+W(hk, T) := (M - hk)*T + phi1*th*(TK - T)/(th - 1)$
+/* E[W_{k+1} | x_k] <= its value at E[h_{k+1}] = a h_k + d, since W is decreasing in h */
+bound_next : (M - (a*hk + d))*th*T + phi1*th*(TK - th*T)/(th - 1)$
+vanishes("STEP 1a the drift bound E[W_{k+1}] - W_k - th^k (M - h_k)(a th - 1)",
+         ratsimp(bound_next - W(hk, T) - T*(M - hk)*(a*th - 1)))$
+print("STEP 1b W_k >= 0: (M - h_k) th^k >= 0 as h <= M, and phi >= 0 as delta <= M (1 - alpha)",
+      "(holds)")$
+
+print("=== STEP 2: W_k > lambda_k exactly when h_k < -gamma ===")$
+lambda_k(T) := (g + M - phi1*th/(th - 1))*T + phi1*th*TK/(th - 1)$
+vanishes("STEP 2a W_k - lambda_k - (-gamma - h_k) th^k",
+         ratsimp(W(hk, T) - lambda_k(T) - (-g - hk)*T))$
+vanishes("STEP 2b lambda_K - (M + gamma) th^K", ratsimp(lambda_k(TK) - (M + g)*TK))$
+vanishes("STEP 2c lambda_0 - (gamma + M + phi th (th^K - 1)/(th - 1))",
+         ratsimp(lambda_k(1) - (g + M + phi1*th*(TK - 1)/(th - 1))))$
+
+print("=== STEP 3: delta < -gamma (1 - alpha), th = 1/alpha ===")$
+/* the coefficient of th^k in lambda_k at th = 1/alpha is gamma + M - phi/(1 - alpha), which is
+   negative exactly when delta < -gamma (1 - alpha): lambda_k falls in k and its min is lambda_K */
+coef3 : ratsimp(subst(th = 1/a, g + M - phi1*th/(th - 1)))$
+vanishes("STEP 3a coefficient - (gamma (1 - alpha) + delta)/(1 - alpha)",
+         ratsimp(coef3 - (g*(1 - a) + d)/(1 - a)))$
+case1(K) := (M - h0 + phi1*th*(th^K - 1)/(th - 1))/((M + g)*th^K)$
+for K : 1 thru 6 do
+  vanishes(sconcat("STEP 3b K = ", K, ": W_0/lambda_K at th = 1/alpha - the first form"),
+           ratsimp(subst(th = 1/a, case1(K)) - outward(h0, K, a, M, d, g)))$
+vanishes("STEP 3c symbolic K",
+         ratsimp(radcan(subst(th = 1/a, case1(K)) - outward(h0, K, a, M, d, g))))$
+
+print("=== STEP 4: delta >= -gamma (1 - alpha), th = (M + gamma)/(M + gamma - phi) ===")$
+th4 : (M + g)/(M + g - phi1)$
+vanishes("STEP 4a lambda_k's coefficient of th^k at th*", ratsimp(subst(th = th4,
+         g + M - phi1*th/(th - 1))))$
+/* th* <= 1/alpha  <=>  alpha (M + gamma) <= M alpha + gamma + delta  <=>  delta >= -gamma(1-alpha) */
+vanishes("STEP 4b 1/th* - (M alpha + gamma + delta)/(M + gamma)",
+         ratsimp(1/th4 - (M*a + g + d)/(M + g)))$
+case2(K) := (M - h0 + phi1*th*(th^K - 1)/(th - 1))/(g + M + phi1*th*(th^K - 1)/(th - 1))$
+for K : 1 thru 6 do
+  vanishes(sconcat("STEP 4c K = ", K, ": W_0/lambda_0 at th* - the second form"),
+           ratsimp(subst(th = th4, case2(K)) - inward(h0, K, a, M, d, g)))$
+
+print("=== STEP 5: the best th, the branches' seam, and the plain form ===")$
+/* the Ville value over a grid of th in (1, 1/alpha] is never below the closed form's */
+samples : [[1/2, 5, 4/5, 1, -3/10, 1/2], [19/20, 2, 9/10, 1, -1/50, 1/20],
+           [1/5, 3, 1/2, 1, 1/10, 0], [3/4, 8, 19/20, 9/4, 1/50, 1/4], [1, 20, 9/25, 1, 7/16, 0]]$
+for p in samples do block([h0 : p[1], K : p[2], a : p[3], M : p[4], d : p[5], g : p[6], best,
+                           grid, least],
+  best : if d < -g*(1 - a) then outward(h0, K, a, M, d, g) else inward(h0, K, a, M, d, g),
+  grid : makelist(1 + (1/a - 1)*i/400, i, 1, 400),
+  least : lmin(map(lambda([t], float(ville(t, h0, K, a, M, d, g))), grid)),
+  holds(sconcat("STEP 5a h0, K, alpha, M, delta, gamma = ", p, ": closed form ", float(best),
+                " <= least over th ", least),
+        is(float(best) <= least + 1d-12)))$
+vanishes("STEP 5b the two forms at delta = -gamma (1 - alpha)",
+         ratsimp(subst(d = -g*(1 - a), outward(h0, K, a, M, d, g) - inward(h0, K, a, M, d, g))))$
+vanishes("STEP 5c delta = gamma = 0: second form - (1 - alpha^K h_0/M)",
+         ratsimp(inward(h0, K, a, M, 0, 0) - (1 - a^K*h0/M)))$
+/* below the seam the first form is the second plus a penalty for the deficit */
+vanishes("STEP 5d gamma = 0, delta < 0: first form - (1 - alpha^K h_0/M) - (-delta/M) sum alpha^i",
+         ratsimp(outward(h0, K, a, M, d, 0) - (1 - a^K*h0/M) - (-d/M)*(1 - a^K)/(1 - a)))$
+
+print("=== STEP 6: a quadratic barrier on an affine loop ===")$
+/* (a) the expectation needs the noise's covariance alone */
+Pm : matrix([p11, p12], [p12, p22])$
+mv : matrix([m1], [m2])$  cv : matrix([c1], [c2])$  wv : matrix([w1], [w2])$
+hq(v) := Mq - expand((transpose(v - cv) . Pm . (v - cv)))$
+expanded : expand(hq(mv + wv))$
+/* E over w: drop the terms linear in w, w_i w_j -> S_ij */
+Ehq : subst([w1 = 0, w2 = 0], expanded)
+      + ratcoef(ratcoef(expanded, w1, 2), w2, 0)*S11 + ratcoef(ratcoef(expanded, w2, 2), w1, 0)*S22
+      + ratcoef(ratcoef(expanded, w1, 1), w2, 1)*S12$
+vanishes("STEP 6a E[h(m + w)] - (h(m) - tr(P S))",
+         ratsimp(Ehq - (hq(mv) - (p11*S11 + 2*p12*S12 + p22*S22))))$
+/* the expectation of the part linear in w is 0, and nothing of higher degree is there */
+holds("STEP 6b h(m + w) is of degree 2 in w",
+      is(hipow(expand(subst([w1 = t*w1, w2 = t*w2], expanded)), t) = 2))$
+/* (b) scalar: x' = rho x + f + w, h = M - p (x - c)^2; the margin's least value */
+gs : (1 - al)*Ms - p*s2 - p*(rho*x + f - c)^2 + al*p*(x - c)^2$
+xs : rhs(solve(diff(gs, x), x)[1])$
+es : rho*c + f - c$
+Qs : al*p - rho^2*p$  qs : rho*p*es$  r0s : (1 - al)*Ms - p*s2 - p*es^2$
+vanishes("STEP 6c scalar: g(x*) - (r0 - q^2/Q)", ratsimp(subst(x = xs, gs) - (r0s - qs^2/Qs)))$
+vanishes("STEP 6d scalar: g'' - 2 Q, so the least value exists iff alpha >= rho^2",
+         ratsimp(diff(gs, x, 2) - 2*Qs))$
+/* (c) the 2-D loop of the tests: a double integrator, dt = 1/10, under u = -4 x1 - 3 x2 + nu,
+   nu ~ N(0, 25); P0 solves F'P0 F - P0 = -I, P = P0/P0[1,1]; c = (1/10, 0), M = 1,
+   alpha = 19/20 */
+dt : 1/10$
+A2 : matrix([1, dt], [0, 1])$  B2 : matrix([dt^2/2], [dt])$  K2 : matrix([-4, -3])$
+F2 : A2 + B2 . K2$
+Pv : matrix([u11, u12], [u12, u22])$
+lyap : solve(map(lambda([e], e = 0),
+                 [(transpose(F2) . Pv . F2 - Pv + ident(2))[1, 1],
+                  (transpose(F2) . Pv . F2 - Pv + ident(2))[1, 2],
+                  (transpose(F2) . Pv . F2 - Pv + ident(2))[2, 2]]), [u11, u12, u22])$
+P0 : subst(lyap[1], Pv)$
+P2 : P0/P0[1, 1]$
+S2 : 25*(B2 . transpose(B2))$
+c2v : matrix([1/10], [0])$  M2 : 1$  al2 : 19/20$
+xv : matrix([y1], [y2])$
+h2(v) := M2 - (transpose(v - c2v) . P2 . (v - c2v))$
+g2 : expand(h2(F2 . xv) - (P2[1, 1]*S2[1, 1] + 2*P2[1, 2]*S2[1, 2] + P2[2, 2]*S2[2, 2])
+            - al2*h2(xv))$
+Q2 : al2*P2 - transpose(F2) . P2 . F2$
+holds(sconcat("STEP 6e Q = alpha P - F'P F >= 0: trace ", float(Q2[1, 1] + Q2[2, 2]),
+              ", det ", float(determinant(Q2))),
+      is(Q2[1, 1] + Q2[2, 2] > 0) and is(determinant(Q2) > 0))$
+crit : solve([diff(g2, y1) = 0, diff(g2, y2) = 0], [y1, y2])$
+slack2 : ratsimp(subst(crit[1], g2))$
+e2 : F2 . c2v - c2v$
+q2 : transpose(F2) . P2 . e2$
+r02 : (1 - al2)*M2 - (P2[1, 1]*S2[1, 1] + 2*P2[1, 2]*S2[1, 2] + P2[2, 2]*S2[2, 2])
+      - (transpose(e2) . P2 . e2)$
+vanishes("STEP 6f 2-D: g(x*) - (r0 - q'Q^-1 q)",
+         ratsimp(slack2 - (r02 - (transpose(q2) . invert(Q2) . q2))))$
+print("STEP 6g 2-D slack, exact:", slack2, " =", bfloat(slack2))$
+/* the library's value, tests/test_exit_probability.py */
+near("STEP 6h 2-D slack against the library's", bfloat(slack2), -9.739396086560971b-4, 1b-15)$
+/* (d) a barrier on the position alone, P = diag(1, 0): Q = alpha e1 e1' - f1 f1', f1 the first
+   row of F, has det(Q) = -alpha F[1,2]^2 < 0 at every alpha > 0 -- the velocity moves the
+   position's barrier, and the margin falls without bound along Q's negative direction */
+Ppos : matrix([1, 0], [0, 0])$
+Qpos : al*Ppos - transpose(F2) . Ppos . F2$
+vanishes("STEP 6i position-only: det(Q) + alpha F[1,2]^2", ratsimp(determinant(Qpos) + al*F2[1, 2]^2))$
+
+print("=== STEP 7: the scalar loop's exact exit probability under the bound ===")$
+rho7 : 0.6d0$  s7 : 0.45d0$  x07 : 0.0d0$
+dens(y, m) := exp(-(y - m)^2/(2*s7^2))/(s7*sqrt(2*float(%pi)))$
+inside(m) := (erf((1 - m)/(s7*sqrt(2.0d0))) - erf((-1 - m)/(s7*sqrt(2.0d0))))/2$
+/* K = 1: 1 - P(|rho x0 + w| <= 1) */
+exit1 : 1 - inside(rho7*x07)$
+/* K = 2: 1 - int_{-1}^{1} dens(y, rho x0) P(|rho y + w| <= 1) dy */
+exit2 : 1 - quad_qags(dens(y, rho7*x07)*inside(rho7*y), y, -1, 1, 'epsrel = 1d-13)[1]$
+/* K = 1..10: the survival recursion S_k(x) = int_{-1}^{1} dens(y, rho x) S_{k-1}(y) dy, S_0 = 1,
+   on Simpson's rule with 400 panels */
+N7 : 400$  hh : 2.0d0/N7$
+nodes : makelist(-1.0d0 + j*hh, j, 0, N7)$
+weights : makelist(hh/3*(if j = 0 or j = N7 then 1 else if oddp(j) then 4 else 2), j, 0, N7)$
+kern : genmatrix(lambda([i, j], weights[j]*dens(nodes[j], rho7*nodes[i])), N7 + 1, N7 + 1)$
+start : matrix(makelist(weights[j]*dens(nodes[j], rho7*x07), j, 1, N7 + 1))$
+surv : transpose(matrix(makelist(1.0d0, j, 0, N7)))$
+exact : []$
+for k : 1 thru 10 do (exact : endcons(1 - start . surv, exact), surv : kern . surv)$
+near("STEP 7a K = 1, Simpson against erf", exact[1], exit1, 1d-9)$
+near("STEP 7b K = 2, Simpson against quad_qags", exact[2], exit2, 1d-9)$
+/* the library's Gauss-Legendre quadrature, 400 nodes */
+near("STEP 7c K = 5 against Gauss-Legendre", exact[5], 0.22386166d0, 1d-7)$
+near("STEP 7d K = 10 against Gauss-Legendre", exact[10], 0.42020431d0, 1d-7)$
+/* the loop x' = 0.9 x + 0.5 u + w under u = -0.6 x: rho = 0.6; h = 1 - x^2, M = 1, P = 1,
+   alpha = rho^2 = 0.36: the margin (1 - alpha) - s^2 + (alpha - rho^2) x^2 is flat, delta = 0.4375,
+   and M alpha + delta = 1 - s^2 at every alpha in [rho^2, 1 - s^2] */
+al7 : 0.36d0$  d7 : (1 - al7) - s7^2$
+for k in [1, 2, 3, 5, 10] do block([b : inward(1.0d0, k, al7, 1.0d0, d7, 0.0d0)],
+  holds(sconcat("STEP 7e K = ", k, ": exact ", exact[k], " <= bound ", b, ", ratio ",
+                b/exact[k]), is(exact[k] <= b)))$
+near("STEP 7f K = 1: the bound is s^2/M", inward(1.0d0, 1, al7, 1.0d0, d7, 0.0d0), s7^2, 1d-15)$
+
+print("=== STEP 8: an affine barrier has no M ===")$
+/* h = 1 - x on x' = 0.6 x + w: E[h(x') | x] = 1 - 0.6 x = 0.6 h(x) + 0.4 at every x */
+vanishes("STEP 8a E[1 - x'] - (0.6 (1 - x) + 0.4)", ratsimp((1 - 3/5*x) - (3/5*(1 - x) + 2/5)))$
+/* read with M = h(x0) = 1, delta = 0.4 = M (1 - alpha) is admissible, and the second form says 0 */
+vanishes("STEP 8b the second form at M = h(x0) = 1, alpha = 3/5, delta = 2/5",
+         inward(1, K, 3/5, 1, 2/5, 0))$
+/* yet one step leaves x <= 1 with P(w > 1) > 0 */
+exit8 : 1 - (1 + erf(1/(s7*sqrt(2.0d0))))/2$
+holds(sconcat("STEP 8c P(x_1 > 1) = ", exit8, " > 0 = the claimed bound"), is(exit8 > 0))$
+/* the slab |x| <= 1 lies inside the half-space x <= 1, so leaving the half-space leaves the slab */
+holds(sconcat("STEP 8d half-space ", exit8, " <= slab ", exact[1], " <= slab's bound ", s7^2),
+      is(exit8 <= exact[1]) and is(exact[1] <= s7^2))$

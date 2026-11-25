@@ -214,6 +214,15 @@ documented, and what is not built yet. Every name below is importable from `chc`
   caller measures. See [`chc.mpc`](api/mpc.md).
 - **`robust_safety_filter`.** It clips one nominal action into the certified interval, at one
   state. See [`chc.barrier`](api/barrier.md).
+- **`exit_probability`** (*experimental*). How likely the deployed loop is to leave a barrier's
+  safe set within `K` steps under the plant's noise: a bound, by Ville's inequality, where the
+  barrier holds in expectation, `E[h(x') | x] >= alpha h(x) + slack` (Cosner, Culbertson, Taylor
+  and Ames, RSS 2023). The barrier is a `QuadraticBarrier`, bounded above as the bound needs. On
+  a `LinearGaussianPlant` under an `AffinePolicy` the condition is read exactly at every state;
+  under a callable feedback, a safety filter say, at the states given. It refuses an open-loop
+  plan, and `certify_safety` neither reads nor returns it. The bound is loose: on a scalar
+  Gaussian loop it read 0.896 where the loop leaves within ten steps with probability 0.420.
+  See [`chc.barrier`](api/barrier.md).
 - **`DeploymentGate`.** It runs a candidate policy in shadow of the baseline, per zone, and after
   each batch says deploy, hold, experiment or roll back. It can be read at any time: at every
   read, the expected share of wrong deploys across zones is at most `alpha`. That holds when the

@@ -178,6 +178,11 @@ path: a filter rather than a proof of invariance. It reports the certified prefi
 plan's `Gamma*`, exactly the weakest step's. `causal_plan(barrier=BarrierConstraint(...))` holds
 the same worst-case condition inside the solve instead of pricing it after.
 
+`exit_probability` (experimental) reads what none of these does, the plant's noise: a bound on
+the chance that a closed loop leaves a `QuadraticBarrier`'s safe set within `K` steps, where the
+barrier holds in expectation (Ville's inequality on Kushner's supermartingale, as Cosner et al.
+state it). A closed loop only, and no part of the audit.
+
 ## What the certificate is worth
 
 [`reachability`](api/reachability.md)

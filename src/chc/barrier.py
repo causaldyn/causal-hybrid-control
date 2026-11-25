@@ -42,25 +42,38 @@ its general form: **acting is pointless exactly when the identified interval con
 
 NumPy, like the rest of :mod:`chc.research.sensitivity`, so it is independent of the JAX x64 flag.
 Maxima ``validation/barrier_feasibility.mac``, Rocq ``proofs/barrier_feasibility.v``.
+
+**The plant's noise, read apart** (experimental). :func:`exit_probability` bounds the chance that
+a discrete-time closed loop leaves a :class:`QuadraticBarrier`'s safe set within ``K`` steps under
+its noise, where the barrier holds in expectation, ``E[h(x') | x] >= alpha h(x) + slack``: Ville's
+inequality on Kushner's supermartingale, as Cosner, Culbertson, Taylor and Ames state it (RSS 2023,
+Thm 5). It reads a feedback law and refuses an open-loop plan, and it is no part of any audit of
+the deterministic condition above. Maxima ``validation/exit_probability.mac``.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
+from chc.evaluation import AffinePolicy, LinearGaussianPlant
 from chc.uncertainty import confounding_robust_inflation
 
 __all__ = [
     "BarrierConfoundingCurve",
+    "ExitProbability",
+    "QuadraticBarrier",
     "SafetyFilterBenchmark",
     "admissible_action_interval",
     "barrier_confounding_certificate",
     "barrier_gamma_star",
     "control_channel",
+    "exit_probability",
     "identification_radius_threshold",
     "robust_barrier_margin",
     "robust_safe_action",
@@ -435,4 +448,343 @@ def safety_filter_benchmark(
         tracking_cost=costs,
         gamma_star=gamma_star,
         ok=filtered_are_safe and unfiltered_violate,
+    )
+
+
+@dataclass(frozen=True)
+class QuadraticBarrier:
+    """``h(x) = upper - (x - centre)' shape (x - centre)``, safe where ``h >= 0``.
+
+    ``shape`` is symmetric positive semidefinite, so ``h`` exceeds ``upper`` nowhere: the bound
+    :func:`exit_probability` needs on the whole state space. Positive definite, the safe set is an
+    ellipsoid; of lower rank, a slab or a cylinder, unbounded along ``shape``'s null space. An
+    affine barrier has no such bound and is not one of these; a half-space is read through a slab
+    inside it, which the loop leaves whenever it leaves the half-space.
+
+    Raises:
+        ValueError: on an ``upper`` that is not positive and finite, a ``centre`` that is not a
+            vector, a ``shape`` that is not ``(n, n)``, a non-finite entry, or a ``shape`` that is
+            not symmetric positive semidefinite.
+    """
+
+    upper: float
+    centre: NDArray[np.float64]  # (n,)
+    shape: NDArray[np.float64]  # (n, n)
+
+    def __post_init__(self) -> None:
+        upper = float(self.upper)
+        if not 0.0 < upper < math.inf:
+            raise ValueError(f"upper must be positive and finite, got {self.upper}")
+        centre = np.array(self.centre, dtype=np.float64)
+        if centre.ndim != 1 or centre.size == 0:
+            raise ValueError(f"centre must be a vector, got shape {centre.shape}")
+        n = centre.size
+        shape = np.array(self.shape, dtype=np.float64)
+        if shape.shape != (n, n):
+            raise ValueError(f"shape must have shape ({n}, {n}), got {shape.shape}")
+        if not (np.all(np.isfinite(centre)) and np.all(np.isfinite(shape))):
+            raise ValueError("centre and shape must be finite")
+        scale = max(1.0, float(np.abs(shape).max()))
+        if not np.allclose(shape, shape.T, rtol=0.0, atol=1e-12 * scale):
+            raise ValueError("shape is not symmetric")
+        shape = 0.5 * (shape + shape.T)
+        if float(np.linalg.eigvalsh(shape).min()) < -1e-12 * scale:
+            raise ValueError("shape is not positive semidefinite, so h has no upper bound")
+        centre.setflags(write=False)
+        shape.setflags(write=False)
+        object.__setattr__(self, "upper", upper)
+        object.__setattr__(self, "centre", centre)
+        object.__setattr__(self, "shape", shape)
+
+    def __call__(self, x: ArrayLike) -> float:
+        """``h`` at the state ``x``."""
+        gap = np.asarray(x, dtype=np.float64) - self.centre
+        return self.upper - float(gap @ self.shape @ gap)
+
+
+@dataclass(frozen=True)
+class ExitProbability:
+    """A bound on the chance that a closed loop leaves ``{h >= -level}`` within ``steps`` steps.
+
+    ``bound`` is at least ``P(min_{k <= steps} h(x_k) < -level)`` from the start, by Ville's
+    inequality on Kushner's supermartingale, under ``E[h(x_{k+1}) | x_k] >= alpha h(x_k) + slack``
+    and ``h <= upper``; it is clipped at 1, where the theorem says nothing. Read ``scope`` before
+    the number. ``"everywhere"``: the drift condition holds at every state, exactly, on an affine
+    loop. ``"states"``: it was read at the states given, and the bound holds only if no state the
+    loop visits before it leaves has a smaller margin -- nothing checks that between them.
+    """
+
+    bound: float
+    steps: int  # K: the bound covers k = 0 .. K
+    alpha: float
+    # the least E[h(x') | x] - alpha h(x) over the scope, capped at upper * (1 - alpha)
+    slack: float
+    level: float
+    initial: float  # h(x0)
+    upper: float  # the barrier's bound
+    # "inward": slack >= -level (1 - alpha), so the mean step from the edge of {h >= -level} stays
+    # in it, and the bound is Cosner et al.'s geometric form; "outward": below that, the summed one
+    branch: Literal["inward", "outward"]
+    scope: Literal["everywhere", "states"]
+
+
+def _exit_bound(
+    initial: float, steps: int, alpha: float, upper: float, slack: float, level: float
+) -> tuple[float, Literal["inward", "outward"]]:
+    """Cosner, Culbertson, Taylor and Ames's Theorem 5 (RSS 2023), clipped at 1."""
+    spread = upper + level
+    if slack >= -level * (1.0 - alpha):
+        rate = (upper * alpha + level + slack) / spread
+        return min(1.0, 1.0 - (initial + level) / spread * rate**steps), "inward"
+    deficit = upper * (1.0 - alpha) - slack
+    summed = (1.0 - alpha**steps) / (1.0 - alpha)
+    value = (upper - initial) / spread * alpha**steps + deficit / spread * summed
+    return min(1.0, value), "outward"
+
+
+def _least_affine_margin(
+    barrier: QuadraticBarrier,
+    matrix: NDArray[np.float64],
+    shift: NDArray[np.float64],
+    noise_cost: float,
+    alpha: float,
+) -> float:
+    """``inf_x E[h(x') | x] - alpha h(x)`` on the loop ``x' = matrix x + shift + w``.
+
+    With ``y = x - centre`` and ``e = matrix centre + shift - centre`` the margin is
+    ``r0 - 2 q'y + y'Q y``, with ``F = matrix`` and ``P`` the barrier's shape:
+    ``Q = alpha P - F'P F``, ``q = F'P e`` and ``r0 = (1 - alpha) upper - noise_cost - e'P e``.
+    Bounded below iff ``Q >= 0`` with ``q`` in its range, and then its least value is
+    ``r0 - q'Q^+ q`` (``validation/exit_probability.mac``, STEP 6).
+
+    Raises:
+        ValueError: where the margin falls without bound, so the drift condition holds at no slack.
+    """
+    shape = barrier.shape
+    pull = matrix @ barrier.centre + shift - barrier.centre
+    contraction = matrix.T @ shape @ matrix
+    q_matrix = alpha * shape - contraction
+    q = matrix.T @ shape @ pull
+    r0 = (1.0 - alpha) * barrier.upper - noise_cost - float(pull @ shape @ pull)
+    eigenvalues, vectors = np.linalg.eigh(0.5 * (q_matrix + q_matrix.T))
+    tolerance = 1e-10 * max(float(np.abs(alpha * shape).max()), float(np.abs(contraction).max()))
+    along = vectors.T @ q
+    flat = np.abs(eigenvalues) <= tolerance
+    falls = (eigenvalues < -tolerance) | (flat & (np.abs(along) > 1e-9 * np.linalg.norm(q)))
+    if np.any(falls):
+        direction = vectors[:, int(np.argmax(falls))]
+        raise ValueError(
+            f"the drift condition E[h(x') | x] >= alpha h(x) + slack holds at no slack on this "
+            f"loop: at alpha = {alpha}, E[h(x') | x] - alpha h(x) falls without bound along "
+            f"{np.round(direction, 6).tolist()}, where alpha * shape - F' shape F has the "
+            f"eigenvalue {float(eigenvalues[int(np.argmax(falls))]):.3g}. A larger alpha may "
+            "hold; none below 1 holds on a loop that does not contract the barrier's shape"
+        )
+    curved = ~flat
+    return r0 - float(np.sum(along[curved] ** 2 / eigenvalues[curved]))
+
+
+def _refuse_open_loop(policy: object) -> None:
+    """A plan of actions fixed in advance has no action that reads the state the noise moved."""
+    if isinstance(policy, AffinePolicy):
+        if not np.any(policy.gain):
+            raise ValueError(
+                "an AffinePolicy whose gain is zero is an open-loop plan: no action reads the "
+                "state, and the exit probability reads a closed loop"
+            )
+        return
+    if not callable(policy):
+        raise TypeError(
+            "policy must be a feedback law, an AffinePolicy or a callable of the state, got "
+            f"{type(policy).__name__}: a plan of actions fixed in advance (an AffineSchedule, a "
+            "CausalPlan) is open loop, and the exit probability reads a closed loop"
+        )
+
+
+def _checked_start(
+    barrier: QuadraticBarrier,
+    plant: LinearGaussianPlant,
+    x0: ArrayLike,
+    *,
+    steps: int,
+    alpha: float,
+    level: float,
+) -> NDArray[np.float64]:
+    """``x0`` as a vector, once the theorem's numbers and the dimensions are checked."""
+    if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
+        raise ValueError(f"steps must be an integer of at least 1, got {steps!r}")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(f"alpha must lie in (0, 1), got {alpha}")
+    if not 0.0 <= level < math.inf:
+        raise ValueError(f"level must be nonnegative and finite, got {level}")
+    n = plant.states
+    if barrier.centre.size != n:
+        raise ValueError(f"the barrier is on {barrier.centre.size} states, the plant on {n}")
+    start = np.asarray(x0, dtype=np.float64)
+    if start.shape != (n,) or not np.all(np.isfinite(start)):
+        raise ValueError(f"x0 must be a finite vector of {n} states, got {start!r}")
+    return start
+
+
+def _affine_slack(
+    barrier: QuadraticBarrier,
+    plant: LinearGaussianPlant,
+    policy: AffinePolicy,
+    alpha: float,
+    states: ArrayLike | None,
+) -> float:
+    """The margin's least value over the whole state space, on the loop the policy closes."""
+    if policy.gain.shape != (plant.actions, plant.states):
+        raise ValueError(
+            f"the policy's gain must have shape ({plant.actions}, {plant.states}), got "
+            f"{policy.gain.shape}"
+        )
+    if states is not None:
+        raise ValueError(
+            "states reads a callable policy; an AffinePolicy's condition is read everywhere"
+        )
+    noise = plant.noise + plant.b @ policy.covariance @ plant.b.T
+    return _least_affine_margin(
+        barrier,
+        plant.a + plant.b @ policy.gain,
+        plant.b @ policy.offset + plant.offset,
+        float(np.sum(barrier.shape * noise)),
+        alpha,
+    )
+
+
+def _callable_slack(
+    barrier: QuadraticBarrier,
+    plant: LinearGaussianPlant,
+    policy: Callable[[NDArray[np.float64]], ArrayLike],
+    start: NDArray[np.float64],
+    alpha: float,
+    states: ArrayLike | None,
+) -> float:
+    """The margin's least value over ``start`` and ``states``, the policy read at each."""
+    n, m = plant.states, plant.actions
+    if states is None:
+        raise ValueError("a callable policy needs the states at which its condition is read")
+    read = np.asarray(states, dtype=np.float64)
+    if read.ndim != 2 or read.shape[0] == 0 or read.shape[1] != n:
+        raise ValueError(f"states must have shape (N, {n}) with N >= 1, got {read.shape}")
+    if not np.all(np.isfinite(read)):
+        raise ValueError("states must be finite")
+    noise_cost = float(np.sum(barrier.shape * plant.noise))
+    margins = []
+    for x in np.vstack([start, read]):
+        u = np.asarray(policy(x), dtype=np.float64).reshape(-1)
+        if u.size != m or not np.all(np.isfinite(u)):
+            raise ValueError(f"the policy must return {m} finite actions, got {u!r} at {x}")
+        mean = plant.a @ x + plant.b @ u + plant.offset
+        margins.append(barrier(mean) - noise_cost - alpha * barrier(x))
+    return min(margins)
+
+
+def exit_probability(
+    barrier: QuadraticBarrier,
+    plant: LinearGaussianPlant,
+    policy: AffinePolicy | Callable[[NDArray[np.float64]], ArrayLike],
+    x0: ArrayLike,
+    *,
+    steps: int,
+    alpha: float,
+    level: float = 0.0,
+    states: ArrayLike | None = None,
+) -> ExitProbability:
+    """How likely a closed loop is to leave a barrier's safe set within ``steps`` steps: a bound.
+
+    The loop is ``plant`` under the state feedback ``policy``, ``x' = a x + b u(x) + offset + w``,
+    the noise ``w`` independent of the past and of the state, with mean 0 and covariance
+    ``plant.noise``, plus ``b Sigma b'`` for an affine policy's own covariance ``Sigma``. On a
+    quadratic barrier the next state's mean barrier needs that covariance alone,
+    ``E[h(x') | x] = h(m(x)) - tr(shape Cov(w))`` with ``m(x)`` the loop's mean step, so the drift
+    condition ``E[h(x') | x] >= alpha h(x) + slack`` is read exactly, without sampling the noise:
+
+    * an :class:`~chc.evaluation.AffinePolicy` closes an affine loop, ``x' = F x + f + w``, on
+      which the margin ``E[h(x') | x] - alpha h(x)`` is a quadratic in ``x``. Its least value over
+      the whole state space is ``slack`` (``scope="everywhere"``), the premise as Cosner et al.
+      state it. Where the quadratic falls without bound -- ``alpha shape - F' shape F`` has a
+      negative direction, or a flat one along which the margin still slopes -- no slack holds
+      and the call refuses.
+    * a callable ``u = policy(x)``, a safety filter around a nominal controller say, is read at
+      ``x0`` and at each row of ``states`` (``scope="states"``), and ``slack`` is the least margin
+      there. The bound then holds if no state the loop visits before it leaves
+      ``{h >= -level}`` has a smaller margin, which nothing checks between the states given.
+
+    ``slack`` is capped at ``upper (1 - alpha)``, as the theorem asks. With
+    ``h0 = h(x0)`` and ``phi = upper (1 - alpha) - slack``, the bound is Cosner, Culbertson,
+    Taylor and Ames's (RSS 2023, Thm 5, a form of Kushner's): where
+    ``slack >= -level (1 - alpha)`` (``branch="inward"``),
+
+        1 - (h0 + level)/(upper + level) * ((upper alpha + level + slack)/(upper + level))^steps,
+
+    and below it (``"outward"``)
+
+        (upper - h0)/(upper + level) alpha^steps
+            + phi/(upper + level) (1 - alpha^steps)/(1 - alpha),
+
+    each clipped at 1. At ``slack = level = 0`` it is ``1 - alpha^steps h0 / upper``. Maxima
+    ``validation/exit_probability.mac`` derives both forms from the supermartingale and sets the
+    bound against the exact exit probability of a scalar Gaussian loop, where it is several times
+    the truth: 0.2025 against 0.0263 at one step, 0.896 against 0.420 at ten.
+
+    Scope. A closed loop only: the condition is a property of the feedback at the states the noise
+    moves the loop to, and an open-loop plan -- an :class:`~chc.evaluation.AffineSchedule`, a
+    :class:`chc.plan.CausalPlan`, an affine policy whose gain is zero -- is refused. The bound is
+    a reading of the loop under its noise, not a certificate of the deterministic barrier:
+    :func:`chc.plan.certify_safety` neither reads nor returns it. It is free of the dimension, and
+    it reads the noise through its covariance alone; a noise whose law depends on the state is
+    outside it, and so is one that persists from step to step, an AR(1) say, until it is carried
+    as a state.
+
+    Args:
+        barrier: ``h`` and its bound ``upper``; safe where ``h >= 0``.
+        plant: the step ``x' = a x + b u + offset + w``.
+        policy: the state feedback that closes the loop.
+        x0: the known start.
+        steps: ``K``, at least 1.
+        alpha: the discrete-time factor in ``(0, 1)`` of ``E[h(x') | x] >= alpha h(x) + slack``,
+            not :func:`chc.plan.certify_safety`'s continuous-time gain, which is a rate.
+        level: ``gamma >= 0``: the bound is on leaving ``{h >= -level}``.
+        states: ``(N, n)``, the states besides ``x0`` at which a callable policy's condition is
+            read. Refused with an affine policy, whose condition is read everywhere.
+
+    Raises:
+        TypeError: on a ``barrier`` that is not a :class:`QuadraticBarrier`, a ``plant`` that is
+            not a :class:`~chc.evaluation.LinearGaussianPlant`, or a ``policy`` that is not a
+            feedback law.
+        ValueError: on an open-loop policy, dimensions that do not agree, a non-finite entry,
+            ``steps`` below 1, an ``alpha`` outside ``(0, 1)``, a negative ``level``, ``states``
+            with an affine policy or none with a callable one, an action of the wrong size, and a
+            drift condition that holds at no slack.
+    """
+    if not isinstance(barrier, QuadraticBarrier):
+        raise TypeError(
+            f"barrier must be a QuadraticBarrier, got {type(barrier).__name__}: the bound needs h "
+            "bounded above everywhere, and its mean under the noise"
+        )
+    if not isinstance(plant, LinearGaussianPlant):
+        raise TypeError(f"plant must be a LinearGaussianPlant, got {type(plant).__name__}")
+    _refuse_open_loop(policy)
+    start = _checked_start(barrier, plant, x0, steps=steps, alpha=alpha, level=level)
+    scope: Literal["everywhere", "states"]
+    if isinstance(policy, AffinePolicy):
+        slack, scope = _affine_slack(barrier, plant, policy, alpha, states), "everywhere"
+    else:
+        slack, scope = _callable_slack(barrier, plant, policy, start, alpha, states), "states"
+    upper = barrier.upper
+    slack = min(slack, upper * (1.0 - alpha))
+    initial = barrier(start)
+    bound, branch = _exit_bound(initial, steps, alpha, upper, slack, level)
+    return ExitProbability(
+        bound=bound,
+        steps=steps,
+        alpha=alpha,
+        slack=slack,
+        level=level,
+        initial=initial,
+        upper=upper,
+        branch=branch,
+        scope=scope,
     )

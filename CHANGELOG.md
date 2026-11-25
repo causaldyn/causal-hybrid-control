@@ -40,6 +40,19 @@ experimental may change in any minor release (`docs/api/index.md`).
   own effect, and a run no longer than the lags its plug-in reads. The default, `"first"`, is
   unchanged (ADR 0168).
 
+- **`exit_probability`**, opt-in, experimental: a bound on the chance that a closed loop leaves
+  a barrier's safe set within `K` steps under the plant's noise, by Ville's inequality on
+  Kushner's supermartingale as Cosner, Culbertson, Taylor and Ames state it (RSS 2023, Thm 5), in
+  both of its forms (`validation/exit_probability.mac`). The barrier is a `QuadraticBarrier`,
+  `upper - (x - c)'P(x - c)`, bounded above everywhere as the theorem needs, whose mean under any
+  noise of covariance `S` is `h(m) - tr(P S)`. On a `LinearGaussianPlant` under an `AffinePolicy`
+  the drift condition `E[h(x') | x] >= alpha h(x) + slack` is read exactly over every state;
+  under a callable feedback, a safety filter say, at the states given. On `x' = 0.6 x + N(0,
+  0.45^2)` and `|x| <= 1` the bound is 0.2025 where the exact exit probability is 0.0263 at one
+  step, and 0.896 where it is 0.420 at ten. It refuses an open-loop plan (an `AffineSchedule`, a
+  `CausalPlan`, a zero gain), a barrier with no upper bound and a loop on which the condition holds
+  at no slack, and `certify_safety` neither reads nor returns it (ADR 0171).
+
 - **`fit_causal_residual(nuisance_choice="score")`**, opt-in, experimental: the three nuisance
   sieves of ADR 0120 read by the logs of the out-of-fold mean squares of the action's residual and
   of the moment's score, the target's residual less its fit on the action's, each column in its own

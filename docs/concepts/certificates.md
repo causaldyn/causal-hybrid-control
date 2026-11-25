@@ -21,6 +21,7 @@ pages point here rather than repeat the claims.
 | conformal width: `SplitConformal` | marginal coverage of at least `1 − α` | data exchangeable with the calibration split | exchangeability; `n ≥ (1 − α)/α` calibration scores, which `calibrate` enforces | the split-conformal argument, cited; `coverage` measures it |
 | deployment gate: [`chc.gate`](../api/gate.md) | the expected share of wrong deploys across zones, at most `α` at every read | the zones' logs in shadow | logged propensities, no spillover, no carryover | e-processes and e-BH, cited |
 | delay margin: [`chc.delay`](../api/delay.md) | the delay the loop tolerates, `arccos(a/K)/sqrt(K² − a²)` | a scalar loop with one discrete delay | the plant's rate `a`, and a gain `K` larger than `a` in magnitude | the algebraic core: Rocq `proofs/delay_margin.v`; the smallest crossing: Maxima `validation/delay_margin.mac`, checked numerically |
+| exit probability: [`exit_probability`](../api/barrier.md) | the chance that a closed loop leaves `{h >= -level}` within `K` steps, from a known start | a `LinearGaussianPlant` under a state feedback, an `AffinePolicy` or a callable; an open-loop plan is refused | a `QuadraticBarrier`, so `h <= upper` everywhere; `E[h(x') | x] >= alpha h(x) + slack`, read exactly at every state under an `AffinePolicy` and at the states given under a callable; noise independent of the past and of the state | Ville's inequality on Kushner's supermartingale (Cosner, Culbertson, Taylor and Ames, RSS 2023, Thm 5): Maxima `validation/exit_probability.mac`; `tests/test_exit_probability.py` sets it against the exact exit probability and Monte Carlo |
 
 ## Plan, audit, filter
 
@@ -142,6 +143,16 @@ design record is
   promise too: on 20 calibrated logs of an unstable drift the true plant then stayed in the set on
   all 20, where it left on 1, at 24.85 certified steps of 30 on average, where there were 29.95.
   `Γ* = ∞` does not read that tube, so it can stand beside no certified step.
+- **The exit probability** — `exit_probability` bounds the chance that a closed loop leaves
+  `{h >= -level}` within `K` steps under the plant's noise, where a `QuadraticBarrier` holds in
+  expectation, `E[h(x') | x] >= alpha h(x) + slack`. It reads the plant's noise, which the
+  barrier above does not, and it is none of plan, audit and filter: `certify_safety` neither
+  reads nor returns it. Under an `AffinePolicy` the slack is the condition's least margin over
+  every state, exact; under a callable feedback it is the least over the states given, and
+  the bound holds only where no state the loop visits has a smaller one. An open-loop plan is
+  refused. The bound reads the noise through its covariance alone and is loose: on a scalar
+  Gaussian loop 0.2025 against an exit probability of 0.0263 at one step, 0.896 against 0.420
+  at ten ([ADR 0171](https://github.com/causaldyn/causal-hybrid-control/blob/main/docs/adr/0171-a-closed-loop-s-exit-probability-is-read-apart-from-the-barrier-s-audit.md)).
 - **The optimality gap** — `plan_regret_bound` bounds how far a finished plan can be from the
   best one its own box allows on the planning model, from the plan's own gradient and with no
   optimum needed. It reads the plan's actions, not the solver's internals, so it prices a plan that
