@@ -47,7 +47,7 @@ from chc.residual import ControlAffineResidual
 from chc.switchback import Horizon, read_switchback
 
 FORMAL_LINKS = {
-    "chc.decision._field_scale": {
+    "chc._decision.tube._field_scale": {
         "cites": ("tube_level.mac",),
         "tests": (
             "test_field_scale_squared_is_the_f_quantile",
@@ -55,7 +55,7 @@ FORMAL_LINKS = {
             "test_field_scale_holds_two_states_at_its_level",
         ),
     },
-    "chc.decision._field_errors": {
+    "chc._decision.tube._field_errors": {
         "cites": ("rk4_inherited.mac", "tube_projected_action.mac", "rk4_stage_term.mac"),
         "tests": (
             "test_field_terms_tube.py::test_the_field_s_error_is_the_delta_method_through_the_one_step_map",

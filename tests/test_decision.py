@@ -30,6 +30,17 @@ import pytest
 from scipy.stats import chi2
 from scipy.stats import t as student_t
 
+from chc._decision.record import _json_label
+from chc._decision.tube import (
+    _field_error,
+    _field_errors,
+    _field_scale,
+    _model_error,
+    _noise_read,
+    _rate,
+    _slopes,
+    _Stages,
+)
 from chc.cost import QuadraticCost
 from chc.decision import (
     Constraint,
@@ -43,19 +54,10 @@ from chc.decision import (
     StartState,
     Target,
     _episodes,
-    _field_error,
-    _field_errors,
-    _field_scale,
-    _json_label,
     _linearised,
     _margins,
-    _model_error,
-    _noise_read,
     _panel_start,
-    _rate,
     _show_start,
-    _slopes,
-    _Stages,
     _transitions,
     prescribe,
 )

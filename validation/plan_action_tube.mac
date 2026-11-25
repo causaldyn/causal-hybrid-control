@@ -1,4 +1,4 @@
-/* The tube's field part at the plan's own actions (chc.decision._plan_field, ADR 0138).
+/* The tube's field part at the plan's own actions (chc._decision.tube._plan_field, ADR 0138).
 
    The fit's error is one vector theta of covariance Sigma. It moves the field at (x, u) by
    H(x, u) theta, so the plan's state at step k moves by S_k theta, S_k its derivative in theta

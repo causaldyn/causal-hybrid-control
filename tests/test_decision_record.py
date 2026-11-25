@@ -24,6 +24,7 @@ import pytest
 
 import chc.decision as decision
 import chc.evaluation as decision_evaluation
+from chc._decision.record import _read_setting, _setting
 from chc.cost import QuadraticCost
 from chc.decision import (
     Constraint,
@@ -369,14 +370,14 @@ def test_a_graph_s_edges_go_to_the_record_with_their_provenance(held: Prescripti
 def test_an_infinite_setting_is_text_and_none_is_not_given() -> None:
     """JSON has no infinity, and None in ``inputs`` means not given: ``tolerance=None`` switches
     the tube off where ``tolerance=inf`` evaluates it, and a lever's open side is ``-inf``."""
-    assert [decision._setting(v) for v in (math.inf, -math.inf, None, 2, 0.5)] == [
+    assert [_setting(v) for v in (math.inf, -math.inf, None, 2, 0.5)] == [
         "inf",
         "-inf",
         None,
         2,
         0.5,
     ]
-    assert [decision._read_setting(v) for v in ("inf", "-inf", None, 2, 0.5)] == [
+    assert [_read_setting(v) for v in ("inf", "-inf", None, 2, 0.5)] == [
         math.inf,
         -math.inf,
         None,

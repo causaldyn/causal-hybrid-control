@@ -7,7 +7,9 @@ underscore name another tier keeps for itself, moves when that module moves. So 
 is listed here, in :data:`CROSSINGS`, with the entry it serves. An experimental module's name may
 serve only one of the page's experimental entries, the one whose result it moves; an underscore
 name of an evolving module, or any name of a module private to the package, names the stable entry
-a change of it moves.
+a change of it moves. A private package named after a module, ``chc._decision`` for
+``chc.decision``, is that module's own: its imports are read as the module's, and the two import
+each other without crossing.
 
 An import the list does not hold fails, and so does a listed one the source no longer makes.
 Nothing outside ``chc.research`` imports it (ADR 0117). The page's table and its entry list are
@@ -139,11 +141,20 @@ def _entries() -> dict[str, list[str]]:
     }
 
 
+def _owner(module: str) -> str:
+    """``module``, or the module whose private package holds it: ``decision`` for
+    ``_decision.tube``."""
+    head = module.split(".")[0]
+    if head.startswith("_") and (LIBRARY / f"{head[1:]}.py").is_file():
+        return head[1:]
+    return module
+
+
 def _tier(module: str, table: dict[str, list[str]]) -> str:
     """The tier of ``module``, a dotted name below ``chc``: the page names the stable and the
     experimental modules one by one and every other one is evolving; an underscore module is
-    private to the package."""
-    head = module.split(".")[0]
+    private to the package, unless it is a module's private package, which is in its tier."""
+    head = _owner(module).split(".")[0]
     if head == "research":
         return "research"
     if head.startswith("_"):
@@ -191,7 +202,7 @@ def _crossings(module: str, source: str, table: dict[str, list[str]]) -> set[tup
         if tier in ("stable", "research"):
             continue
         if tier == "experimental" or tier == "private" or name.startswith("_"):
-            crossings.add((module, target, name))
+            crossings.add((_owner(module), target, name))
     return crossings
 
 
@@ -294,6 +305,8 @@ def test_a_new_crossing_is_seen_at_any_depth_and_by_any_form_of_import() -> None
         ("plan", "_action_units", "action_units"),
         ("plan", "uncertainty", "_tube"),
     }
+    private = "from chc.uncertainty import _tube\nfrom chc.decision import Lever, _strict\n"
+    assert _crossings("_decision.tube", private, table) == {("decision", "uncertainty", "_tube")}
 
 
 def test_nothing_outside_chc_research_imports_it() -> None:

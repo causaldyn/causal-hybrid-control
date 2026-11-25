@@ -1,4 +1,4 @@
-/* The level of prescribe's tube (chc.decision._field_scale, ADR 0096 as amended).
+/* The level of prescribe's tube (chc._decision.tube._field_scale, ADR 0096 as amended).
 
    The gap between the plant and the plan at a step is the plant's noise n, Gaussian, plus the
    fitted field's error carried to that step, f T u: f the standard error of its norm, read from

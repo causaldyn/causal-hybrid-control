@@ -27,8 +27,7 @@ from scipy import integrate
 from scipy.stats import norm, t
 
 from chc import CausalGraph, Constraint, Lever, Panel, Target, prescribe
-from chc._robust_cov import _cosine_count
-from chc.decision import (
+from chc._decision.tube import (
     _field_error,
     _field_errors,
     _field_scale,
@@ -37,6 +36,7 @@ from chc.decision import (
     _slopes,
     _Stages,
 )
+from chc._robust_cov import _cosine_count
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.dynamics_id import CausalDynamicsFit, fit_causal_residual
 from chc.plan import _error_tube

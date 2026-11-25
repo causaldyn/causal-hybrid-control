@@ -20,8 +20,8 @@ import pytest
 from scipy.stats import chi2
 
 from chc import CausalGraph, Constraint, Lever, Panel, Target, prescribe
+from chc._decision.tube import _autoregression
 from chc.cost import QuadraticCost
-from chc.decision import _autoregression
 from chc.dynamics import LinearDynamics
 from chc.plan import causal_plan
 from chc.uncertainty import _noise_covariances, _noise_radius, _noise_tube

@@ -1,5 +1,5 @@
 /* The tube's noise read off a log, with the read's own error carried (chc.uncertainty
-   _read_covariances, _studentised; chc.decision._noise_read).
+   _read_covariances, _studentised; chc._decision.tube._noise_read).
 
    The fitted drift absorbs the log's mean noise, so the plant's one-step error is w_k + mu: w_k the
    noise the log reads, a VAR(1) of covariance S, and mu a constant, the error of that mean,

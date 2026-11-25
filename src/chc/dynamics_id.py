@@ -444,7 +444,7 @@ class CausalDynamicsFit:
     _lever_errors: np.ndarray | None = dataclasses.field(default=None, repr=False, compare=False)
     # (r, n m, F, F), set with ``_lever_errors``: the covariances of each channel entry's
     # coefficients, entry ``(i, j)`` at ``i m + j``, that it and ``channel_error`` read at the log's
-    # rows. The tube reads them at the plan's own states (``chc.decision._field_errors``).
+    # rows. The tube reads them at the plan's own states (``chc._decision.tube._field_errors``).
     _channel_blocks: np.ndarray | None = dataclasses.field(default=None, repr=False, compare=False)
     # (G, F, F), set with ``drift_error``: the covariance of the drift regression's coefficients,
     # its features then its drivers, one block every state shares under Euler without clusters or
@@ -452,7 +452,8 @@ class CausalDynamicsFit:
     # over the blocks, the largest read's where it takes several.
     _drift_blocks: np.ndarray | None = dataclasses.field(default=None, repr=False, compare=False)
     # Set on an identified fit, under either integrator (ADR 0131, ADR 0133): what the tube reads
-    # the field's error from at any state and any action of the box, ``chc.decision._field_errors``.
+    # the field's error from at any state and any action of the box,
+    # ``chc._decision.tube._field_errors``.
     # The drift regression reads its target at the fitted channel, so the channel's error reaches
     # the field through the drift where the log's actions lean on the state, and the channel's
     # part and that part are one term, priced from the log's projected action; under ``rk4`` the

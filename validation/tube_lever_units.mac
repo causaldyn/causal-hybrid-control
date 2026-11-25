@@ -1,7 +1,7 @@
 /* The tube's rate error read the same in any units of each lever (ADR 0087), as the scale of the
    Euclidean norm over the states that the tube bounds.
 
-   Setting (chc.decision._model_error, chc.dynamics_id._channel_errors). The channel has n states
+   Setting (chc._decision.tube._model_error, chc.dynamics_id._channel_errors). The channel has n states
    and m levers. S[i,j] is entry (i, j)'s mean square standard error at the log's states, in state
    i's units squared per lever j's unit squared, off one covariance; r[j] is the largest action
    lever j's box allows, in lever j's units. The tube takes the largest read after it prices the

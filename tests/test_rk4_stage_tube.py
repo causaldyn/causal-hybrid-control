@@ -18,8 +18,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from chc import CausalGraph, Lever, Panel, Target, decision, prescribe
-from chc.decision import _field_errors, _plan_field, _slopes, _stage_states, _Stages
+from chc import CausalGraph, Lever, Panel, Target, prescribe
+from chc._decision.tube import _field_errors, _plan_field, _slopes, _stage_states, _Stages
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.dynamics_id import fit_causal_residual
 from chc.integrate import rk4_step, rollout
@@ -222,7 +222,7 @@ def _decide(integrator: str):
     )
 
 
-def test_the_euler_map_reads_no_stage(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_euler_map_reads_no_stage(decision_patch) -> None:
     """The Euler map has one stage, the step's start: its tube never reads the stages, and stays
     0.22.0's bit for bit. Under ``rk4`` the same decision reads them."""
 
@@ -232,7 +232,7 @@ def test_the_euler_map_reads_no_stage(monkeypatch: pytest.MonkeyPatch) -> None:
     euler = _decide("euler")
     assert euler.plan is not None
     assert euler.certificate.tube_mode == "exact"
-    monkeypatch.setattr(decision, "_stage_variances", refused)
+    decision_patch("_stage_variances", refused)
     again = _decide("euler")
     assert again.plan is not None
     np.testing.assert_array_equal(

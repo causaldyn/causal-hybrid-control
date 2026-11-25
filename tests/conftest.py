@@ -47,28 +47,37 @@ def _release_compiled_programs():
     gc.collect()
 
 
-@pytest.fixture
-def allocation_patch(monkeypatch):
-    """Sets a global of ``chc.allocation`` for one test in every module that binds it: the module
-    and its private modules under ``chc._allocation``, which split one namespace into several, so
+def _patch_everywhere(monkeypatch, owner: str):
+    """Sets a global of ``chc.<owner>`` for one test in every module that binds it: the module
+    and its private modules under ``chc._<owner>``, which split one namespace into several, so
     a name its code reads may be bound in more than one of them. A name none binds, or one bound
     to different objects, is refused."""
-    import chc._allocation  # here, not above: the modules must load after float64 is enabled
-    import chc.allocation
-
-    modules = [chc.allocation] + [
-        importlib.import_module(f"chc._allocation.{found.name}")
-        for found in pkgutil.iter_modules(chc._allocation.__path__)
+    # here, not at the top: the modules must load after float64 is enabled
+    public = importlib.import_module(f"chc.{owner}")
+    private = importlib.import_module(f"chc._{owner}")
+    modules = [public] + [
+        importlib.import_module(f"chc._{owner}.{found.name}")
+        for found in pkgutil.iter_modules(private.__path__)
     ]
 
     def patch(name: str, value: object) -> None:
         bound = [module for module in modules if name in vars(module)]
-        assert bound, f"no module of chc.allocation binds {name}"
+        assert bound, f"no module of chc.{owner} binds {name}"
         assert len({id(vars(module)[name]) for module in bound}) == 1, name
         for module in bound:
             monkeypatch.setattr(module, name, value)
 
     return patch
+
+
+@pytest.fixture
+def allocation_patch(monkeypatch):
+    return _patch_everywhere(monkeypatch, "allocation")
+
+
+@pytest.fixture
+def decision_patch(monkeypatch):
+    return _patch_everywhere(monkeypatch, "decision")
 
 
 @pytest.fixture

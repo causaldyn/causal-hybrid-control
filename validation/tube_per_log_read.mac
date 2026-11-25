@@ -1,5 +1,5 @@
 /* The spread over logs of the share of the plant's paths a radius holds, at any radius and with
-   the radius's own read (chc.decision._per_log_spread with radius= and read=).
+   the radius's own read (chc._decision.tube._per_log_spread with radius= and read=).
 
    One state: the plant's noise has standard deviation 1, and one log's fitted path is off by an
    offset kappa W, W standard normal across logs, which every path of that log shares. The radius
@@ -80,7 +80,7 @@ spreadread(r, k, d) := block([within],
   within : first(quad_qagi(gwithin, u, minf, inf, 'epsrel = 1e-12)),
   mm : first(quad_qagi(gmean, u, minf, inf, 'epsrel = 1e-13)),
   sqrt(within + first(quad_qagi(gbetween, u, minf, inf, 'epsrel = 1e-12, 'epsabs = 1e-20))))$
-/* the library's values, chc.decision._per_log_spread(kappa, rho, d), at 40 nodes */
+/* the library's values, chc._decision.tube._per_log_spread(kappa, rho, d), at 40 nodes */
 library : [[0.0, 1.96, 0.05, 0.005878847419593827], [0.5, 2.6, 0.1, 0.018799216824930663],
            [1.0, 3.0, 0.2, 0.0685919161380619], [0.1, 2.2, 0.08, 0.006005493932562051],
            [0.5, 2.6, 0.0, 0.017737391390399104], [1.0, 3.0, 0.0, 0.06506887583031318]]$

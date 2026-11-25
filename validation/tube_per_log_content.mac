@@ -1,5 +1,5 @@
 /* The spread over logs of the share of the plant's paths a tube calibrated on average holds
-   (chc.decision._per_log_spread, ADR 0138).
+   (chc._decision.tube._per_log_spread, ADR 0138).
 
    One state: the plant's noise has standard deviation sigma, and one log's fitted field is off by
    kappa sigma W, W standard normal across logs, which every path of that log shares. The radius

@@ -44,8 +44,8 @@ from jax import Array
 from scipy.stats import beta
 from scipy.stats import t as student_t
 
+from chc._decision.tube import _features
 from chc.cost import QuadraticCost
-from chc.decision import _features
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.dynamics_id import CausalDynamicsFit, fit_causal_residual
 from chc.integrate import rollout

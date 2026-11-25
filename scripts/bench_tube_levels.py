@@ -33,7 +33,7 @@ import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 
 from chc import CausalGraph, Constraint, Lever, Panel, Target, prescribe  # noqa: E402
-from chc.decision import _model_error  # noqa: E402
+from chc._decision.tube import _model_error  # noqa: E402
 from chc.dynamics import HybridDynamics, LinearDynamics  # noqa: E402
 from chc.dynamics_id import channel_region, fit_causal_residual  # noqa: E402
 from chc.integrate import rk4_step, rollout  # noqa: E402

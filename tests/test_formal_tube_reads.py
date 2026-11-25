@@ -14,7 +14,7 @@ float code live beside the code's other tests; this file links them.
 from __future__ import annotations
 
 FORMAL_LINKS = {
-    "chc.decision._per_log_spread": {
+    "chc._decision.tube._per_log_spread": {
         "cites": ("tube_per_log_content.mac", "tube_per_log_content.gp", "tube_per_log_read.mac"),
         "tests": (
             "test_plan_action_tube.py::test_the_per_log_spread_is_its_closed_form",
@@ -23,7 +23,7 @@ FORMAL_LINKS = {
             "test_plan_action_tube.py::test_the_read_s_spread_by_simulation",
         ),
     },
-    "chc.decision._plan_field": {
+    "chc._decision.tube._plan_field": {
         "cites": ("plan_action_tube.mac", "rk4_stage_term.mac"),
         "tests": (
             "test_rk4_stage_tube.py::test_the_stages_read_is_never_narrower_than_the_plan_s_form_under_rk4",

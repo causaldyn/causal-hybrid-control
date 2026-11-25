@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from scipy.stats import norm
 
-from chc.decision import _autoregression, _noise_read
+from chc._decision.tube import _autoregression, _noise_read
 from chc.uncertainty import _noise_radius, _noise_tube, _read_covariances, _studentised
 
 _DT, _HORIZON, _SLOPE = 0.1, 15, -0.6

@@ -22,8 +22,7 @@ import pytest
 from scipy.stats import chi2
 
 from chc import CausalGraph, Constraint, Lever, Panel, Target, prescribe
-from chc.cost import QuadraticCost
-from chc.decision import (
+from chc._decision.tube import (
     _field_error,
     _field_errors,
     _field_scale,
@@ -32,6 +31,7 @@ from chc.decision import (
     _Stages,
     _state_noise,
 )
+from chc.cost import QuadraticCost
 from chc.dynamics import HybridDynamics, LinearDynamics
 from chc.dynamics_id import CausalDynamicsFit
 from chc.integrate import rk4_step, rollout

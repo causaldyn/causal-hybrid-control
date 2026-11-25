@@ -20,14 +20,14 @@ import pytest
 from scipy.stats import norm
 
 from chc import CausalGraph, Lever, Panel, Target, prescribe
-from chc.decision import (
-    DecisionError,
+from chc._decision.tube import (
     _field_errors,
     _per_log_spread,
     _per_log_spreads,
     _plan_field,
     _slopes,
 )
+from chc.decision import DecisionError
 from chc.dynamics import HybridDynamics, LinearDynamics, _EulerStep
 from chc.dynamics_id import fit_causal_residual
 from chc.integrate import rollout

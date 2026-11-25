@@ -1,5 +1,5 @@
 \\ PARI/GP: the spread over logs of the share of the plant's paths a tube calibrated on average
-\\ holds (chc.decision._per_log_spread), at 38 digits; validation/tube_per_log_content.mac derives
+\\ holds (chc._decision.tube._per_log_spread), at 38 digits; validation/tube_per_log_content.mac derives
 \\ it and checks it in double precision.
 \\
 \\ One state, noise sigma, the field off by kappa sigma W across logs; the radius

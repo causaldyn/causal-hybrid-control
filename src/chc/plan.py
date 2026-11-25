@@ -2268,17 +2268,17 @@ def _error_tube(
     a step, and the tube adds what it carries to the noise's radius, unless ``field_scale`` is
     given: then ``model_error`` is a standard error, and what it carries, ``f_k``, the standard
     deviation of the norm of an error independent of the noise, read at ``field_scale`` times
-    itself where its spread is estimated (:func:`chc.decision._field_scale`). Its direction is not
-    known, and it is placed along the noise's widest, where it widens the radius most: the radius
-    is that of the noise's covariance with ``(field_scale f_k)^2`` added to its largest
+    itself where its spread is estimated (:func:`chc._decision.tube._field_scale`). Its direction
+    is not known, and it is placed along the noise's widest, where it widens the radius most: the
+    radius is that of the noise's covariance with ``(field_scale f_k)^2`` added to its largest
     eigenvalue, on one state ``sqrt(r_k^2 + (field_scale z f_k)^2)``, ``z`` the normal's two-sided
     quantile. ``read`` carries the noise's own error where it was read off a log
     (:func:`chc.uncertainty._read_covariances`).
 
     ``model_error`` may also be ``(H, S)``, an error for each of a step's ``S`` stages, each read
-    where its stage reads the field (:func:`chc.decision._field_errors`). The state matrices carry
-    each stage's by its own weight (:func:`chc.uncertainty._linear_tube`); a norm bound holds where
-    the field is off by at most its budget wherever the step reads it, so it reads the stages'
+    where its stage reads the field (:func:`chc._decision.tube._field_errors`). The state matrices
+    carry each stage's by its own weight (:func:`chc.uncertainty._linear_tube`); a norm bound holds
+    where the field is off by at most its budget wherever the step reads it, so it reads the stages'
     largest."""
     reads = np.asarray(model_error, dtype=np.float64)
     if reads.ndim == 2 and carried.ndim == 0:

@@ -1547,13 +1547,13 @@ def _linear_tube(
     to the bit. Under ``integrator="euler"`` the rollouts are Euler's (:func:`_step_parts`).
 
     ``model_error`` may also be ``(H, S)``, one error for each of a step's ``S`` stages, where each
-    stage reads the field at its own state (:func:`chc.decision._field_errors`): step ``j``'s stage
-    ``i`` then reaches step ``k`` through ``R(dt A_{k-1}) ... R(dt A_{j+1}) c_i(dt A_j)`` alone,
-    and the tube sums each stage's gains' norms times its own error. One step's error is ``dt sum_i
-    c_i(dt A) delta_i``, exactly, on a field affine in the state (``validation/rk4_stage_term.mac``
-    (1)), so this bounds its norm by Minkowski's inequality, as the gains' norms bound the steps'
-    sum. Every stage's error equal to the step's reads the one error's tube, to
-    rounding."""
+    stage reads the field at its own state (:func:`chc._decision.tube._field_errors`): step ``j``'s
+    stage ``i`` then reaches step ``k`` through ``R(dt A_{k-1}) ... R(dt A_{j+1}) c_i(dt A_j)``
+    alone, and the tube sums each stage's gains' norms times its own error. One step's error is ``dt
+    sum_i c_i(dt A) delta_i``, exactly, on a field affine in the state
+    (``validation/rk4_stage_term.mac`` (1)), so this bounds its norm by Minkowski's inequality, as
+    the gains' norms bound the steps' sum. Every stage's error equal to the step's reads the one
+    error's tube, to rounding."""
     a_matrix = np.asarray(state_matrix, dtype=float)
     steps = a_matrix[None] if a_matrix.ndim == 2 else a_matrix
     if steps.ndim != 3 or steps.shape[1] != steps.shape[2]:
@@ -1728,7 +1728,7 @@ def _noise_covariance(noise: ArrayLike, states: int) -> NDArray[np.float64]:
 
 @dataclass(frozen=True)
 class _NoiseRead:
-    """The sampling error of a tube's noise read off a log (:func:`chc.decision._noise_read`).
+    """The sampling error of a tube's noise read off a log (:func:`chc._decision.tube._noise_read`).
 
     ``covariances`` and ``carries``, ``(J, n, n)``: the noise's covariance ``S`` and its VAR(1)
     coefficient ``Phi`` read with each of ``J`` groups of the log's units left out, a
