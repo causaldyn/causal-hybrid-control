@@ -23,6 +23,7 @@ import pytest
 from jax import Array
 
 from chc import (
+    BarrierConstraint,
     ConformalHorizon,
     ConformalPessimism,
     QuadraticCost,
@@ -254,7 +255,7 @@ class _DriftingGain(eqx.Module):
 PLANT = _DriftingGain()
 
 
-def _controller(lam_unc: float = 0.0) -> RecedingHorizon:
+def _controller(lam_unc: float = 0.0, barrier: BarrierConstraint | None = None) -> RecedingHorizon:
     return RecedingHorizon(
         MODEL,
         COST,
@@ -265,7 +266,12 @@ def _controller(lam_unc: float = 0.0) -> RecedingHorizon:
         support=SUPPORT,
         uncertainty=ConfoundingRobustPenalty(radius=0.5),
         lam_unc=lam_unc,
+        barrier=barrier,
     )
+
+
+def _ceiling(x: Array) -> Array:
+    return 0.6 - x[0]
 
 
 def _missed(x: Array, t: float, u: Array) -> tuple[Array, float]:
@@ -364,6 +370,40 @@ def test_a_moving_weight_compiles_nothing_after_the_first_two_steps() -> None:
     with _compilations() as compiled:
         loop.controller.step(x, 6 * DT)
     assert compiled != []
+
+
+def test_under_a_barrier_a_moving_weight_compiles_nothing_after_the_first_two_steps(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The barrier's rounds weigh the uncertainty penalty by the same weight, and read it as an
+    input as the descent does: held as a constant of their programs, each new weight compiled
+    them again."""
+    jax.clear_caches()
+    pessimism = ConformalPessimism(0.0, target=0.2, step=0.5, bound=1.0, safe=2.0)
+    loop = ConformalHorizon(_controller(barrier=BarrierConstraint(_ceiling, alpha=1.0)), pessimism)
+    x = jnp.zeros(1)
+
+    def step(k: int) -> None:
+        nonlocal x
+        plan = loop.step(x, k * DT)
+        x, _ = _missed(x, k * DT, plan.actions[0])
+        loop.update(BOUND if k < 4 else 0.0)  # weights 0.4, 0.8, 1.2, 1.6, 1.5, 1.4
+
+    step(0)
+    step(1)
+    with _compilations() as compiled, caplog.at_level(logging.INFO, logger="chc.plan"):
+        for k in range(2, 6):
+            step(k)
+    assert len(set(pessimism.path.tolist())) == 7
+    assert compiled == []
+    rounds = [
+        int(getattr(record, "rounds", -1))
+        for record in caplog.records
+        if getattr(record, "chc_event", None) == "barrier"
+    ]
+    # the ceiling binds at some of these plans, and their rounds ran at weights new to them
+    assert len(rounds) >= 2
+    assert min(rounds) > 0
 
 
 def test_plans_and_losses_alternate() -> None:

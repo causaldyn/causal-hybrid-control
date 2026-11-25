@@ -2673,7 +2673,9 @@ class _HeldBarrier(eqx.Module):
     # a bound on the drift's error the deviation tube carries beside the channel's; None, none
     drift: Array | None = None
     rest: PenaltyModel | None = None
-    rest_weight: float = eqx.field(static=True, default=0.0)
+    # not static: filter_jit keys on a Python float all the same, and reads a numpy one, the weight
+    # ConformalHorizon moves at each plan, as an input, so a moving weight compiles the rounds once
+    rest_weight: float = 0.0
 
     def shortfall(self, states: Array, actions: Array) -> Array:
         """Per step and barrier, ``-alpha h - (a + <w, u> - d ||D^+ (u - c)||)`` and

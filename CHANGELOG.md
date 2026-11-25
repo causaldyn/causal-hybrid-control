@@ -49,6 +49,19 @@ experimental may change in any minor release (`docs/api/index.md`).
   back as often or more often, by up to 21 of 400 paths, and wrongly no more often: at most 1 of
   400 paths in a null cell, unset alike (ADR 0146, amended; `scripts/bench_gate_restart.py`).
 
+### Fixed
+
+- **`ConformalHorizon` over a controller with a barrier no longer compiles its rounds at each new
+  weight.** A barrier's rounds weigh the uncertainty penalty by the controller's `lam_unc`, and
+  held it as a static field of the module their compiled programs read. The numpy weight the hook
+  hands over, which the penalised descent reads as an input, was a constant there: each new
+  weight compiled the rounds' programs again, and equinox warned that a JAX array was set as
+  static, which failed the plan where warnings are errors. After its first two plans
+  a moving weight now compiles nothing, with a barrier as without one. A Python float `lam_unc`
+  is a constant of the program as before, and no plan moves: at a fixed weight, with a barrier or
+  not, and under the hook, the plans are the same bit for bit in float64 and float32.
+  *Experimental.*
+
 ### Documentation
 
 - **The barrier's drift-error room, read on 200 logs, and the default's calibration gap.** On the
