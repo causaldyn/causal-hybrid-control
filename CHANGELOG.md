@@ -52,6 +52,13 @@ experimental may change in any minor release (`docs/api/index.md`).
   `prescribe(barrier_drift_error=)` now state the gap and the bound's reach: at the held plans'
   states inside the log's spread the drift's own error was 0.71 to 0.85 of the bound, beyond it 1.45
   to 1.63 times it (ADR 0104). No value moves (ADR 0119, amended).
+- **Why `PlanEvaluation` has no bias-corrected value.** ADR 0155 said the corrected value failed its
+  rule; on three of the four designs the reported bias was 0.03 to 0.12 of the mean error's Monte
+  Carlo error, where even an exact correction wins the comparison with probability 0.506 to 0.524,
+  so the rule could not decide. The field stays out because it is `value - normalisation_bias`,
+  both already fields and record keys, it has no interval of its own, and where windows persist it
+  removes a half to a ninth of the bias (ADR 0095). The docstring states the groups' numbers. No
+  value moves (ADR 0155, amended).
 
 ## [1.5.0] — 2026-11-25
 

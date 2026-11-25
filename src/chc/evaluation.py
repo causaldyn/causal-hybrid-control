@@ -381,7 +381,10 @@ class PlanEvaluation:
     is logged where it exceeds 0.05 of the interval's half-width. The estimate's actual bias can
     be several times it: on one unit's windows, whose state and noise persist, it was 2 to 9
     times, and 0.27 to 0.59 of the estimate's standard deviation at a horizon of 20 steps, where
-    the interval covered 0.63 (ADR 0095).
+    the interval covered 0.63 (ADR 0095). ``value - normalisation_bias`` is not a field: on
+    independent groups' windows it read the plan's cost 0.54 Monte Carlo errors low where
+    ``value`` read 2.54, but it has no interval of its own, and where the windows persist it
+    removes a half to a ninth of the bias (ADR 0155).
     """
 
     value: float

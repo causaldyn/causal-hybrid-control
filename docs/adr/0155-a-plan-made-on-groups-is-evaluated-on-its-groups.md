@@ -26,6 +26,16 @@ mean error read, so the corrected value reads the larger mean error on each, and
 less than 0.1 %. The rule fails, and nothing is added. The warning ADR 0095 logs where the bias
 passes 0.05 of the interval's half-width fired on 178 of the 194 grouped panels and on none of the
 other 600: it marks the evaluations where the correction moved the reading.
+Amended 2026-11-25: **why there is no field.** The rule above could not decide on three of the
+four designs. Where the reported bias is `r` = 0.03 to 0.12 of the mean error's Monte Carlo error,
+even an exact correction reads the smaller mean error with probability `Phi(r / 2)`, 0.506 to
+0.524, and on all three about one time in seven. So the rule's failure says nothing against the
+correction, and on the groups, where `r` is 2, it held. The field stays out for three other
+reasons. It is `value` less `normalisation_bias`, and both are fields and keys of the record. The
+interval is about `value`, and a second point estimate beside it would have no interval of its
+own. And the correction is of first order under the model: on one unit's persistent windows the
+estimate's bias was 2 to 9 times it (ADR 0095), so it would remove a half to a ninth of it there.
+`PlanEvaluation`'s docstring states the groups' numbers.
 
 ## Context
 
