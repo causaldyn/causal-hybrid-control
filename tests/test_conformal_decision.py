@@ -327,11 +327,15 @@ def test_on_a_drifting_plant_the_loop_keeps_its_mean_miss_within_the_bound() -> 
 @pytest.mark.parametrize("initial", [0.0, 0.75])
 def test_the_first_plan_is_the_controllers_own_at_that_weight(initial: float) -> None:
     """The weight goes in as a numpy float, which the descent reads as an input rather than a
-    constant of its program; the plan is the one a Python float gives, bit for bit."""
+    constant of its program; the plan is the one a Python float gives. Bit for bit on Linux, but
+    XLA may fold a constant weight of 0 out of the program, and macOS's runner then read the last
+    bits otherwise: the same plan, to rounding."""
     pessimism = ConformalPessimism(initial, target=0.2, step=0.5, bound=1.0, safe=2.0)
     plan = ConformalHorizon(_controller(), pessimism).step(jnp.array([0.2]))
     plain = _controller(initial).step(jnp.array([0.2]))
-    assert np.array_equal(np.asarray(plan.actions), np.asarray(plain.actions))
+    np.testing.assert_allclose(
+        np.asarray(plan.actions), np.asarray(plain.actions), rtol=1e-9, atol=1e-12
+    )
 
 
 def test_a_moving_weight_compiles_nothing_after_the_first_two_steps() -> None:
