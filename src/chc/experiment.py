@@ -82,6 +82,9 @@ from typing import Literal
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy import optimize, special
+from scipy.linalg import solve_discrete_lyapunov
+
+from chc.regret import _gain_jacobian, dlqr
 
 __all__ = [
     "ChannelPrior",
@@ -90,10 +93,12 @@ __all__ = [
     "DitherMethod",
     "ExperimentDesign",
     "PinnedZone",
+    "ProbeDesign",
     "ZoneDecision",
     "ZoneExperiment",
     "design_experiment",
     "dither_covariance",
+    "probe_design",
 ]
 
 _log = logging.getLogger(__name__)
@@ -1126,3 +1131,339 @@ def _white_dither(c: _Array, q: _Array, p0: _Array) -> float:
     while slope(high) < 0.0:
         high *= 2.0
     return float(optimize.brentq(slope, low, high, xtol=1e-300))
+
+
+@dataclass(frozen=True)
+class ProbeDesign:
+    """What :func:`probe_design` recommends: the probe's covariance over the levers, what the gain
+    re-solved after it is expected to lose, and the same for a white probe of the same power.
+
+    ``regret`` is the expected excess of the re-solved gain's average cost per period over the
+    optimal gain's, to first order in ``1 / periods``: ``Phi(U) / periods`` at ``covariance``.
+    ``gap`` bounds how far it is above the least any probe of that power reaches, in the same
+    units: 0 for the closed form, the duality gap the gradient certifies on the numeric route.
+    ``white_regret`` is ``Phi`` of ``power / m`` times the identity over ``periods``, and ``ratio``
+    ``regret / white_regret``, at most 1. ``cost`` and ``white_cost`` are what each probe adds to
+    the plan's average cost per period while it runs, exactly: ``tr((R + B' P B) U)``, ``P`` the
+    cost-to-go of ``gain``, the gain the probe runs under.
+    """
+
+    covariance: _Array  # (m, m), positive semidefinite, of trace `power`
+    regret: float
+    method: DitherMethod
+    gap: float
+    white_regret: float
+    ratio: float
+    cost: float
+    white_cost: float
+    gain: _Array  # (m, n), u = -gain x + probe
+
+
+def probe_design(
+    a: ArrayLike,
+    b: ArrayLike,
+    q: ArrayLike,
+    r: ArrayLike,
+    *,
+    noise: ArrayLike,
+    power: float,
+    periods: int,
+    weight: ArrayLike | None = None,
+    gain: ArrayLike | None = None,
+) -> ProbeDesign:
+    """The covariance of a probe, at a cap on its power, that leaves the LQR gain re-solved after
+    it the least expected regret.
+
+    The plant is ``x_{t+1} = A x_t + B u_t + w_t``, ``w_t ~ N(0, noise)`` independent over ``t``,
+    and the decision is the LQR gain of the average cost per period ``E[x' Q x + u' R u]``,
+    ``u = -K x``. For ``periods`` periods the plant runs under ``gain``, the LQR gain on ``(A, B)``
+    unless given, plus a probe drawn afresh each period, ``u_t = -gain x_t + eta_t``,
+    ``eta_t ~ N(0, U)``; ``[A B]`` is then fitted by least squares on ``(x_t, u_t)`` and the gain
+    re-solved on the fit. :func:`probe_design` chooses the ``U >= 0`` with ``tr U = power`` that
+    minimises what the re-solved gain is expected to lose.
+
+    **The criterion** is the task-optimal one of Wagenmaker, Simchowitz and Jamieson (ICML 2021):
+    the trace of the decision weight against the inverse information. To second order in the fit's
+    error ``e`` over ``theta = (A.ravel(), B.ravel())``, the re-solved gain loses ``e' W e / 2`` per
+    period, ``W`` the decision weight: ``weight``, by default the LQR's own,
+    ``W = 2 J' (G (x) Sigma*) J``, ``J`` the gain's Jacobian in ``theta``, ``G = R + B' P* B`` and
+    ``Sigma*`` the closed loop's stationary state covariance under ``noise``
+    (:func:`chc.regret.ce_regret_law`'s second-order law, doubled to a Hessian). To first order the
+    fit's error in ``[A B]``, row by row, is ``N(0, noise (x) Gamma^-1 / periods)``, ``Gamma`` the
+    stationary covariance of ``z = (x, u)`` in the probed loop, so the expected regret is
+    ``Phi(U) / periods`` with ``Phi(U) = tr(Wn Gamma(U)^-1) / 2``, ``Wn`` the weight traced against
+    ``noise`` over the plant's rows, ``(n + m) x (n + m)``: the re-plan price ``tr(W S) / 2`` of
+    :meth:`chc.gate.ChannelMove.price` at the fit's covariance ``S``.
+
+    **Where the probe's information goes.** ``Gamma^-1 = E Sx^-1 E' + F U^-1 F'``, ``E = [I; 0]``
+    and ``F = [gain'; I]``: the fit reads ``B`` off the probe alone, ``U``, and the closed loop
+    ``A - B gain`` off the state's excitation, ``Sx(U)``, the stationary solution of
+    ``Sx = A_cl Sx A_cl' + B U B' + noise`` (``validation/dynamic_probe_design.mac``). So
+
+        Phi(U) = (tr(Wn_xx Sx(U)^-1) + tr(F' Wn F U^-1)) / 2,
+
+    convex in ``U``, since ``Sx`` is affine in it, and decreasing, so the cap binds. Where the
+    weight holds no state block the first term vanishes and the optimum is in closed form,
+    ``U* = power M / tr M`` with ``M = (F' Wn F)^1/2``. That is the static case: a weight on ``B``
+    alone, ``n m`` square and ravelled as ``B.ravel()`` (as
+    :meth:`chc.plan.CausalPlan.decision_weight` ravels the one-step channel), gives
+    :func:`dither_covariance`'s covariance with ``cost`` the identity and ``weight``
+    ``F' Wn F / (2 periods)`` at the power that is its trace, and ``regret`` its regret term. A cap
+    on ``tr(C U)`` in place of ``tr U``, such as the probe's own cost, ``C = R + B' P B``, is this
+    one on the levers scaled by ``C^1/2``: pass ``B C^-1/2`` and ``C^-1/2 R C^-1/2``. Otherwise the
+    optimum is found over a Cholesky factor of ``U`` scaled to the cap, by L-BFGS from the white
+    probe and from the closed form of the second term alone, and ``gap`` is
+    ``tr(D U) - power lambda_min(D)``, ``D`` the gradient of ``Phi``, over ``periods``: the
+    convex problem's Frank-Wolfe gap, a bound on how far the probe is from the best.
+
+    On ``A = [[0.9, 0.2], [-0.1, 0.7]]``, ``B = [[1, 0.1], [0.3, 0.2]]``, ``Q = I``,
+    ``R = diag(1, 0.05)``, unit noise and power 1, the gain leans on the weak, cheap second lever;
+    the design gives it 0.83 of the power and leaves 0.753 of the white probe's regret. At power 10,
+    where the state's excitation counts, it leaves 0.942, where the closed form of the second term
+    alone leaves 1.004.
+
+    **What it leaves out.** It is first order in ``1 / periods``: the fit's error is not exactly
+    Gaussian, a fit of a few periods inflates its covariance, by ``periods / (periods - n - m -
+    1)`` for Gaussian regressors, and the exact regret's mean is infinite, since a fit can give a
+    gain that does not stabilise the plant (:func:`chc.regret.ce_regret_law` reads its law). It
+    is a certainty-equivalent design: the weight and ``Gamma`` are read at the ``(A, B)`` given,
+    not at the truth. The probe is drawn afresh each period; a probe correlated over time, whose
+    spectrum Wagenmaker et al. design, can excite the state more at the same power, and is not
+    built. The fit is of all of ``[A B]``: a fit that holds ``A`` known reads ``B`` off ``gain x``
+    as well, and learns more than this credits. The cap is the caller's: what the probe costs over
+    the run, against the regret it removes over the uses after it, is not traded here.
+
+    Raises:
+        ValueError: on matrices of shapes that do not match, a non-finite entry, a ``q`` that is
+            not symmetric positive semidefinite, an ``r`` or a ``noise`` that is not symmetric
+            positive definite, a plant with no stabilising LQR gain, a ``gain`` whose closed loop
+            is not stable, a ``weight`` that is not ``n (n + m)`` or ``n m`` square, not symmetric
+            positive semidefinite or zero, a ``power`` that is not positive and finite, or
+            ``periods`` of at most ``n + m + 1``.
+    """
+    if not (math.isfinite(power) and power > 0.0):
+        raise ValueError(f"power must be positive and finite, got {power}")
+    loop = _probed_loop(a, b, q, r, noise, gain)
+    n, m = loop.b.shape
+    if periods <= n + m + 1:
+        raise ValueError(f"periods must exceed n + m + 1 = {n + m + 1}, got {periods}")
+    w = _probe_weight(loop, weight)
+    traced = _traced_weight(w, loop.noise, n, m)
+    f = np.vstack([loop.gain.T, np.eye(m)])
+    h_state, h_probe = traced[:n, :n], _symmetric(f.T @ traced @ f)
+
+    def value(u: _Array) -> tuple[float, _Array]:
+        return _probe_value(u, loop.closed, loop.b, loop.noise, h_state, h_probe)
+
+    white_covariance = (power / m) * np.eye(m)
+    white_value = value(white_covariance)[0]
+    method: DitherMethod = "closed_form"
+    gap = 0.0
+    if m == 1:
+        covariance, phi = white_covariance, white_value
+    elif not np.any(h_state):
+        root = _psd_root(h_probe)
+        covariance = power * root / float(np.trace(root))
+        phi = float(np.trace(root)) ** 2 / (2.0 * power)
+    else:
+        method = "numeric"
+        covariance, phi, gap = _probe_numeric(value, h_probe, power, white_value)
+    cost_to_go = solve_discrete_lyapunov(loop.closed.T, loop.q + loop.gain.T @ loop.r @ loop.gain)
+    probe_price = _symmetric(loop.r + loop.b.T @ _symmetric(cost_to_go) @ loop.b)
+    design = ProbeDesign(
+        covariance=_frozen(_symmetric(covariance)),
+        regret=float(phi) / periods,
+        method=method,
+        gap=gap / periods,
+        white_regret=white_value / periods,
+        ratio=float(phi) / white_value,
+        cost=float(np.sum(probe_price * covariance)),
+        white_cost=power / m * float(np.trace(probe_price)),
+        gain=_frozen(loop.gain.copy()),
+    )
+    _log.info(
+        "probe design: %s",
+        method,
+        extra={
+            "chc_event": "probe_design",
+            "method": method,
+            "regret": design.regret,
+            "gap": design.gap,
+            "white_regret": design.white_regret,
+            "ratio": design.ratio,
+        },
+    )
+    return design
+
+
+@dataclass(frozen=True)
+class _ProbedLoop:
+    """The plant, its LQR task and optimum, and the loop the probe runs in."""
+
+    a: _Array
+    b: _Array
+    q: _Array
+    r: _Array
+    noise: _Array
+    optimal: _Array  # K*, u = -K* x
+    cost_to_go: _Array  # P*
+    gain: _Array
+    closed: _Array  # A - B gain
+
+
+def _probed_loop(
+    a: ArrayLike, b: ArrayLike, q: ArrayLike, r: ArrayLike, noise: ArrayLike, gain: ArrayLike | None
+) -> _ProbedLoop:
+    b_matrix = np.array(b, dtype=np.float64)
+    if b_matrix.ndim != 2 or b_matrix.size == 0:
+        raise ValueError(f"b must be a non-empty matrix, got shape {b_matrix.shape}")
+    _finite(b_matrix, "b")
+    n, m = b_matrix.shape
+    a_matrix = _matrix(a, "a", n)
+    q_matrix, r_matrix, noise_matrix = (
+        _matrix(q, "q", n),
+        _matrix(r, "r", m),
+        _matrix(noise, "noise", n),
+    )
+    _symmetric_root(q_matrix, "q", definite=False)
+    _symmetric_root(r_matrix, "r", definite=True)
+    _symmetric_root(noise_matrix, "noise", definite=True)
+    q_matrix, r_matrix, noise_matrix = (_symmetric(x) for x in (q_matrix, r_matrix, noise_matrix))
+    try:
+        optimal, cost_to_go = dlqr(a_matrix, b_matrix, q_matrix, r_matrix)
+    except (np.linalg.LinAlgError, ValueError) as error:
+        raise ValueError("the plant has no stabilising LQR gain") from error
+    running = optimal if gain is None else np.array(gain, dtype=np.float64)
+    if running.shape != (m, n):
+        raise ValueError(f"gain must have shape ({m}, {n}), got {running.shape}")
+    _finite(running, "gain")
+    closed = a_matrix - b_matrix @ running
+    radius = float(np.max(np.abs(np.linalg.eigvals(closed))))
+    if radius >= 1.0:
+        raise ValueError(
+            f"the loop the probe runs in is not stable, spectral radius {radius:.4g}: it has no"
+            " stationary covariance"
+        )
+    return _ProbedLoop(
+        a_matrix, b_matrix, q_matrix, r_matrix, noise_matrix, optimal, cost_to_go, running, closed
+    )
+
+
+def _probe_weight(loop: _ProbedLoop, weight: ArrayLike | None) -> _Array:
+    """The decision weight over ``(A.ravel(), B.ravel())``: the LQR's own, or ``weight``, one over
+    ``B.ravel()`` alone padded with zeros."""
+    n, m = loop.b.shape
+    d = n * (n + m)
+    if weight is None:
+        jacobian = _gain_jacobian(loop.a, loop.b, loop.optimal, loop.cost_to_go, loop.r)
+        jacobian = jacobian.reshape(d, m * n)
+        spread = solve_discrete_lyapunov(loop.a - loop.b @ loop.optimal, loop.noise)
+        curvature = loop.r + loop.b.T @ loop.cost_to_go @ loop.b
+        w = 2.0 * jacobian @ np.kron(_symmetric(curvature), _symmetric(spread)) @ jacobian.T
+    else:
+        w = np.array(weight, dtype=np.float64)
+        if w.shape not in ((d, d), (n * m, n * m)):
+            raise ValueError(
+                f"weight must have shape ({d}, {d}) over (A.ravel(), B.ravel()) or"
+                f" ({n * m}, {n * m}) over B.ravel(), got {w.shape}"
+            )
+        _finite(w, "weight")
+        _symmetric_root(w, "weight", definite=False)
+        if w.shape[0] != d:
+            full = np.zeros((d, d))
+            full[n * n :, n * n :] = w
+            w = full
+    if not np.any(w):
+        raise ValueError("weight is zero: no probe changes the regret")
+    return _symmetric(w)
+
+
+def _psd_root(m: _Array) -> _Array:
+    """The symmetric square root of ``m``'s positive part."""
+    values, vectors = np.linalg.eigh(_symmetric(m))
+    return _symmetric((vectors * np.sqrt(np.clip(values, 0.0, None))) @ vectors.T)
+
+
+def _traced_weight(w: _Array, noise: _Array, n: int, m: int) -> _Array:
+    """``Wn_jl = sum_ik W_(i,j),(k,l) noise_ki`` over the regressors ``z = (x, u)``, ``(i, j)`` the
+    entry of ``[A B]`` in row ``i`` and column ``j``: ``tr(W (noise (x) X)) = tr(Wn X)``."""
+    width = n + m
+    order = np.array(
+        [i * n + j if j < n else n * n + i * m + (j - n) for i in range(n) for j in range(width)]
+    )
+    rows = w[np.ix_(order, order)].reshape(n, width, n, width)
+    return _symmetric(np.einsum("ijkl,ki->jl", rows, noise))
+
+
+def _probe_value(
+    u: _Array, closed: _Array, b: _Array, noise: _Array, h_state: _Array, h_probe: _Array
+) -> tuple[float, _Array]:
+    """``Phi(U) = (tr(Wn_xx Sx(U)^-1) + tr(F' Wn F U^-1)) / 2`` and its gradient in ``U``,
+    ``-(B' L*(Sx^-1 Wn_xx Sx^-1) B + U^-1 F' Wn F U^-1) / 2``, ``L*`` the adjoint Lyapunov map;
+    ``inf`` where ``U`` is singular and the second term is not zero."""
+    state = _symmetric(solve_discrete_lyapunov(closed, noise + b @ u @ b.T))
+    state_inverse = np.linalg.inv(state)
+    pull = _symmetric(state_inverse @ h_state @ state_inverse)
+    gradient = -0.5 * b.T @ solve_discrete_lyapunov(closed.T, pull) @ b
+    total = float(np.sum(h_state * state_inverse))
+    if np.any(h_probe):
+        try:
+            factor = np.linalg.cholesky(_symmetric(u))
+        except np.linalg.LinAlgError:
+            return math.inf, np.zeros_like(u)
+        inverse = np.linalg.solve(factor.T, np.linalg.solve(factor, np.eye(u.shape[0])))
+        total += float(np.sum(h_probe * inverse))
+        gradient = gradient - 0.5 * inverse @ h_probe @ inverse
+    return 0.5 * total, _symmetric(gradient)
+
+
+def _probe_numeric(
+    value: Callable[[_Array], tuple[float, _Array]], h_probe: _Array, power: float, scale: float
+) -> tuple[_Array, float, float]:
+    """The least ``Phi(U)`` over ``U >= 0``, ``tr U = power``: by L-BFGS over a lower-triangular
+    ``L``, ``U = power L L' / tr(L L')``, from the white probe and the second term's closed form,
+    with ``Phi`` scaled by the white probe's; and the Frank-Wolfe gap its gradient ``D``
+    certifies, ``tr(D U) - power lambda_min(D)``, which bounds ``Phi(U) - Phi*`` by convexity."""
+    k = h_probe.shape[0]
+    rows, cols = np.tril_indices(k)
+    eye = np.eye(k)
+
+    def covariance_of(theta: _Array) -> tuple[_Array, _Array, float]:
+        lower = np.zeros((k, k))
+        lower[rows, cols] = theta
+        square = lower @ lower.T
+        return lower, square, float(np.trace(square))
+
+    def objective(theta: _Array) -> tuple[float, _Array]:
+        lower, square, size = covariance_of(theta)
+        if not size > 0.0:
+            return math.inf, np.zeros_like(theta)
+        phi, gradient = value(power * square / size)
+        if not math.isfinite(phi):
+            return math.inf, np.zeros_like(theta)
+        tangent = (power / size) * (gradient - (float(np.sum(gradient * square)) / size) * eye)
+        return phi / scale, (2.0 * tangent @ lower / scale)[rows, cols]
+
+    root = _psd_root(h_probe)
+    starts = [eye]
+    if np.trace(root) > 0.0:
+        starts.append(root / np.trace(root) + 1e-3 * eye)
+    best: tuple[float, _Array] = (math.inf, eye)
+    for start in starts:
+        result = optimize.minimize(
+            objective,
+            np.linalg.cholesky(_symmetric(start))[rows, cols],
+            jac=True,
+            method="L-BFGS-B",
+            options={"ftol": 1e-15, "gtol": 1e-12, "maxiter": 10_000, "maxcor": 30},
+        )
+        _, square, size = covariance_of(result.x)
+        candidate = power * square / size
+        phi = value(candidate)[0]
+        if phi < best[0]:
+            best = (phi, candidate)
+    phi, covariance = best
+    gradient = value(covariance)[1]
+    least = float(np.linalg.eigvalsh(gradient)[0])
+    gap = max(float(np.sum(gradient * covariance)) - power * least, 0.0)
+    return covariance, phi, gap

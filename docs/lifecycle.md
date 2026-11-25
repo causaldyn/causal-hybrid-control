@@ -192,8 +192,18 @@ documented, and what is not built yet. Every name below is importable from `chc`
   share, which vanishes at one half, and an alarm near the LP limit, where that bias stops being
   second order. Strata fixed before the assignment post-stratify it. `shadow_price_interval` is the
   range the exact LP leaves at `eps = 0`. See [`chc.matching`](api/matching.md).
-- **Not built:** an experiment design for a dynamic plan's whole decision, beyond one lever's
-  effect.
+- **`probe_design`** (*experimental*). It designs the probe for a dynamic plan's whole decision,
+  not one lever's effect. The plant is linear, the decision is its LQR gain, and the gain is
+  re-solved on a least-squares fit of the whole plant after the probe runs. The probe is Gaussian,
+  drawn afresh each period and added to the loop's action; the design is its covariance over the
+  levers, at a cap on its power. It minimises the re-solved gain's expected regret to first order:
+  the decision weight traced against the inverse of the information the probe gives the fit
+  (Wagenmaker, Simchowitz and Jamieson 2021). The fit learns the channel from the probe alone and
+  the closed loop from the state's excitation, and the design weighs both. It reports that regret
+  beside a white probe's of the same power, and what each probe adds to the average cost while it
+  runs. A weight on the channel alone gives the static dither covariance's design. Scope: Gaussian
+  noise, a probe uncorrelated over time, and first order in the length of the run. See
+  [`chc.experiment`](api/experiment.md).
 
 ## 5. Deploy: one step at a time
 

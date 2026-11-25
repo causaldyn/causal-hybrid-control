@@ -2,7 +2,8 @@
 
 **Status:** proposed, 2026-09-28. Amended by ADR 0124, 2026-10-21: both arms act on the Bayes
 action, and Monte Carlo chooses the allocation where the local model is flagged or its experiment
-does not pay.
+does not pay. Amended by ADR 0166, 2026-11-25: `probe_design` builds the dynamic decision listed
+under "Not built", for an LQR gain.
 
 ## Context
 
@@ -128,6 +129,9 @@ different path to the posterior from the design's own Monte Carlo. The numbers:
 - **The comparison on a marketplace flagship.** It waits for a zones-by-time marketplace model.
 - **A dynamic decision.** The weight here is a static plan's; the dynamic analogue needs a
   decision-weighted identification of the dynamics first.
+  Built 2026-11-25 (ADR 0166) for an LQR gain re-solved on a least-squares fit of the whole plant:
+  `probe_design` chooses the covariance of a Gaussian probe, drawn afresh each period, at a cap on
+  its power.
 
 ## Alternatives considered
 

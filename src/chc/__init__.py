@@ -96,7 +96,13 @@ from chc.evaluation import (
     certify_evaluation,
     evaluate_plan,
 )
-from chc.experiment import ChannelPrior, ZoneDecision, ZoneExperiment, design_experiment
+from chc.experiment import (
+    ChannelPrior,
+    ZoneDecision,
+    ZoneExperiment,
+    design_experiment,
+    probe_design,
+)
 from chc.gate import (
     BlockBatch,
     DecisionLog,
@@ -216,6 +222,7 @@ __all__ = [
     "optimal_exploration_certificate",
     "plan_regret_bound",
     "prescribe",
+    "probe_design",
     "randomisation_interval",
     "randomisation_test",
     "read_switchback",

@@ -9,6 +9,21 @@ experimental may change in any minor release (`docs/api/index.md`).
 
 ### Added
 
+- **`chc.experiment.probe_design`** and `ProbeDesign`, experimental, also at the top level: the
+  probe for a dynamic plan's whole decision. It chooses the covariance of a Gaussian probe drawn
+  afresh each period in an LQR loop, at a cap on its power, so that the gain re-solved on a
+  least-squares fit of `[A B]` loses the least. The criterion is Wagenmaker, Simchowitz and
+  Jamieson's (ICML 2021), `Phi(U) / T` with `Phi(U) = tr(Wn Gamma(U)^-1) / 2`. The fit reads `B`
+  off the probe alone and the closed loop off the state's excitation, so
+  `Phi = (tr(Wn_xx Sx(U)^-1) + tr(F' Wn F U^-1)) / 2`, convex in `U`; a weight on the channel
+  alone gives `dither_covariance`'s design (`validation/dynamic_probe_design.mac`). It reports the
+  regret beside a white probe's of the same power, a certified gap, and what each probe adds to
+  the average cost. On a two-lever plant whose gain leans on a weak, cheap lever, the design
+  predicted 0.753 of the white probe's regret, and 400 runs of 2000 periods read 0.749 ± 0.018.
+  At ten times the noise's power it leaves 0.942, where both static designs are no better than
+  white. Closes the lifecycle's "not built" experiment design for a dynamic plan (ADR 0166,
+  amending ADR 0011).
+
 - **`fit_causal_residual(nuisance_choice="score")`**, opt-in, experimental: the three nuisance
   sieves of ADR 0120 read by the logs of the out-of-fold mean squares of the action's residual and
   of the moment's score, the target's residual less its fit on the action's, each column in its own

@@ -5,8 +5,9 @@ confounder, the contrast's null variance and its noncentrality, and the void cas
 ``validation/dither_persistence.mac`` the lean a drift on the states alone reads of a covariate
 that persists, which the instrumented fit's drift holds;
 ``validation/dither_covariance.mac`` derives the matrix geometric mean, its value, the binding
-case at forty digits and the white dither's search bound. The tests that read them on the float code
-live beside the code they test.
+case at forty digits and the white dither's search bound; ``validation/dynamic_probe_design.mac``
+the dynamic probe's regret, the split of its information and its optimum at forty digits. The
+tests that read them on the float code live beside the code they test.
 """
 
 from __future__ import annotations
@@ -36,6 +37,15 @@ FORMAL_LINKS = {
             "test_dither_covariance.py::test_a_prior_below_the_optimum_is_subtracted",
             "test_dither_covariance.py::test_a_binding_prior_matches_the_forty_digit_solution",
             "test_dither_covariance.py::test_the_diagonal_case_is_water_filling",
+        ),
+    },
+    "chc.experiment.probe_design": {
+        "cites": ("dynamic_probe_design.mac",),
+        "tests": (
+            "test_probe_design.py::test_the_scalar_plant_reads_maxima_s_phi",
+            "test_probe_design.py::test_one_state_two_levers_reach_maxima_s_optimum",
+            "test_probe_design.py::test_a_weight_on_the_channel_alone_is_dither_covariance",
+            "test_probe_design.py::test_the_split_reads_what_the_whole_inverse_does",
         ),
     },
     "chc.experiment._white_dither": {

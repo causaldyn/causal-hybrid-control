@@ -1,0 +1,224 @@
+/* The probe that teaches a re-solved LQR gain the most, at a cap on its power.
+
+   Setting (chc.experiment.probe_design). The plant x' = A x + B u + w, w ~ N(0, S_w), runs for T
+   periods under u = -K x + eta, eta ~ N(0, U) drawn afresh each period; [A B] is fitted by least
+   squares on z = (x, u) and the LQR gain of the average cost E[x' Q x + u' R u] re-solved on the
+   fit. To first order the fit's error e over theta = (A.ravel(), B.ravel()) is
+   N(0, S_w (x) Gamma^-1 / T), Gamma the stationary covariance of z (the least-squares asymptotics
+   on a stable loop; the Monte Carlo test of tests/test_probe_design.py reads it end to end), and
+   the re-solved gain loses e' W e / 2, W the decision weight. So the expected regret is Phi(U) / T,
+
+       Phi(U) = tr(Wn Gamma(U)^-1) / 2,     Wn the weight traced against S_w over the plant's rows.
+
+     STEP 1  the cost-difference lemma on a scalar plant, symbolic modulo the Riccati equation:
+             J(k) - J(k*) = Sigma_k (k - k*)^2 (r + b^2 p), J(k*) = p s2. It makes the regret of a
+             gain second order in its error with weight 2 (r + b^2 p) Sigma* at k*.
+     STEP 2  the gain's derivative in (a, b), symbolic modulo the Riccati equation: the implicit
+             derivative of the closed form equals the Lyapunov form chc.regret._gain_jacobian
+             computes, dp = 2 al p (da - db k) / (1 - al^2), dk = (db p al + b dp al + b p (da -
+             db k)) / (r + b^2 p), al = a - b k.
+     STEP 3  the decision weight: the Hessian in (a_hat, b_hat) of the exact regret of the gain
+             re-solved on (a_hat, b_hat), from the closed-form Riccati root, equals
+             W = 2 (r + b^2 p) Sigma* g g', g STEP 2's gradient; tr(W) / 2 is
+             chc.regret.ce_regret_law's c2: 2.3416 at (a, b, r) = (1, 1, 1), 20.191 at
+             (1.2, 0.5, 1).
+     STEP 4  where the probe's information goes: with u = -K x + eta, Gamma = [[Sx, -Sx K'],
+             [-K Sx, K Sx K' + U]] has Gamma^-1 = E Sx^-1 E' + F U^-1 F', E = [I; 0], F = [K'; I],
+             symbolic on two states and two levers. The fit reads B off U alone.
+     STEP 5  Phi on the scalar plant (1.2, 0.5, q = r = s2 = 1) at U = 1/2, two ways: the trace
+             against Gamma^-1 and the split (Wn_xx / Sx + F' Wn F / U) / 2.
+     STEP 6  convexity and the gradient on one state and two levers, symbolic:
+             Phi(U) = (h c / (s2 + B U B') + tr(Hf U^-1)) / 2, c = 1 - al^2, has
+             d/dt Phi(U + t V) = tr(D V), D = -(h c B'B / (s2 + B U B')^2 + U^-1 Hf U^-1) / 2, the
+             adjoint-Lyapunov form of chc.experiment._probe_value, and a second derivative
+             h c (B V B')^2 / (s2 + B U B')^3 + tr(Hf U^-1 V U^-1 V U^-1), never negative.
+     STEP 7  the optimum on a one-state, two-lever plant, a = 11/10, B = (1, 2/5),
+             R = [[1, 1/5], [1/5, 1/2]], q = s2 = 1, at power 1/2: the cost-difference lemma at a
+             gain off the optimum, the weight from the closed-form gain's Jacobian, and Newton in
+             40 digits on the KKT conditions of the convex problem. U* is positive definite and
+             the gradient there is -nu I, so it is the global optimum: Phi* = 6.2217573..., the
+             white probe's 6.9785812..., ratio 0.8915504...
+     STEP 8  the static case: with no state block the optimum is U* = P M / tr M, M = Hf^1/2, of
+             value (tr M)^2 / (2 P), the gradient there a multiple of I: dither_covariance's
+             closed form with C = I, symbolic on two levers.
+
+   Run: timeout 600 maxima --very-quiet -Q -b validation/dynamic_probe_design.mac */
+
+display2d : false$
+linel : 110$
+ratprint : false$
+fpprec : 40$
+
+verdict(ok) := if ok then "(PASS)" else "(FAIL)"$
+close(x, y, tol) := is(abs(x - y) <= tol)$
+maxabs(m) := lmax(map(abs, flatten(args(m))))$
+
+/* ===== STEP 1: the cost-difference lemma ===== */
+print("=== STEP 1: J(k) - J(k*) = Sigma_k (k - k*)^2 (r + b^2 p), scalar, modulo the DARE ===")$
+dare : b^2*p^2 + (r - a^2*r - q*b^2)*p - q*r$
+ks : a*b*p/(r + b^2*p)$
+/* p = q + a^2 p - a^2 b^2 p^2 / (r + b^2 p), times (r + b^2 p), is dare = 0 */
+check0 : remainder(num(ratsimp((p - q - a^2*p)*(r + b^2*p) + a^2*b^2*p^2)), dare, p)$
+print("STEP 1a the Riccati equation cleared of its denominator is dare:", check0, verdict(check0 = 0))$
+/* J(k) = (q + r k^2) s2 / (1 - (a - b k)^2); J(k*) = p s2 */
+e1 : remainder(num(ratsimp((q + r*ks^2) - p*(1 - (a - b*ks)^2))), dare, p)$
+print("STEP 1b (q + r k*^2) - p (1 - al*^2) mod dare =", e1, verdict(e1 = 0))$
+e2 : remainder(num(ratsimp((q + r*k^2) - p*(1 - (a - b*k)^2) - (k - ks)^2*(r + b^2*p))), dare, p)$
+print("STEP 1c (q + r k^2) - p (1 - al^2) - (k - k*)^2 (r + b^2 p) mod dare =", e2, verdict(e2 = 0))$
+
+/* ===== STEP 2: the gain's derivative ===== */
+print("=== STEP 2: the implicit derivative of k* equals the Lyapunov form ===")$
+dpda : -diff(dare, a)/diff(dare, p)$
+dpdb : -diff(dare, b)/diff(dare, p)$
+dkda : diff(ks, a) + diff(ks, p)*dpda$
+dkdb : diff(ks, b) + diff(ks, p)*dpdb$
+al : a - b*ks$
+dpform(da, db) := 2*al*p*(da - db*ks)/(1 - al^2)$
+dkform(da, db) := (db*p*al + b*dpform(da, db)*al + b*p*(da - db*ks))/(r + b^2*p)$
+c2a : remainder(num(ratsimp(dpda - dpform(1, 0))), dare, p)$
+c2b : remainder(num(ratsimp(dpdb - dpform(0, 1))), dare, p)$
+c2c : remainder(num(ratsimp(dkda - dkform(1, 0))), dare, p)$
+c2d : remainder(num(ratsimp(dkdb - dkform(0, 1))), dare, p)$
+print("STEP 2a dp/da, dp/db against the Lyapunov form, mod dare:", c2a, c2b, verdict(c2a = 0 and c2b = 0))$
+print("STEP 2b dk/da, dk/db against the Lyapunov form, mod dare:", c2c, c2d, verdict(c2c = 0 and c2d = 0))$
+
+/* ===== STEP 3: the decision weight ===== */
+print("=== STEP 3: the exact regret's Hessian is 2 (r + b^2 p) Sigma* g g' ===")$
+proot(a0, b0, q0, r0) := (-(r0 - a0^2*r0 - q0*b0^2) + sqrt((r0 - a0^2*r0 - q0*b0^2)^2 + 4*b0^2*q0*r0))
+                         /(2*b0^2)$
+kof(a0, b0, q0, r0) := a0*b0*proot(a0, b0, q0, r0)/(r0 + b0^2*proot(a0, b0, q0, r0))$
+weight3(pt) := block([a0 : pt[1], b0 : pt[2], q0 : pt[3], r0 : pt[4], s0 : pt[5], kst, pst, reg, hes,
+                      g, sig, w],
+  pst : proot(a0, b0, q0, r0),
+  kst : kof(a0, b0, q0, r0),
+  /* the exact average-cost regret, on the plant (a0, b0), of the gain re-solved on (ah, bh) */
+  reg : s0/(1 - (a0 - b0*kof(ah, bh, q0, r0))^2)*(kof(ah, bh, q0, r0) - kst)^2*(r0 + b0^2*pst),
+  hes : bfloat(subst([ah = a0, bh = b0], matrix([diff(reg, ah, 2), diff(reg, ah, 1, bh, 1)],
+                                                 [diff(reg, ah, 1, bh, 1), diff(reg, bh, 2)]))),
+  g : bfloat(subst([a = a0, b = b0, q = q0, r = r0, p = pst], [dkform(1, 0), dkform(0, 1)])),
+  sig : bfloat(s0/(1 - (a0 - b0*kst)^2)),
+  w : 2*bfloat(r0 + b0^2*pst)*sig*transpose(matrix(g)) . matrix(g),
+  [hes, w])$
+[h31, w31] : weight3([1, 1, 1, 1, 1])$
+print("STEP 3a (1, 1, 1): Hessian", h31, "; 2 G Sigma* g g'", w31, "; tr / 2 =", mat_trace(w31)/2,
+      verdict(maxabs(h31 - w31) < 1b-30 and close(mat_trace(w31)/2, 2.3416b0, 1b-4)))$
+[h32, w32] : weight3([6/5, 1/2, 1, 1, 1])$
+print("STEP 3b (1.2, 0.5, 1): Hessian", h32, "; tr / 2 =", mat_trace(w32)/2,
+      verdict(maxabs(h32 - w32) < 1b-28 and close(mat_trace(w32)/2, 20.191b0, 1b-3)))$
+
+/* ===== STEP 4: Gamma^-1 splits ===== */
+print("=== STEP 4: Gamma^-1 = E Sx^-1 E' + F U^-1 F', two states, two levers ===")$
+Sx : matrix([s11, s12], [s12, s22])$
+Ug : matrix([u11, u12], [u12, u22])$
+Kg : matrix([k11, k12], [k21, k22])$
+Gam : addrow(addcol(Sx, -Sx . transpose(Kg)), addcol(-Kg . Sx, Kg . Sx . transpose(Kg) + Ug))$
+Eg : addrow(ident(2), zeromatrix(2, 2))$
+Fg : addrow(transpose(Kg), ident(2))$
+split : Eg . invert(Sx) . transpose(Eg) + Fg . invert(Ug) . transpose(Fg)$
+res4 : ratsimp(Gam . split - ident(4))$
+print("STEP 4a Gamma (E Sx^-1 E' + F U^-1 F') - I =", res4, verdict(res4 = zeromatrix(4, 4)))$
+blk : submatrix(1, 2, invert(Gam), 1, 2)$
+res4b : ratsimp(blk - invert(Ug))$
+print("STEP 4b the lever block of Gamma^-1 less U^-1 =", res4b, verdict(res4b = zeromatrix(2, 2)))$
+
+/* ===== STEP 5: Phi on the scalar plant ===== */
+print("=== STEP 5: Phi at U = 1/2 on (1.2, 0.5, q = r = s2 = 1), two ways ===")$
+block([a0 : 6/5, b0 : 1/2, q0 : 1, r0 : 1, s0 : 1, u0 : 1/2, kst, al0, sx, G5, wn, trace_form, split_form],
+  kst : bfloat(kof(a0, b0, q0, r0)),
+  al0 : a0 - b0*kst,
+  sx : (s0 + b0^2*u0)/(1 - al0^2),
+  G5 : matrix([sx, -kst*sx], [-kst*sx, kst^2*sx + u0]),
+  wn : s0*w32,
+  trace_form : mat_trace(wn . invert(G5))/2,
+  split_form : (wn[1, 1]/sx + (matrix([kst, 1]) . wn . transpose(matrix([kst, 1])))/u0)/2,
+  print("STEP 5 tr(Wn Gamma^-1) / 2 =", trace_form, "; split =", split_form,
+        verdict(close(trace_form, split_form, 1b-30))))$
+
+/* ===== STEP 6: gradient and convexity ===== */
+print("=== STEP 6: the gradient and the second derivative, one state, two levers ===")$
+Bg : matrix([b1, b2])$
+Hf : matrix([f11, f12], [f12, f22])$
+Vg : matrix([v11, v12], [v12, v22])$
+phi6(Um) := (h*c/(s2 + (Bg . Um . transpose(Bg))) + mat_trace(Hf . invert(Um)))/2$
+along6 : phi6(Ug + t*Vg)$
+slope6 : ratsimp(subst(t = 0, diff(along6, t)))$
+Ui : invert(Ug)$
+den : s2 + (Bg . Ug . transpose(Bg))$
+D6 : -(h*c*transpose(Bg) . Bg/den^2 + Ui . Hf . Ui)/2$
+res6a : ratsimp(slope6 - mat_trace(D6 . Vg))$
+print("STEP 6a d/dt Phi(U + t V) - tr(D V) =", res6a, verdict(res6a = 0))$
+/* the general form -B' L*(Sx^-1 h Sx^-1) B / 2 with Sx = den / c and L*(Y) = Y / c */
+sx6 : den/c$
+res6b : ratsimp(-(h/sx6^2/c)*(transpose(Bg) . Bg)/2 + h*c*(transpose(Bg) . Bg)/den^2/2)$
+print("STEP 6b the adjoint-Lyapunov form of the state term less the direct one =", res6b,
+      verdict(res6b = zeromatrix(2, 2)))$
+curve6 : ratsimp(subst(t = 0, diff(along6, t, 2)))$
+claim6 : h*c*(Bg . Vg . transpose(Bg))^2/den^3 + mat_trace(Hf . Ui . Vg . Ui . Vg . Ui)$
+res6c : ratsimp(curve6 - claim6)$
+print("STEP 6c d^2/dt^2 Phi(U + t V) - [h c (B V B')^2 / den^3 + tr(Hf U^-1 V U^-1 V U^-1)] =", res6c,
+      verdict(res6c = 0))$
+print("        each term is a square times a non-negative factor: Phi is convex in U > 0")$
+
+/* ===== STEP 7: the optimum on one state, two levers ===== */
+print("=== STEP 7: a = 11/10, B = (1, 2/5), R = [[1, 1/5], [1/5, 1/2]], q = s2 = 1, power 1/2 ===")$
+R7 : matrix([1, 1/5], [1/5, 1/2])$
+power7 : 1/2$
+/* n = 1: B (R + p B'B)^-1 B' = be2 / (1 + p be2), be2 = B R^-1 B', so p solves the scalar DARE with
+   b^2 -> be2 and r -> 1 */
+gain7(a0, c1, c2) := block([Bm : matrix([c1, c2]), be2, p0],
+  be2 : (Bm . invert(R7) . transpose(Bm)),
+  p0 : proot(a0, sqrt(be2), 1, 1),
+  [p0, invert(R7 + p0*transpose(Bm) . Bm) . transpose(Bm)*p0*a0])$
+[p7, K7] : gain7(11/10, 1, 2/5)$
+p7 : bfloat(p7)$
+K7 : bfloat(K7)$
+B7 : matrix([1, 2/5])$
+al7 : bfloat(11/10 - (B7 . K7))$
+sig7 : 1/(1 - al7^2)$
+G7 : bfloat(R7 + p7*transpose(B7) . B7)$
+/* STEP 7a: the lemma off the optimum, at K = K* + (1/10, -1/5)' */
+Kt : K7 + matrix([1/10], [-1/5])$
+alt : bfloat(11/10 - (B7 . Kt))$
+lhs7 : (1 + (transpose(Kt) . R7 . Kt))/(1 - alt^2) - p7$
+rhs7 : (transpose(Kt - K7) . G7 . (Kt - K7))/(1 - alt^2)$
+print("STEP 7a J(K) - J(K*) =", lhs7, "; Sigma_K (K - K*)' G (K - K*) =", rhs7,
+      verdict(close(lhs7, rhs7, 1b-35)))$
+/* STEP 7b: the weight, from the closed-form gain's Jacobian in theta = (a, b1, b2) */
+Ksym : second(gain7(aa, c1, c2))$
+Jac : bfloat(subst([aa = 11/10, c1 = 1, c2 = 2/5],
+                   matrix([diff(Ksym[1, 1], aa), diff(Ksym[2, 1], aa)],
+                          [diff(Ksym[1, 1], c1), diff(Ksym[2, 1], c1)],
+                          [diff(Ksym[1, 1], c2), diff(Ksym[2, 1], c2)])))$
+W7 : 2*sig7*Jac . G7 . transpose(Jac)$
+print("STEP 7b K* =", K7, "; W =", W7)$
+F7 : addrow(transpose(K7), ident(2))$
+Hf7 : transpose(F7) . W7 . F7$
+hx7 : W7[1, 1]$
+phi7(Um) := (hx7*(1 - al7^2)/(1 + (B7 . Um . transpose(B7))) + mat_trace(Hf7 . invert(Um)))/2$
+Uv : matrix([x1, x2], [x2, x3])$
+ph : phi7(Uv)$
+load(mnewton)$
+newtonepsilon : 1b-35$
+newtonmaxiter : 200$
+sol7 : mnewton([diff(ph, x1) + nu, diff(ph, x3) + nu, diff(ph, x2), x1 + x3 - power7],
+               [x1, x2, x3, nu], [0.1733, -0.0697, 0.3267, 10.0])$
+U7 : bfloat(subst(sol7[1], Uv))$
+nu7 : bfloat(subst(sol7[1], nu))$
+definite7 : is(U7[1, 1] > 0 and determinant(U7) > 0)$
+Dm : bfloat(-(hx7*(1 - al7^2)*transpose(B7) . B7/(1 + (B7 . U7 . transpose(B7)))^2
+               + invert(U7) . Hf7 . invert(U7))/2)$
+print("STEP 7c U* =", U7, "; U*_11 and det U* positive:", definite7, verdict(definite7))$
+print("STEP 7d the gradient at U* plus nu I =", Dm + nu7*ident(2), verdict(maxabs(Dm + nu7*ident(2)) < 1b-30))$
+phistar : bfloat(phi7(U7))$
+phiwhite : bfloat(phi7(power7/2*ident(2)))$
+print("STEP 7e Phi* =", phistar, "; white =", phiwhite, "; ratio =", phistar/phiwhite,
+      verdict(phistar < phiwhite and close(phistar, 6.2217573b0, 1b-6) and close(phistar/phiwhite, 0.89155047b0, 1b-7)))$
+
+/* ===== STEP 8: the static case ===== */
+print("=== STEP 8: no state block: U* = P M / tr M, M = Hf^1/2, value (tr M)^2 / (2 P) ===")$
+Mg : matrix([m1, m2], [m2, m3])$
+Us : P*Mg/mat_trace(Mg)$
+val8 : ratsimp(mat_trace(Mg . Mg . invert(Us))/2 - mat_trace(Mg)^2/(2*P))$
+grad8 : ratsimp(-invert(Us) . Mg . Mg . invert(Us)/2 + mat_trace(Mg)^2/(2*P^2)*ident(2))$
+print("STEP 8a tr(M^2 U*^-1) / 2 - (tr M)^2 / (2 P) =", val8, verdict(val8 = 0))$
+print("STEP 8b the gradient at U* + (tr M)^2 / (2 P^2) I =", grad8, verdict(grad8 = zeromatrix(2, 2)))$
