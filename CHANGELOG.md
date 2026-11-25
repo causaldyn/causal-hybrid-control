@@ -5,7 +5,15 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
 experimental may change in any minor release (`docs/api/index.md`).
 
-## [Unreleased]
+## [1.6.0] — 2026-11-25
+
+A deprecation and one experimental addition, so a minor release; no parameter's default changes and
+no number moves. A `GateConfig` whose rollback reads evidence and leaves `rollback_restart` unset
+now warns that the default becomes `rollback_restart=250` in 1.7.0, and `rollback_restart=0` keeps
+today's reading without the warning. Added, experimental: `prescribe(inner=)` hands the rounds of a
+held barrier to `causal_plan`'s orthant or projected-Newton solve. `chc.allocation` and
+`chc.decision` keep their engines in private packages, with every public name, record and number
+unchanged. The rest is documentation.
 
 ### Added
 
@@ -9145,6 +9153,8 @@ as interventions, not correlations.
 - **Tooling** — `src`-layout, `uv`-managed, `py.typed`; `ruff` + astral `ty` gates; CI test matrix on
   Python 3.12 / 3.13 / 3.14.
 
+[1.6.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.6.0
+[1.5.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.5.0
 [1.4.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.4.0
 [1.3.1]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.3.1
 [1.3.0]: https://github.com/causaldyn/causal-hybrid-control/releases/tag/v1.3.0
