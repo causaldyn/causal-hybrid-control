@@ -1,0 +1,186 @@
+/* The moving baseline behind chc.switchback.read_switchback(..., se="design", baseline="moving"):
+   Liang and Recht's (Biometrika 2025) moment estimator read against the reading L periods back,
+   its exact variance over the coins, and when it is narrower than the first reading's.
+
+   Notation as in validation/switchback_design_variance.mac: y_t = sum_{s<=t} g_s x_{t-s} + e_t is
+   the reading after lever t, x_t in {0, 1} i.i.d. fair, z_t = 2 x_t - 1, e anything the coins do
+   not move, c the reading before the first lever. The moving baseline reads
+
+       m_t = y_t - y_(t-L)  for t >= L,      m_t = y_t - c  for t < L,
+
+   and tau_hat = sum_{s<H} 2/(T - s) sum_{i=0}^{T-1-s} z_i m_(i+s), at a lag L >= H.
+
+   STEP 1  m = T_d (y - c), d = (1, 0, .., 0, -1) with the -1 at lag L, a lower-triangular Toeplitz
+           filter; T_d T_g = T_(d * g), so m = T_g~ x + e~ with g~ = g - S^L g and
+           e~ = T_d (e - c): Liang and Recht's model again, its noise as fixed as e
+   STEP 2  over all 2^T designs at T = 5: the mean is tau_H and the variance is their eq. (2.5) of
+           (g~, e~), at (H, L) = (1, 1), (1, 2), (2, 2), (2, 3), (3, 3); at L < H the mean is
+           tau_H - sum_{L<=s<H} g_(s-L): the baseline reads the lever's own effect
+   STEP 3  the noise's share over a stationary noise of autocovariance gam, the baseline's noise
+           c = n_(-1) included: at H = 1 the first reading's expected T^2 var less the moving
+           baseline's is 8 ((T - L) gam_L - sum_{k=L+1}^{T} gam_k), at T = 6, L = 1, 2, 3; at any H,
+           per row i >= L whose window the run holds, 4 sum_{s,s'<H} q_s q_s' (gam_0 - gam_(s-s')
+           + gam_(s-s'-L) + gam_(s-s'+L) - gam_(i+s+1) - gam_(i+s'+1)), at T = 7, H = 2, 3
+   STEP 4  the lever's share on the first-order plant g_s = b a^s at H = 1, per period of a long
+           run: b^2 (a^2/(1 - a^2) + 1/(1 - a)^2) on the first reading, b^2 (2 (1 - a^L)/(1 - a^2)
+           - 1) on the moving baseline; the difference less 2 a^L b^2/(1 - a^2) is
+           2 a b^2/((1 - a)^2 (1 + a)) >= 0 on 0 <= a < 1
+   STEP 5  the verdict: per period of a long run at H = 1 the moving baseline is narrower iff
+           8 gam_L plus STEP 4's difference is positive. On the white-noise plant (a = 0,
+           gam_L = 0) the two tie exactly at every T: T^2 var = T b^2 + 8 T gam_0 for both. It
+           widens on a noise with gam_L < 0; at H >= 2 the first reading's shared c costs
+           H^2 gam_0 a row, so white noise favours the moving baseline. The textbook bar
+           gam_L > gam_0/2 is against no baseline at all, which the design does not read
+   STEP 6  the numbers tests/test_switchback_design.py checks: at a = 0, b = 2, H = L = 1,
+           T = 60, the noise AR(rho) of unit innovations, the ratio of the standard deviations,
+           moving over first, at rho = 0 and rho = -1/2
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/switchback_moving_baseline.mac */
+
+linel : 110$
+display2d : false$
+ratprint : false$
+fpprec : 30$
+fpprintprec : 12$
+
+verdict(x) := if x = 0 then "(PASS)" else "(FAIL)"$
+
+/* lists are 1-based; g[s + 1] is g_s and e[t + 1] is e_t */
+designs(n) := makelist(makelist(mod(floor(k/2^(i - 1)), 2), i, 1, n), k, 0, 2^n - 1)$
+response(x, g, e, n) := makelist(sum(g[s + 1]*x[t - s + 1], s, 0, t) + e[t + 1], t, 0, n - 1)$
+moving(y, n, l, c) := makelist(y[t + 1] - (if t >= l then y[t - l + 1] else c), t, 0, n - 1)$
+estimate(x, m, n, h) := sum(2/(n - s)*sum((2*x[i + 1] - 1)*m[i + s + 1], i, 0, n - 1 - s), s, 0, h - 1)$
+toeplitz(v, n) := genmatrix(lambda([i, j], if i >= j then v[i - j + 1] else 0), n, n)$
+weights(n, h) := makelist(if s < h then n/(n - s) else 0, s, 0, n - 1)$
+/* (1 - S^L) v over the run: what the moving baseline does to the response and to the noise */
+differenced(v, n, l) := makelist(v[t + 1] - (if t >= l then v[t - l + 1] else 0), t, 0, n - 1)$
+/* Liang and Recht's eq. (2.5) of (g, e), the noise already read from its baseline */
+formula(g, e, n, h) := block([tq, tg, m, l, ones],
+  tq : toeplitz(weights(n, h), n),
+  tg : toeplitz(g, n),
+  m : transpose(tq) . tg,
+  ones : transpose(matrix(makelist(1, i, 1, n))),
+  l : transpose(tq) . (tg . ones + 2*transpose(matrix(e))),
+  (sum(sum(m[i, j]^2, j, 1, n), i, 1, n) + sum(sum(m[i, j]*m[j, i], j, 1, n), i, 1, n)
+   - 2*sum(m[i, i]^2, i, 1, n) + sum(l[i, 1]^2, i, 1, n))/n^2)$
+moments(g, e, n, h, l, c) := block([ds, vs, mean],
+  ds : designs(n),
+  vs : map(lambda([x], estimate(x, moving(response(x, g, e, n), n, l, c), n, h)), ds),
+  mean : ratsimp(apply("+", vs)/length(ds)),
+  [mean, ratsimp(apply("+", map(lambda([v], (v - mean)^2), vs))/length(ds))])$
+
+print("=== STEP 1: the moving baseline is a lower-triangular Toeplitz filter ===")$
+block([n : 6, l : 2, g6, y6, d, lhs, rhs],
+  g6 : makelist(concat(g, i), i, 0, n - 1),
+  y6 : makelist(concat(y, i), i, 0, n - 1),
+  d : makelist(if s = 0 then 1 else if s = l then -1 else 0, s, 0, n - 1),
+  lhs : toeplitz(d, n) . toeplitz(g6, n) - toeplitz(differenced(g6, n, l), n),
+  print("STEP 1 T = 6, L = 2: T_d T_g - T_(g - S^L g) =", lhs,
+        verdict(ratsimp(apply("+", flatten(args(lhs^2)))))),
+  rhs : toeplitz(d, n) . transpose(matrix(y6 - c)) - transpose(matrix(moving(y6, n, l, c))),
+  print("STEP 1 T = 6, L = 2: T_d (y - c) - m =", rhs,
+        verdict(ratsimp(apply("+", flatten(args(rhs^2)))))))$
+
+print("=== STEP 2: the mean is tau_H and the variance is eq. (2.5) of (g~, e~), at T = 5 ===")$
+gs : [g0, g1, g2, g3, g4]$
+es : [e0, e1, e2, e3, e4]$
+for hl in [[1, 1], [1, 2], [2, 2], [2, 3], [3, 3]] do block([h : hl[1], l : hl[2], mv, bias, gap],
+  mv : moments(gs, es, 5, h, l, c),
+  bias : ratsimp(mv[1] - sum(gs[s], s, 1, h)),
+  gap : ratsimp(mv[2] - formula(differenced(gs, 5, l), differenced(es - c, 5, l), 5, h)),
+  print("STEP 2 H =", h, ", L =", l, ": mean - tau_H =", bias, verdict(bias),
+        "; var - (2.5) of (g~, e~) =", gap, verdict(gap)))$
+for hl in [[2, 1], [3, 1], [3, 2]] do block([h : hl[1], l : hl[2], bias],
+  bias : ratsimp(moments(gs, es, 5, h, l, c)[1] - sum(gs[s], s, 1, h)
+                 + sum(gs[s - l + 1], s, l, h - 1)),
+  print("STEP 2 H =", h, ", L =", l, "< H: mean - (tau_H - sum_{L<=s<H} g_(s-L)) =", bias,
+        verdict(bias)))$
+
+print("=== STEP 3: the noise's share over a stationary noise ===")$
+/* the noise n_(-1), n_0, .., n_(T-1); c = n_(-1) is the reading before the first lever. A
+   linear map A of it has E |A n|^2 = tr(A Gam A'), Gam_jk = gam(|j - k|) */
+gam(k) := concat(gam, abs(k))$
+noise_matrix(n) := genmatrix(lambda([i, j], gam(i - j)), n + 1, n + 1)$
+/* rows: e' = n_t - n_(-1) (the first reading) and e~ = T_d e' (the moving baseline) */
+first_map(n) := genmatrix(lambda([i, j], if j = 1 then -1 else if j = i + 1 then 1 else 0), n, n + 1)$
+moving_map(n, l) := toeplitz(makelist(if s = 0 then 1 else if s = l then -1 else 0, s, 0, n - 1), n)
+                    . first_map(n)$
+expected(a, n) := ratsimp(4*sum((a . noise_matrix(n) . transpose(a))[i, i], i, 1, length(a)))$
+for l in [1, 2, 3] do block([n : 6, tq, gap],
+  tq : transpose(toeplitz(weights(n, 1), n)),
+  gap : ratsimp(expected(tq . first_map(n), n) - expected(tq . moving_map(n, l), n)
+                - 8*((n - l)*gam(l) - sum(gam(k), k, l + 1, n))),
+  print("STEP 3 H = 1, T = 6, L =", l, ": first - moving - 8((T - L) gam_L - sum gam_k) =", gap,
+        verdict(gap)))$
+row_gap(n, h, l, i) := block([q : weights(n, h)],
+  4*sum(sum(q[s + 1]*q[r + 1]*(gam(0) - gam(s - r) + gam(s - r - l) + gam(s - r + l)
+                               - gam(i + s + 1) - gam(i + r + 1)), r, 0, h - 1), s, 0, h - 1))$
+for hl in [[2, 2], [2, 3], [3, 3]] do block([n : 7, h : hl[1], l : hl[2], tq, f, m, gaps],
+  tq : transpose(toeplitz(weights(n, h), n)),
+  f : tq . first_map(n),
+  m : tq . moving_map(n, l),
+  gaps : makelist(ratsimp(4*((f . noise_matrix(n) . transpose(f))[i + 1, i + 1]
+                            - (m . noise_matrix(n) . transpose(m))[i + 1, i + 1])
+                          - row_gap(n, h, l, i)), i, l, n - h),
+  print("STEP 3 H =", h, ", T = 7, L =", l, ": rows", l, "..", n - h, "against the formula:", gaps,
+        verdict(apply("+", map(abs, gaps)))))$
+/* far from the start of a long run, q_s -> 1 and gam_(i+s+1) -> 0: a row gains
+   4 (H^2 gam_0 - sum_{s,s'} gam_(s-s') + 2 sum_{s,s'} gam_(L+s-s')) */
+far(h, l) := expand(4*(h^2*gam(0) - sum(sum(gam(s - r), r, 0, h - 1), s, 0, h - 1)
+                       + 2*sum(sum(gam(l + s - r), r, 0, h - 1), s, 0, h - 1)))$
+print("STEP 3 far rows, H = 1, L = 1, 2, 3:", makelist(far(1, l), l, 1, 3), "; H = L = 2:", far(2, 2),
+      "; H = L = 3:", far(3, 3))$
+print("STEP 3 far rows on white noise (gam_k = 0, k > 0), H = L = 1, 2, 3:",
+      makelist(subst(makelist(concat(gam, k) = 0, k, 1, 6), far(h, h)), h, 1, 3),
+      "(4 (H^2 - H) gam0)")$
+
+print("=== STEP 4: the lever's share on the first-order plant, H = 1, a long run ===")$
+assume(0 < a, a < 1)$
+first_share : b^2*(sum(a^(2*k), k, 1, inf) + 1/(1 - a)^2), simpsum$
+/* g~_s = g_s - g_(s-L): |g~|^2 = 2 |g|^2 - 2 sum_s g_s g_(s-L), less g~_0^2 = b^2 off the
+   diagonal; T_g~ 1 = G(t) - G(t - L) -> 0 */
+moving_share : b^2*(2*(1 - a^L)*sum(a^(2*k), k, 0, inf) - 1), simpsum$
+step4 : ratsimp(first_share - moving_share - 2*a^L*b^2/(1 - a^2) - 2*a*b^2/((1 - a)^2*(1 + a)))$
+print("STEP 4 first:", ratsimp(first_share), "; moving:", ratsimp(moving_share))$
+print("STEP 4 first - moving - 2 a^L b^2/(1 - a^2) - 2 a b^2/((1 - a)^2 (1 + a)) =", step4,
+      verdict(step4))$
+/* the same per-row shares off the finite sums, at a = 1/2, L = 2, H = 1, rows far from both ends:
+   sum_(k>=1) g_k^2 + G_inf^2 against sum_(k>=1) g~_k^2 */
+block([aa : 1/2, ll : 2, kk : 80, g, gt, f, m],
+  g : makelist(b*aa^k, k, 0, kk),
+  gt : makelist(g[k + 1] - (if k >= ll then g[k - ll + 1] else 0), k, 0, kk),
+  f : sum(g[k + 1]^2, k, 1, kk) + sum(g[k + 1], k, 0, kk)^2,
+  m : sum(gt[k + 1]^2, k, 1, kk),
+  print("STEP 4 a = 1/2, L = 2, 80 lags: first, moving =", float(f/b^2), float(m/b^2),
+        "against", float(subst([a = aa, L = ll], first_share/b^2)),
+        float(subst([a = aa, L = ll], moving_share/b^2)),
+        verdict(if abs(float(f/b^2 - subst([a = aa, L = ll], first_share/b^2))) < 1e-15
+                   and abs(float(m/b^2 - subst([a = aa, L = ll], moving_share/b^2))) < 1e-15
+                then 0 else 1)))$
+forget(0 < a, a < 1)$
+
+print("=== STEP 5: the white-noise plant ties at every T, H = 1 ===")$
+/* a = 0, g = (b): the lever's share is T b^2 for both, the moving baseline's (T - L) b^2 off the
+   diagonal and L b^2 in T_g~ 1; on white noise the noise's share is 8 T gam_0 for both */
+for l in [1, 2] do block([n : 5, gb, mv0, mvl, tie],
+  gb : [b, 0, 0, 0, 0],
+  tie : ratsimp(formula(differenced(gb, n, l), makelist(0, i, 1, n), n, 1)
+                - formula(gb, makelist(0, i, 1, n), n, 1)),
+  print("STEP 5 a = 0, T = 5, L =", l, ": the lever's share, moving - first =", tie, verdict(tie)),
+  tie : ratsimp(subst(makelist(concat(gam, k) = 0, k, 1, n),
+                      expected(transpose(toeplitz(weights(n, 1), n)) . moving_map(n, l), n)
+                      - expected(transpose(toeplitz(weights(n, 1), n)) . first_map(n), n))),
+  print("STEP 5 white noise, T = 5, L =", l, ": the noise's share, moving - first =", tie,
+        verdict(tie)))$
+print("STEP 5 against no baseline at all (raw readings, mean zero), H = 1, a far row:",
+      "4 gam0 against 8 (gam0 - gamL): narrower iff gamL > gam0/2")$
+
+print("=== STEP 6: the numbers the tests check, a = 0, b = 2, H = L = 1, T = 60 ===")$
+/* AR(rho) noise of unit innovations: gam_k = rho^k/(1 - rho^2). T^2 var:
+   first  = T b^2 + 8 sum_{j=0}^{T-1} (gam_0 - gam_(j+1)),   moving = T b^2 + 8 T (gam_0 - gam_1) */
+sd_ratio(rho, n, bb) := block([g0 : 1/(1 - rho^2), first, mov],
+  first : n*bb^2 + 8*sum(g0 - rho^(j + 1)/(1 - rho^2), j, 0, n - 1),
+  mov : n*bb^2 + 8*n*(g0 - rho/(1 - rho^2)),
+  [bfloat(sqrt(mov/first)), bfloat(sqrt(first/n^2)), bfloat(sqrt(mov/n^2))])$
+print("STEP 6 rho = 0: [moving/first, sd first, sd moving] =", sd_ratio(0, 60, 2))$
+print("STEP 6 rho = -1/2: [moving/first, sd first, sd moving] =", sd_ratio(-1/2, 60, 2))$

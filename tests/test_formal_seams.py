@@ -127,12 +127,18 @@ FORMAL_LINKS = {
         ),
     },
     "chc.switchback.read_switchback": {
-        "cites": ("local_projection_bias.mac", "half_panel_jackknife.mac"),
+        "cites": (
+            "local_projection_bias.mac",
+            "half_panel_jackknife.mac",
+            "switchback_moving_baseline.mac",
+        ),
         "tests": (
             "test_local_projection_bias_on_one_zone",
             "test_local_projection_bias_on_four_zones_depends_on_a",
             "test_switchback_jackknife.py::test_the_jackknife_is_twice_the_run_less_its_halves_each_read_on_its_own",
             "test_switchback_jackknife.py::test_the_jackknife_removes_the_local_projections_bias",
+            "test_switchback_design.py::test_the_estimate_is_unbiased_and_its_variance_is_eq_2_5_over_every_design",
+            "test_switchback_design.py::test_a_moving_baseline_ties_on_white_noise_and_widens_on_a_noise_that_alternates",
         ),
     },
 }

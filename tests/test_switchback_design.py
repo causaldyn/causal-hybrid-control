@@ -4,7 +4,11 @@ its variance over the coins with the noise held fixed.
 
 Its mean and variance are checked over every design of a short run, against their eq. (2.5)
 (``validation/switchback_design_variance.mac`` derives both), and its interval by simulation on a
-plant whose noise persists or trends, where the regression's interval does not hold its level.
+plant whose noise persists or trends, where the regression's interval does not hold its level. The
+moving baseline, ``baseline="moving"``, is the same estimator on the readings less the reading
+``L`` periods back, and eq. (2.5) of the differenced response and noise
+(``validation/switchback_moving_baseline.mac``): checked over every design, and its spread against
+the derivation's on a persistent plant, a white-noise one and one whose noise alternates.
 """
 
 from __future__ import annotations
@@ -28,11 +32,11 @@ def _tau(h: int) -> float:
     return B * (1.0 - A**h) / (1.0 - A)
 
 
-def _plant(u: np.ndarray, shocks: np.ndarray) -> np.ndarray:
-    """``x_(t+1) = A x_t + B u_t + shocks_t`` from rest, over the last axis; one more period."""
+def _plant(u: np.ndarray, shocks: np.ndarray, a: float = A) -> np.ndarray:
+    """``x_(t+1) = a x_t + B u_t + shocks_t`` from rest, over the last axis; one more period."""
     x = np.zeros((*u.shape[:-1], u.shape[-1] + 1))
     for t in range(u.shape[-1]):
-        x[..., t + 1] = A * x[..., t] + B * u[..., t] + shocks[..., t]
+        x[..., t + 1] = a * x[..., t] + B * u[..., t] + shocks[..., t]
     return x
 
 
@@ -49,10 +53,28 @@ def _coins(rng, shape) -> np.ndarray:
     return (rng.random(shape) < 0.5).astype(np.float64)
 
 
-def _moment_estimate(u: np.ndarray, y: np.ndarray, h: int) -> float:
-    """The estimator, transcribed: ``sum_(s<H) 2/(T - s) sum_t (2 u_t - 1) (y_(t+1+s) - y_0)``."""
+def _after(y: np.ndarray, lag: int | None) -> np.ndarray:
+    """The readings after the first less their baseline: the first reading, or with a ``lag`` the
+    reading ``lag`` periods back once there is one, ``y_(t+1) - y_(max(t + 1 - lag, 0))``."""
+    if lag is None:
+        return y[1:] - y[0]
+    return np.array([y[t + 1] - y[max(t + 1 - lag, 0)] for t in range(y.size - 1)])
+
+
+def _differenced(v: np.ndarray, lag: int | None) -> np.ndarray:
+    """``(1 - S^lag) v`` over the last axis, the moving baseline's filter; ``v`` without a lag."""
+    if lag is None:
+        return v
+    out = v.copy()
+    out[..., lag:] = v[..., lag:] - v[..., :-lag]
+    return out
+
+
+def _moment_estimate(u: np.ndarray, y: np.ndarray, h: int, lag: int | None = None) -> float:
+    """The estimator, transcribed: ``sum_(s<H) 2/(T - s) sum_t (2 u_t - 1) (y_(t+1+s) - y_0)``,
+    or less ``y_(t+1+s-L)`` in place of ``y_0`` with a ``lag``."""
     periods = u.size
-    z, after = 2.0 * u - 1.0, y[1:] - y[0]
+    z, after = 2.0 * u - 1.0, _after(y, lag)
     return sum(2.0 / (periods - s) * (z[: periods - s] * after[s:]).sum() for s in range(h))
 
 
@@ -78,11 +100,11 @@ def _dense_variance(q, g, g_long, h) -> float:
     )
 
 
-def _plug_in(u: np.ndarray, y: np.ndarray, h: int, lags: int) -> float:
+def _plug_in(u: np.ndarray, y: np.ndarray, h: int, lags: int, lag: int | None = None) -> float:
     """The plug-in of eq. (2.5), transcribed over full matrices: ``g`` read over ``2 lags`` lags,
     the noise as ``2 y' - T_g z`` over the first ``lags``, and ``q_s = T / (T - s)``."""
     periods = u.size
-    z, after = 2.0 * u - 1.0, y[1:] - y[0]
+    z, after = 2.0 * u - 1.0, _after(y, lag)
     g = np.array(
         [2.0 / (periods - s) * (z[: periods - s] * after[s:]).sum() for s in range(2 * lags)]
     )
@@ -91,10 +113,12 @@ def _plug_in(u: np.ndarray, y: np.ndarray, h: int, lags: int) -> float:
     return _dense_variance(q, g[:lags], g, noise) / periods**2
 
 
-@pytest.mark.parametrize("h", [1, 2, 3])
-def test_the_estimate_is_unbiased_and_its_variance_is_eq_2_5_over_every_design(monkeypatch, h):
-    # the plug-in reads ceil(ln 10) = 3 lags here, so that a run of 10 can be read at all
-    monkeypatch.setattr(switchback, "_DESIGN_LAGS", 1.0)
+@pytest.mark.parametrize(("h", "lag"), [(1, None), (2, None), (3, None), (1, 1), (1, 2), (2, 2)])
+def test_the_estimate_is_unbiased_and_its_variance_is_eq_2_5_over_every_design(monkeypatch, h, lag):
+    # the plug-in reads ceil(ln 10) = 3 lags here, so that a run of 10 can be read at all; under a
+    # moving baseline it reads L more, and max(H, ceil(0.4 ln 10)) + L = H + L
+    per_log = 1.0 if lag is None else 0.4
+    monkeypatch.setattr(switchback, "_DESIGN_LAGS", per_log)
     rng = np.random.default_rng(1)
     periods = 10
     g = rng.normal(size=periods) * 0.7 ** np.arange(periods)
@@ -104,19 +128,29 @@ def test_the_estimate_is_unbiased_and_its_variance_is_eq_2_5_over_every_design(m
     for bits in itertools.product((0.0, 1.0), repeat=periods):
         u = np.array(bits)
         y = noise + np.concatenate([[0.0], np.convolve(u, g)[:periods]])
-        estimate = _moment_estimate(u, y, h)
+        estimate = _moment_estimate(u, y, h, lag)
         if 0.0 < u.sum() < periods:
-            reading = read_switchback(u, y, Horizon(h), "local_projection", se="design")
+            reading = read_switchback(
+                u,
+                y,
+                Horizon(h),
+                "local_projection",
+                se="design",
+                baseline="first" if lag is None else "moving",
+                baseline_lag=lag,
+            )
             assert reading.estimate == pytest.approx(estimate, rel=1e-12, abs=1e-12)
             # at H = 3 the plug-in's tr(M M) reads g beyond the 3 lags its other terms read
-            plug_in = _plug_in(u, y, h, max(h, math.ceil(math.log(periods))))
-            assert reading.se**2 == pytest.approx(plug_in, rel=1e-10, abs=0.0)
+            lags = max(h, math.ceil(per_log * math.log(periods))) + (lag or 0)
+            assert reading.se**2 == pytest.approx(_plug_in(u, y, h, lags, lag), rel=1e-10, abs=0.0)
         estimates.append(estimate)
     estimates = np.array(estimates)
     assert estimates.mean() == pytest.approx(g[:h].sum(), rel=0.0, abs=1e-12)
-    # T^2 var = |M|_F^2 + tr(M M) - 2 sum M_ii^2 + |T_q' h|^2, h = T_g 1 + 2 (e - y_0)
+    # T^2 var = |M|_F^2 + tr(M M) - 2 sum M_ii^2 + |T_q' h|^2, h = T_g 1 + 2 (e - y_0); the moving
+    # baseline's is the same of g - S^L g and (1 - S^L) h
     q = periods / (periods - np.arange(h, dtype=np.float64))
     level = np.convolve(np.ones(periods), g)[:periods] + 2.0 * (noise[1:] - noise[0])
+    level, g = _differenced(level, lag), _differenced(g, lag)
     exact = switchback._design_variance(q, g[None], g[None], level[None])[0] / periods**2
     assert estimates.var() == pytest.approx(exact, rel=1e-12, abs=0.0)
 
@@ -222,6 +256,78 @@ def test_the_design_interval_holds_its_level_given_the_noise():
     assert _coverage(u, y, 1, "model")[0] < 0.93
 
 
+def _design_readings(u, y, h: int, tau: float, **baseline):
+    """Each run's design reading of ``tau_H``: the estimates, the standard errors and the share of
+    the intervals that cover ``tau``."""
+    readings = [
+        read_switchback(u[r], y[r], Horizon(h), "local_projection", se="design", **baseline)
+        for r in range(len(u))
+    ]
+    return (
+        np.array([x.estimate for x in readings]),
+        np.array([x.se for x in readings]),
+        float(np.mean([x.interval[0] <= tau <= x.interval[1] for x in readings])),
+    )
+
+
+def _spread(u, y, h: int, lag: int | None) -> float:
+    """The variance over the runs that eq. (2.5) predicts on ``_plant``: the estimate's variance
+    over the coins on each run's own noise path, averaged over the paths. Its mean is ``tau_H`` on
+    every path, so that is its whole variance. ``lag`` reads it under the moving baseline."""
+    reps, periods = u.shape
+    g = B * A ** np.arange(periods)
+    effect = np.stack([np.convolve(row, g)[:periods] for row in u])
+    level = np.convolve(np.ones(periods), g)[:periods] + 2.0 * (y[:, 1:] - effect - y[:, :1])
+    level, g = _differenced(level, lag), _differenced(g, lag)
+    q = periods / (periods - np.arange(h, dtype=np.float64))
+    g = np.broadcast_to(g, (reps, periods))
+    return float(switchback._design_variance(q, g, g, level).mean()) / periods**2
+
+
+def test_a_moving_baseline_narrows_the_design_reading_on_a_persistent_plant():
+    """``x' = 0.8 x + 2 u + eps``, i.i.d. ``eps``: an outcome that persists. Read against the
+    reading ``H`` periods back, ``tau_3``'s estimate over 60 periods spread 0.547 times as far as
+    from the first reading, against 0.543 from eq. (2.5) of each one's own response and noise, and
+    its interval covered 0.946. The plug-in reads ``L`` lags more than the first reading's, each
+    with its error, and its standard error was 1.10 times the spread."""
+    rng = np.random.default_rng(60)
+    reps, periods, h = 1000, 60, 3
+    u = _coins(rng, (reps, periods + BURN))
+    y = _plant(u, rng.standard_normal(u.shape))
+    u, y = u[:, BURN:], y[:, BURN:]
+    first, _, _ = _design_readings(u, y, h, _tau(h))
+    moving, se, covered = _design_readings(u, y, h, _tau(h), baseline="moving")
+    assert covered == pytest.approx(LEVEL, abs=4 * math.sqrt(LEVEL * (1 - LEVEL) / reps))
+    assert moving.mean() == pytest.approx(_tau(h), abs=4 * moving.std() / math.sqrt(reps))
+    assert 1.0 <= se.mean() / moving.std() < 1.25
+    for estimates, lag in ((first, None), (moving, h)):
+        predicted = math.sqrt(_spread(u, y, h, lag))
+        assert estimates.std() == pytest.approx(predicted, rel=4 / math.sqrt(2 * reps), abs=0.0)
+    assert moving.std() / first.std() < 0.6
+
+
+@pytest.mark.parametrize(
+    ("rho", "first_sd", "moving_sd"), [(0.0, 0.4472136, 0.4472136), (-0.5, 0.4954110, 0.5773503)]
+)
+def test_a_moving_baseline_ties_on_white_noise_and_widens_on_a_noise_that_alternates(
+    rho, first_sd, moving_sd
+):
+    """``x' = 2 u + eps``, ``eps`` AR(``rho``) of unit innovations, the channel over 60 periods
+    at ``L = 1``. ``validation/switchback_moving_baseline.mac`` STEP 6 gives the spreads:
+    ``T^2 var = T b^2 + 8 sum_j (gam_0 - gam_(j+1))`` from the first reading and
+    ``T b^2 + 8 T (gam_0 - gam_1)`` from the moving baseline. On white noise they tie; where the
+    noise alternates, ``gam_1 < 0``, the moving baseline spreads 1.165 times as far."""
+    rng = np.random.default_rng(1)
+    reps, periods = 1000, 60
+    u = _coins(rng, (reps, periods + BURN))
+    y = _plant(u, _persistent(rng, u.shape, rho), a=0.0)
+    u, y = u[:, BURN:], y[:, BURN:]
+    for sd, baseline in ((first_sd, "first"), (moving_sd, "moving")):
+        estimates, _, _ = _design_readings(u, y, 1, B, baseline=baseline)
+        assert estimates.mean() == pytest.approx(B, abs=4 * sd / math.sqrt(reps))
+        assert estimates.std() == pytest.approx(sd, rel=4 / math.sqrt(2 * reps), abs=0.0)
+
+
 def _run(periods: int, seed: int = 9, share: float = 0.5, flip: float | None = None):
     rng = np.random.default_rng(seed)
     if flip is None:
@@ -249,6 +355,10 @@ def test_the_default_standard_error_is_the_models():
     assert read_switchback(u, y, Horizon(2), "local_projection", se="model") == default
     design = read_switchback(u, y, Horizon(2), "local_projection", se="design")
     assert design.estimate != default.estimate
+    first = read_switchback(u, y, Horizon(2), "local_projection", se="design", baseline="first")
+    assert first == design
+    moving = read_switchback(u, y, Horizon(2), "local_projection", se="design", baseline="moving")
+    assert moving.estimate != design.estimate
 
 
 @pytest.mark.parametrize(
@@ -289,6 +399,36 @@ def test_the_design_reading_refuses_what_it_cannot_read(call, match):
 
 
 @pytest.mark.parametrize(
+    ("options", "match"),
+    [
+        ({"baseline": "none"}, "'first' or 'moving'"),
+        ({"se": "model", "baseline": "moving"}, "read by the design standard error"),
+        ({"baseline_lag": 3}, "the moving baseline's"),
+        ({"baseline": "moving", "baseline_lag": 2}, "at least the horizon's 3"),
+        ({"baseline": "moving", "baseline_lag": 3.0}, "whole number"),
+        ({"baseline": "moving", "baseline_lag": True}, "whole number"),
+        # ceil(3 ln 300) = 18 lags and L more, twice over, must stay below the run's 300 periods
+        ({"baseline": "moving", "baseline_lag": 132}, r"reads 300 lags .*\(264 for the moving"),
+        ({"baseline": "moving", "baseline_lag": 300}, "more periods"),
+    ],
+)
+def test_a_moving_baseline_refuses_a_lag_the_design_cannot_read(options, match):
+    u, y = _run(300)
+    with pytest.raises(ValueError, match=match):
+        read_switchback(u, y, Horizon(3), "local_projection", **({"se": "design"} | options))
+
+
+def test_a_moving_baseline_reads_up_to_the_longest_lag_its_run_holds():
+    u, y = _run(300)
+    longest = read_switchback(
+        u, y, Horizon(3), "local_projection", se="design", baseline="moving", baseline_lag=131
+    )
+    assert longest.estimate == pytest.approx(_moment_estimate(u, y, 3, 131), rel=1e-12, abs=0.0)
+    with pytest.raises(ValueError, match="finite horizon"):
+        read_switchback(u, y, STEADY_STATE, "local_projection", se="design", baseline="moving")
+
+
+@pytest.mark.parametrize(
     ("lever", "match"),
     [({"flip": 0.1}, r"i\.i\.d\."), ({"share": 0.3}, "fair coin")],
 )
@@ -305,4 +445,5 @@ def test_a_design_reading_is_logged(caplog):
     (record,) = caplog.records
     assert record.chc_event == "switchback_reading"
     assert record.se_over == "design"
+    assert record.baseline == "first"
     assert record.se == reading.se

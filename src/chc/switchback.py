@@ -1035,7 +1035,20 @@ def _design_variance(q: np.ndarray, g: np.ndarray, g_long: np.ndarray, h: np.nda
     return quadratic + (linear * linear).sum(axis=-1)
 
 
-def _design_projection(u, y, h: int, z: float):
+def _moving_lag(baseline_lag, h: int) -> int:
+    """The moving baseline's lag, ``H`` unless given. A reading fewer than ``H`` periods back holds
+    the coins the lags below ``H`` read, so ``tau_H``'s estimate would read ``tau_H`` less
+    ``sum_(L<=s<H) g_(s - L)``."""
+    lag = h if baseline_lag is None else baseline_lag
+    if isinstance(lag, bool) or not isinstance(lag, (int, np.integer)) or lag < h:
+        raise ValueError(
+            f"a moving baseline reads a whole number of periods back, at least the horizon's {h}: "
+            f"a reading fewer back holds the lever's own effect; got {baseline_lag!r}"
+        )
+    return int(lag)
+
+
+def _design_projection(u, y, h: int, z: float, lag: int | None = None):
     """``tau_H`` by Liang and Recht's moment estimator, the local projection with the design's
     moments in place of the sample's, and its standard error over the design's coins.
 
@@ -1045,7 +1058,12 @@ def _design_projection(u, y, h: int, z: float):
     ``q_s = T / (T - s)``, whose target is ``tau_H`` itself, and it is unbiased over the coins
     whatever the noise, as long as the noise does not depend on them. The variance is their
     eq. (2.5), exact over the coins, with ``g`` read over ``K`` lags and the noise read off the
-    data, ``h = 2 y' - z * g``: their plug-in, consistent at ``K = Theta(log T)``."""
+    data, ``h = 2 y' - z * g``: their plug-in, consistent at ``K = Theta(log T)``.
+
+    With a ``lag`` ``L``, ``y'_t`` is less ``y'_(t - L)`` from ``t = L`` on: the readings through
+    the lower-triangular Toeplitz filter ``1 - S^L``, which is the same model with the response
+    ``g - S^L g`` and the noise filtered alike. ``g_s`` is unchanged below ``L``, and the plug-in
+    reads ``L`` more lags, where the response's echo ``-g_(s - L)`` lies."""
     _iid_lever(u)
     share = float(u.mean())
     if abs(2.0 * share - 1.0) * math.sqrt(u.size) > _IID:
@@ -1054,14 +1072,17 @@ def _design_projection(u, y, h: int, z: float):
             f"{share:.3f} of them"
         )
     zones, periods = u.shape
-    lags = max(h, math.ceil(_DESIGN_LAGS * math.log(periods)))
+    lags = max(h, math.ceil(_DESIGN_LAGS * math.log(periods))) + (lag or 0)
     if periods <= 2 * lags:
+        echo = f" ({2 * lag} for the moving baseline's echo)" if lag else ""
         raise ValueError(
-            f"a design standard error reads {2 * lags} lags of the impulse response, and needs "
-            f"more periods a zone than that; got {periods}"
+            f"a design standard error reads {2 * lags} lags of the impulse response{echo}, and "
+            f"needs more periods a zone than that; got {periods}"
         )
     signs = 2.0 * u - 1.0
     after = y[:, 1:] - y[:, :1]
+    if lag:
+        after[:, lag:] = after[:, lag:] - after[:, :-lag]
     g = np.stack(
         [
             2.0 / (periods - s) * (signs[:, : periods - s] * after[:, s:]).sum(axis=-1)
@@ -1274,6 +1295,8 @@ def read_switchback(  # noqa: C901, PLR0912
     blocks: BlockDesign | None = None,
     alpha: float = 0.05,
     se: Literal["model", "design"] = "model",
+    baseline: Literal["first", "moving"] = "first",
+    baseline_lag: int | None = None,
     jackknife: bool = False,
 ) -> SwitchbackReading:
     """Read ``estimand`` off a switchback's data by ``analysis``.
@@ -1329,6 +1352,30 @@ def read_switchback(  # noqa: C901, PLR0912
     asymptotic in ``T``. It is wider than the model's where the model's holds, since it uses
     neither the regression's intercept nor ``y_t``.
 
+    ``baseline`` is what the design's reading subtracts. ``"first"``, the default, is each zone's
+    first reading, as above. ``"moving"`` reads each reading against the one ``L`` periods back,
+    ``L = baseline_lag``, ``H`` unless given, and the first ``L`` against the first reading:
+    ``g_s = 2 / (T - s) sum_t (2 u_t - 1) (y_(t+1+s) - y_max(t+1+s-L, 0))``. That passes the
+    readings through ``1 - S^L``, a lower-triangular Toeplitz filter, so they are Liang and Recht's
+    model again, with the response ``g - S^L g`` and the noise filtered alike: the estimate is
+    unbiased for ``tau_H`` at any ``L >= H``, since the reading ``L`` back holds none of the coins
+    the lags below ``H`` read, and its variance over the coins is their eq. (2.5) of the filtered
+    response and noise (``validation/switchback_moving_baseline.mac``). Its plug-in reads ``L``
+    lags more, where the response's echo ``-g_(s-L)`` lies. It trades each reading's distance from
+    the first for its distance from ``L`` periods back. At the channel, ``T^2`` times the variance
+    loses ``8 ((T - L) gam_L - sum_(k=L+1..T) gam_k)`` of the noise's share, ``gam`` the noise's
+    autocovariance, ``8 gam_L`` a period of a long run, and on the working model
+    ``b^2 ((2 a^L - 1) / (1 - a^2) + 1 / (1 - a)^2) >= 0`` a period of the lever's, whose mean
+    effect the first reading keeps in every period. So it narrows the reading where the outcome
+    persists, spreads as far as the first reading's on white noise at the channel, and widens it
+    where the noise's autocovariance at ``L`` is negative; past the channel the first reading's own
+    noise enters each lag a period sums, and white noise favours the moving baseline. On
+    ``x' = 0.8 x + 2 u + eps`` with i.i.d. ``eps``, ``tau_3``'s estimate over 60 periods spread 0.55
+    times as far as from the first reading, its interval covered 0.946, and its standard error was
+    1.10 times its spread: each lag the plug-in adds is read with an error. On ``x' = 2 u + eps``
+    with ``eps`` an AR(-0.5), the derivation has the channel's spread 1.165 times as far. A longer
+    ``L`` pays where the noise's autocovariance peaks at it, a weekly cycle in daily readings.
+
     ``jackknife=True`` reads the plug-in (``"state_aware"``) or the local projection by the
     half-panel jackknife (Dhaene and Jochmans, Review of Economic Studies 2015),
     ``2 tau_T - (tau_1 + tau_2) / 2``: each half of the run is read on its own periods, with its
@@ -1379,8 +1426,11 @@ def read_switchback(  # noqa: C901, PLR0912
             comes out negative, which the working model's errors cannot produce; and when ``se``
             is neither ``"model"`` nor ``"design"``, or ``"design"`` is asked of another analysis
             than the local projection, of a lever that is not a fair coin each period, of a run no
-            longer than the ``6 log T`` lags the plug-in reads, or of an outcome that never moves
-            off its first reading; and when ``jackknife`` is asked of another analysis or with
+            longer than the ``6 log T`` lags the plug-in reads, ``2 L`` more under a moving
+            baseline, or of an outcome that never moves off its first reading; when ``baseline``
+            is neither ``"first"`` nor ``"moving"``, ``"moving"`` is asked without
+            ``se="design"``, ``baseline_lag`` without ``"moving"``, or a lag that is not a whole
+            number at least ``H``; and when ``jackknife`` is asked of another analysis or with
             ``se="design"``, of a run whose halves leave fewer than 3 rows a zone, of a half in
             which the lever never switches, or of a steady state some half fits ``a_hat >= 1``
             to or whose jackknifed ``a_J`` is at or past 1.
@@ -1406,6 +1456,14 @@ def read_switchback(  # noqa: C901, PLR0912
         raise ValueError(
             f"a design standard error reads the local projection of an i.i.d. lever, not {analysis}"
         )
+    if baseline not in ("first", "moving"):
+        raise ValueError(f"baseline is 'first' or 'moving', got {baseline!r}")
+    if baseline == "moving" and se != "design":
+        raise ValueError(f"a moving baseline is read by the design standard error, not se={se!r}")
+    if baseline_lag is not None and baseline != "moving":
+        raise ValueError(
+            f"baseline_lag is the moving baseline's; got it with baseline={baseline!r}"
+        )
     if jackknife and (se != "model" or analysis not in ("state_aware", "local_projection")):
         raise ValueError(
             "the jackknife corrects the plug-in's and the local projection's 1/T bias under the "
@@ -1423,9 +1481,11 @@ def read_switchback(  # noqa: C901, PLR0912
         raise ValueError("a local projection reads a finite horizon, not the steady state")
     elif jackknife:
         estimate, error, interval = _half_panel(u, y, estimand, analysis, z)
+    elif analysis == "local_projection" and se == "design":
+        lag = None if baseline == "first" else _moving_lag(baseline_lag, int(h))
+        estimate, error, interval = _design_projection(u, y, int(h), z, lag)
     elif analysis == "local_projection":
-        reader = _design_projection if se == "design" else _projection
-        estimate, error, interval = reader(u, y, int(h), z)
+        estimate, error, interval = _projection(u, y, int(h), z)
     else:
         estimate, error, interval = _plant(u, y, estimand, analysis, z)
     _log.info(
@@ -1438,6 +1498,7 @@ def read_switchback(  # noqa: C901, PLR0912
             "estimate": estimate,
             "se": error,
             "se_over": se,
+            "baseline": baseline,
             "jackknife": jackknife,
         },
     )

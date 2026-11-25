@@ -1,7 +1,8 @@
 # ADR 0098 — A switchback's standard error over its coins
 
 **Status:** accepted, 2026-10-13. Extends `read_switchback` (ADR 0012) and closes ADR 0025's
-"coverage of the local-projection interval" for a lever drawn by a fair coin each period.
+"coverage of the local-projection interval" for a lever drawn by a fair coin each period. Amended
+2026-11-25 by ADR 0168: `baseline="moving"` reads against the reading `L` periods back, opt-in.
 
 ## Context
 
@@ -113,6 +114,7 @@ Measured by `tests/test_switchback_design.py` and the runs behind its comments, 
   `y_t`, is still unbiased: it depends on earlier coins only, which `z_t` is independent of. It
   would remove most of a persistent noise from the variance, and the width with it. But eq. (2.5)
   no longer holds, and its variance is not derived here.
+  Built 2026-11-25 (ADR 0168) against the reading `L >= H` periods back, which keeps eq. (2.5).
 - **Spillover between zones.** A zone's outcome moved by another zone's coins puts terms in the
   variance that eq. (2.5) does not hold. The block difference's standard error keeps them.
 - **Markov and block designs.** Eq. (2.5) is for independent fair coins. Those designs keep

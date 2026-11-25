@@ -177,7 +177,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   `read_switchback(..., se="design")` reads a local projection of a lever drawn by a fair coin
   each period with its standard error over the coins, the noise held fixed, so a noise that
   persists or trends does not move the interval's level; it is several times wider than the
-  model's. `read_switchback(..., jackknife=True)` removes the 1/T bias of the plug-in and of the
+  model's. `baseline="moving"` reads that estimate against the reading `H` periods back instead of
+  the first: unbiased still, with its variance over the coins derived, and narrower where the
+  outcome persists, though wider on a noise that alternates. `read_switchback(..., jackknife=True)` removes the 1/T bias of the plug-in and of the
   local projection by the half-panel jackknife, with a standard error of its own, read on one zone
   as on many. `randomisation_test` draws the design's schedule again to test the sharp null that the
   lever moves nothing: exact at any number of blocks and whatever the plant's memory, where
