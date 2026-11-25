@@ -9,6 +9,22 @@ experimental may change in any minor release (`docs/api/index.md`).
 
 ### Added
 
+- **`read_switchback(se="design", baseline="moving")`**, opt-in, experimental: the design
+  reading's moment estimator read against the reading `L` periods back, `baseline_lag`, `H` unless
+  given, in place of each zone's first reading. That is the readings through `1 - S^L`, a
+  lower-triangular Toeplitz filter, so the estimate stays unbiased for `tau_H` at any `L >= H`
+  and its variance over the coins is Liang and Recht's eq. (2.5) of the filtered response and noise
+  (`validation/switchback_moving_baseline.mac`); its plug-in reads `L` more lags. At the channel
+  the noise's share of `T^2` times the variance falls by `8 ((T - L) gam_L - sum_(k>L) gam_k)`,
+  `gam` the noise's autocovariance, and the lever's mean effect leaves it: the reading narrows
+  where the outcome persists, ties with the first reading on white noise at the channel, and
+  widens where the noise's autocovariance at `L` is negative. On `x' = 0.8 x + 2 u + eps`, i.i.d.
+  `eps`, `tau_3`'s estimate over 60 periods spread 0.55 times as far, and its interval covered
+  0.946 with a standard error 1.10 times its spread; on `x' = 2 u + eps`, `eps` an AR(-0.5), the
+  channel's spreads 1.165 times as far. It refuses a lag below `H`, which would read the lever's
+  own effect, and a run no longer than the lags its plug-in reads. The default, `"first"`, is
+  unchanged (ADR 0168).
+
 - **`fit_causal_residual(nuisance_choice="score")`**, opt-in, experimental: the three nuisance
   sieves of ADR 0120 read by the logs of the out-of-fold mean squares of the action's residual and
   of the moment's score, the target's residual less its fit on the action's, each column in its own
