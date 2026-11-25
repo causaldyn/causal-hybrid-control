@@ -43,6 +43,8 @@ WHOLE = (
     "transport",
 )
 SPLIT = ("regret", "games", "residual")
+# Written in the research tier from the start: no old path to retire.
+BORN = ("stepwise_confounding",)
 
 
 def _defined(module: str) -> set[str]:
@@ -61,7 +63,7 @@ def _defined(module: str) -> set[str]:
 
 def test_the_research_package_holds_the_modules_that_moved_whole_and_the_three_halves() -> None:
     found = {m.name for m in pkgutil.iter_modules(chc.research.__path__)}
-    assert found == {*WHOLE, *SPLIT}
+    assert found == {*WHOLE, *SPLIT, *BORN}
 
 
 @pytest.mark.parametrize("name", WHOLE)
