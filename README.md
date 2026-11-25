@@ -32,7 +32,7 @@ one.
 
 **Stable means the stable tier.** The `Production/Stable` classifier and Semantic Versioning cover
 the [stable tier](https://causaldyn.github.io/causal-hybrid-control/api/#the-tiers) of the API
-reference: 158 of the 881 names the modules list in `__all__`, in 15 modules. The rest are
+reference: 158 of the 882 names the modules list in `__all__`, in 15 modules. The rest are
 evolving, experimental or research, each promising less, and each page of the reference states its
 tier.
 

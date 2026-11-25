@@ -98,6 +98,21 @@ experimental may change in any minor release (`docs/api/index.md`).
   evaluation reads `41/9`; a confounder that persists with probability 0.9 is refused. The bounds
   are plug-in, with no sampling error (ADR 0173).
 
+- **`ChannelMove.keep_or_replan(plan, level=0.05)`**, opt-in, experimental: keep a plan whose
+  one-step channel moved, or re-plan on the move's estimate. It returns a `KeepOrReplan` with the
+  re-solved plan, `price`'s two expectations, and a one-sided test of the null that re-planning
+  does not pay, `d' W d <= tr(W S)`. The re-solve runs `causal_plan`'s descent on the plan's
+  one-step map plus the estimate times the action taken: the map the decision weight perturbs,
+  under RK4 and Euler alike. The test reads `keep - replan` against the null's least favourable
+  law, all of `tr(W S)` as noncentrality on `W S`'s largest eigenvalue, by Imhof's inversion,
+  which now takes noncentralities (`validation/keep_or_replan.mac`). It holds for one read at
+  levels up to 0.2, where a scan of 154 spectra found that law the heaviest; it is not
+  anytime-valid. On ADR 0019's budgeted plan, at 0.05, it re-planned on 2%, 3.5%, 21.5% and 91.5%
+  of the logs of 30, 100, 400 and 1600 decisions and lost 0.102, 0.099, 0.084 and 0.0124, where
+  keeping lost 0.095, always re-planning 0.184, 0.080, 0.024 and 0.0060, and comparing the two
+  prices 0.149, 0.100, 0.043 and 0.0060. A Wald test on `keep_error` re-plans with probability
+  0.0029 at a nominal 0.05 on one direction, and is not shipped (ADR 0167).
+
 - **`fit_causal_residual(nuisance_choice="score")`**, opt-in, experimental: the three nuisance
   sieves of ADR 0120 read by the logs of the out-of-fold mean squares of the action's residual and
   of the moment's score, the target's residual less its fit on the action's, each column in its own

@@ -66,7 +66,7 @@ on the zone plant, for the response curves `response` in the plans they warm-sta
 the geo world `geo_world` in the geo models scored on it. They may change or be withdrawn in
 any minor release. Pin an exact version if you depend on one.
 
-105 entries in modules of other tiers are experimental on the same terms, for the same
+107 entries in modules of other tiers are experimental on the same terms, for the same
 reason. An entry is a name, `Class.member` for a field or a method, `function(argument=)` for an
 argument, or a value or key in quotes:
 
@@ -99,6 +99,7 @@ argument, or a value or key in quotes:
   `SharedStateMarket(payment="per_driver")`;
 - `chc.gate`: `channel_drift_evalues`, `DriftAlarm`, `MissRateAlarm`, `OnlineRadius`,
   `ConformalPessimism`, `ConformalHorizon`, `channel_move`, `ChannelMove`, `MovePrice`,
+  `ChannelMove.keep_or_replan`, `KeepOrReplan`,
   `BlockBatch`, `GateConfig.alpha_futility`, `GateConfig.block_length`, `GateConfig.burn_in`,
   `GateConfig.check_burn_in`, `GateConfig.centred`, `GateConfig.rollback_baseline_share`,
   `GateConfig.rollback_restart`, `GateConfig.rollback_horizon`;

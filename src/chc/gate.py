@@ -181,7 +181,8 @@ which, under ``centred``.
 A zone's channel is watched through per-decision drift e-values. :func:`channel_drift_evalues`
 reads them off the Gaussian dither a :class:`DecisionLog` records, and :class:`DriftAlarm` turns
 them into an alarm outside the gate as well. Once the channel has moved, :func:`channel_move`
-re-reads it off the same dither, and :meth:`ChannelMove.price` puts the move in a plan's own cost.
+re-reads it off the same dither, :meth:`ChannelMove.price` puts the move in a plan's own cost, and
+:meth:`ChannelMove.keep_or_replan` re-solves the plan on it and tests whether that pays.
 
 A deployed model's one-step innovations are watched too (*experimental*): :class:`MissRateAlarm`
 alarms when they leave a split-conformal radius more often than its calibration allows, and
@@ -205,11 +206,13 @@ import numpy as np
 from jax import Array
 from numpy.typing import ArrayLike, NDArray
 from scipy import special
+from scipy.optimize import brentq
 
 from chc.frames import _real_numbers
+from chc.misspecification import _mixture_weights
 from chc.mpc import RecedingHorizon
-from chc.plan import CausalPlan, DecisionWeight
-from chc.uncertainty import _as_written, _conformal_rank
+from chc.plan import CausalPlan, DecisionWeight, _replanned
+from chc.uncertainty import _as_written, _chi_square_mixture_survival, _conformal_rank
 
 __all__ = [
     "BlockBatch",
@@ -221,6 +224,7 @@ __all__ = [
     "DriftAlarm",
     "GateConfig",
     "GateMode",
+    "KeepOrReplan",
     "MissRateAlarm",
     "MovePrice",
     "OnlineRadius",
@@ -245,6 +249,10 @@ _DRIFT_BETS = 2.0 ** -np.arange(8)  # |theta|, in residual scales per dither sca
 _DITHER_LEVEL = 1e-9  # a dither this far from its stated scale is a slip, not a draw
 _CARRYOVER_FIRST = 100  # decisions before the carryover check first reads, then at every doubling
 _CARRYOVER_LEVEL = 0.05  # a zone's chance of a false carryover warning over its whole run
+# the largest level at which the null's noncentrality, all on W S's largest eigenvalue, is read
+# least favourable: over 154 spectra of 2 to 11 directions, no split of it read a heavier tail at
+# levels up to 0.25, and at 0.3 one read 0.010 more
+_REPLAN_LEVEL = 0.2
 
 
 def _vector(value: ArrayLike, name: str) -> _Array:
@@ -1575,6 +1583,31 @@ class MovePrice:
 
 
 @dataclass(frozen=True)
+class KeepOrReplan:
+    """Whether to keep a plan whose one-step channel moved or to re-plan on the move's estimate,
+    the test that chose, and the re-solved plan. *Experimental.*
+
+    See :meth:`ChannelMove.keep_or_replan`.
+    """
+
+    price: MovePrice  # the two expectations the test compares, keep and replan
+    # the least keep - replan, in the plan's cost, at which the test re-plans
+    margin: float
+    # the largest chance, over the moves re-planning does not pay for, that keep - replan reads at
+    # least this large
+    p_value: float
+    level: float  # the false re-plan rate the test was read at
+    decision: Literal["keep", "replan"]
+    # the plan re-solved on the estimate, whatever the decision; it carries no tube
+    replanned: CausalPlan
+
+    @property
+    def difference(self) -> float:
+        """The test's statistic, ``keep - replan``: what re-planning saves, in expectation."""
+        return self.price.keep - self.price.replan
+
+
+@dataclass(frozen=True)
 class ChannelMove:
     """How far the plant's one-step channel lies from the model's, read off a log's dither.
     *Experimental.*
@@ -1613,6 +1646,8 @@ class ChannelMove:
         and re-planning on the other, did no better than the better of the two throughout. Re-read
         the move on the decisions logged after the choice, such as those after a
         :class:`DriftAlarm` sounds, and the re-plan price is the re-solved plan's.
+        :meth:`keep_or_replan` tests one price against the other at a stated rate of wrong
+        re-plans.
 
         **How far they reach.** Both are second order in the move, and hold as far as ``W`` does:
         while the plan's active set stays as it is, and for a move small against the channel (see
@@ -1639,6 +1674,92 @@ class ChannelMove:
             keep=(float(d @ w @ d) - trace) / 2.0,
             keep_error=math.sqrt(4.0 * leverage + 2.0 * trace_squared) / 2.0,
             replan=trace / 2.0,
+        )
+
+    def keep_or_replan(
+        self,
+        plan: CausalPlan,
+        *,
+        level: float = 0.05,
+        steps: int = 10_000,
+        tolerance: float | None = None,
+    ) -> KeepOrReplan:
+        """Keep ``plan`` after its one-step channel moved, or re-plan on the estimate: the plan
+        re-solved on the estimate, and a test that re-plans only where re-planning pays, wrongly
+        with probability at most ``level``. *Experimental.*
+
+        **The re-solve.** :meth:`price` reads the move in the cost of the plan whose one-step map
+        is the model's plus ``E u``, ``u`` the action the field takes: the map
+        :meth:`chc.plan.CausalPlan.decision_weight` perturbs. The plan's problem is solved again
+        on that map at ``E = dh``, the estimate, with its cost, box and rows, by
+        :func:`chc.plan.causal_plan`'s descent from ``plan``'s actions, for at most ``steps``
+        steps. The move does not enter the model's field: a field plus ``dh u / dt`` steps to the
+        moved map only where the model is stepped by Euler's map, and under RK4 the move would
+        pass through the step's stages. The re-solved plan's model is the moved map, and it
+        carries no tube, since what ``plan``'s tube was read with is not kept. It is that map's
+        own plan, not a second-order one: on the budgeted plan of
+        ``tests/test_keep_or_replan.py`` it is SLSQP's minimiser within 1e-5.
+
+        **The test.** With ``W`` the decision weight, ``d`` the move and ``S`` the estimate's
+        covariance, re-planning pays in expectation when ``d' W d > tr(W S)``. The test's null is
+        ``d' W d <= tr(W S)``, and its statistic is :attr:`KeepOrReplan.difference`,
+        ``keep - replan = (dh' W dh - 2 tr(W S)) / 2``. With ``dh ~ N(d, S)``, ``dh' W dh`` is a
+        mixture of noncentral chi-squares over the eigenvalues ``l_i`` of ``W S``, whose
+        noncentralities ``c_i`` meet ``sum l_i c_i = d' W d``, so the null holds many laws. The
+        p-value is read, by Imhof's inversion, at the one that puts all of ``tr(W S)`` on the
+        largest eigenvalue, where the tail is heaviest: exactly so on one direction, where the
+        tail grows with the move, and on eigenvalues alike, where only the sum counts; on two
+        directions as the split moves (``validation/keep_or_replan.mac`` STEPs 3-4); and over
+        154 spectra of 2 to 11 directions, each split at random and whole on every direction, at
+        levels up to 0.25. At 0.3 a split read a tail 0.010 heavier, so ``level`` stops at 0.2.
+        The test re-plans where the p-value is at most ``level``: where the difference exceeds
+        :attr:`KeepOrReplan.margin`. At the least favourable move of 40 000 Gaussian estimates it
+        re-planned on 0.05 of them. A Wald test on ``keep_error`` re-plans far less often than its
+        level, since the keep price's error grows with the move it reads: on one direction, 0.0029
+        at a nominal 0.05 (STEP 5).
+
+        What the level holds: one read, a ``dh`` near normal, and ``S`` read as known. A caller
+        who reads the test after every batch and re-plans at its first ``replan`` re-plans
+        wrongly more often than ``level``: the test is not anytime-valid. Watch the channel with
+        :class:`DriftAlarm`, which is, and read the move once, on the decisions after it sounds.
+
+        **What it costs.** On the budgeted plan of ``scripts/bench_channel_move.py``, 200 logs of
+        each size, the test at 0.05 re-planned on 0.020, 0.035, 0.215 and 0.915 of the logs of 30,
+        100, 400 and 1600 decisions, and lost 0.102, 0.099, 0.084 and 0.0124, where always keeping
+        lost 0.095 and always re-planning 0.184, 0.080, 0.024 and 0.0060. It forgoes the
+        re-plans that would lose, as comparing the two prices does not (0.149 at 30 decisions),
+        and is slow to take the ones that pay: at 400 decisions re-planning pays four times over,
+        yet a log's keep price spreads as far as its mean, and a move twice the null's edge in
+        standard errors clears a one-sided test at 0.05 about a quarter of the time.
+
+        **The re-solve and the test read one log.** Where the test re-plans, the estimate read a
+        move large along ``W``, and its error is likely large there too: the re-solved plan loses
+        more than ``replan`` on average, most near the margin. At 100 decisions, the logs the test
+        re-planned on lost more than keeping did. Re-solve on a move re-read from the decisions
+        logged after the choice, ``later.keep_or_replan(plan).replanned``, and ``replan`` is the
+        re-solved plan's again: chosen on one log and re-planned on the next, the test lost 0.096,
+        0.093, 0.081 and 0.0147.
+
+        Raises:
+            ValueError: on a ``level`` outside ``(0, 0.2]``, a move whose shape is not the plan's
+                one-step channel's (see :meth:`price`), and what
+                :meth:`chc.plan.CausalPlan.decision_weight` refuses.
+        """
+        if not 0.0 < level <= _REPLAN_LEVEL:
+            raise ValueError(
+                f"level is a false re-plan rate in (0, {_REPLAN_LEVEL}], got {level}: above it the"
+                " move the p-value is read at need not be the null's least favourable"
+            )
+        weight = plan.decision_weight(tolerance)
+        price = self.price(weight)
+        margin, p_value = _replan_test(weight, self, price, level)
+        return KeepOrReplan(
+            price=price,
+            margin=margin,
+            p_value=p_value,
+            level=level,
+            decision="replan" if p_value <= level else "keep",
+            replanned=_replanned(plan, np.asarray(self.estimate), steps),
         )
 
 
@@ -1734,6 +1855,45 @@ def channel_move(
         covariance=covariance,
         effective_size=total * total / float(squares.sum()),
     )
+
+
+def _null_law(
+    weight: NDArray[np.float64], covariance: NDArray[np.float64]
+) -> tuple[_Array, _Array]:
+    """The law of ``dh' W dh`` at the null's least favourable move, ``dh ~ N(d, S)``: the
+    eigenvalues of ``W S``, and the noncentralities that put all of ``tr(W S)`` on the largest."""
+    mixture = _mixture_weights(weight, covariance)
+    shifts = np.zeros_like(mixture)
+    if mixture.size and mixture.max() > 0.0:
+        top = int(np.argmax(mixture))
+        shifts[top] = float(mixture.sum()) / float(mixture[top])
+    return mixture, shifts
+
+
+def _replan_test(
+    weight: DecisionWeight, move: ChannelMove, price: MovePrice, level: float
+) -> tuple[float, float]:
+    """The margin ``keep - replan`` must exceed to re-plan at ``level``, and the p-value of the
+    move read, both under the null's least favourable law (:meth:`ChannelMove.keep_or_replan`)."""
+    w = np.asarray(weight.matrix, dtype=np.float64)
+    d = move.estimate.ravel()
+    quadratic = float(d @ w @ d)
+    trace = 2.0 * price.replan
+    mixture, shifts = _null_law(w, move.covariance)
+    if not np.any(shifts):
+        # no noise along W: dh' W dh is d' W d, and re-planning pays wherever it is positive
+        return -trace, 0.0 if quadratic > 0.0 else 1.0
+
+    def excess(q: float) -> float:
+        return _chi_square_mixture_survival(q, mixture, shifts) - level
+
+    # by Cantelli's inequality the quantile lies below mean + sqrt(variance (1 - level) / level)
+    mean = float(np.sum(mixture * (1.0 + shifts)))
+    variance = float(np.sum(2.0 * mixture**2 * (1.0 + 2.0 * shifts)))
+    high = mean + math.sqrt(variance * (1.0 - level) / level)
+    critical = high if excess(high) >= 0.0 else brentq(excess, 0.0, high, xtol=1e-12 * high)
+    p_value = _chi_square_mixture_survival(quadratic, mixture, shifts)
+    return (critical - 2.0 * trace) / 2.0, p_value
 
 
 def _exclusive_sums(values: _Array) -> _Array:

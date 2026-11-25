@@ -1,6 +1,7 @@
 # ADR 0019 — Re-reading a moved channel
 
-**Status:** proposed, 2026-09-29.
+**Status:** proposed, 2026-09-29. Amended by ADR 0167, 2026-11-25: `ChannelMove.keep_or_replan`
+re-solves the plan on the estimate and chooses by a one-sided test, not by comparing the prices.
 
 ## Context
 

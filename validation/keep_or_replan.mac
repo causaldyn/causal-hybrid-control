@@ -1,0 +1,112 @@
+/* Keep a plan whose one-step channel moved, or re-plan on the move's estimate: the two
+   expectations chc.gate.ChannelMove.price reads and the test ChannelMove.keep_or_replan reads them
+   with.
+
+   A plan u* minimises J(u; e), the task cost of the rollout whose one-step channel is off by e, at
+   e = 0. The move d is read as dh ~ N(d, s); W = J_ue^2 / J_uu is the plan's decision weight.
+
+   STEP 1  one step of x1 = phi x0 + (gam + e) u under the library's cost: the plan re-solved on
+           dh loses R(dh, d) = J(u*(dh); d) - J(u*(d); d) = W (dh - d)^2 / 2 to second order in
+           (dh, d) together, and keeping it, R(0, d) = W d^2 / 2
+   STEP 2  in expectation over dh: the keep price (W dh^2 - W s) / 2 is unbiased for W d^2 / 2, and
+           the re-solved plan loses W s / 2 = tr(W S) / 2
+   STEP 3  the test on one direction. Re-planning pays where d^2 > s; the statistic is dh' W dh,
+           W s (z + mu)^2 with mu = d / sqrt(s). Its tail P(> c) = Phi(mu - t) + Phi(-mu - t),
+           t = sqrt(c / (W s)), grows with |mu|, so the null's least favourable move is mu = 1;
+           its critical value at 0.05 and 0.01, and a p-value, against the library's
+   STEP 4  two directions, W S with eigenvalues 1 and 0.3: the tail at the library's critical
+           value, by a one-dimensional integral, with the null's noncentrality tr(W S) split
+           between them; it is level with all of it on the larger and falls as it moves to the
+           smaller, and the library's Imhof inversion with noncentralities reads the same
+   STEP 5  the Wald test on keep_error that the library does not ship: on one direction at the
+           least favourable move it re-plans with probability 0.0029 at a nominal 0.05
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/keep_or_replan.mac */
+
+linel : 110$
+display2d : false$
+fpprec : 30$
+/* a check that fails stops the batch with "-- an error.", which validation/run_all.sh reads */
+vanishes(label, x) := if is(x = 0) then print(label, "= 0") else error(label, "is not zero:", x)$
+near(label, x, y, tol) := if is(abs(x - y) <= tol) then print(label, x, "~", y)
+  else error(label, x, "is not within", tol, "of", y)$
+
+Phi(x) := (1 + erf(x/sqrt(2)))/2$
+
+print("=== STEP 1: the regret of a plan re-solved on an estimate ===")$
+/* the cost the library's QuadraticCost writes on one step: a running 1/2 q (x - g)^2 + 1/2 r u^2
+   at x0 and a terminal 1/2 qf (x - g)^2 at x1 */
+J(v, e) := q*(x0 - g)^2/2 + r*v^2/2 + qf*(phi*x0 + (gam + e)*v - g)^2/2$
+best(e) := rhs(first(solve(diff(J(v, e), v) = 0, v)))$
+R(eh, e) := J(best(eh), e) - J(best(e), e)$
+W : ratsimp(subst([v = best(0), e = 0], diff(J(v, e), v, 1, e, 1)^2/diff(J(v, e), v, 2)))$
+/* (dh, d) = t (a, b): the second-order term of R along every ray */
+series : ratsimp(taylor(R(t*a, t*b), t, 0, 2))$
+vanishes("STEP 1a R(t a, t b) - W t^2 (a - b)^2 / 2, to second order in t",
+         ratsimp(series - W*t^2*(a - b)^2/2))$
+vanishes("STEP 1b keeping, R(0, t b) - W t^2 b^2 / 2, to second order in t",
+         ratsimp(taylor(R(0, t*b), t, 0, 2) - W*t^2*b^2/2))$
+print("STEP 1c W =", factor(W))$
+
+print("=== STEP 2: the two expectations ===")$
+gmoment(n) := if oddp(n) then 0 else product(2*j - 1, j, 1, n/2)$
+expect(ex, z) := block([p : expand(ex)], sum(coeff(p, z, i)*gmoment(i), i, 0, hipow(p, z)))$
+dh : d + sqrt(s)*z$
+vanishes("STEP 2a E[(W dh^2 - W s) / 2] - W d^2 / 2",
+         ratsimp(expect(w*(dh^2 - s)/2, z) - w*d^2/2))$
+vanishes("STEP 2b E[W (dh - d)^2 / 2] - W s / 2", ratsimp(expect(w*(dh - d)^2/2, z) - w*s/2))$
+
+print("=== STEP 3: the null on one direction ===")$
+tail(mu, t) := Phi(mu - t) + Phi(-mu - t)$
+dens(x) := exp(-x^2/2)/sqrt(2*%pi)$
+/* d/dmu tail = dens(mu - t) - dens(mu + t) = dens(mu - t) (1 - exp(-2 mu t)) >= 0 for mu, t >= 0 */
+vanishes("STEP 3a d/dmu P(> c) - dens(mu - t) (1 - exp(-2 mu t))",
+         ratsimp(radcan(diff(tail(mu, t), mu) - dens(mu - t)*(1 - exp(-2*mu*t)))))$
+/* the critical t at level alpha: tail(1, t) falls from 1 to 0 as t grows */
+critical(alpha) := block([lo : 0b0, hi : 20b0, mid],
+  for i thru 120 do (mid : (lo + hi)/2,
+    if bfloat(tail(1, mid)) > alpha then lo : mid else hi : mid),
+  (lo + hi)/2)$
+t05 : critical(5b-2)$  t01 : critical(1b-2)$
+/* the library on W = 1, S = 1 (tests/test_keep_or_replan.py): dh' W dh's critical value is
+   2 margin + 2 tr(W S). Imhof's inversion reads the tail to about 1e-12, which moves a quantile
+   where the density is 0.003 by about 1e-9 */
+near("STEP 3b critical t^2 at 0.05, against the library's", t05^2, 7.002086262124174b0, 1b-8)$
+near("STEP 3c critical t^2 at 0.01, against the library's", t01^2, 11.066480528872718b0, 1b-8)$
+print("STEP 3d the margin keep - replan exceeds at 0.05, in units of W s:", (t05^2 - 2)/2)$
+near("STEP 3e p-value at dh = 1.5 s^(1/2), against the library's",
+     bfloat(tail(1, 3/2)), 0.3147472040446107b0, 1b-10)$
+
+print("=== STEP 4: the null on two directions ===")$
+/* P(l1 (y1 + m1)^2 + l2 (y2 + m2)^2 > c): outside |y1 + m1| <= sqrt(c / l1) the first term alone
+   exceeds c; inside, the second must exceed what is left */
+l1 : 1.0d0$  l2 : 0.3d0$  total : l1 + l2$
+c2 : 8.096474267762279d0$  /* the library's critical value at 0.05 */
+split(f) := block([m1 : sqrt((1 - f)*total/l1), m2 : sqrt(f*total/l2), a],
+  a : sqrt(c2/l1),
+  float(Phi(-a - m1) + Phi(m1 - a))
+    + quad_qags(dens(y)*(Phi(m2 - sqrt((c2 - l1*(y + m1)^2)/l2))
+                         + Phi(-m2 - sqrt((c2 - l1*(y + m1)^2)/l2))),
+                y, -m1 - a, -m1 + a, 'epsrel = 1d-12, 'limit = 400)[1])$
+/* the library's tails at the same critical value, Imhof's inversion with the split noncentrality */
+library : [[0.0d0, 0.04999999999999993d0], [0.25d0, 0.04279754767516675d0],
+           [0.5d0, 0.03500909739781494d0], [1.0d0, 0.01724789751344674d0]]$
+for row in library do
+  near(sconcat("STEP 4a split ", row[1], " of tr(W S) on the smaller: tail at the critical value"),
+       split(row[1]), row[2], 1d-9)$
+tails : makelist(split(k/10), k, 0, 10)$
+print("STEP 4b tails as the split moves from the larger to the smaller:", tails)$
+if every(lambda([pair], pair[1] >= pair[2]),
+         makelist([tails[k], tails[k + 1]], k, 1, 10))
+  then print("STEP 4b falling: all of it on the larger eigenvalue is least favourable")
+  else error("STEP 4b the tail does not fall as the split moves:", tails)$
+
+print("=== STEP 5: the Wald test on keep_error ===")$
+/* one direction, W s = 1, y = dh / sqrt(s) ~ N(1, 1): keep - replan = (y^2 - 2) / 2 and
+   keep_error = sqrt(4 max(y^2 - 1, 0) + 2) / 2, so the statistic is (y^2 - 2) / sqrt(4 (y^2 - 1)
+   + 2) past y^2 = 1, increasing in y^2, and it exceeds z where y^2 exceeds vz */
+vz : 2 + 2*z^2 + sqrt(4*z^4 + 6*z^2)$
+vanishes("STEP 5a (vz - 2)^2 - z^2 (4 vz - 2)", ratsimp(expand((vz - 2)^2 - z^2*(4*vz - 2))))$
+z95 : 1.6448536269514722b0$
+size : bfloat(tail(1, sqrt(subst(z = z95, vz))))$
+near("STEP 5b its false re-plan rate at a nominal 0.05", size, 0.0029b0, 1b-4)$

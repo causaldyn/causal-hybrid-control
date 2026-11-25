@@ -15,7 +15,8 @@ regrets only, no wall time.
              ``E`` 10-15% of the one-step channel's entries. Each log's estimate is priced with
              the plan's decision weight, and the plan is re-solved on it by SLSQP. Per log size:
              the realised regrets of keeping and of re-planning against the plan that knew ``E``,
-             the two prices, and three rules a caller might build on them (see :func:`plan`).
+             the two prices, three rules a caller might build on them, and the test of
+             :meth:`chc.gate.ChannelMove.keep_or_replan` (see :func:`plan`).
 
 Run: JAX_ENABLE_X64=1 uv run python scripts/bench_channel_move.py [--logs 200] > out.json
 """
@@ -37,7 +38,7 @@ from scipy.optimize import minimize
 from chc.control import LinearConstraint
 from chc.cost import QuadraticCost
 from chc.dynamics import LinearDynamics
-from chc.gate import ChannelMove, DecisionLog, channel_move
+from chc.gate import ChannelMove, DecisionLog, _replan_test, channel_move
 from chc.integrate import rk4_step
 from chc.plan import CausalPlan, _perturbed_task_cost, causal_plan
 
@@ -206,13 +207,17 @@ def _read_runs(action: np.ndarray, drawn: np.ndarray, residual: np.ndarray) -> C
 
 def plan(logs: int) -> dict[str, object]:
     """Per log size, the realised regrets of keeping and of re-planning on the estimate, the two
-    prices, and three rules a caller might build on them:
+    prices, three rules a caller might build on them, and the test at a level of 0.05:
 
     * ``compared``: re-plan when the keep price exceeds the re-plan price, both off one log;
     * ``shrunk``: re-plan on the estimate times ``max(0, 1 - tr(W S) / dh' W dh)``, the linear
       shrinkage that is optimal in ``W``'s metric when ``d' W d`` is known, with it estimated;
     * ``split``: compare the first half's keep price with the second half's re-plan price, and
-      re-plan on the second half's estimate, so the choice does not select on its error.
+      re-plan on the second half's estimate, so the choice does not select on its error;
+    * ``tested``: re-plan where :meth:`chc.gate.ChannelMove.keep_or_replan`'s test does, on the
+      estimate it read, and ``tested_rate`` how often;
+    * ``tested_later``: the same choice, re-planned on a second log of the same size, as a caller
+      who re-reads the move after choosing would.
     """
     base, kept, solve, value = _problem()
     weight = base.decision_weight()
@@ -230,6 +235,9 @@ def plan(logs: int) -> dict[str, object]:
         )
     )
     rng = np.random.default_rng(SEED + 2)
+    # the second logs draw from their own stream, so that the first logs are those of the columns
+    # measured before the test was
+    later_rng = np.random.default_rng(SEED + 3)
     out: dict[str, object] = {
         "keep_regret": keep_regret,
         "keep_price_at_the_true_move": weight.regret(PLAN_MOVE),
@@ -239,7 +247,17 @@ def plan(logs: int) -> dict[str, object]:
     for runs in (6, 20, 80, 320):
         rows: dict[str, list[float]] = {
             name: []
-            for name in ("keep_price", "replan_price", "replan", "compared", "shrunk", "split")
+            for name in (
+                "keep_price",
+                "replan_price",
+                "replan",
+                "compared",
+                "shrunk",
+                "split",
+                "tested",
+                "tested_rate",
+                "tested_later",
+            )
         }
         for _ in range(logs):
             action, drawn, residual = _plan_log(runs, kept, phi, gamma, rng)
@@ -262,6 +280,14 @@ def plan(logs: int) -> dict[str, object]:
                 regret(solve(second.estimate, kept))
                 if first.price(weight).keep > second.price(weight).replan
                 else keep_regret
+            )
+            _, p_value = _replan_test(weight, move, price, 0.05)
+            tested = p_value <= 0.05
+            rows["tested"].append(replanned if tested else keep_regret)
+            rows["tested_rate"].append(float(tested))
+            later = _read_runs(*_plan_log(runs, kept, phi, gamma, later_rng))
+            rows["tested_later"].append(
+                regret(solve(later.estimate, kept)) if tested else keep_regret
             )
         summary: dict[str, float] = {"always_keep": keep_regret}
         for name, values in rows.items():

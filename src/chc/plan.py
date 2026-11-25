@@ -762,7 +762,7 @@ class _RuledCost(QuadraticCost):
 
 def _taken(model: Dynamics, x: Array, u: Array) -> Array:
     """The action ``model``'s field takes at ``x`` for the plan's ``u``."""
-    return model.read(x, u) if isinstance(model, _Ruled) else u
+    return model.read(x, u) if isinstance(model, _Ruled | _Moved) else u
 
 
 def _integrator(model: Dynamics) -> Integrator:
@@ -771,6 +771,69 @@ def _integrator(model: Dynamics) -> Integrator:
     it here, so it is carried by the step the plan rolls out by."""
     inner = model.dynamics if isinstance(model, _Ruled) else model
     return "euler" if isinstance(inner, _EulerStep) else "rk4"
+
+
+class _MovedRate(eqx.Module):
+    """The rate whose Euler step from ``x`` is ``model``'s one-step map plus ``change`` times the
+    action ``model``'s field takes."""
+
+    model: Dynamics
+    change: Array  # (n, m)
+    dt: float = eqx.field(static=True)
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        step = rk4_step(self.model, t, x, u, self.dt) + self.change @ _taken(self.model, x, u)
+        return (step - x) / self.dt
+
+
+class _Moved(_SetAtStep):
+    """A plan's model with its one-step channel moved: a step from ``x`` is the model's step plus
+    ``change @ u``, ``u`` the action the model's field takes. It is the map
+    :func:`_perturbed_task_cost` rolls out, so a plan solved on it is the one
+    :meth:`CausalPlan.decision_weight`'s regret is read against. A field of the model plus
+    ``change @ u / dt`` steps so only where the model is stepped by Euler's map; under RK4 the move
+    would pass through the step's stages."""
+
+    rate: _MovedRate
+
+    def at_step(self, x: Array, u: Array) -> tuple[Dynamics, Array]:
+        return _EulerStep(self.rate), u
+
+    def read(self, x: Array, u: Array) -> Array:
+        """The action the model's field takes at ``x``."""
+        return _taken(self.rate.model, x, u)
+
+    def __call__(self, t: float | Array, x: Array, u: Array) -> Array:
+        return self.rate(t, x, u)
+
+
+def _replanned(plan: CausalPlan, change: NDArray[np.float64], steps: int) -> CausalPlan:
+    """``plan``'s problem solved again with its one-step channel moved by ``change``, from
+    ``plan``'s actions, with no tube.
+
+    Raises:
+        ValueError: on what :meth:`CausalPlan.decision_weight` refuses of the problem.
+    """
+    problem = _weighable(plan._problem)
+    moved = _Moved(
+        _MovedRate(problem.model, jnp.asarray(change, dtype=plan.actions.dtype), problem.dt)
+    )
+    return causal_plan(
+        moved,
+        problem.x0,
+        problem.cost,
+        problem.dt,
+        plan.actions.shape[0],
+        problem.u_lo,
+        problem.u_hi,
+        support=problem.support,
+        lam_supp=problem.lam_supp,
+        uncertainty=problem.uncertainty,
+        lam_unc=problem.lam_unc,
+        steps=steps,
+        constraints=problem.constraints,
+        warm_start=plan.actions,
+    )
 
 
 def _perturbed_task_cost(problem: _PlanProblem, actions: Array, change: Array) -> Array:

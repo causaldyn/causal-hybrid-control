@@ -284,8 +284,12 @@ documented, and what is not built yet. Every name below is importable from `chc`
   moved: how far each entry lies from the model's, with a covariance, and with older decisions
   forgotten at a constant rate. Its `price` reads the move in the plan's own cost, through
   `CausalPlan.decision_weight()`. That gives two expectations: what keeping the plan loses,
-  estimated without bias, and what a plan re-solved on the estimate would lose to its noise. They
-  are not a rule. Compared on one log, they choose on the log's own error. See
-  [`chc.gate`](api/gate.md).
-- **Not built:** a re-solve on the estimate, since `causal_plan` plans on a continuous-time field
-  and the move is a one-step one; and a rule that chooses between keeping and re-planning.
+  estimated without bias, and what a plan re-solved on the estimate would lose to its noise.
+  Compared on one log, they choose on the log's own error. Its `keep_or_replan` re-solves the plan
+  on the estimate, on the plan's one-step map with the move added, and tests the two expectations
+  against each other. Where re-planning does not pay, it re-plans with probability at most its
+  `level`, for one read of the move. Read the move once, after a `DriftAlarm` sounds: read again
+  as decisions arrive, the test re-plans wrongly more often. See [`chc.gate`](api/gate.md).
+- **Not built:** a re-solve on the plan's continuous-time field, since the move is a one-step one
+  and under RK4 it would pass through the step's stages; and a comparison of the kept and the
+  re-solved plan that holds its level at every read.

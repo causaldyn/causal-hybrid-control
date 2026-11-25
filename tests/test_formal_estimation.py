@@ -223,6 +223,15 @@ FORMAL_LINKS = {
             "test_move_price_keep_error_is_the_keep_prices_spread",
         ),
     },
+    "chc.gate.ChannelMove.keep_or_replan": {
+        "cites": ("keep_or_replan.mac",),
+        "via": "ChannelMove",
+        "tests": (
+            "test_keep_or_replan.py::test_one_directions_margin_and_p_value_are_maximas_closed_forms",
+            "test_keep_or_replan.py::test_two_noncentral_terms_read_the_conditional_integral_and_maximas_tails",
+            "test_keep_or_replan.py::test_all_of_the_noncentrality_on_the_largest_eigenvalue_is_least_favourable",
+        ),
+    },
     "chc.gate.ConformalPessimism": {
         "cites": ("conformal_decision.mac",),
         "tests": (
@@ -274,10 +283,11 @@ FORMAL_LINKS = {
         ),
     },
     "chc.uncertainty._chi_square_mixture_survival": {
-        "cites": ("lift_rho_median_unbiased.mac",),
+        "cites": ("keep_or_replan.mac", "lift_rho_median_unbiased.mac"),
         "tests": (
             "test_misspecification.py::test_weights_of_both_signs_at_zero_give_the_f_law",
             "test_misspecification.py::test_weights_of_both_signs_give_the_convolution_s_tail",
+            "test_keep_or_replan.py::test_two_noncentral_terms_read_the_conditional_integral_and_maximas_tails",
         ),
     },
     "chc.pathway": {

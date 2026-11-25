@@ -2004,8 +2004,14 @@ def _noise_radius(covariance: NDArray[np.float64], widest: float = 0.0) -> float
     return math.sqrt(largest * float(root))
 
 
-def _chi_square_mixture_survival(q: float, weights: NDArray[np.float64]) -> float:
+def _chi_square_mixture_survival(
+    q: float, weights: NDArray[np.float64], shifts: NDArray[np.float64] | None = None
+) -> float:
     """``P(sum_k weights_k chi2_1 > q)``, by Imhof's inversion; the weights of either sign.
+    ``shifts``, one per weight, makes each term noncentral, ``chi2_1(shifts_k)``: the square of a
+    normal of mean ``sqrt(shifts_k)``, which adds ``shifts_k w u / (1 + w^2 u^2) / 2`` to the
+    phase and ``exp(-shifts_k w^2 u^2 / (1 + w^2 u^2) / 2)`` to the amplitude, as Imhof writes it
+    (``validation/keep_or_replan.mac``).
 
     The integrand ``sin(theta(u)) / (u rho(u))`` decays like ``u^(-1 - k/2)`` and oscillates, and
     with one or two terms a plain rule on ``[0, inf)`` misses the tail badly (0.0036 against 0.00053
@@ -2025,20 +2031,29 @@ def _chi_square_mixture_survival(q: float, weights: NDArray[np.float64]) -> floa
     largest = float(np.max(np.abs(weights), initial=0.0))
     if largest <= 0.0:
         return 1.0 if q <= 0.0 else 0.0
-    weights = weights[np.abs(weights) > 1e-12 * largest]
+    kept = np.abs(weights) > 1e-12 * largest
+    weights = weights[kept]
+    shift = None if shifts is None else shifts[kept]
     if q <= 0.0 and weights.min() > 0.0:
         return 1.0
     if q < 0.0:
-        return 1.0 - _chi_square_mixture_survival(-q, -weights)
+        return 1.0 - _chi_square_mixture_survival(-q, -weights, shift)
     omega = 0.5 * q
 
     # each factor is at most 1: with many weights their product underflows to 0 where the product
     # of their inverses would overflow
     def amplitude(u: float) -> float:
-        return float(np.prod((1.0 + (weights * u) ** 2) ** -0.25)) / u
+        value = float(np.prod((1.0 + (weights * u) ** 2) ** -0.25)) / u
+        if shift is None:
+            return value
+        square = (weights * u) ** 2
+        return value * math.exp(-0.5 * float(np.sum(shift * square / (1.0 + square))))
 
     def phase(u: float) -> float:
-        return 0.5 * float(np.sum(np.arctan(weights * u)))
+        value = 0.5 * float(np.sum(np.arctan(weights * u)))
+        if shift is None:
+            return value
+        return value + 0.5 * float(np.sum(shift * weights * u / (1.0 + (weights * u) ** 2)))
 
     cut = 20.0 / omega if omega > 0.0 else 1000.0 / float(np.min(np.abs(weights)))
     edges, edge = [0.0], 1000.0 / largest
