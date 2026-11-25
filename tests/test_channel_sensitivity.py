@@ -305,6 +305,30 @@ def test_safeguarded_rounds_grow_the_penalty_where_every_round_runs_out_of_its_s
     assert plan.safety.certified_steps > 0
 
 
+@pytest.mark.parametrize("start", _STARTS)
+def test_safeguarded_rounds_keep_the_projection_where_next_states_join(
+    start: float, caplog: pytest.LogCaptureFixture
+) -> None:
+    """On this log the next states join after the first rounds on every path. Where those rounds
+    stopped at the penalty's ceiling, the joined columns start at it, and their first round can
+    step to a far point of the condition from which no projection holds every step: the plan was
+    certified on 27 to 29 steps of 30 on such paths, while the projection onto the same columns
+    from where they joined held all 30. The projection there is now a candidate plan, so the plan
+    is certified on no fewer leading steps than it, whichever way the rounds go."""
+    with caplog.at_level(logging.DEBUG, logger="chc.plan"):
+        plan = _held_on_an_unstable_drift(2, 10_000, "safeguarded", start=start)
+    joins = [
+        record.projected_steps  # type: ignore[attr-defined]
+        for record in caplog.records
+        if getattr(record, "chc_event", None) == "barrier_join"
+    ]
+    assert joins
+    assert plan.safety is not None
+    for projected in joins:
+        if projected is not None:
+            assert plan.safety.certified_steps >= projected
+
+
 def _safeguarded_rounds(
     seed: int, steps: int, caplog: pytest.LogCaptureFixture
 ) -> list[tuple[int, float, float, int]]:

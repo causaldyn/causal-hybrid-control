@@ -161,6 +161,12 @@ certifies fewer leading steps: by the contract rule above it ships opt-in, and t
 `"halved"`. It is not a candidate for the default: what holds those plans short of the optimum is
 the kink, not the outer rule.
 
+Re-read 2026-11-25 (ADR 0169): the safeguarded rounds now keep the projection onto the held columns
+at each join of next states as a candidate plan. On this machine the third log's plan above is then
+certified on all 30 steps, 0.95 % above SLSQP's cost. Against the default rounds, on the same 293
+plans as ADR 0156, the rule moves 148: 13 to more certified leading steps and 15 to fewer, two of
+those from 12 to 8; the kept projection moves no status there. It stays opt-in.
+
 ## Amended 2026-11-07: the kink at the barrier's centre
 
 **Where the kink enters.** Under a radius, a held step reads its action through

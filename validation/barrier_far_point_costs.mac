@@ -1,0 +1,119 @@
+/* The far point of a held barrier's safeguarded rounds: the task costs of the plans ADR 0169
+   compares, recomputed in 40 digits from the fitted field and the plans' actions.
+
+   Setting (tests/test_channel_sensitivity.py, log 2 of the unstable drift; ADR 0156's far point).
+   The fit's field is r(x, u) = d1 + d2 x + c u, the known part zero; a plan is 30 steps of
+   dt = 0.1 (the double), rolled out by RK4, and costs
+       sum_k [ (x_k - 2)^2 / 2 + 1e-4 u_k^2 / 2 ] + (x_30 - 2)^2 / 2.
+   Two start states, -3e-12 (a) and -2e-9 (b), each have two plans certified on all 30 steps:
+   the rounds' plan before ADR 0169 ("before"), the projection onto the held columns from the
+   iterate after two rounds at the penalty's ceiling, and the projection first at the join
+   ("first"), from the first rounds' last iterate. SLSQP's plan on the same held columns, from
+   zero, is the reference.
+
+     STEP 1  each plan's cost in 40 digits agrees with the double the library reads, to 1e-14.
+     STEP 2  the projection first costs more than the plan before from both start states, and
+             both cost more than SLSQP's plan: how far above it, in percent.
+     STEP 3  the actions' absolute sums: SLSQP's plan spends least, the projection first most.
+*/
+display2d : false$
+fpprec : 40$
+
+/* ===== the data: the field, the actions, the costs the library read (doubles) ===== */
+drift : [0.0462071103420076, 0.6667903228264375]$
+chan : 0.27192843207845546$
+x0_a_before : -3e-12$
+u_a_before : [
+  0.1879195930666901, 0.1434465315304728, 0.09794490792644085, 0.050181691016415356,
+  -1.600451329610739e-06, 6.298059493209544e-06, -0.0008777457032351419, -2.950076292360557e-06,
+  -0.004327050564578492, 1.4900680354207745e-07, -3.690332519209247e-06, -2.3866101164277857e-05,
+  1.87588749464082e-07, 2.034691253271099e-07, 2.2093789530550256e-07, 2.408345926654437e-07,
+  2.630855327829186e-07, 2.886332398148955e-07, -0.006667308477832896, 3.5240215779395225e-07,
+  3.930324875129785e-07, 4.421488286770068e-07, 5.0294652031074e-07, -6.424623827035121e-06,
+  -1.5650097887982063e-05, 8.198143261871179e-07, -3.332314381371994e-07, -0.002403572159920612,
+  -3.237188582275423e-05, -0.00010820160159692933]$
+j_a_before : 51.05506476528103$
+x0_a_first : -3e-12$
+u_a_first : [
+  0.17687050490307873, 0.13114105501955603, 0.08418350189245377, 0.03472466402535817,
+  -9.016966203725193e-05, 1.5303847969383972e-05, -0.0008164016420596354, -0.002401881523609745,
+  -0.09959807055859767, 0.00019472114407221615, -0.00038238647504708654, 3.231326475276135e-05,
+  -0.0003781874495335116, 0.00011934233361730853, -0.005377038626638545, -0.0015991065238469087,
+  -0.0003113107940542343, 0.0011888478728890684, 7.298404497654907e-05, 1.3505342357016038e-05,
+  -0.0030728270943784506, -0.0005768973075404111, -0.0027002284686312595, -0.0011587767678835187,
+  -0.012832144181530827, 0.0005533991927914739, 0.002194196441963571, 0.0028253296401726034,
+  -0.025867545911721086, -0.0019175890429687298]$
+j_a_first : 51.50122042074011$
+x0_b_before : -2e-09$
+u_b_before : [
+  0.15651262163253282, 0.12925251627901874, 0.09878875232371996, 0.06473643903920717,
+  0.026789871366239643, 0.016062307368168348, -0.003463219219112501, 9.533084953420226e-05,
+  -7.05283177678432e-06, -1.9093318284313038e-05, -8.197069878460148e-06, -8.854696056646081e-06,
+  -0.00028070953716773225, 3.7407698364836313e-05, -2.8354519936009638e-05,
+  -3.088935061390144e-05, -1.3434503907876028e-05, -3.7029994502757226e-05,
+  -1.6239817096525096e-05, -0.0052058007029249145, -2.0072787111316026e-05,
+  -2.258174956677423e-05, -6.451788945788134e-05, -2.960211280567438e-05, -0.003934098326141405,
+  -4.187477094114697e-05, -0.0001315492891814177, -6.94188472057183e-05, -0.00043831593157206395,
+  0.002647982268320496]$
+j_b_before : 51.061964547693805$
+x0_b_first : -2e-09$
+u_b_first : [
+  0.149874459892324, 0.12165772722737694, 0.09005785829022667, 0.05465110739240285,
+  0.01508380061641076, 0.002409815162296184, 0.0008163400213299347, -0.003945803353836646,
+  -0.05364659416598073, -0.0021636813954767245, 0.0007962534360659936, -0.0028260214800808455,
+  -0.0066028827760625415, -0.0022856683367202192, 0.000973847539406764, -0.004236874278861755,
+  -0.0005743869473094442, -0.0005827726664919537, -0.005658726595564317, -0.00306338869348988,
+  -0.005088794796754318, 0.0008486129237573541, 0.0001593815622024357, -0.015019837580580137,
+  -0.000961362041969734, -0.04421016809569799, -0.00406023104280588, -0.05622855447134086,
+  0.019751121708541652, -0.010366454588200432]$
+j_b_first : 51.44797596253845$
+x0_slsqp : 0.0$
+u_slsqp : [
+  0.4527316709366941, 2.4954661314901162e-11, 5.1050862786178605e-12, 3.3528294803242565e-11,
+  2.2803980692920843e-09, 3.5913276533291997e-10, 1.3508836716807482e-11, 1.576563197747027e-11,
+  1.5573523241124593e-10, -6.918341984942527e-12, 6.251721477674881e-11, 8.897387587972869e-12,
+  3.838178271190233e-13, 5.64455325345788e-11, 8.01311977947023e-11, -3.610342557095927e-12,
+  8.147016060283358e-11, 2.8320611463066502e-11, 7.985869530312651e-11, 1.1072059489746219e-11,
+  4.49070026122762e-11, -7.05940412542015e-11, -6.784451397016188e-11, 1.5016907360973513e-10,
+  6.24325718722952e-11, 2.7129352859853315e-11, 1.041682547691719e-10, -7.390861899476924e-11,
+  -1.4618945679358626e-10, -3.26933630128171e-11]$
+j_slsqp : 50.995133445939885$
+
+dt : bfloat(0.1d0)$
+f(x, u) := bfloat(drift[1]) + bfloat(drift[2]) * x + bfloat(chan) * u$
+rk4(x, u) := block([k1, k2, k3, k4],
+  k1 : f(x, u), k2 : f(x + dt / 2 * k1, u), k3 : f(x + dt / 2 * k2, u), k4 : f(x + dt * k3, u),
+  x + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4))$
+cost(x0, us) := block([x : bfloat(x0), j : 0b0, u],
+  for k thru length(us) do (
+    u : bfloat(us[k]),
+    j : j + (x - 2) ^ 2 / 2 + bfloat(1d-4) * u ^ 2 / 2,
+    x : rk4(x, u)),
+  j + (x - 2) ^ 2 / 2)$
+
+/* ===== STEP 1: the costs in 40 digits ===== */
+print("=== STEP 1: each plan's cost in 40 digits against the library's double ===")$
+plans : [["a_before", x0_a_before, u_a_before, j_a_before],
+         ["a_first", x0_a_first, u_a_first, j_a_first],
+         ["b_before", x0_b_before, u_b_before, j_b_before],
+         ["b_first", x0_b_first, u_b_first, j_b_first],
+         ["slsqp", x0_slsqp, u_slsqp, j_slsqp]]$
+exact : makelist(cost(p[2], p[3]), p, plans)$
+for i thru length(plans) do block([gap : abs(bfloat(plans[i][4]) - exact[i]) / exact[i]],
+  print("STEP 1", plans[i][1], "40 digits:", exact[i], "library:", plans[i][4],
+        "relative gap:", float(gap), if gap < 1b-14 then "(PASS)" else "(FAIL)"))$
+[ja, jfa, jb, jfb, js] : exact$
+
+/* ===== STEP 2: over SLSQP's cost ===== */
+print("=== STEP 2: the projection first costs more; percent above SLSQP's plan ===")$
+over(j) := float(100 * (j / js - 1))$
+print("STEP 2 a: before", over(ja), "%, first", over(jfa), "%; b: before", over(jb),
+      "%, first", over(jfb), "%")$
+print("STEP 2", if js < ja and ja < jfa and js < jb and jb < jfb then "(PASS)" else "(FAIL)")$
+
+/* ===== STEP 3: what each plan spends ===== */
+print("=== STEP 3: the actions' absolute sums ===")$
+spent(us) := float(lsum(abs(u), u, us))$
+print("STEP 3 a: SLSQP", spent(u_slsqp), "before", spent(u_a_before), "first", spent(u_a_first))$
+print("STEP 3", if spent(u_slsqp) < spent(u_a_before) and spent(u_a_before) < spent(u_a_first)
+      then "(PASS)" else "(FAIL)")$

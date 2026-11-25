@@ -147,6 +147,23 @@ experimental may change in any minor release (`docs/api/index.md`).
 
 ### Fixed
 
+- **`causal_plan(outer="safeguarded")` keeps the projection where a barrier's next states join.**
+  Where the safeguarded rounds stopped at the penalty's ceiling, the next states that then joined
+  started their rounds at it, and the first of those could step to a far point of the condition,
+  from which no projection held every step: on an unstable drift held under a `ChannelSensitivity`,
+  40 of 91 start states near zero ended certified on 27 to 29 steps of 30 (ADR 0156). At each join
+  of next states after a set of rounds the plan is now projected onto the held columns and the
+  result kept as a candidate, by the rule the rounds' other candidates follow: more certified
+  leading steps, or every step and a lower cost. The rounds go on from where the columns joined,
+  step for step as before. On the 91 start states 36 plans move from 27 to 29 certified steps to all
+  30 (30 plans under jax 0.4.30), none to fewer and none to a higher cost at the same steps. Of the
+  293 plans held at a barrier in the library's planning tests, solved under the safeguarded rule, 12
+  are certified on one more leading step and 13 cost 0.07 % to 4.3 % less on every step; the other
+  268 are the same plans, and no status moves. Taking the projection in place of the rounds' plan,
+  the candidate ADR 0156 named, made two plans certified on all 30 steps 0.87 % and 0.76 % costlier,
+  and 56 of the 293 costlier by up to 3.8 %. The default rounds, `outer="halved"`, give the same
+  plans bit for bit. A debug record, `chc_event="barrier_join"`, reports each join (ADR 0169,
+  `validation/barrier_far_point_costs.mac`). *Experimental.*
 - **`ce_explicit_constant_certificate`'s `empirical_radius` is bisected, not read off its
   multiples.** It was `rho` times the first multiple of the sweep, 0.25, 1, 4, 10, 20, 40 or 80,
   at which a draw destabilised the true plant, which brackets the first unstable radius from above

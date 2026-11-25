@@ -2188,14 +2188,16 @@ def causal_plan(
             Where every round runs out of its share, the halved rule never moves the penalty: on
             an unstable drift held under a :class:`ChannelSensitivity` it stayed at its start over
             all 15 rounds, where the safeguarded rule grew it seven or eight times, as the
-            rounding of the path goes (ADR 0156). It is not the default because it is not better
-            plan by plan: of 293 plans held at a barrier in the library's planning tests it moved
-            138, 40 to a cheaper plan at the same certified steps, 73 to a costlier one (by up to
-            43 %), 7 within 1e-9, 2 to more certified leading steps and 16 to fewer, two of them
-            from 12 to 8 where the halved rounds certified all 12; 18 plans that converged under
-            the halved rule ended ``max_iterations``, and 8 that ended ``max_iterations`` stalled
-            at the penalty's ceiling, ``no_progress``. Without a barrier there are no rounds, and
-            it changes nothing.
+            rounding of the path goes (ADR 0156). Where next states join after a set of its
+            rounds, the projection onto the held columns there is kept as a candidate plan (ADR
+            0169). It is not the default because it is not better plan by plan: of 293 plans held
+            at a barrier in the library's planning tests it moved 148, 46 to a cheaper plan at the
+            same certified steps, 67 to a costlier one (by up to 43 %), 7 within 1e-9, 13 to more
+            certified leading steps and 15 to fewer, two of them from 12 to 8 where the halved
+            rounds certified all 12; 18 plans that converged under the halved rule ended
+            ``max_iterations``, and 8 that ended ``max_iterations`` stalled at the penalty's
+            ceiling, ``no_progress``. Without a barrier there are no rounds, and it changes
+            nothing.
 
     Raises:
         ValueError: if an uncertainty penalty is given without a support model, which would
@@ -2859,6 +2861,15 @@ def _hold_barrier(  # noqa: C901, PLR0912, PLR0915
     at no step, while a projection held it at 7 of 12. A plan the rounds did not end as
     ``converged`` that meets the condition at every step is the cheapest that does.
 
+    Under ``outer="safeguarded"`` the projection onto the columns held at each join of next states
+    after a set of rounds is one of those candidates too. Rounds that stopped at the penalty's
+    ceiling hand it to the joined columns, whose first round can step to a far point of the
+    condition, from which no projection holds every step: on an unstable drift held under a
+    sensitivity model, 40 of 91 start states near zero ended there, certified on 27 to 29 steps
+    of 30, and on 36 of them the projection at the join held all 30. The rounds still go on from
+    where the columns joined: projected first instead, two plans certified on all 30 steps either
+    way cost 0.87 % and 0.76 % more, the projection being blind to the cost (ADR 0169).
+
     ``multipliers`` seed the rounds in place of zeros -- a receding horizon's last, shifted. The
     penalty is chosen afresh all the same: one grown for the last state left the first round
     ill-conditioned, and cost more descent steps than warm multipliers saved.
@@ -3053,6 +3064,27 @@ def _hold_barrier(  # noqa: C901, PLR0912, PLR0915
         held = _held_paths(held, left)
         _, shortfall = _barrier_state(model, x0, actions, dt, held)
         excess = np.asarray(shortfall, dtype=np.float64) + backoff
+        if outer == "safeguarded":
+            # rounds that stopped at the penalty's ceiling hand it to the joined columns, whose
+            # first round can step to a far point of the condition; the projection from here
+            # does not take that step, and is kept as a candidate while the rounds go on
+            projected = _restore(model, x0, dt, cost, lo, hi, blocks, actions, held, backoff)
+            projected_steps = None
+            if projected is not None:
+                scored = score(projected)
+                projected_steps = scored[0]
+                if better(scored, best):
+                    best = scored
+            _log.debug(
+                "barrier next states joined",
+                extra={
+                    "chc_event": "barrier_join",
+                    "joined": int(np.sum(left)),
+                    "penalty": weight,
+                    "growths": grown,
+                    "projected_steps": projected_steps,
+                },
+            )
     if cleared and math.isnan(weight):
         return actions, start.status, start.iterations, np.zeros_like(excess), held
     _, shortfall = _barrier_state(model, x0, actions, dt, held)

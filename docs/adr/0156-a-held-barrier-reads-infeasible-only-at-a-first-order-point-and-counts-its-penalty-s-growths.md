@@ -1,7 +1,8 @@
 # ADR 0156 — A held barrier reads `infeasible` only at a first-order point, and counts its penalty's growths
 
 **Status:** accepted, 2026-11-21. Amends the status rule of ADR 0102's barrier rounds and the
-ceiling of ADR 0144's outer rules. A public status moves on some plans: a minor release.
+ceiling of ADR 0144's outer rules. A public status moves on some plans: a minor release. Its
+open item, the far point, is closed under `outer="safeguarded"` by ADR 0169 (2026-11-25).
 
 ## Context
 
@@ -141,6 +142,15 @@ So the planner is unchanged here, and the far point stays open: under the safegu
 a third to a half of the paths near this start end certified on fewer steps than the rest. The
 projection at a join is the candidate to measure on the corpus, with the two counterexamples above
 to explain.
+
+**Closed, 2026-11-25 (ADR 0169).** Under `outer="safeguarded"` the projection at a join is now
+kept as a candidate plan, not taken, and the rounds go on from where the columns joined as before.
+The two counterexamples keep their plans. On the 91 start states it certifies 36 plans (lockfile)
+and 30 (floors) on all 30 steps where they were on 27 to 29, and moves none to fewer steps or a
+higher cost; on the 293 plans of the planning tests it certifies 12 on one more step, makes 13
+cheaper on every step, and leaves the rest and every status as they were. Taken instead of kept,
+the projection made 56 of those plans costlier. Where the projection at the join holds no move,
+4 and 3 of the start states, the plan is as short as before.
 
 ## Consequences
 
