@@ -1,0 +1,154 @@
+/* The bound behind chc.gate.ConformalPessimism (ADR 0172): the conformal controller of Lekeufack,
+   Angelopoulos, Bajcsy, Jordan and Malik (ICRA 2024, arXiv:2310.05921, Theorem 1).
+
+   The weight w grows with conservatism. Each decision is taken at w_t and realises a loss l_t in
+   [0, B]; then w_(t+1) = clip(w_t + eta (l_t - eps), lower, cap), cap = safe + K eta (B - eps).
+   Eventual safety: on every K consecutive decisions all taken at a weight of at least safe, the
+   losses average at most eps. The paper writes lambda = -w, losses in [0, 1], and no clip.
+
+   STEP 1  unclipped, w_(T+1) - w_1 = eta sum_t (l_t - eps), so mean - eps = (w_(T+1) - w_1)/(eta T),
+           for symbolic losses, T = 1..8
+   STEP 2  the constant: (cap - w_1)/(eta T) = ((safe - w_1)/eta + K (B - eps))/T; the paper's
+           ((lambda_1 - lambda_safe)/eta + K)/T at B = 1 exceeds it by K eps / T
+   STEP 3  the one-step induction for K = 1, as identities: at w >= safe a loss of at most eps
+           moves w by eta (l - eps) <= 0; below safe, cap - w_(t+1) = (safe - w) + eta (B - l) > 0
+   STEP 4  every adversary in exact rationals, losses in {0, eps, B}, the floor at 0: K = 1 over
+           10 decisions and K = 2 over 8; the weight never reaches past the cap, and the mean less
+           eps never exceeds (cap - w_1)/(eta t), at any t. Steps 4-7 take eta = 1/2 (2 in step 7),
+           eps = 1/8 and B = 1, whose sums binary floating point holds exactly, as the test's
+           replays in tests/test_conformal_decision.py need
+   STEP 5  the bound is attained up to (safe - w_n)/(eta T), w_n the last weight below safe: the
+           adversary that plays B below safe and eps at or above it
+   STEP 6  two-sided: if also l >= eps wherever w <= unsafe, the weight stays in
+           [unsafe - eta eps, safe + eta (B - eps)], of length safe - unsafe + eta B, and
+           |mean - eps| <= (safe - unsafe + eta B)/(eta T); every such adversary over 10 decisions
+   STEP 7  a loss that rises again with the weight (B below 1, 0 on [1, 2), B from 2) has no safe
+           weight: at a claimed safe = 3/2 and eta = 2 the weight reaches the cap, and the mean
+           less eps passes the bound
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/conformal_decision.mac */
+
+linel : 110$
+display2d : false$
+fpprintprec : 12$
+assume(eta > 0, B > 0, eps >= 0, eps < B)$
+
+print("=== STEP 1: the telescoping identity ===")$
+bad : []$
+for T : 1 thru 8 do block([w : w1],
+  for t : 1 thru T do w : w + eta*(l[t] - eps),
+  if ratsimp(w - w1 - eta*sum(l[t] - eps, t, 1, T)) # 0 then bad : cons(T, bad),
+  if ratsimp(sum(l[t], t, 1, T)/T - eps - (w - w1)/(eta*T)) # 0 then bad : cons(-T, bad))$
+print("STEP 1 failures over T = 1..8:", bad, if bad = [] then "(PASS)" else "(FAIL)")$
+
+print("=== STEP 2: the constant ===")$
+cap : safe + K*eta*(B - eps)$
+ours : ((safe - w1)/eta + K*(B - eps))/T$
+print("STEP 2 (cap - w1)/(eta T) - ours =", ratsimp((cap - w1)/(eta*T) - ours),
+      if ratsimp((cap - w1)/(eta*T) - ours) = 0 then "(PASS)" else "(FAIL)")$
+/* the paper's lambda = -w, lambda_safe = -safe, losses in [0, 1] */
+paper : ((-w1 - (-safe))/eta + K)/T$
+gap : ratsimp(paper - subst(B = 1, ours))$
+print("STEP 2 paper's bound less ours at B = 1:", gap,
+      if ratsimp(gap - K*eps/T) = 0 then "(PASS)" else "(FAIL)")$
+
+print("=== STEP 3: the one-step induction, K = 1 ===")$
+supcontext(at_safe)$
+assume(l <= eps)$
+step3a : sign(eta*(l - eps))$
+killcontext(at_safe)$
+step3b : ratsimp(subst(K = 1, cap) - (w + eta*(l - eps)) - ((safe - w) + eta*(B - l)))$
+/* with d1 = safe - w > 0 and d2 = B - l >= 0, which step3b's identity writes it in */
+supcontext(below_safe)$
+assume(d1 > 0, d2 >= 0)$
+step3c : sign(d1 + eta*d2)$
+killcontext(below_safe)$
+print("STEP 3 at or above safe, the move's sign:", step3a, " below it, cap - w_(t+1) - ((safe - w)",
+      "+ eta (B - l)) =", step3b, " and its sign:", step3c,
+      if member(step3a, [nz, neg, zero]) and step3b = 0 and step3c = pos then "(PASS)"
+        else "(FAIL)")$
+
+/* An adversary over exact rationals. allowed(ws, ls) lists the losses it may play next, given the
+   weights ws issued so far (the last is the current one) and the losses ls played. */
+explore(ws, ls, depth) := block([w : last(ws), worst : 0, broke : false, moved, nw, sub, t],
+  t : length(ls),
+  if t > 0 then (
+    worst : (apply("+", ls)/t - E)*H*t/(CAP - first(ws))),
+  if depth = 0 then return([worst, broke]),
+  for l in allowed(ws, ls) do (
+    moved : w + H*(l - E),
+    if moved > CAP then broke : true,
+    nw : min(max(moved, LOW), CAP),
+    sub : explore(endcons(nw, ws), endcons(l, ls), depth - 1),
+    worst : max(worst, first(sub)),
+    broke : broke or second(sub)),
+  [worst, broke])$
+
+print("=== STEP 4: every adversary ===")$
+[H, BB, E, SAFE, LOW] : [1/2, 1, 1/8, 1, 0]$
+/* K = 1: below safe any of {0, eps, B}; at or above it at most eps */
+CAP : SAFE + H*(BB - E)$
+allowed(ws, ls) := if last(ws) >= SAFE then [0, E] else [0, E, BB]$
+r : explore([0], [], 10)$
+print("STEP 4 K = 1, 10 decisions: worst (mean - eps) eta t / (cap - w1) =", first(r), "=",
+      float(first(r)), " cap passed:", second(r),
+      if first(r) <= 1 and not second(r) then "(PASS)" else "(FAIL)")$
+/* K = 2: a loss is refused where it and the one before, both at weights >= safe, average > eps */
+CAP : SAFE + 2*H*(BB - E)$
+allowed(ws, ls) := block([n : length(ls)],
+  sublist([0, E, BB], lambda([l],
+    not (n >= 1 and ws[n] >= SAFE and last(ws) >= SAFE and (last(ls) + l)/2 > E))))$
+r : explore([0], [], 8)$
+print("STEP 4 K = 2, 8 decisions: worst ratio =", first(r), "=", float(first(r)),
+      " cap passed:", second(r), if first(r) <= 1 and not second(r) then "(PASS)" else "(FAIL)")$
+
+print("=== STEP 5: the bound is attained up to the last gap below safe ===")$
+/* greedy: B below safe, eps at or above it. n rises of eta (B - eps) carry w1 past safe. */
+attained(n, T) := n*(B - eps)/T$
+gap5 : ratsimp(((safe + eta*(B - eps)) - w1)/(eta*T) - attained(n, T)
+               - (safe - (w1 + (n - 1)*eta*(B - eps)))/(eta*T))$
+print("STEP 5 bound - attained - (safe - w_n)/(eta T) =", gap5,
+      if gap5 = 0 then "(PASS)" else "(FAIL)")$
+greedy(safe0, T) := block([w : 0, s : 0, l],
+  for t : 1 thru T do (l : if w >= safe0 then 1/8 else 1, s : s + l, w : w + (1/2)*(l - 1/8)),
+  s/T - 1/8)$
+for row in [[1, 20], [7/8 + 1/1024, 20]] do block([s0, T, b, a],
+  [s0, T] : row,
+  b : (s0 + (1/2)*(7/8) - 0)/((1/2)*T),
+  a : greedy(s0, T),
+  print("STEP 5 safe =", s0, " T =", T, " mean - eps =", a, " bound =", b, " gap =", b - a,
+        if a <= b and b - a < (7/8)/T then "(PASS)" else "(FAIL)"))$
+
+print("=== STEP 6: two-sided ===")$
+print("STEP 6 range length:", ratsimp((safe + eta*(B - eps)) - (unsafe - eta*eps)),
+      if ratsimp((safe + eta*(B - eps)) - (unsafe - eta*eps) - (safe - unsafe + eta*B)) = 0
+        then "(PASS)" else "(FAIL)")$
+[H, BB, E, SAFE, UNSAFE, LOW] : [1/2, 1, 1/8, 1, 1/2, -100]$
+CAP : SAFE + H*(BB - E)$
+allowed(ws, ls) := block([w : last(ws)],
+  if w >= SAFE then [0, E] else if w <= UNSAFE then [E, BB] else [0, E, BB])$
+twosided(ws, ls, depth) := block([w : last(ws), worst : 0, t : length(ls), sub],
+  if t > 0 then worst : abs(apply("+", ls)/t - E)*H*t/(SAFE - UNSAFE + H*BB),
+  if depth = 0 then return(worst),
+  for l in allowed(ws, ls) do (
+    sub : twosided(endcons(w + H*(l - E), ws), endcons(l, ls), depth - 1),
+    worst : max(worst, sub)),
+  worst)$
+r : twosided([3/4], [], 10)$
+print("STEP 6 worst |mean - eps| eta t / (safe - unsafe + eta B) =", r, "=", float(r),
+      if r <= 1 then "(PASS)" else "(FAIL)")$
+
+print("=== STEP 7: a loss that rises again with the weight ===")$
+nonmonotone(w) := if w < 1 then 1 else if w < 2 then 0 else 1$
+block([w : 0, s : 0, l, capped : 0, path : [0], cap7 : 3/2 + 2*(7/8), T : 20, b],
+  for t : 1 thru T do (
+    l : nonmonotone(w), s : s + l,
+    if w + 2*(l - 1/8) > cap7 then capped : capped + 1,
+    w : min(max(w + 2*(l - 1/8), 0), cap7),
+    path : endcons(w, path)),
+  b : (cap7 - 0)/(2*T),
+  print("STEP 7 path:", path),
+  print("STEP 7 cap =", cap7, " capped", capped, "times; mean - eps =", s/T - 1/8, "=",
+        float(s/T - 1/8), " bound =", b, "=", float(b),
+        if capped > 0 and s/T - 1/8 > b then "(PASS: the bound breaks, as stated)"
+          else "(FAIL)"))$

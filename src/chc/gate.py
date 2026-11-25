@@ -186,7 +186,10 @@ re-reads it off the same dither, and :meth:`ChannelMove.price` puts the move in 
 A deployed model's one-step innovations are watched too (*experimental*): :class:`MissRateAlarm`
 alarms when they leave a split-conformal radius more often than its calibration allows, and
 :class:`OnlineRadius` moves a radius per horizon so that each horizon's long-run miss rate stays
-near its target on any sequence.
+near its target on any sequence. :class:`ConformalPessimism` moves a pessimism weight by the losses
+its decisions realise, so that their mean stays near its target on any sequence on which a weight
+high enough meets it, and :class:`ConformalHorizon` feeds that weight to a
+:class:`chc.mpc.RecedingHorizon`'s ``lam_unc``.
 """
 
 from __future__ import annotations
@@ -199,16 +202,20 @@ from dataclasses import dataclass, field
 from typing import ClassVar, Literal
 
 import numpy as np
+from jax import Array
 from numpy.typing import ArrayLike, NDArray
 from scipy import special
 
 from chc.frames import _real_numbers
-from chc.plan import DecisionWeight
+from chc.mpc import RecedingHorizon
+from chc.plan import CausalPlan, DecisionWeight
 from chc.uncertainty import _as_written, _conformal_rank
 
 __all__ = [
     "BlockBatch",
     "ChannelMove",
+    "ConformalHorizon",
+    "ConformalPessimism",
     "DecisionLog",
     "DeploymentGate",
     "DriftAlarm",
@@ -1296,6 +1303,258 @@ class OnlineRadius:
             eta = self.step * float(self._scored[h]) ** -self.decay
             self._radius[h] += eta * (float(missed[h]) - self.alpha)
         return missed
+
+
+class ConformalPessimism:
+    """A pessimism weight moved online by the losses its decisions realise, so that their mean
+    comes within a stated bound of ``target`` on any sequence on which a weight of at least ``safe``
+    keeps the loss at the target: the conformal controller of Lekeufack, Angelopoulos, Bajcsy,
+    Jordan and Malik (ICRA 2024, arXiv:2310.05921). *Experimental.*
+
+    Each decision is taken at :attr:`weight` and closes with :meth:`update`, which takes the loss in
+    ``[0, bound]`` the decision realised and moves the weight by ``step (loss - target)``: up after
+    a loss above the target, down after one below it. The weight is held to ``[lower, cap]``. A
+    larger weight is the more conservative decision, as a larger ``lam_unc`` is in
+    :class:`chc.mpc.RecedingHorizon`, which :class:`ConformalHorizon` feeds it to.
+
+    The weight after ``n`` decisions is ``initial + step (sum of loss - target)``, plus what the
+    floor lifted and less what the cap cut. While the cap has cut nothing, the mean loss is
+    therefore at most ``target + excess_bound``, with
+
+    ``excess_bound = (cap - initial) / (step n) = ((safe - initial) / step + window (bound -
+    target)) / n``,
+
+    whatever the losses were. **Eventual safety** keeps the cap from cutting: on every ``window``
+    consecutive decisions, all taken at a weight of at least ``safe``, the losses average at most
+    ``target`` (their Definition 1). The weight then never rises past ``cap = safe + window step
+    (bound - target)``, on any sequence of losses, chosen even by an adversary who sees the weights
+    (their Lemma 1.1). With the identity above that is their Theorem 1, the bound
+    ``((lambda_1 - lambda_safe) / eta + K) / t`` for losses in ``[0, 1]``, written for a weight
+    that grows with conservatism (their ``lambda`` is ``-weight``) and with a step's largest rise,
+    ``step (bound - target)``, in place of their ``eta``; the proof is theirs
+    (``validation/conformal_decision.mac``). Their weight is not clipped. Here the cap keeps a
+    weight whose assumption failed from growing without end, and the floor keeps it where the
+    caller's weight is defined, as ``lam_unc`` is at 0 and above. A floor ``lower`` at most
+    ``safe`` lifts the weight only after a loss below the target, so it keeps the bound. While the
+    floor has lifted nothing either, the mean loss is at least ``target - (initial - lower) /
+    (step n)``.
+
+    A weight the cap cuts refutes the assumption at ``safe`` and ``window``: :attr:`capped` counts
+    such decisions, and the first one logs a warning (``chc_event = "conformal_cap"``). From then on
+    ``excess_bound`` need not hold: a loss whose rise the cap cut is not counted in it. A cap never
+    reached does not say the assumption held, only that the bound did.
+
+    What the guarantee needs, and the weight cannot check:
+
+    * **A weight at which the loss meets the target**, ``safe``. Where the loss falls as the weight
+      grows -- more pessimism, smaller actions, fewer misses -- such a weight exists. Where a weight
+      too high costs something of its own, such as a plan so cautious it misses its target, no
+      weight is safe: the weight then climbs to the cap and stays there, and so does the loss.
+    * **Each loss the one its decision realised**, at the weight it was issued with, and read
+      before the next decision. A loss that reads earlier decisions too, on a plant with memory, is
+      covered by ``window``: how many consecutive decisions at a weight of at least ``safe`` it
+      takes to bring the losses' average to the target.
+
+    The bound is on the running mean of the sequence scored, not on any one decision's loss.
+
+    Raises:
+        ValueError: on a ``target`` not in ``[0, bound)``, a ``bound`` or ``step`` that is not
+            positive and finite, a ``safe`` or ``lower`` that is not finite, a ``lower`` above
+            ``safe``, an ``initial`` outside ``[lower, safe + step (bound - target)]``, or a
+            ``window`` below 1.
+    """
+
+    def __init__(
+        self,
+        initial: float,
+        *,
+        target: float,
+        step: float,
+        bound: float,
+        safe: float,
+        lower: float = 0.0,
+        window: int = 1,
+    ) -> None:
+        for name, value in (("bound", bound), ("step", step)):
+            if not (math.isfinite(value) and value > 0.0):
+                raise ValueError(f"{name} must be positive and finite, got {value}")
+        if not 0.0 <= target < bound:
+            raise ValueError(f"target must lie in [0, bound = {bound}), got {target}")
+        for name, value in (("safe", safe), ("lower", lower)):
+            if not math.isfinite(value):
+                raise ValueError(f"{name} must be finite, got {value}")
+        if lower > safe:
+            raise ValueError(f"lower must not exceed safe = {safe}, got {lower}")
+        if window < 1:
+            raise ValueError(f"window must be at least 1, got {window}")
+        rise = step * (bound - target)
+        if not lower <= initial <= safe + rise:
+            raise ValueError(
+                f"initial must lie in [lower, safe + step (bound - target)] = [{lower},"
+                f" {safe + rise}], got {initial}"
+            )
+        self.target, self.step, self.bound = float(target), float(step), float(bound)
+        self.safe, self.lower, self.window = float(safe), float(lower), int(window)
+        self.cap = self.safe + self.window * rise
+        self._path = [float(initial)]
+        self._total = 0.0
+        self._capped = 0
+        self._floored = 0
+
+    @property
+    def weight(self) -> float:
+        """The weight the next decision is taken at."""
+        return self._path[-1]
+
+    @property
+    def path(self) -> _Array:
+        """Every weight issued, the first ``initial`` and the last :attr:`weight`, which no loss
+        has scored yet: one more than :attr:`steps`."""
+        path = np.array(self._path)
+        path.setflags(write=False)
+        return path
+
+    @property
+    def steps(self) -> int:
+        """How many losses have been scored."""
+        return len(self._path) - 1
+
+    @property
+    def mean_loss(self) -> float:
+        """The scored losses' mean, ``nan`` before the first."""
+        return self._total / self.steps if self.steps else math.nan
+
+    @property
+    def excess_bound(self) -> float:
+        """``(cap - initial) / (step n)``: how far the mean loss may lie above ``target`` while
+        :attr:`capped` is 0, ``inf`` before the first loss."""
+        if not self.steps:
+            return math.inf
+        return (self.cap - self._path[0]) / (self.step * self.steps)
+
+    @property
+    def capped(self) -> int:
+        """How many updates the cap cut: each refutes the assumption at ``safe`` and ``window``."""
+        return self._capped
+
+    @property
+    def floored(self) -> int:
+        """How many updates the floor lifted, each after a loss below the target."""
+        return self._floored
+
+    def update(self, loss: float) -> float:
+        """Score the loss the decision taken at :attr:`weight` realised, and return the weight the
+        next decision is taken at.
+
+        Raises:
+            ValueError: on a loss that is not one number in ``[0, bound]``.
+        """
+        value = np.asarray(_real_numbers(loss, "loss"), dtype=np.float64)
+        if value.shape != () or not 0.0 <= float(value) <= self.bound:
+            raise ValueError(f"loss must be one number in [0, bound = {self.bound}], got {loss}")
+        moved = self.weight + self.step * (float(value) - self.target)
+        if moved > self.cap:
+            self._capped += 1
+            if self._capped == 1:
+                _log.warning(
+                    "conformal pessimism: the weight %.6g rose past its cap %.6g after loss %d, so"
+                    " a weight of at least %.6g did not keep %d consecutive losses at the target"
+                    " %.4g; the excess bound no longer holds",
+                    moved,
+                    self.cap,
+                    self.steps + 1,
+                    self.safe,
+                    self.window,
+                    self.target,
+                    extra={
+                        "chc_event": "conformal_cap",
+                        "weight": moved,
+                        "cap": self.cap,
+                        "decision": self.steps + 1,
+                    },
+                )
+        elif moved < self.lower:
+            self._floored += 1
+        self._total += float(value)
+        self._path.append(min(max(moved, self.lower), self.cap))
+        return self.weight
+
+
+@dataclass(eq=False)
+class ConformalHorizon:
+    """A :class:`chc.mpc.RecedingHorizon` whose ``lam_unc`` a :class:`ConformalPessimism` moves,
+    one plan and one loss at a time. *Experimental.*
+
+    ::
+
+        pessimism = ConformalPessimism(0.0, target=0.1, step=2.0, bound=1.0, safe=20.0)
+        loop = ConformalHorizon(controller, pessimism)
+        while running:
+            plan = loop.step(measure(), t)
+            apply(plan.actions[0])
+            loop.update(loss())  # what the applied action realised
+
+    :meth:`step` sets the controller's ``lam_unc`` to the pessimism's weight and plans;
+    :meth:`update` scores the plan's loss and moves the weight. They alternate: a step whose plan
+    has not been scored is refused, and so is a loss with no plan before it, so that each loss is
+    the one its plan's weight realised, as the pessimism's bound needs. The controller is the
+    caller's, and nothing else of it changes; its ``lam_unc`` is the pessimism's from the first
+    step on.
+
+    The weight reaches the controller as a numpy ``float64``, which is a float, and which the
+    penalised descent's compiled program reads as an input: a Python float is part of the program
+    instead, and each new weight compiled the descent again.
+
+    Raises:
+        ValueError: on a controller with no uncertainty model, whose ``lam_unc`` weighs nothing,
+            and a pessimism whose ``lower`` is negative, a weight that would reward the uncertainty.
+    """
+
+    controller: RecedingHorizon
+    pessimism: ConformalPessimism
+    _planned: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.controller.uncertainty is None:
+            raise ValueError(
+                "the controller has no uncertainty model, so its lam_unc weighs nothing; give it"
+                " the penalty whose weight the pessimism moves"
+            )
+        if self.pessimism.lower < 0.0:
+            raise ValueError(
+                f"lam_unc must not be negative, and the pessimism's floor is {self.pessimism.lower}"
+            )
+
+    def step(self, x: Array, t: float = 0.0, spent: float | None = None) -> CausalPlan:
+        """Plan from the measured state ``x`` at the pessimism's weight, as
+        :meth:`chc.mpc.RecedingHorizon.step` does.
+
+        Raises:
+            ValueError: where the last plan's loss has not been scored, and on what
+                :meth:`chc.mpc.RecedingHorizon.step` refuses.
+        """
+        if self._planned:
+            raise ValueError(
+                "the last plan's loss has not been scored: call update with it before planning"
+                " again"
+            )
+        self.controller.lam_unc = np.float64(self.pessimism.weight)
+        plan = self.controller.step(x, t, spent)
+        self._planned = True
+        return plan
+
+    def update(self, loss: float) -> float:
+        """Score the loss the last plan realised, and return the weight the next plan is made at.
+
+        Raises:
+            ValueError: where no plan awaits a loss, and on what :meth:`ConformalPessimism.update`
+                refuses.
+        """
+        if not self._planned:
+            raise ValueError("no plan awaits a loss: call step before update")
+        weight = self.pessimism.update(loss)
+        self._planned = False
+        return weight
 
 
 @dataclass(frozen=True)

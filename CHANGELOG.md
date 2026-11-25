@@ -53,6 +53,20 @@ experimental may change in any minor release (`docs/api/index.md`).
   `CausalPlan`, a zero gain), a barrier with no upper bound and a loop on which the condition holds
   at no slack, and `certify_safety` neither reads nor returns it (ADR 0171).
 
+- **`ConformalPessimism` and `ConformalHorizon`**, opt-in, experimental: a pessimism weight moved
+  after each decision by the loss it realised, `step (loss - target)`, the conformal controller of
+  Lekeufack, Angelopoulos, Bajcsy, Jordan and Malik (ICRA 2024). While its cap,
+  `safe + window step (bound - target)`, has cut nothing, the mean loss after `n` decisions is at
+  most `target + (cap - initial) / (step n)` on any sequence of losses; eventual safety, a weight
+  of at least `safe` keeping every `window` consecutive losses at the target on average, keeps the
+  cap from cutting, and a cut logs a warning (`validation/conformal_decision.mac`: every adversary
+  over 10 decisions took at most 22/23 of the bound). A loss that rises again with the weight has
+  no safe weight, and the weight then sits at its cap. `ConformalHorizon` sets a
+  `RecedingHorizon`'s `lam_unc` to the weight before each plan, as a numpy float, so that a moving
+  weight does not compile the descent again. On a plant whose gain drifts from the model's, a
+  fixed `lam_unc = 0` missed its one-step prediction on 70 of 120 decisions; moved toward a target
+  of 0.2, it missed on 16, within the bound of 0.24. `RecedingHorizon` does not change (ADR 0172).
+
 - **`fit_causal_residual(nuisance_choice="score")`**, opt-in, experimental: the three nuisance
   sieves of ADR 0120 read by the logs of the out-of-fold mean squares of the action's residual and
   of the moment's score, the target's residual less its fit on the action's, each column in its own

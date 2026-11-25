@@ -105,6 +105,8 @@ from chc.experiment import (
 )
 from chc.gate import (
     BlockBatch,
+    ConformalHorizon,
+    ConformalPessimism,
     DecisionLog,
     DeploymentGate,
     DriftAlarm,
@@ -166,6 +168,8 @@ __all__ = [
     "CausalPlan",
     "ChannelPrior",
     "ChannelSensitivity",
+    "ConformalHorizon",
+    "ConformalPessimism",
     "Constraint",
     "CyclicGraphError",
     "DecisionError",

@@ -264,6 +264,13 @@ documented, and what is not built yet. Every name below is importable from `chc`
   scored prediction: up after a miss, down otherwise. On any sequence of scores, also one the plan
   steers through its own states, each horizon's long-run miss rate comes within a stated bound of
   `alpha`. See [`chc.gate`](api/gate.md).
+- **`ConformalPessimism` and `ConformalHorizon`** (*experimental*). `ConformalPessimism` moves a
+  pessimism weight after each decision by the loss the decision realised: up after a loss above
+  the target, down after one below it (the conformal controller of Lekeufack et al., 2024). The
+  mean loss then comes within a stated bound of the target on any sequence on which a weight of at
+  least `safe` keeps the loss at the target. A loss that rises again with the weight has no such
+  weight: the weight then reaches its cap, which logs a warning. `ConformalHorizon` sets a
+  `RecedingHorizon`'s `lam_unc` to the weight before each plan. See [`chc.gate`](api/gate.md).
 - **`channel_drift_evalues` and `DriftAlarm`** (*experimental*). They watch a deployed plan's
   channel through the Gaussian dither its decisions log. Each decision gives e-values that every
   entry of the channel still lies within its identification radius of the model's. They hold
