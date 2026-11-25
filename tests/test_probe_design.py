@@ -85,7 +85,8 @@ def test_one_state_two_levers_reach_maxima_s_optimum() -> None:
     assert design.regret * 100 == pytest.approx(6.2217573451312867380, rel=1e-10, abs=0.0)
     assert design.white_regret * 100 == pytest.approx(6.9785812210885939849, rel=1e-12, abs=0.0)
     assert design.ratio == pytest.approx(0.89155046678109024898, rel=1e-10, abs=0.0)
-    assert 0.0 <= design.gap <= 1e-10 * design.regret
+    # L-BFGS's stopping point moves with the BLAS: the gap read 2.7e-12 on Linux, 1.9e-11 on macOS
+    assert 0.0 <= design.gap <= 1e-9 * design.regret
 
 
 @pytest.mark.parametrize("noise", [np.eye(2), np.array([[2.0, 0.6], [0.6, 0.5]])])
