@@ -7,6 +7,21 @@ experimental may change in any minor release (`docs/api/index.md`).
 
 ## [Unreleased]
 
+### Added
+
+- **`prescribe(inner=)`** (experimental), recorded as `inputs.inner`: how the rounds of a barrier
+  held under `hold_constraints` are solved, `causal_plan`'s `inner` handed through. `"diagonal"`,
+  the default, is every held plan's solve as before; `"orthant"` takes the held condition's kink
+  at the log's mean action by its sides, and `"newton"` is projected Newton. Both step on the box
+  alone: where the plan holds linear rows, a lever's `cap_per_step`, a budget or a combination of
+  the levers the log kept at one level, its rounds take the descent, and a `WARNING` record
+  (`chc_event="plan"`) says so. Refused without `hold_constraints`, as a name of no solve, and
+  past Newton's 4096 actions. On the barrier test's held plan with one lever under the fit's
+  absolute radius, the default rounds converged in 338 descent steps and `"orthant"` in 48, both
+  certified on all 15 steps, the orthant plan 5.4e-7 costlier. `SCHEMA_VERSION` stays 3: a key is
+  added and none changes meaning; a record written before it is refused by
+  `Prescription.from_json`, which names `inputs.inner` (ADR 0144, amended).
+
 ### Deprecated
 
 - **A `GateConfig` whose rollback reads evidence and leaves `rollback_restart` unset emits a

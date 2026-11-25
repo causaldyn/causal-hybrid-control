@@ -115,11 +115,13 @@ from chc.panel import (
     _x64_enabled,
 )
 from chc.plan import (
+    _NEWTON_SIZE,
     BarrierConstraint,
     CausalPlan,
     CertificateStatus,
     ChannelSensitivity,
     DiagnosticStatus,
+    InnerSolve,
     PlannedCostBias,
     PlanRegretBound,
     RegretStatus,
@@ -224,8 +226,9 @@ call, and a library that reaches for ``basicConfig`` takes it away.
 The records that are not ``INFO`` are the ones worth waking someone for: identifying in single
 precision, a graph that says the effect is not identified at all, a driver's forecast outside the
 range the panel logged, levers held to what the log did with them, a plan some fit the log cannot
-tell apart predicts differently, a tube whose rate or budget is not a finite number, and an
-evaluation that reads one unit's windows as independent. The logger check's rejection is
+tell apart predicts differently, a tube whose rate or budget is not a finite number, a held
+round's solve the plan's linear rows send back to the descent (``inner``), and an evaluation that
+reads one unit's windows as independent. The logger check's rejection is
 ``INFO``: it reports the logger's memory and the columns it read, and a confounder drawn afresh
 each period is one it cannot see (:class:`~chc.evaluation.LoggerCheck`).
 """
@@ -2380,6 +2383,7 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
     dither: str | Sequence[str] | None = None,
     planned_cost_bias: bool = False,
     barrier_drift_error: bool = False,
+    inner: InnerSolve = "diagonal",
 ) -> Prescription:
     """Fit the causal control channel from ``panel`` and plan a certified schedule on it.
 
@@ -2632,6 +2636,15 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
             on none. Off by default, so the room reads the channel's error alone, as up to 1.2,
             and nothing moves. With no constraint, or on a fit that gives no drift error, the
             observational one, it raises.
+        inner: how each of the held barrier's rounds is solved, under ``hold_constraints``
+            (*experimental*): ``causal_plan``'s ``inner`` (:func:`chc.plan.causal_plan`).
+            ``"diagonal"``, the default, is the descent every held plan took before. ``"orthant"``
+            takes the kink of the held condition's worst case at the log's mean action, the
+            barrier's centre, by its sides, where a plan with one lever under a radius can stall
+            under the descent and under ``"newton"`` alike (ADR 0144). Both step on the box alone:
+            where the plan holds linear rows, a lever's ``cap_per_step``, a budget or a combination
+            of the levers the log kept at one level, its rounds take the descent, which holds them,
+            and a warning says so. The record holds the solve asked for, ``inputs.inner``.
 
     Returns:
         A :class:`Prescription`. Read :attr:`DecisionCertificate.identification` before
@@ -2653,7 +2666,10 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
             negative or nan, a ``gamma`` below 1 or not finite, which is not a sensitivity level,
             a ``radius`` other than ``"auto"``, ``"absolute"`` and
             ``"relative"``, or ``"absolute"`` on a fit that gives no absolute radius,
-            ``barrier_drift_error`` with no constraint or on a fit that gives no drift error, a
+            ``barrier_drift_error`` with no constraint or on a fit that gives no drift error, an
+            ``inner`` that is none of ``"diagonal"``, ``"newton"`` and ``"orthant"``, or that is
+            not ``"diagonal"`` without ``hold_constraints`` or over more actions, ``horizon``
+            times the levers, than a Newton round factors, a
             panel with
             no consecutive pair of periods to fit a transition on, a ``cap_per_step``
             on a lever that follows its logged rule or a budget that prices one,
@@ -2732,6 +2748,19 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
     if barrier_drift_error and not constraints:
         raise DecisionError(
             "barrier_drift_error was set, but no constraint was given to read a barrier at"
+        )
+    if inner not in ("diagonal", "newton", "orthant"):
+        raise DecisionError(
+            f"inner={inner!r} is not a held round's solve: 'diagonal', 'newton' or 'orthant'"
+        )
+    if inner != "diagonal" and not hold_constraints:
+        raise DecisionError(
+            f"inner={inner!r} solves the rounds of a held barrier, and hold_constraints is off"
+        )
+    if inner != "diagonal" and horizon * len(levers) > _NEWTON_SIZE:
+        raise DecisionError(
+            f"inner={inner!r} factors a dense matrix over the {horizon * len(levers)} actions, "
+            f"past its limit of {_NEWTON_SIZE}: use inner='diagonal'"
         )
     if not 0.0 < dt < math.inf:
         raise DecisionError(f"dt={dt} is not a step, which is finite and positive")
@@ -2880,6 +2909,7 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
         dither=dither,
         planned_cost_bias=planned_cost_bias,
         barrier_drift_error=barrier_drift_error,
+        inner=inner,
     )
     if clusters is not None:
         numbers = (*states, *lever_names, *driver_names, *draws)
@@ -3263,6 +3293,17 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
         if hold_constraints
         else None
     )
+    # Newton's and the orthant rounds step on the box alone; the descent holds linear rows
+    rows = any(row.matrix.shape[0] for row in (rate, *relation_rows, *spend_rows))
+    held_inner: InnerSolve = "diagonal" if rows else inner
+    if inner != held_inner:
+        _log.warning(
+            "inner=%r steps on the box alone, and the plan holds linear rows, a lever's cap, a "
+            "budget or a combination of the levers the log kept at one level: its barrier's "
+            "rounds take the diagonal descent",
+            inner,
+            extra={"chc_event": "plan", "inner": inner, "inner_solved": held_inner},
+        )
 
     started = time.perf_counter()
     planning_cost = _cost(states, levers, target, horizon, rule)
@@ -3401,6 +3442,7 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
             # the budgets' rows last: :meth:`Prescription.budget_prices` reads them there
             constraints=(rate, *relation_rows, *spend_rows),
             barrier=held,
+            inner=held_inner,
         )
         if at_plan:
             assert slopes is not None
@@ -6270,6 +6312,7 @@ def _inputs_record(
     dither: str | Sequence[str] | None,
     planned_cost_bias: bool,
     barrier_drift_error: bool,
+    inner: str,
 ) -> dict[str, Any]:
     """Every argument of :func:`prescribe` that moves its result, as plain JSON values."""
     if isinstance(adjustment, CausalGraph):
@@ -6357,6 +6400,7 @@ def _inputs_record(
         "dither": dither if dither is None or isinstance(dither, str) else list(dither),
         "planned_cost_bias": bool(planned_cost_bias),
         "barrier_drift_error": bool(barrier_drift_error),
+        "inner": inner,
     }
 
 
@@ -6389,6 +6433,7 @@ _INPUT_KEYS = (
     "dither",
     "planned_cost_bias",
     "barrier_drift_error",
+    "inner",
 )
 
 
@@ -6494,6 +6539,7 @@ def _replay_arguments(  # noqa: C901
         "dither": lambda: inputs["dither"],
         "planned_cost_bias": lambda: inputs["planned_cost_bias"],
         "barrier_drift_error": lambda: inputs["barrier_drift_error"],
+        "inner": lambda: inputs["inner"],
     }
     arguments: dict[str, Any] = {"known": model}
     for key, read in readers.items():

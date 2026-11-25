@@ -5,6 +5,8 @@ Amended 2026-11-06: an opt-in rule for how the same rounds share their budget an
 penalty, `outer="safeguarded"`, measured on the same corpus (last section); the default stays.
 Amended 2026-11-07: an opt-in solve that takes the radius norm's kink at the barrier's centre by its
 sides, `inner="orthant"`, measured on the same corpus (last section); the default stays.
+Amended 2026-11-25: `prescribe(inner=)` hands the solve to its held plans, and the orthant default
+for plans with one lever under a radius waits for 2.0 (last section).
 
 ## Context
 
@@ -283,4 +285,40 @@ the same steps costs more than 5.5e-7 more.
 
 **Limits.** `CausalPlan.shadow_prices` and the decision weight still read the masked derivative:
 an action on the kink is a free action there, and what its push leaves shows in their residual.
-`prescribe` passes no `inner`: its held plans keep the default rounds.
+`prescribe` passes no `inner`: its held plans keep the default rounds (until 2026-11-25, below).
+
+## Amended 2026-11-25: `prescribe`'s rounds, and the default deferred to 2.0
+
+**`prescribe(inner=)`** (*experimental*), recorded as `inputs.inner`, hands the solve to the
+rounds of a barrier held under `hold_constraints`, as `causal_plan`'s `inner`. Newton's and the
+orthant rounds step on the box alone, and `prescribe` passes linear rows wherever a lever has a
+`cap_per_step`, a budget prices the levers or the log kept a combination of them at one level: there
+the rounds take the descent, which holds the rows, and a warning record says so. The keyword is
+refused without `hold_constraints`, where there are no rounds to solve, and past Newton's 4096
+actions. On the held plan of `tests/test_prescribe_radius.py`, one lever under the fit's absolute
+radius, the default rounds converged in 338 descent steps, `"orthant"` in 48 and `"newton"` in 38,
+each certified on all 15 steps, the orthant plan 5.4e-7 costlier than the default's.
+
+**The orthant default for one-lever radius plans is deferred to 2.0.** The section above named those
+plans the candidate for a scoped default: `inner` unset would read `"orthant"` where a step has one
+lever under a radius and no rows, and `"diagonal"` elsewhere. The corpus was re-run after 1.4.0, whose
+rounds read `infeasible` and `no_progress` (ADR 0156), on the files that held such plans at 1.3.0
+and two tests of the drift's error: 208 held plans, 134 of them in the class and asked for the
+default rounds. Under the rule above:
+
+| move | plans | detail |
+|---|---|---|
+| cheaper, the same certified steps | 73 | by 7.9e-9 to 8.8 % |
+| more certified leading steps | 26 | 10 → 12 of 12 and 26 → 30 of 30 among them; cost -0.6 % to +1.6 %, more steps held |
+| costlier, the same certified steps | 35 | 30 `converged` both ways by at most 5.42e-7; 2 `max_iterations` → `converged`; 3 → `infeasible`, by at most 0.54 % |
+| fewer certified leading steps | 0 | |
+
+Statuses: 80 `max_iterations`, 38 `converged` and 4 `no_progress` → `converged`; 11
+`max_iterations` and 1 `no_progress` → `infeasible`, all twelve in the drift-room test with the drift's
+error read, at stationarity 0 and with equal or longer prefixes, which ADR 0156 reads as no hold of
+all 30 steps existing. `gamma*` moved on 17 plans; descent steps fell from 1.51 million to 174 000.
+No plan loses a certified step, but 35 cost more at the same prefix and `gamma*` moves on 17, and
+`causal_plan` and `RecedingHorizon` are in the stable tier, whose behaviour a minor release does
+not move: in 1.x `inner` keeps `"diagonal"` with no warning, and the scoped default is a 2.0
+decision, to be argued on this table re-run there.
+

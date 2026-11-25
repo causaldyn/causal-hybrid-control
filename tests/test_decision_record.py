@@ -411,6 +411,7 @@ def test_an_infinite_setting_is_text_and_none_is_not_given() -> None:
         dither="eta1",
         planned_cost_bias=False,
         barrier_drift_error=False,
+        inner="diagonal",
     )
     text = _text(written)
     assert (text["tolerance"], text["levers"][0]["lo"], text["constraints"][0]) == (

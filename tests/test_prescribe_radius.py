@@ -8,12 +8,13 @@ read at each planned step's predicted state, and the held solve and the audit no
 
 from __future__ import annotations
 
+import json
 import logging
 
 import numpy as np
 import pytest
 
-from chc import CausalGraph, Constraint, Lever, Panel, Target, prescribe
+from chc import CausalGraph, Constraint, Lever, Panel, Target, decision, prescribe
 from chc.decision import DecisionError, Prescription
 from chc.plan import ChannelSensitivity
 
@@ -56,12 +57,12 @@ def _panel(seed: int = 0, units: int = 100, periods: int = 12) -> Panel:
 def _ask(**options: object) -> Prescription:
     return prescribe(
         _panel(),
-        levers=[Lever("incentive", lo=-REACH, hi=REACH, unit_cost=0.05)],
         target=Target("supply", value=1.0),
         adjustment=CausalGraph.from_edges(EDGES),
-        horizon=15,
         dt=DT,
         **{  # type: ignore[arg-type]
+            "levers": [Lever("incentive", lo=-REACH, hi=REACH, unit_cost=0.05)],
+            "horizon": 15,
             "integrator": "euler",
             "x0": np.zeros(2),
             "constraints": [Constraint("supply", hi=0.8), Constraint("wait", hi=0.5)],
@@ -157,3 +158,66 @@ def test_every_finite_level_reads_the_absolute_radius() -> None:
     assert _ask(gamma=3.0, integrator="rk4").certificate.radius_model == "relative"
     with pytest.raises(DecisionError, match="none of 'auto'"):
         _ask(radius="share")
+
+
+def test_inner_reaches_the_held_rounds_of_a_plan_with_no_rows(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``prescribe(inner=)`` hands its solve to the held barrier's rounds, and the record keeps it.
+    Here, one lever under the fit's absolute radius, the class the orthant rounds are built for
+    (ADR 0144): the default rounds converged in 338 descent steps, the orthant rounds in 48, both
+    certified on all 15 steps, the orthant plan 5.4e-7 costlier. A lever's cap is a linear row,
+    which only the descent holds: there the rounds take it, the plan is the default's to the bit,
+    and a warning says so."""
+    asked: list[str] = []
+    solve = decision.causal_plan
+
+    def spy(*args: object, **options: object) -> object:
+        asked.append(str(options.get("inner", "diagonal")))
+        return solve(*args, **options)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(decision, "causal_plan", spy)
+    default = _ask(hold_constraints=True)
+    orthant = _ask(hold_constraints=True, inner="orthant")
+    assert asked == ["diagonal", "orthant"]
+    assert default.plan is not None
+    assert orthant.plan is not None
+    assert default.plan.solver_status == orthant.plan.solver_status == "converged"
+    assert orthant.plan.solver_iterations < default.plan.solver_iterations / 5
+    assert orthant.certificate.barrier_certified_steps == 15
+    assert default.certificate.barrier_certified_steps == 15
+    assert orthant.plan.task_cost == pytest.approx(default.plan.task_cost, rel=1e-6, abs=0.0)
+    assert default.to_json()["inputs"]["inner"] == "diagonal"
+    record = json.loads(json.dumps(orthant.to_json()))
+    assert record["inputs"]["inner"] == "orthant"
+    assert Prescription.from_json(record, _panel()).to_json() == record
+    record["inputs"]["inner"] = "diagonal"
+    with pytest.raises(DecisionError, match="the replay does not give the record back"):
+        Prescription.from_json(record, _panel())
+
+    capped = [Lever("incentive", lo=-REACH, hi=REACH, unit_cost=0.05, cap_per_step=1.0)]
+    asked.clear()
+    with caplog.at_level(logging.WARNING, logger="chc.decision"):
+        rowed = _ask(hold_constraints=True, inner="orthant", levers=capped)
+    (warned,) = [r for r in caplog.records if getattr(r, "inner", None) == "orthant"]
+    assert warned.chc_event == "plan"  # type: ignore[attr-defined]
+    assert warned.inner_solved == "diagonal"  # type: ignore[attr-defined]
+    plain = _ask(hold_constraints=True, levers=capped)
+    assert asked == ["diagonal", "diagonal"]
+    assert rowed.plan is not None
+    assert plain.plan is not None
+    assert np.array_equal(np.asarray(rowed.plan.actions), np.asarray(plain.plan.actions))
+    assert rowed.to_json()["inputs"]["inner"] == "orthant"
+
+
+@pytest.mark.parametrize(
+    ("options", "match"),
+    [
+        ({"hold_constraints": True, "inner": "projected"}, "is not a held round's solve"),
+        ({"inner": "orthant"}, "hold_constraints is off"),
+        ({"hold_constraints": True, "inner": "newton", "horizon": 5000}, "past its limit of 4096"),
+    ],
+)
+def test_an_inner_solve_outside_the_contract_is_refused(options: dict, match: str) -> None:
+    with pytest.raises(DecisionError, match=match):
+        _ask(**options)
