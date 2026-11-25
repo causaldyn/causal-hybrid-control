@@ -273,6 +273,8 @@ failures, when the tests were first written (names relative to `chc`):
 | `spectral_circulant.mac` | `residual.SpectralResidual`, `toeplitz.circulant_symbol`, `transport.advection_diffusion_symbol` | `test_formal_fields.py` |
 | `spectral_circulant.v` | `residual.SpectralResidual`, `toeplitz.circulant_operator_norm` | `test_formal_fields.py` |
 | `switchback_moving_baseline.mac` | `switchback.read_switchback` | `test_formal_seams.py` |
+
+| `stepwise_confounding.mac` | `stepwise_confounding` | `test_formal_control.py` |
 | `switchback_randomisation.mac` | `switchback.randomisation_interval` | `test_formal_estimation.py` |
 | `transportability_regret.mac` | `regret.transportability_regret_certificate` | `test_formal_regret_c.py` |
 | `transportability_regret.v` | `regret.transportability_regret_certificate` | `test_formal_regret_c.py` |

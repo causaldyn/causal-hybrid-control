@@ -168,6 +168,7 @@ nav:
           - api/research/residual.md
           - api/research/sensitivity.md
           - api/research/spine.md
+          - api/research/stepwise_confounding.md
           - api/research/surrogate.md
           - api/research/symbolic.md
           - api/research/transport.md

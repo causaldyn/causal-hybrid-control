@@ -1,0 +1,187 @@
+/* The per-step MSM bound of a robust fitted-Q evaluation under memoryless confounding
+   (chc.research.stepwise_confounding: stepwise_robust_value and stepwise_breakdown).
+
+   Bruns-Smith and Zhou (arXiv 2302.00662) bound the weight w = e(a|s)/e(a|s, U) that turns the
+   logged law of Y = R + V(S') in a cell into the law under the plan by Tan's marginal sensitivity
+   model at level Lambda, CHC's Gamma: w in [alpha, beta] = [e + (1 - e)/G, e + (1 - e) G],
+   E[w | s, a] = 1, e the logged propensity. The density box [1/G, G] is e = 0.
+
+   STEP 1  The share at beta in the least E[w Y] is (1 - alpha)/(beta - alpha) = 1/(G + 1) for
+           every e: the tail sits below the quantile at 1 - tau, tau = G/(G + 1).
+   STEP 2  A two-point law Y in {y0 < y1}, P(Y = y1) = p: the least E[w Y] (the greedy fill, and
+           the simplex LP at rational points in both regimes) equals the closed form
+           alpha E[Y] + (1 - alpha) LTM, LTM the mean of the lowest 1/(G + 1) of the law; the
+           largest is alpha E[Y] + (1 - alpha) UTM. G = 1 gives E[Y].
+   STEP 3  A Gaussian law N(mu, s^2): LTM = mu - s phi(z)/m, m = 1/(G + 1), z = Phi^-1(m), so the
+           lower bound is mu - (1 - alpha) s phi(z)/m. Weak duality: for any admissible w and any
+           q, E[w Y] >= D(q) = q + E[alpha (Y - q)_+ - beta (Y - q)_-], whose derivative
+           1 - alpha P(Y > q) - beta P(Y < q) vanishes at P(Y < q) = m; the weight beta below
+           that quantile, alpha above, has mean 1 and attains D there (quadrature).
+   STEP 4  The convention: on the density box the upper bound is CHC's
+           mean + (G - 1)/(G + 1) (CVaR_up - CVaR_lo) (confounding_robust_inflation), and on
+           Tan's box (1 - e) times its inflation (msm_level_bound.mac L1).
+   STEP 5  A two-state, two-action plant with a memoryless binary confounder of MSM level 2,
+           exact in rationals: the plan's true value, the population lower and upper values at
+           G = 1, 6/5, 2 and 3 and as G -> inf, and the level at which the lower value reaches
+           the true value, which tests/test_stepwise_confounding.py reads on a log whose empirical
+           law is the population's.
+   Maxima is the source of truth. */
+display2d : false$
+ratprint : false$
+load("simplex")$
+assume(G > 1, e >= 0, e < 1)$
+wlo(e, G) := e + (1 - e)/G$
+whi(e, G) := e + (1 - e)*G$
+
+/* ---------- STEP 1 ---------- */
+share : ratsimp((1 - wlo(e, G))/(whi(e, G) - wlo(e, G)))$
+print("STEP 1 share at beta:", share,
+      if ratsimp(share - 1/(G + 1)) = 0 then "(PASS: 1/(G + 1) whatever e)" else "(FAIL)")$
+
+/* ---------- STEP 2 ---------- */
+/* the lowest m of the two-point law: all of it at y0 while m <= 1 - p, else y0's mass and the
+   rest at y1 */
+ltm2(y0, y1, p, m) := if m <= 1 - p then y0 else ((1 - p)*y0 + (m - (1 - p))*y1)/m$
+utm2(y0, y1, p, m) := if m <= p then y1 else (p*y1 + (m - p)*y0)/m$
+closed2(y0, y1, p, e, G, side) := block([a : wlo(e, G), mu : (1 - p)*y0 + p*y1, m : 1/(G + 1)],
+    a*mu + (1 - a)*(if side < 0 then ltm2(y0, y1, p, m) else utm2(y0, y1, p, m)))$
+/* symbolic, regime m <= 1 - p: w0 = alpha + (1 - alpha)/(1 - p), w1 = alpha */
+w0a : wlo(e, G) + (1 - wlo(e, G))/(1 - p)$
+vala : (1 - p)*w0a*y0 + p*wlo(e, G)*y1$
+cfa : wlo(e, G)*((1 - p)*y0 + p*y1) + (1 - wlo(e, G))*y0$
+print("STEP 2a m <= 1 - p: greedy - closed form =", ratsimp(vala - cfa),
+      if ratsimp(vala - cfa) = 0 then "(PASS)" else "(FAIL)")$
+/* the regime's condition is w0 <= beta: (1 - alpha)/(1 - p) <= beta - alpha <=> m <= 1 - p */
+print("STEP 2a w0 <= beta <=> (1 - alpha)/(beta - alpha) <= 1 - p:",
+      ratsimp((whi(e, G) - wlo(e, G))*(1/(G + 1)) - (1 - wlo(e, G))),
+      if ratsimp((whi(e, G) - wlo(e, G))*(1/(G + 1)) - (1 - wlo(e, G))) = 0
+      then "(PASS: the room times m is the mass to place)" else "(FAIL)")$
+/* symbolic, regime m > 1 - p: w0 = beta, w1 = (1 - (1 - p) beta)/p */
+valb : (1 - p)*whi(e, G)*y0 + (1 - (1 - p)*whi(e, G))*y1$
+m : 1/(G + 1)$
+cfb : wlo(e, G)*((1 - p)*y0 + p*y1) + (1 - wlo(e, G))*((1 - p)*y0 + (m - (1 - p))*y1)/m$
+print("STEP 2b m > 1 - p: greedy - closed form =", ratsimp(valb - cfb),
+      if ratsimp(valb - cfb) = 0 then "(PASS)" else "(FAIL)")$
+kill(m)$
+/* the LP at rational points, both regimes, both sides, both boxes */
+lp2(y0, y1, p, e, G, side) := block([a : wlo(e, G), b : whi(e, G), obj, cons],
+    obj : side*((1 - p)*w0*y0 + p*w1*y1),
+    cons : [w0 >= a, w0 <= b, w1 >= a, w1 <= b, (1 - p)*w0 + p*w1 = 1],
+    side*first(maximize_lp(obj, cons)))$
+ok2 : true$
+for pt in [[-1, 3, 1/5, 1/4, 2], [-1, 3, 4/5, 1/4, 2], [0, 1, 1/2, 0, 3], [2, 7, 9/10, 2/5, 3/2],
+           [2, 7, 1/10, 0, 5], [-3, -1, 2/3, 1/3, 4]] do
+  for side in [-1, 1] do block([lp, cf],
+    lp : lp2(pt[1], pt[2], pt[3], pt[4], pt[5], side),
+    cf : closed2(pt[1], pt[2], pt[3], pt[4], pt[5], side),
+    if ratsimp(lp - cf) # 0 then (ok2 : false, print("STEP 2c mismatch at", pt, side, lp, cf)))$
+print("STEP 2c simplex LP = closed form at 6 points x 2 sides:", if ok2 then "(PASS)" else "(FAIL)")$
+/* G = 1: alpha = 1, so both bounds are the mean */
+print("STEP 2d G = 1:", ratsimp(closed2(y0, y1, p, e, 1, -1) - ((1 - p)*y0 + p*y1)),
+      ratsimp(closed2(y0, y1, p, e, 1, 1) - ((1 - p)*y0 + p*y1)),
+      if wlo(e, 1) = 1 and ratsimp(closed2(y0, y1, p, e, 1, -1) - ((1 - p)*y0 + p*y1)) = 0
+      then "(PASS: the nominal expectation)" else "(FAIL)")$
+
+/* ---------- STEP 3 ---------- */
+phi(x) := exp(-x^2/2)/sqrt(2*%pi)$
+Phi(x) := (1 + erf(x/sqrt(2)))/2$
+/* the dual's slope: d/dq of q + alpha E[(Y - q)_+] - beta E[(q - Y)_+] for a law with CDF F */
+depends(F, q)$
+slope : 1 - wlo(e, G)*(1 - F) - whi(e, G)*F$
+print("STEP 3a the dual's stationary point F(q) =", solve(slope = 0, F),
+      if ratsimp(rhs(first(solve(slope = 0, F))) - 1/(G + 1)) = 0
+      then "(PASS: the quantile at 1/(G + 1))" else "(FAIL)")$
+gauss_check(mu, s, ee, GG) := block([m, z, q, a, b, mass, value, closed],
+    m : 1/(GG + 1), a : wlo(ee, GG), b : whi(ee, GG),
+    z : find_root(Phi(x) - m, x, -12, 12), q : mu + s*z,
+    mass : b*float(Phi(z)) + a*(1 - float(Phi(z))),
+    value : b*quad_qagi(y*phi((y - mu)/s)/s, y, minf, q)[1]
+            + a*quad_qagi(y*phi((y - mu)/s)/s, y, q, inf)[1],
+    closed : mu - (1 - a)*s*float(phi(z))/m,
+    [mass, value, closed])$
+ok3 : true$
+for pt in [[0, 1, 0, 2], [1.5, 0.7, 0.25, 3], [-2, 2, 0.6, 1.5], [0.3, 1.1, 0.5, 8]] do
+  block([r : apply(gauss_check, pt)],
+    print("STEP 3b N(", pt[1], ",", pt[2], "^2), e =", pt[3], ", G =", pt[4],
+          ": E[w] =", r[1], ", E[w Y] =", r[2], ", closed form =", r[3]),
+    if abs(r[1] - 1) > 1e-12 or abs(r[2] - r[3]) > 1e-9 then ok3 : false)$
+print("STEP 3b weight beta below the quantile, alpha above: mean 1, value the closed form:",
+      if ok3 then "(PASS)" else "(FAIL)")$
+/* D(q) below its value at the quantile on either side: q is the dual's maximiser */
+dual(mu, s, ee, GG, q) := q + wlo(ee, GG)*quad_qagi((y - q)*phi((y - mu)/s)/s, y, q, inf)[1]
+                          + whi(ee, GG)*quad_qagi((y - q)*phi((y - mu)/s)/s, y, minf, q)[1]$
+block([z : find_root(Phi(x) - 1/3, x, -12, 12), at, lo, hi],
+  at : dual(0, 1, 0.25, 2, z), lo : dual(0, 1, 0.25, 2, z - 0.1), hi : dual(0, 1, 0.25, 2, z + 0.1),
+  print("STEP 3c D at the quantile", at, "; 0.1 below", lo, "; 0.1 above", hi,
+        if lo < at and hi < at and abs(at - (0 - (1 - wlo(0.25, 2))*float(phi(z))*3)) < 1e-9
+        then "(PASS: the dual's maximum is the closed form)" else "(FAIL)"))$
+print("STEP 3d G = 1 on N(mu, s^2): mu - (1 - wlo(e, 1)) s phi(z)/m =",
+      ratsimp(mu - (1 - wlo(e, 1))*s*phi(z)*2),
+      if ratsimp(1 - wlo(e, 1)) = 0 then "(PASS: mu)" else "(FAIL)")$
+
+/* ---------- STEP 4 ---------- */
+/* UTM of mass t = 1/(G + 1) and the complementary lower mean CL: mu = t UTM + (1 - t) CL */
+t : 1/(G + 1)$
+mu4 : t*UTM + (1 - t)*CL$
+upper_box : wlo(0, G)*mu4 + (1 - wlo(0, G))*UTM$
+chc_form : mu4 + (G - 1)/(G + 1)*(UTM - CL)$
+print("STEP 4a density box: upper - (mean + inflation) =", ratsimp(upper_box - chc_form),
+      if ratsimp(upper_box - chc_form) = 0 then "(PASS: confounding_robust_inflation)" else "(FAIL)")$
+upper_odds : wlo(e, G)*mu4 + (1 - wlo(e, G))*UTM$
+print("STEP 4b odds box: (upper - mean)/inflation =", factor(ratsimp((upper_odds - mu4)/(chc_form - mu4))),
+      if ratsimp((upper_odds - mu4) - (1 - e)*(chc_form - mu4)) = 0 then "(PASS: 1 - e)" else "(FAIL)")$
+kill(t)$
+
+/* ---------- STEP 5 ---------- */
+/* States {0, 1}, actions {0, 1}, U in {0, 1} with P(U = 1 | s) = 1/2, drawn afresh each step.
+   The logger takes a = 1 with probability 2/3 where U = 1 and 1/3 where U = 0, so e(a | s) = 1/2
+   and the odds ratios are 2 and 1/2: the least valid MSM level is 2. The reward is
+   r = s + a/2 + U and P(S' = 1 | s, a, U) = 1/4 + a/4 + U/4. The plan is the table
+   [[1, 0], [1, 1], [0, 1]] (step by state) from state 0. */
+pu(u) := 1/2$
+pib(a, u) := if a = 1 then (if u = 1 then 2/3 else 1/3) else (if u = 1 then 1/3 else 2/3)$
+rew(s, a, u) := s + a/2 + u$
+pnext(s, a, u, sp) := if sp = 1 then 1/4 + a/4 + u/4 else 3/4 - a/4 - u/4$
+plan : [[1, 0], [1, 1], [0, 1]]$
+odds(x) := x/(1 - x)$
+least_level : lmax(flatten(makelist(makelist(
+    max(odds(pib(a, u))/odds(1/2), odds(1/2)/odds(pib(a, u))), u, 0, 1), a, 0, 1)))$
+print("STEP 5a the logger's least MSM level:", least_level,
+      if least_level = 2 then "(PASS)" else "(FAIL)")$
+truth : block([V : [0, 0]],
+  for k : 3 step -1 thru 1 do
+    V : makelist(block([a : plan[k][s + 1]],
+          sum(pu(u)*(rew(s, a, u) + sum(pnext(s, a, u, sp)*V[sp + 1], sp, 0, 1)), u, 0, 1)), s, 0, 1),
+  V[1])$
+/* the cell's logged law: P(u | s, a) = pu(u) pib(a, u)/e, e = 1/2; atoms [y, mass] */
+cell(s, a, V) := block([atoms : []],
+  for u : 0 thru 1 do for sp : 0 thru 1 do
+    atoms : endcons([rew(s, a, u) + V[sp + 1], pu(u)*pib(a, u)/(1/2)*pnext(s, a, u, sp)], atoms),
+  atoms)$
+/* the mean of the lowest (side -1) or highest (side 1) mass m of the atoms; m = 0 reads the end */
+tailmean(atoms, m, side) := block([sorted, left : m, acc : 0],
+  sorted : sort(atoms, lambda([x1, x2], side*x1[1] > side*x2[1])),
+  if m = 0 then return(first(first(sorted))),
+  for at in sorted do (block([take : min(at[2], left)], acc : acc + take*at[1], left : left - take)),
+  acc/m)$
+bound(GG, side) := block([V : [0, 0]],
+  for k : 3 step -1 thru 1 do
+    V : makelist(block([at : cell(s, plan[k][s + 1], V), a, mean],
+          a : if GG = inf then 1/2 else wlo(1/2, GG),
+          mean : apply("+", map(lambda([x], x[1]*x[2]), at)),
+          ratsimp(a*mean + (1 - a)*tailmean(at, if GG = inf then 0 else 1/(GG + 1), side))), s, 0, 1),
+  V[1])$
+print("STEP 5b the plan's true value:", truth, "=", float(truth))$
+for GG in [1, 6/5, 2, 3] do
+  print("STEP 5c G =", GG, ": lower", bound(GG, -1), "=", float(bound(GG, -1)),
+        "; upper", bound(GG, 1), "=", float(bound(GG, 1)))$
+print("STEP 5c G -> inf: lower", bound(inf, -1), "=", float(bound(inf, -1)))$
+print("STEP 5d at the least valid level 2 the truth is inside, at 6/5 below the lower value:",
+      if bound(2, -1) <= truth and truth <= bound(2, 1) and truth < bound(6/5, -1)
+      then "(PASS)" else "(FAIL)")$
+print("STEP 5d at G = 1 the nominal", bound(1, -1), "misses the truth by", bound(1, -1) - truth)$
+/* the level at which the lower value reaches the truth: bisected on exact values, to 1e-12 */
+gstar : block([lo : 6/5, hi : 2, mid],
+  while hi - lo > 1/10^12 do (mid : (lo + hi)/2, if bound(mid, -1) < truth then hi : mid else lo : mid),
+  (lo + hi)/2)$
+print("STEP 5e the lower value reaches the true value at G =", float(gstar))$

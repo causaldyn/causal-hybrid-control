@@ -2,10 +2,11 @@
 
 Each test reads one statement of a Rocq lemma or a Maxima derivation that a docstring in
 ``chc.uncertainty``, ``chc.plan``, ``chc.barrier``, ``chc.research.sensitivity``,
-``chc.research.koopman`` or ``chc.allocation`` cites, and checks it on the library's output by
-another route: rollouts simulated in NumPy against the error tubes, a linear program against the
-MSM closed form, brute-force grids against the barrier margins, re-solved plans against the decision
-weights and the planned cost's bias, a Monte Carlo of the plant against the noise tube.
+``chc.research.stepwise_confounding``, ``chc.research.koopman`` or ``chc.allocation`` cites, and
+checks it on the library's output by another route: rollouts simulated in NumPy against the error
+tubes, a linear program against the MSM closed form, brute-force grids against the barrier margins,
+re-solved plans against the decision weights and the planned cost's bias, a Monte Carlo of the plant
+against the noise tube, a log whose empirical law is a plant's against Maxima's exact bounds.
 """
 
 from __future__ import annotations
@@ -135,6 +136,15 @@ FORMAL_LINKS = {
             "test_sensitivity_margin_is_the_worst_case_over_the_operator_ball",
             "test_sensitivity_margin_is_the_worst_case_over_the_frobenius_ball",
             "test_sensitivity_filter_keeps_the_true_plant_safe",
+        ),
+    },
+    "chc.research.stepwise_confounding": {
+        "cites": ("stepwise_confounding.mac",),
+        "tests": (
+            "test_stepwise_confounding.py::test_the_population_log_reads_maximas_exact_bounds",
+            "test_stepwise_confounding.py::test_one_step_is_msm_worst_case_mean_at_the_cell_s_propensity",
+            "test_stepwise_confounding.py::test_the_breakdown_is_maximas_crossing_and_the_limit_maximas",
+            "test_stepwise_confounding.py::test_at_gamma_one_every_value_is_the_plain_fitted_evaluation_exactly",
         ),
     },
     "chc.uncertainty._step_parts": {

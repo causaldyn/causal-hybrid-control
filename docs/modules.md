@@ -161,6 +161,12 @@ ratios compose. `negative_control_gamma` inverts a known-null outcome for the sm
 reconciles it: a point estimate of a *lower bound* on the confounding present, a lower confidence
 bound on it with `level`, or `inf` when the model class is refuted instead. `chc.research.sensitivity` is the one-import surface: calibrate, then radius, then control.
 
+[`stepwise_confounding`](api/research/stepwise_confounding.md) carries the same `Γ` to a plan's
+value on a log with a discrete state and action, where the confounder acts afresh each step: a
+robust fitted-Q evaluation returns the plan's lower and upper values at `Γ`, and the least `Γ` at
+which the lower value falls below a threshold or a baseline plan's value. It refuses a log whose
+transitions' innovations persist within units, where the confounder may persist too.
+
 ## Safety under partial identification
 
 [`barrier`](api/barrier.md), [`plan`](api/plan.md)

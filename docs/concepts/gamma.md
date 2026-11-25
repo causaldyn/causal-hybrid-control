@@ -175,6 +175,27 @@ robust-optimal action is the one the channel's error is read from (the log's mea
 `prescribe`, whose barrier is centred there): with the sign of the channel unidentified, moving
 away from it cannot improve the guarantee.
 
+## Or on a plan's value, one step at a time
+
+Where the confounder acts afresh each step, `Γ` bounds a whole plan's value rather than one
+effect. `chc.research.stepwise_confounding` (*research*) evaluates a plan on a log with a discrete
+state and action: `stepwise_robust_value` returns its lower and upper values at `Γ`, and
+`stepwise_breakdown` bisects for `Γ*`, the least `Γ` at which the lower value falls below a
+threshold or below a baseline plan's nominal value. Each step's expectation of
+`reward + next value` is replaced by the MSM's sharp bound on it,
+`α E[Y] + (1 - α) · (mean of the lowest 1/(Γ+1) of Y)`, with `α = e + (1 - e)/Γ` at the logged
+propensity `e` of the plan's action. That is `msm_worst_case_mean`'s bound with `propensity=`
+(Bruns-Smith and Zhou, arXiv 2302.00662, Proposition 5). The `Γ` is the same one: their `Λ` is
+CHC's `Γ`, and their quantile level `τ = Λ/(1+Λ)` is `Γ/(Γ+1)`. At `Γ = 1` the three values are
+the plain fitted evaluation.
+
+The bound needs the confounder to be **memoryless**: independent of the past given the state. A
+confounder that persists makes the observed process non-Markov, and then nothing bounds the value
+step by step. The functions read the premise first, by `persistence_check`'s test on the
+innovations of each transition's reward and next state within units, and refuse a log it rejects.
+A log the check passes is not proved memoryless: the test reads one lag. The bounds are plug-in,
+the sharp ones on the log's empirical law, and carry none of its sampling error.
+
 ## See it
 
 - [Tutorial 5 (robust control)](../tutorials/05_confounding_robust_control.md) — estimate, radius,

@@ -83,6 +83,21 @@ experimental may change in any minor release (`docs/api/index.md`).
   `beta - eta`: `1 - delta - eta` under total variation, less under KL. `shift=None`, the
   default, and a radius of 0 read the band as before (ADR 0170).
 
+- **`chc.research.stepwise_confounding`**, new, research tier: a plan's value on a log with a
+  discrete state and action, bounded under unobserved confounding that acts afresh each step
+  (Bruns-Smith and Zhou, arXiv 2302.00662). `stepwise_robust_value` runs a robust fitted-Q
+  evaluation whose step replaces the expectation of `reward + next value` by the MSM's sharp bound,
+  `alpha E[Y] + (1 - alpha)` times the mean of the lowest `1 / (Gamma + 1)` of `Y`, `alpha = e +
+  (1 - e) / Gamma` at the logged propensity: their `Lambda` is CHC's `Gamma`, and on one step the
+  bound is `msm_worst_case_mean`'s with `propensity=` (`validation/stepwise_confounding.mac`).
+  `stepwise_breakdown` bisects for `Gamma*`, the least level at which the lower value falls below a
+  threshold or a baseline plan's nominal value, and reads `inf` where no level does. Both read the
+  premise first, `persistence_check`'s test on the transitions' innovations within units, and
+  refuse a log it rejects (`PersistentConfounding`). On a two-state plant confounded at MSM level 2
+  the true value, `65/16`, lies in the bounds at `Gamma = 2`, `[31/8, 81/16]`, where the plain
+  evaluation reads `41/9`; a confounder that persists with probability 0.9 is refused. The bounds
+  are plug-in, with no sampling error (ADR 0173).
+
 - **`fit_causal_residual(nuisance_choice="score")`**, opt-in, experimental: the three nuisance
   sieves of ADR 0120 read by the logs of the out-of-fold mean squares of the action's residual and
   of the moment's score, the target's residual less its fit on the action's, each column in its own

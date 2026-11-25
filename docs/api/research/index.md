@@ -7,7 +7,7 @@ study's plant — rather than a stage of a decision taken from logs. They are ou
 0.20.0 freezes: any of them may change or be withdrawn in any release, and `import chc` imports
 none of them. Import each from its own path, `chc.research.<module>`.
 
-Each moved here in 0.19.0. The path it had before served it with a `DeprecationWarning` through
+Each but `stepwise_confounding`, which was written here, moved here in 0.19.0. The path it had before served it with a `DeprecationWarning` through
 0.19.x and was deleted in 0.20.0: `import chc.mmm` is now a `ModuleNotFoundError`, and
 `chc.regret.van_trees_certificate` an `AttributeError`. Import each name from its path here.
 
@@ -26,6 +26,7 @@ Each moved here in 0.19.0. The path it had before served it with a `DeprecationW
 | [`mmm`](mmm.md) | the media-budgets case study's plant, not a media-mix model | `chc.mmm` |
 | [`sensitivity`](sensitivity.md) | robust control under hidden confounding, one façade | `chc.sensitivity` |
 | [`spine`](spine.md) | confounded logs to a certified plan, as one story | `chc.spine` |
+| [`stepwise_confounding`](stepwise_confounding.md) | a plan's value under confounding that acts one step at a time, and the level that overturns it | none: new here |
 | [`surrogate`](surrogate.md) | gradient-boosted surrogate dynamics, the tabular baseline | `chc.surrogate` |
 | [`symbolic`](symbolic.md) | symbolic extraction from a Kolmogorov–Arnold layer | `chc.symbolic` |
 | [`transport`](transport.md) | continuum mean-field control by density transport | `chc.transport` |
