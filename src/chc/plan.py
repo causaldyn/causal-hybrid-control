@@ -3932,9 +3932,10 @@ def certify_safety(
             :func:`chc.prescribe` passes ``t sqrt(n)`` times it under ``barrier_drift_error``,
             ``t`` Student's at 0.975 and ``n`` the states, which reads it at the log's rows, not at
             the plan's states: at the held plans' states of two of the logs below, inside the log's
-            spread, the drift's own standard error was 0.71 to 0.85 of the root mean, and beyond
-            the spread 1.45 to 1.63 times it (ADR 0104), so a plan that leaves the log meets a
-            larger error than the bound.
+            spread, the drift's own standard error was 0.71 to 0.85 of the root mean
+            (``scripts/bench_drift_room.py``, section ``reach``), and beyond the spread 1.45 to
+            1.63 times it (ADR 0104), so a plan that leaves the log meets a larger error than the
+            bound.
             On the 20 unstable logs above, each plan held and certified under the fit's own
             sensitivity at ``gamma = 1.5`` and that bound (0.185 to 0.192), the true plant stayed
             in the set over the certified steps on every log, least ``h`` +0.72, where without it
@@ -3948,7 +3949,8 @@ def certify_safety(
             0.95 the channel's radius states: without the bound the certificate does not carry
             the drift's sampling error, a calibration gap of the default. None, the default, reads
             the channel's error alone, as up to 1.2, and stays so in 1.x: the bound shortens the
-            certified steps there, 29.2 to 24.6 on average (ADR 0119, amended).
+            certified steps there, 29.2 to 24.6 on average (ADR 0119, amended;
+            ``scripts/bench_drift_room.py``).
 
     Assumes the plant is control-affine, and checks it: the condition reads the drift and the
     channel at zero action, so a model whose field, seen through ``grad h``, is not affine in the

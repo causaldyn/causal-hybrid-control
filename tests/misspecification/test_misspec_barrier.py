@@ -523,8 +523,8 @@ def test_on_twenty_logs_the_true_plant_stays_safe_where_the_room_reads_the_drift
     passes it, which the next test does not (``validation/misspec_power.mac`` STEP 6). On 200 logs,
     seeds 0 to 199, the true plant stayed in on all 200 with the drift's error and on 173 without
     it, 0.865, which passes a floor at 0.9 on 200 logs as well (166): the rate stays 0.9, the union
-    of the two 0.95 statements, on these 20 (ADR 0119, amended). The certified steps are the price:
-    24.85 on average, 19 to 30, where they were 29.95."""
+    of the two 0.95 statements, on these 20 (ADR 0119, amended; ``scripts/bench_drift_room.py``).
+    The certified steps are the price: 24.85 on average, 19 to 30, where they were 29.95."""
     gamma, dt, horizon = 1.5, 0.1, 30
     start = jnp.zeros(1)
     cost = QuadraticCost(

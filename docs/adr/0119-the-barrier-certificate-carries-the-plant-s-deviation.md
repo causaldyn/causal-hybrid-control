@@ -207,7 +207,8 @@ deprecation cycle first.
 
 The 20-log test could not tell a stay-in rate of 0.9 from one of 0.95, so the same plans were read
 on the unstable drift's logs of seeds 0 to 199, each held and certified under the fit's own
-sensitivity at `Gamma = 1.5`, with the bound and without it, in float64:
+sensitivity at `Gamma = 1.5`, with the bound and without it, in float64, by
+`scripts/bench_drift_room.py`, section `stay`:
 
 | room | true plant in the set over the certified steps | Clopper-Pearson 95 % | mean certified steps |
 |---|---|---|---|
@@ -230,5 +231,6 @@ Seeds 0 to 19 are the test's logs, 19 of 20 without the bound, as above.
   shortens the certified steps from 29.2 to 24.6 on average.
 - **The bound's reach.** It is the drift's standard error at its root mean over the log's rows. At
   the held plans' states of logs 0 and 18, inside the log's spread, the drift's own standard error
-  there was 0.71 to 0.85 of it (features `[1, x]`); beyond the spread ADR 0104 measured 1.45 to
-  1.63 times the root mean, so a plan that leaves the log meets more than the bound carries.
+  there was 0.71 to 0.85 of it (features `[1, x]`; the script's section `reach`); beyond the spread
+  ADR 0104 measured 1.45 to 1.63 times the root mean, so a plan that leaves the log meets more than
+  the bound carries.

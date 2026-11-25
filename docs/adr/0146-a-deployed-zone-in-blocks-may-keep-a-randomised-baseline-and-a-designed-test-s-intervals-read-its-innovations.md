@@ -75,8 +75,9 @@ gate, on a candidate as good as the baseline for 3000 decisions after its DEPLOY
 after, `N` fell below `U` by at most 0.058 at `K` 1, 7 and 250, and each rolled back 15 to 18 reads
 before `U` did (`tests/test_gate.py`). Alike weights carry no such bound. Measured on the 18 power
 cells of the Consequences below, its three candidates that turn or are worse, centred and plain,
-at `q` 0.1, 0.2 and 0.3, 400 paths each, every setting on the same stream (unset, epochs every 10,
-50 and 250 blocks, alike every 250 over 10 000):
+at `q` 0.1, 0.2 and 0.3, 400 paths each, every setting on the same stream (unset, which reads as
+`0` does; epochs every 10, 50 and 250 blocks; alike every 250 over 10 000), by
+`scripts/bench_gate_restart.py`, section `blocks`:
 
 | cell | unset | epochs, `K` 10 / 50 / 250 | alike |
 |---|---|---|---|
@@ -93,10 +94,12 @@ Per decision, the module's example turning after 3000 decisions was caught withi
 200 paths unset and on 179, 185 and 187 started every 50, 250 and 1000 decisions; turning after
 10 000, within 6000 on none of 200 unset and on all 200 at each `K`, after a median of 2400, 2150
 and 2175 decisions. The example's candidate as good as the baseline after its first 3000
-decisions was rolled back on none of 200 paths in the 20 000 after, unset or at any `K`. `K` = 250 is the measured default: 10 and 50 read a turn near
-the DEPLOY a little sooner, and a turn long after it later, since the start after the turn weighs
-less: after 10 000 decisions, 12.9, 9.7 and 7.0 nats below 1 at `K` 50, 250 and 1000, where 1000
-may open up to 1000 decisions after the turn. `0` keeps the reading since the DEPLOY; in blocks
+decisions was rolled back on none of 200 paths in the 20 000 after, unset or at any `K`
+(`scripts/bench_gate_restart.py`, section `decisions`). `K` = 250 is the measured default: 10 and
+50 read a turn near the DEPLOY a little sooner, and a turn long after it later, since the start
+after the turn weighs less: after 10 000 decisions, 12.9, 9.7 and 7.0 nats below 1 at `K` 50, 250
+and 1000, where 1000 may open up to 1000 decisions after the turn
+(`validation/gate_rollback_restart.mac`, STEP 4). `0` keeps the reading since the DEPLOY; in blocks
 without a `rollback_baseline_share` the rollback has no evidence and the default reads nothing,
 as now.
 

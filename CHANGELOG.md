@@ -37,7 +37,7 @@ experimental may change in any minor release (`docs/api/index.md`).
   at `1 / alpha_harm + 0.1`, 0.005 nats higher at an `alpha_harm` of 0.05. On ADR 0146's 18 power
   cells (shares 0.1 to 0.3, plain and centred, the lab's plant and the plants of order 1) it rolled
   back as often or more often, by up to 21 of 400 paths, and wrongly no more often: at most 1 of
-  400 paths in a null cell, unset alike (ADR 0146, amended).
+  400 paths in a null cell, unset alike (ADR 0146, amended; `scripts/bench_gate_restart.py`).
 
 ### Documentation
 
@@ -51,7 +51,7 @@ experimental may change in any minor release (`docs/api/index.md`).
   logs, the union of the room's two 0.95 statements. `certify_safety(drift_error=)` and
   `prescribe(barrier_drift_error=)` now state the gap and the bound's reach: at the held plans'
   states inside the log's spread the drift's own error was 0.71 to 0.85 of the bound, beyond it 1.45
-  to 1.63 times it (ADR 0104). No value moves (ADR 0119, amended).
+  to 1.63 times it (ADR 0104). No value moves (ADR 0119, amended; `scripts/bench_drift_room.py`).
 - **Why `PlanEvaluation` has no bias-corrected value.** ADR 0155 said the corrected value failed its
   rule; on three of the four designs the reported bias was 0.03 to 0.12 of the mean error's Monte
   Carlo error, where even an exact correction wins the comparison with probability 0.506 to 0.524,
