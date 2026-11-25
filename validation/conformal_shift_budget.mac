@@ -1,0 +1,150 @@
+/* A distribution-shift budget for the horizon's conformal band:
+   chc.uncertainty.HorizonConformal.calibrate(shift=).
+
+   Cauchois, Gupta, Ali and Duchi (JASA 2024): over the ball D_f(P || P0) <= r, an event of
+   probability beta under P0 has probability at least
+       g(beta) = inf { z in [0, 1] : beta f(z / beta) + (1 - beta) f((1 - z) / (1 - beta)) <= r }
+   under P (their Proposition 1), and the k-th smallest of n calibration scores drawn from P0
+   holds a fresh score drawn from P with probability at least g(k / (n + 1)) (their Theorem 1,
+   here at the rank split conformal reads). So the band at 1 - delta over the ball reads the rank
+   k = ceil((n + 1) beta*), g(beta*) = 1 - delta. The code keeps the gap 1 - beta*.
+
+   Checked here:
+   (1) total variation, f(t) = |t - 1| / 2, eps = sup_A |P(A) - P0(A)|: the two-point divergence
+       is |z - beta|, so g(beta) = max(0, beta - eps), beta* = 1 - delta + eps, and the rank is
+       ceil((n + 1)(1 - delta + eps)) = n + 1 - floor((n + 1)(delta - eps)); at eps = 0 it is
+       the unshifted ceil((n + 1)(1 - delta)); the tests' coverages, exact rationals;
+   (2) Kullback-Leibler, f(t) = t log t: the two-point divergence is
+       KL(z || beta) = z log(z / beta) + (1 - z) log((1 - z) / (1 - beta)), jointly convex in
+       (z, beta): its Hessian has a positive diagonal and the determinant
+       (z - beta)^2 / (z (1 - z) beta^2 (1 - beta)^2). So g is convex, the step from
+       E g(F0(S_(k))) to g(k / (n + 1)), and its second differences at bfloat are positive;
+   (3) d KL(tau || beta) / d beta = (beta - tau) / (beta (1 - beta)) > 0 on (tau, 1), and the
+       divergence grows without bound as beta -> 1: the root beta* > tau = 1 - delta of
+       KL(tau || beta*) = rho is unique. At six (delta, rho) it is bisected in bfloat to 1e-35,
+       checked by putting it back into the divergence and against find_root in doubles, with
+       the least number of windows ceil(beta* / (1 - beta*)) that holds it;
+   (4) rho = 0: the root is 1 - delta, the unshifted level, and a radius of 1e-20 moves it by
+       less than 1e-9; near 0 it moves by sqrt(2 delta (1 - delta) rho);
+   (5) one series: the KL floor g(beta* - eta), the root z < b of KL(z || b) = rho, b = beta* - eta,
+       and 0 where -log(1 - b) <= rho;
+   (6) the KL tests' coverage under the two-piece tilt at b = beta*, z = 1 - delta, a law at
+       divergence exactly rho: E G(U_(k)), U_(k) ~ Beta(k, n + 1 - k), G(u) = (z / b) u below b
+       and z + (1 - z)(u - b) / (1 - b) above, for the shifted rank and the unshifted one.
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/conformal_shift_budget.mac */
+
+linel : 200$
+display2d : false$
+fpprec : 40$
+/* a check that fails stops the batch with "-- an error.", which validation/run_all.sh reads */
+vanishes(label, x) := if is(x = 0) then print(label, "= 0") else error(label, "is not zero:", x)$
+near(label, x, y, tol) := if is(abs(x - y) <= tol) then print(label, x, "~", y)
+  else error(label, x, "is not within", tol, "of", y)$
+holds(label, p) := if is(p) then print(label, "holds") else error(label, "fails")$
+
+/* (1) total variation: the two-point divergence on a grid of exact rationals */
+ftv(t) := abs(t - 1)/2$
+for b in [1/7, 1/2, 5/6, 99/100] do
+  for z in [0, 1/9, 1/7, 1/2, 5/6, 8/9, 1] do
+    vanishes(sconcat("(1) tv two-point at beta=", b, " z=", z),
+      b*ftv(z/b) + (1 - b)*ftv((1 - z)/(1 - b)) - abs(z - b))$
+/* the rank, both forms, and eps = 0 */
+for n : 1 thru 60 do
+  for i : 1 thru 10 do
+    for j : 0 thru i - 1 do block([delta : i/20, eps : j/40, k],
+      k : ceiling((n + 1)*(1 - delta + eps)),
+      if is(k # n + 1 - floor((n + 1)*(delta - eps))) then error("(1) the gap form at", n, delta, eps),
+      if j = 0 and is(k # ceiling((n + 1)*(1 - delta))) then error("(1) eps = 0 at", n, delta),
+      if k <= n and is(k/(n + 1) - eps < 1 - delta) then error("(1) the worst case at", n, delta, eps))$
+print("(1) the rank's two forms agree, eps = 0 is the unshifted rank, and k/(n+1) - eps >= 1 - delta")$
+/* the tests: n = 39, delta = 1/10, eps = 1/20 */
+block([n : 39, delta : 1/10, eps : 1/20, k, k0],
+  k : ceiling((n + 1)*(1 - delta + eps)), k0 : ceiling((n + 1)*(1 - delta)),
+  print("(1) shifted rank", k, "unshifted", k0),
+  vanishes("(1) shifted rank - 38", k - 38), vanishes("(1) unshifted rank - 36", k0 - 36),
+  /* the bottom eps of P0 moved beyond the radius: coverage k/(n+1) - eps */
+  vanishes("(1) the moved law, shifted - 9/10", k/(n + 1) - eps - 9/10),
+  vanishes("(1) the moved law, unshifted - 17/20", k0/(n + 1) - eps - 17/20),
+  /* a share eps of the windows beyond the radius: coverage (1 - eps) k/(n+1) */
+  vanishes("(1) the mixture, shifted - 361/400", (1 - eps)*k/(n + 1) - 361/400),
+  vanishes("(1) the mixture, unshifted - 342/400", (1 - eps)*k0/(n + 1) - 342/400),
+  /* the least n: n (1 - b) >= b, b the shifted level */
+  vanishes("(1) least n - 19", ceiling((1 - delta + eps)/(delta - eps)) - 19),
+  vanishes("(1) n = 59 reads rank 57", ceiling(60*(1 - delta + eps)) - 57))$
+
+/* (2) Kullback-Leibler: the two-point divergence and its joint convexity */
+fkl(t) := t*log(t)$
+assume(0 < z, z < 1, 0 < b, b < 1)$
+kl2 : z*log(z/b) + (1 - z)*log((1 - z)/(1 - b))$
+vanishes("(2) kl two-point", radcan(b*fkl(z/b) + (1 - b)*fkl((1 - z)/(1 - b)) - kl2))$
+hzz : diff(kl2, z, 2)$ hbb : diff(kl2, b, 2)$ hzb : diff(kl2, z, 1, b, 1)$
+vanishes("(2) d2/dz2 - 1/(z(1-z))", ratsimp(hzz - 1/(z*(1 - z))))$
+vanishes("(2) d2/db2 - (z/b^2 + (1-z)/(1-b)^2)", ratsimp(hbb - (z/b^2 + (1 - z)/(1 - b)^2)))$
+vanishes("(2) the Hessian's determinant - (z-b)^2/(z(1-z)b^2(1-b)^2)",
+  ratsimp(hzz*hbb - hzb^2 - (z - b)^2/(z*(1 - z)*b^2*(1 - b)^2)))$
+forget(0 < z, z < 1, 0 < b, b < 1)$
+
+kl(p, q) := (if p = 0 then 0 else p*log(p/q)) + (if p = 1 then 0 else (1 - p)*log((1 - p)/(1 - q)))$
+bisect(h, lo, hi) := block([mid], lo : bfloat(lo), hi : bfloat(hi),
+  for i : 1 thru 400 do (mid : (lo + hi)/2, if h(mid) < 0 then lo : mid else hi : mid),
+  (lo + hi)/2)$
+/* g(b): 0 where -log(1 - b) <= rho, else the root z < b of KL(z || b) = rho */
+floor_kl(b, rho) := if bfloat(-log(1 - b)) <= rho then 0
+  else bisect(lambda([w], bfloat(rho - kl(w, b))), 0, b)$
+/* convexity: second differences of g at a grid of b, rho = 1/20 */
+for b0 in [3/10, 1/2, 7/10, 9/10, 97/100] do block([h : 1/1000, d2],
+  d2 : floor_kl(b0 + h, 1/20) - 2*floor_kl(b0, 1/20) + floor_kl(b0 - h, 1/20),
+  holds(sconcat("(2) g convex at ", b0, ": second difference ", float(d2), " >= 0"), d2 >= 0))$
+
+/* (3) the KL root */
+vanishes("(3) d KL(tau||beta)/d beta - (beta - tau)/(beta(1 - beta))",
+  ratsimp(diff(tau*log(tau/beta) + (1 - tau)*log((1 - tau)/(1 - beta)), beta)
+    - (beta - tau)/(beta*(1 - beta))))$
+kroot(delta, rho) := bisect(lambda([w], bfloat(kl(1 - delta, w) - rho)), 1 - delta, 1 - 10^(-30))$
+for p in [[1/10, 1/20], [1/20, 1/100], [1/5, 1/2], [1/10, 1/100], [1/100, 1/10], [1/10, 1]] do
+  block([r : kroot(p[1], p[2]), d],
+    near(sconcat("(3) KL at the root - rho, delta=", p[1], " rho=", p[2]),
+      bfloat(kl(1 - p[1], r) - p[2]), 0, 10^(-30)),
+    d : find_root(kl(1 - float(p[1]), w) - float(p[2]), w, 1 - float(p[1]), 1 - 1e-15),
+    near("(3)   find_root in doubles", d, r, 1e-12),
+    print("(3)   beta* =", r, " 1 - beta* =", 1 - r, " least n =", ceiling(r/(1 - r))))$
+
+/* (4) rho = 0 */
+vanishes("(4) KL(tau || tau)", kl(9/10, 9/10))$
+near("(4) the root at rho = 1e-20", kroot(1/10, 10^(-20)), bfloat(9/10), 10^(-9))$
+/* KL(tau || beta) = (beta - tau)^2 / (2 tau (1 - tau)) + O((beta - tau)^3), so near rho = 0 the
+   root moves by sqrt(2 delta (1 - delta) rho), to a relative O(sqrt(rho)) */
+block([series : ratdisrep(taylor(
+    tau*log(tau/(tau + h)) + (1 - tau)*log((1 - tau)/(1 - tau - h)), h, 0, 2))],
+  vanishes("(4) the series' constant term", ratsimp(coeff(series, h, 0))),
+  vanishes("(4) its first-order term", ratsimp(coeff(series, h, 1))),
+  vanishes("(4) its second-order term - 1/(2 tau (1 - tau))",
+    ratsimp(coeff(series, h, 2) - 1/(2*tau*(1 - tau)))))$
+for p in [[10^(-6), 2*10^(-3)], [10^(-8), 2*10^(-4)]] do block([moved],
+  moved : (kroot(1/10, p[1]) - 9/10)/sqrt(bfloat(2*(1/10)*(9/10)*p[1])),
+  near(sconcat("(4) the root's move over its first order at rho = ", p[1]), moved, 1, p[2]))$
+
+/* (5) the floor on one series: beta* - eta at delta = 1/10, rho = 1/20 */
+block([r : kroot(1/10, 1/20)],
+  for eta in [0, 1/50, 1/20] do
+    print("(5) eta =", eta, " g(beta* - eta) =", floor_kl(r - eta, 1/20)),
+  near("(5) g(beta*) = 1 - delta", floor_kl(r, 1/20), bfloat(9/10), 10^(-30)),
+  /* delta = 2/5, rho = 1: -log(1 - b) <= rho at b = beta* - 39/100 */
+  block([r1 : kroot(2/5, 1)],
+    print("(5) delta = 2/5, rho = 1: beta* =", r1, " 1 - exp(-1) =", bfloat(1 - exp(-1))),
+    vanishes("(5) g(beta* - 39/100) at rho = 1", floor_kl(r1 - 39/100, 1))))$
+
+/* (6) the KL tests: n = 99, delta = 1/10, rho = 1/20, the tilt at b = beta*, z = 9/10 */
+block([n : 99, r : kroot(1/10, 1/20), zz : 9/10, k, k0, cover],
+  k : ceiling((n + 1)*r), k0 : ceiling((n + 1)*(9/10)),
+  print("(6) shifted rank", k, "unshifted", k0),
+  vanishes("(6) shifted rank - 97", k - 97), vanishes("(6) unshifted rank - 90", k0 - 90),
+  near("(6) the tilt's divergence", bfloat(kl(zz, r)), bfloat(1/20), 10^(-30)),
+  cover(kk) := block([dens : u^(kk - 1)*(1 - u)^(n - kk)/beta(kk, n + 1 - kk), above],
+    above : integrate(expand((u - bb)*dens), u, bb, 1),
+    bfloat(subst(bb = r, (zz/bb)*kk/(n + 1) + ((1 - zz)/(1 - bb) - zz/bb)*above))),
+  print("(6) the tilt's coverage, shifted rank:", cover(k)),
+  print("(6) the tilt's coverage, unshifted rank:", cover(k0)),
+  holds("(6) shifted >= 9/10", cover(k) >= 9/10),
+  holds("(6) unshifted < 9/10", cover(k0) < 9/10))$

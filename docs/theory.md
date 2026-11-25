@@ -156,6 +156,7 @@ failures, when the tests were first written (names relative to `chc`):
 | `clustered_van_trees.v` | `regret.clustered_lower_bound_certificate` | `test_formal_regret_a.py` |
 | `composition_transfer.mac` | `regret.composition_transfer_certificate` | `test_formal_regret_a.py` |
 | `composition_transfer.v` | `regret.composition_transfer_certificate`, `regret.confounding_robust_lq_second_order_regret_matrix`, `regret.multivariate_transfer_certificate` | `test_formal_regret_a.py, test_formal_regret_c.py` |
+| `conformal_shift_budget.mac` | `uncertainty.HorizonConformal` | `test_formal_control.py` |
 | `confounded_turnpike.mac` | `regret.confounded_turnpike_certificate` | `test_formal_regret_a.py` |
 | `confounded_turnpike.v` | `regret.confounded_turnpike_certificate` | `test_formal_regret_a.py` |
 | `confounding_lq_regret.mac` | `regret.lq_regret_sensitivity` | `test_formal_regret_b.py` |

@@ -67,6 +67,22 @@ experimental may change in any minor release (`docs/api/index.md`).
   fixed `lam_unc = 0` missed its one-step prediction on 70 of 120 decisions; moved toward a target
   of 0.2, it missed on 16, within the bound of 0.24. `RecedingHorizon` does not change (ADR 0172).
 
+- **`HorizonConformal.calibrate(shift=)`**, opt-in, experimental: a distribution-shift budget for
+  the horizon's joint band. `shift=("tv", eps)` or `shift=("kl", rho)` holds `1 - delta` for every
+  law of the deployed window within that total variation, or Kullback-Leibler divergence
+  `KL(P || P0)`, of the calibration windows' law (Cauchois, Gupta, Ali and Duchi, JASA 2024): the
+  scale is the `ceil((n + 1) beta)`-th score, `beta = 1 - delta + eps` in exact arithmetic, or
+  the root above `1 - delta` of `KL(Bernoulli(1 - delta) || Bernoulli(beta)) = rho`
+  (`validation/conformal_shift_budget.mac`). The radius is the caller's bound on the shift, not an
+  estimate, and the library sets none. A total variation of `delta` or more, which leaves no
+  finite band, and a radius whose rank passes the windows are refused, the latter with the count
+  that would hold it: 19 for `eps = 0.05` at `delta = 0.1`, 31 for `rho = 0.05`. Where the lowest
+  5 % of uniform scores move beyond every band, a total variation of exactly 0.05, the band at
+  `delta = 0.1` held 0.90265 of 20,000 draws of 39 windows, its exact expectation 0.9, and the
+  unshifted band 0.85135 (0.85). On one series the level is what the ball leaves of
+  `beta - eta`: `1 - delta - eta` under total variation, less under KL. `shift=None`, the
+  default, and a radius of 0 read the band as before (ADR 0170).
+
 - **`fit_causal_residual(nuisance_choice="score")`**, opt-in, experimental: the three nuisance
   sieves of ADR 0120 read by the logs of the out-of-fold mean squares of the action's residual and
   of the moment's score, the target's residual less its fit on the action's, each column in its own

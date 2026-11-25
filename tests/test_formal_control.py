@@ -219,6 +219,16 @@ FORMAL_LINKS = {
             "test_contractive_radius_tends_to_the_continuous_one",
         ),
     },
+    "chc.uncertainty.HorizonConformal": {
+        "cites": ("conformal_shift_budget.mac",),
+        "tests": (
+            "test_tube_levels.py::test_the_tv_rank_reads_one_less_delta_plus_eps_in_exact_arithmetic",
+            "test_tube_levels.py::test_the_band_holds_its_level_where_a_tv_shift_moves_eps_of_the_windows_beyond_it",
+            "test_tube_levels.py::test_the_kl_level_is_maxima_s_root_and_grows_with_the_radius",
+            "test_tube_levels.py::test_the_band_holds_its_level_under_the_kl_tilt_at_the_radius",
+            "test_tube_levels.py::test_one_series_under_a_shift_states_what_the_ball_leaves_of_beta_less_eta",
+        ),
+    },
     "chc.uncertainty.gaussian_mixing": {
         "cites": ("tube_levels.mac",),
         "tests": (

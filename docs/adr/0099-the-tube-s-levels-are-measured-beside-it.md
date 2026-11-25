@@ -4,7 +4,9 @@
 (ADR 0080, ADR 0096); it moves none of the tube's numbers, defaults or verdicts. Amended in 0.19.0
 by ADR 0104: `prescribe`'s tube reads the field's error at its studentised quantile, so part 2 of
 the context below holds for that error as `_model_error` returns it, not for the tube, and the
-table's columns that read the tube itself were measured with the tube of 0.18.0.
+table's columns that read the tube itself were measured with the tube of 0.18.0. Amended
+2026-11-25 by ADR 0170: `HorizonConformal.calibrate(shift=)` holds the band's level over a stated
+total variation or Kullback-Leibler ball around the calibration windows' law, opt-in.
 
 ## Context
 

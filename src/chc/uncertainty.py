@@ -34,7 +34,7 @@ import optax
 from jax import Array
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from numpy.typing import ArrayLike, NDArray
-from scipy import integrate, sparse
+from scipy import integrate, sparse, special
 from scipy import linalg as scipy_linalg
 from scipy.optimize import brentq, linprog
 from scipy.stats import chi2
@@ -753,6 +753,87 @@ def gaussian_mixing(
     return beta
 
 
+_BALLS = {"tv": "total variation", "kl": "Kullback-Leibler divergence"}
+
+
+def _two_point_kl(z: float, level: float) -> float:
+    """``KL(Bernoulli(z) || Bernoulli(level))``, ``0 log 0 = 0``."""
+    return float(special.rel_entr(z, level) + special.rel_entr(1.0 - z, 1.0 - level))
+
+
+def _shift_gap(delta: float, shift: tuple[str, float] | None) -> Fraction | float:
+    """``1 - beta``, ``beta`` the calibration law's level that every law in the shift's ball
+    holds at ``1 - delta`` at least.
+
+    ``delta`` without a shift and ``delta - eps`` under a total variation of ``eps``, both as
+    written, in exact arithmetic; under a Kullback-Leibler radius ``rho > 0``, ``1 - beta`` for the
+    root ``beta`` in ``(1 - delta, 1)`` of ``KL(Bernoulli(1 - delta) || Bernoulli(beta)) = rho``,
+    solved in ``log(1 - beta)``, since the root lies within ``2e-7`` of 1 at ``delta = 0.01`` and
+    ``rho = 0.1``. Not positive where no finite band holds the level.
+
+    Raises:
+        ValueError: on a ball other than ``"tv"`` and ``"kl"``, or a radius that is negative or
+            not finite.
+    """
+    if shift is None:
+        return _as_written(delta)
+    kind, radius = shift
+    if kind not in _BALLS:
+        raise ValueError(f"shift={shift!r}: the ball is 'tv' or 'kl'")
+    if not (math.isfinite(radius) and radius >= 0.0):
+        raise ValueError(f"shift={shift!r}: the radius must be finite and at least 0")
+    if kind == "tv" or radius == 0.0:
+        return _as_written(delta) - _as_written(radius)
+    held = 1.0 - delta
+
+    def excess(log_gap: float) -> float:
+        # in s = log(1 - beta), never forming 1 - beta from beta, which keeps it to 1e-16 / gap
+        kept = math.log(held) - math.log1p(-math.exp(log_gap))
+        return held * kept + delta * (math.log(delta) - log_gap) - radius
+
+    # excess(s) >= held log(held) + delta log(delta) - delta s - rho, which is 1 at `deepest`
+    deepest = (held * math.log(held) + delta * math.log(delta) - radius - 1.0) / delta
+    return math.exp(brentq(excess, deepest, math.log(delta), xtol=1e-15))
+
+
+def _too_few_windows(
+    n: int, delta: float, rank: int, gap: Fraction | float, shift: tuple[str, float] | None
+) -> str:
+    """Why ``n`` windows give no finite scale at ``1 - delta``, ``gap`` the shift's
+    :func:`_shift_gap`."""
+    if shift is None:
+        return (
+            f"{n} calibration windows cannot certify a joint level {1.0 - delta:.6g}: the "
+            f"scale is the {rank}-th smallest score, so it needs at least {math.ceil(1 / gap) - 1} "
+            "of them"
+        )
+    level = (
+        f"a joint level {1.0 - delta:.6g} for every law within {_BALLS[shift[0]]} {shift[1]:.6g}"
+    )
+    if isinstance(gap, Fraction) and gap <= 0:
+        return (
+            f"no number of calibration windows certifies {level}: a total variation of delta or "
+            "more can move delta of the windows beyond any radius, so the band is infinite"
+        )
+    # past 1e15 windows the float gap no longer counts them
+    need = f"at least {math.ceil(1 / gap) - 1}" if gap >= 1e-15 else "more than 1e15"
+    return (
+        f"{n} calibration windows cannot certify {level}: the scale is the {rank}-th smallest of "
+        f"{n} scores, so the band is infinite; it needs {need} of them"
+    )
+
+
+def _kl_floor(level: float, rho: float) -> float:
+    """The least probability, over every law within Kullback-Leibler ``rho`` of a law, of an event
+    that law gives ``level``: the root ``z`` in ``(0, level)`` of
+    ``KL(Bernoulli(z) || Bernoulli(level)) = rho``, and 0 where ``-log(1 - level) <= rho``."""
+    if rho == 0.0:
+        return level
+    if -math.log1p(-level) <= rho:
+        return 0.0
+    return float(brentq(lambda z: _two_point_kl(z, level) - rho, 0.0, level, xtol=1e-15))
+
+
 @dataclass(frozen=True)
 class HorizonConformal:
     """One conformal scale for every step of a horizon: a simultaneous band ``scale * r_k``.
@@ -771,6 +852,27 @@ class HorizonConformal:
     On one series rather than i.i.d. windows, :meth:`calibrate` with ``mixing`` states
     ``1 - delta - eta``, ``eta`` from :func:`mixing_penalty`, and refuses where ``eta >= delta``.
 
+    Under a distribution shift, :meth:`calibrate` with ``shift=("tv", eps)`` or
+    ``shift=("kl", rho)`` holds ``1 - delta`` for every law ``P`` of the fresh window within that
+    ball of the calibration windows' law ``P0``: a total variation ``sup_A |P(A) - P0(A)| <= eps``,
+    or ``KL(P || P0) <= rho``. A ball on the windows' law holds the scores' law in it too, and the
+    scores' is all the band reads. Cauchois, Gupta, Ali and Duchi (JASA 2024, Proposition 1 and
+    Theorem 1): over such a ball an event of probability ``beta`` under ``P0`` keeps at least
+    ``g(beta)``, the least ``z`` whose two-point divergence from ``beta`` is within the radius,
+    and ``g`` is convex, so the ``k``-th smallest score holds a fresh window drawn from ``P``
+    with probability at least ``g(k / (n + 1))``. The scale is therefore the
+    ``ceil((n + 1) beta)``-th smallest score, ``g(beta) = 1 - delta``: ``beta = 1 - delta + eps``
+    under total variation, exactly, and under KL the root ``beta > 1 - delta`` of
+    ``KL(Bernoulli(1 - delta) || Bernoulli(beta)) = rho``
+    (``validation/conformal_shift_budget.mac``). How to read the radius: it is the largest shift
+    between the calibration windows and the deployed ones the band is to survive, stated by the
+    caller; nothing here estimates it, and the band says nothing of a larger shift. A total
+    variation of ``delta`` or more leaves no finite band, and :meth:`calibrate` refuses it, as it
+    refuses too few windows for the shifted rank. A KL ball holds no law with mass where ``P0``
+    has none, and a total variation ball does. On one series the ball bounds the fresh window's
+    law given the calibration windows, and the level is ``g(beta - eta)``: ``1 - delta - eta``
+    under total variation, less under KL.
+
     What it covers: windows of the policy that logged the calibration windows, under that
     policy's actions. Not the plan's own actions, which move the plant elsewhere; and it moves no
     number of the tube, which it reads as a profile only.
@@ -782,6 +884,7 @@ class HorizonConformal:
     rank: int
     scale: float
     eta: float | None = None
+    shift: tuple[Literal["tv", "kl"], float] | None = None
 
     @property
     def band(self) -> tuple[float, ...]:
@@ -790,8 +893,13 @@ class HorizonConformal:
 
     @property
     def level(self) -> float:
-        """The joint level the band holds: ``1 - delta``, less ``eta`` on one series."""
-        return 1.0 - self.delta - (self.eta or 0.0)
+        """The joint level the band holds: ``1 - delta``, less ``eta`` on one series, for every
+        law in the shift's ball where there is one; on one series under a KL ball,
+        ``g(beta - eta)``, the least that ball leaves of the series' ``beta - eta``."""
+        if self.shift is None or self.shift[0] == "tv" or self.eta is None:
+            return 1.0 - self.delta - (self.eta or 0.0)
+        held = 1.0 - float(_shift_gap(self.delta, self.shift)) - self.eta
+        return _kl_floor(held, self.shift[1])
 
     @classmethod
     def calibrate(
@@ -802,6 +910,7 @@ class HorizonConformal:
         *,
         mixing: Callable[[int], float] | None = None,
         train_lag: int | None = None,
+        shift: tuple[Literal["tv", "kl"], float] | None = None,
     ) -> HorizonConformal:
         """Calibrate on ``errors``, ``(n, H, states)``, one row per window as
         :func:`horizon_errors` returns them, against ``profile``, one positive radius per step.
@@ -811,11 +920,20 @@ class HorizonConformal:
                 (:func:`mixing_penalty`); None where the windows are i.i.d.
             train_lag: with ``mixing``, the lag in windows from the data the model and the
                 profile were fitted on to the test window (:func:`mixing_penalty`).
+            shift: ``("tv", eps)`` or ``("kl", rho)``, the ball around the calibration windows'
+                law whose every law the band holds at its level: a total variation ``eps``, or
+                the divergence ``KL(P || P0)`` of the deployed law ``P`` from the calibration
+                law ``P0`` (the class's docstring). The caller's bound on the shift, not an
+                estimate. None, the default, reads no shift, and a radius of 0 reads the same
+                band.
 
         Raises:
             ValueError: when ``delta`` is not in ``(0, 1)``, the errors and the profile do not
                 pair, too few windows certify ``1 - delta``, ``train_lag`` is given without
-                ``mixing``, or the series' ``eta`` is at least ``delta``.
+                ``mixing``, or the series' ``eta`` is at least ``delta``; when ``shift`` names
+                another ball or a negative or infinite radius, its radius leaves the band's
+                scale infinite, at these windows or at any number of them (a total variation of
+                ``delta`` or more), or on one series a KL ball leaves no level.
         """
         if not 0.0 < delta < 1.0:
             raise ValueError(f"delta={delta!r} is the share left uncovered, in (0, 1)")
@@ -823,13 +941,10 @@ class HorizonConformal:
             raise ValueError("train_lag is read with mixing only: i.i.d. windows have no lag")
         scores = _horizon_scores(errors, profile)
         n = int(scores.size)
-        rank = _conformal_rank(n, delta)
+        gap = _shift_gap(delta, shift)
+        rank = n + 1 - math.floor((n + 1) * gap)
         if rank > n:
-            least = math.ceil((1 - _as_written(delta)) / _as_written(delta))
-            raise ValueError(
-                f"{n} calibration windows cannot certify a joint level {1.0 - delta:.6g}: the "
-                f"scale is the {rank}-th smallest score, so it needs at least {least} of them"
-            )
+            raise ValueError(_too_few_windows(n, delta, rank, gap, shift))
         penalty = None
         if mixing is not None:
             penalty = mixing_penalty(mixing, n, train_lag)
@@ -838,6 +953,13 @@ class HorizonConformal:
                     f"on one series {n} windows pay eta = {penalty:.4g} of coverage for their "
                     f"dependence, at least delta = {delta:.6g}: no joint level is left to state"
                 )
+            held = 1.0 - float(gap) - penalty
+            if shift is not None and shift[0] == "kl" and _kl_floor(held, shift[1]) == 0.0:
+                raise ValueError(
+                    f"on one series {n} windows pay eta = {penalty:.4g} of coverage for their "
+                    f"dependence, and a Kullback-Leibler ball of {shift[1]:.6g} can take all "
+                    f"of the {held:.4g} left: no joint level is left to state"
+                )
         return cls(
             profile=tuple(float(radius) for radius in profile),
             delta=float(delta),
@@ -845,6 +967,7 @@ class HorizonConformal:
             rank=rank,
             scale=float(np.sort(scores)[rank - 1]),
             eta=penalty,
+            shift=None if shift is None else (shift[0], float(shift[1])),
         )
 
     def covers(self, errors: ArrayLike) -> NDArray[np.bool_]:

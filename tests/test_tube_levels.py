@@ -27,7 +27,9 @@ from chc.integrate import rk4_step
 from chc.uncertainty import (
     HorizonConformal,
     _conformal_rank,
+    _kl_floor,
     _noise_tube,
+    _shift_gap,
     gaussian_mixing,
     horizon_errors,
     mixing_penalty,
@@ -280,6 +282,212 @@ def test_one_series_states_its_level_less_eta_and_refuses_where_eta_reaches_delt
     assert 0.0 < eta < 0.2
     assert band.level == pytest.approx(0.8 - eta, abs=0.0, rel=1e-15)
     assert band.scale == HorizonConformal.calibrate(large, profile, 0.2).scale
+
+
+# --- the shift budget -----------------------------------------------------------------------
+
+# conformal_shift_budget.mac (3): (delta, rho) -> 1 - beta*, the KL root's gap, to 40 digits
+_KL_GAPS = {
+    (0.1, 0.05): 3.127839627227936540300086934407307430606e-2,
+    (0.05, 0.01): 2.49811448166510254755891669892780834939e-2,
+    (0.2, 0.5): 6.913622143754781967040144623535897546016e-3,
+    (0.1, 0.01): 6.291062984725830877598039935399332922351e-2,
+    (0.01, 0.1): 1.678597852949661221102213745746450938664e-7,
+}
+
+
+def _uniform_draws(rng: np.random.Generator, n: int) -> np.ndarray:
+    """``(_DRAWS, n, 1, 1)`` calibration scores drawn from the uniform law on ``[0, 1)``."""
+    return rng.uniform(size=(_DRAWS, n, 1, 1))
+
+
+def _shares(
+    calibration: np.ndarray, fresh: np.ndarray, delta: float, shift: tuple[str, float]
+) -> tuple[np.ndarray, np.ndarray]:
+    """The share of the fresh scores, ``(laws, _DRAWS)``, one a draw for each law, that the
+    shifted band and the unshifted one cover, each calibrated on the draw's own scores."""
+    shifted = np.zeros(fresh.shape[0])
+    unshifted = np.zeros(fresh.shape[0])
+    for draw, scores in zip(calibration, fresh.T, strict=True):
+        tests = scores[:, None, None]
+        shifted += HorizonConformal.calibrate(draw, [1.0], delta, shift=shift).covers(tests)
+        unshifted += HorizonConformal.calibrate(draw, [1.0], delta).covers(tests)
+    return shifted / _DRAWS, unshifted / _DRAWS
+
+
+@pytest.mark.parametrize("kind", ["tv", "kl"])
+def test_a_shift_of_radius_zero_reads_the_band_without_one(kind: str) -> None:
+    """At a radius of 0 the rank, the scale and the level are the unshifted band's, and too few
+    windows are refused alike, over every ``n <= 40`` and ``delta`` in twentieths."""
+    rng = np.random.default_rng(5)
+    for n in range(1, 41):
+        errors = rng.normal(size=(n, 3, 2))
+        for twentieths in range(1, 20):
+            delta = twentieths / 20.0
+            if _conformal_rank(n, delta) > n:
+                for shift in (None, (kind, 0.0)):
+                    with pytest.raises(ValueError, match="cannot certify a joint level"):
+                        HorizonConformal.calibrate(errors, [1.0, 2.0, 0.5], delta, shift=shift)
+                continue
+            plain = HorizonConformal.calibrate(errors, [1.0, 2.0, 0.5], delta)
+            zero = HorizonConformal.calibrate(errors, [1.0, 2.0, 0.5], delta, shift=(kind, 0.0))
+            assert plain.rank == _conformal_rank(n, delta)
+            assert zero.shift == (kind, 0.0)
+            assert dataclasses.replace(zero, shift=None) == plain
+            assert zero.level == plain.level
+
+
+def test_the_tv_rank_reads_one_less_delta_plus_eps_in_exact_arithmetic() -> None:
+    """conformal_shift_budget.mac (1): the rank is ``ceil((n + 1)(1 - delta + eps))`` as written.
+    At ``n = 59``, ``delta = 0.1`` and ``eps = 0.05`` it is 57, where the floats' ``60 * 0.95``
+    reads 57.00000000000001 and asks for the 58th; 19 windows certify that level, 18 do not."""
+    rng = np.random.default_rng(9)
+    for n in range(24, 80):
+        for delta, eps in ((0.1, 0.05), (0.2, 0.15), (0.05, 0.01), (0.3, 0.0)):
+            band = HorizonConformal.calibrate(
+                rng.normal(size=(n, 1, 1)), [1.0], delta, shift=("tv", eps)
+            )
+            exact = (n + 1) * (1 - Fraction(str(delta)) + Fraction(str(eps)))
+            assert band.rank == math.ceil(exact)
+            assert band.level == pytest.approx(1.0 - delta, abs=0.0, rel=1e-15)
+    assert math.ceil(60 * (1 - 0.1 + 0.05)) == 58
+    scores = np.arange(1.0, 60.0)[:, None, None]
+    assert HorizonConformal.calibrate(scores, [1.0], 0.1, shift=("tv", 0.05)).scale == 57.0
+    with pytest.raises(ValueError, match="needs at least 19 of them"):
+        HorizonConformal.calibrate(scores[:18], [1.0], 0.1, shift=("tv", 0.05))
+    assert HorizonConformal.calibrate(scores[:19], [1.0], 0.1, shift=("tv", 0.05)).rank == 19
+
+
+def test_the_band_holds_its_level_where_a_tv_shift_moves_eps_of_the_windows_beyond_it() -> None:
+    """conformal_shift_budget.mac (1): 20,000 draws of 39 calibration windows and one fresh one,
+    scores uniform on ``[0, 1)``. Two laws of the fresh score are at a total variation of exactly
+    ``eps = 0.05``: the scores below ``eps`` moved to 2, beyond every band, the worst case, and a
+    share ``eps`` of the windows at 2, the mixture. The shifted band, the 38th score, holds the
+    first on ``38/40 - eps = 0.9 = 1 - delta`` of draws in expectation and the second on 0.9025;
+    the unshifted one, the 36th, on 0.85 and 0.855: below its level, by more than ten standard
+    errors."""
+    rng = np.random.default_rng(31)
+    n, delta, eps = 39, 0.1, 0.05
+    calibration = _uniform_draws(rng, n)
+    fresh = rng.uniform(size=_DRAWS)
+    moved = np.where(fresh < eps, 2.0, fresh)
+    mixed = np.where(rng.uniform(size=_DRAWS) < eps, 2.0, rng.uniform(size=_DRAWS))
+    se = math.sqrt(0.9 * 0.1 / _DRAWS)
+    shifted, unshifted = _shares(calibration, np.stack([moved, mixed]), delta, ("tv", eps))
+    assert np.all(np.abs(shifted - [0.9, 0.9025]) <= 4.0 * se)
+    assert np.all(np.abs(unshifted - [0.85, 0.855]) <= 4.0 * se)
+    assert np.all(shifted >= 1.0 - delta - 4.0 * se)
+    assert np.all(unshifted < 1.0 - delta - 10.0 * se)
+
+
+def test_the_kl_level_is_maxima_s_root_and_grows_with_the_radius() -> None:
+    """conformal_shift_budget.mac (3) and (4): the gap ``1 - beta*`` is Maxima's to 1e-12 of
+    itself, ``beta*`` to 1e-10, and puts the divergence back at ``rho``; ``beta*`` and the rank
+    grow with ``rho`` from ``1 - delta`` at 0, by ``sqrt(2 delta (1 - delta) rho)`` near it. At
+    ``delta = 0.1``, ``rho = 0.05`` 31 windows certify the level, 30 do not."""
+    for (delta, rho), gap in _KL_GAPS.items():
+        found = float(_shift_gap(delta, ("kl", rho)))
+        assert found == pytest.approx(gap, rel=1e-12, abs=0.0)
+        assert abs((1.0 - found) - (1.0 - gap)) <= 1e-10
+        level = 1.0 - found
+        divergence = (1 - delta) * math.log((1 - delta) / level) + delta * math.log(delta / found)
+        assert divergence == pytest.approx(rho, rel=1e-9, abs=0.0)
+    radii = [0.0, 1e-6, 1e-3, 0.01, 0.05, 0.1, 0.2, 0.3, 0.4]
+    gaps = [float(_shift_gap(0.1, ("kl", rho))) for rho in radii]
+    assert gaps[0] == 0.1
+    assert all(later < earlier for earlier, later in itertools.pairwise(gaps))
+    # (4): near 0 the gap falls by sqrt(2 delta (1 - delta) rho), to a relative O(sqrt(rho))
+    first_order = math.sqrt(2.0 * 0.1 * 0.9 * 1e-6)
+    assert (0.1 - gaps[1]) / first_order == pytest.approx(0.9987428172926519, rel=1e-9, abs=0.0)
+    errors = np.random.default_rng(2).normal(size=(3000, 1, 1))
+    ranks = [HorizonConformal.calibrate(errors, [1.0], 0.1, shift=("kl", r)).rank for r in radii]
+    assert ranks[0] == _conformal_rank(3000, 0.1)
+    assert all(later >= earlier for earlier, later in itertools.pairwise(ranks))
+    assert ranks[-1] > ranks[0]
+    with pytest.raises(ValueError, match="needs at least 31 of them"):
+        HorizonConformal.calibrate(errors[:30], [1.0], 0.1, shift=("kl", 0.05))
+    assert HorizonConformal.calibrate(errors[:31], [1.0], 0.1, shift=("kl", 0.05)).rank == 31
+
+
+def test_the_band_holds_its_level_under_the_kl_tilt_at_the_radius() -> None:
+    """conformal_shift_budget.mac (6): 20,000 draws of 99 calibration windows and one fresh one,
+    scores uniform on ``[0, 1)``. The fresh score's law puts ``1 - delta`` on ``[0, beta*)`` and
+    the rest above, a divergence of exactly ``rho = 0.05``, ``beta* = 0.96872``. The shifted band,
+    the 97th score, holds it on 0.91791 of draws in expectation; the unshifted one, the 90th, on
+    0.83616."""
+    rng = np.random.default_rng(37)
+    n, delta, rho = 99, 0.1, 0.05
+    level = 1.0 - float(_shift_gap(delta, ("kl", rho)))
+    divergence = (1 - delta) * math.log((1 - delta) / level) + delta * math.log(
+        delta / (1.0 - level)
+    )
+    assert divergence == pytest.approx(rho, rel=1e-12, abs=0.0)
+    calibration = _uniform_draws(rng, n)
+    below = rng.uniform(size=_DRAWS) < 1.0 - delta
+    fresh = np.where(below, 0.0, level) + rng.uniform(size=_DRAWS) * np.where(
+        below, level, 1.0 - level
+    )
+    [shifted], [unshifted] = _shares(calibration, fresh[None], delta, ("kl", rho))
+    se = math.sqrt(0.9 * 0.1 / _DRAWS)
+    assert abs(shifted - 0.9179050763393374) <= 4.0 * se
+    assert abs(unshifted - 0.8361625394282504) <= 4.0 * se
+    assert shifted >= 1.0 - delta
+    assert unshifted < 1.0 - delta - 10.0 * se
+
+
+def test_one_series_under_a_shift_states_what_the_ball_leaves_of_beta_less_eta() -> None:
+    """On one series the level is ``g(beta* - eta)``: ``1 - delta - eta`` under total variation;
+    under KL the root ``z < beta* - eta`` of ``KL(z || beta* - eta) = rho``, below
+    ``1 - delta - eta`` (conformal_shift_budget.mac (5): 0.86573 and 0.81989 at ``eta`` of 0.02
+    and 0.05, ``delta = 0.1``, ``rho = 0.05``). Where the ball can take all that is left, as at
+    ``delta = 0.4``, ``rho = 1`` and the ``eta = 0.356`` of 64 windows, it refuses."""
+    level = 1.0 - float(_shift_gap(0.1, ("kl", 0.05)))
+    assert _kl_floor(level - 0.02, 0.05) == pytest.approx(0.8657253624004547, rel=1e-12, abs=0.0)
+    assert _kl_floor(level - 0.05, 0.05) == pytest.approx(0.8198868926952535, rel=1e-12, abs=0.0)
+    rng = np.random.default_rng(11)
+    profile = [1.0, 1.0]
+    beta = gaussian_mixing([[0.5]], [[1.0]], stride=3, span=2)
+    large = rng.normal(size=(20_000, 2, 1))
+    tv = HorizonConformal.calibrate(
+        large, profile, 0.2, mixing=beta, train_lag=50, shift=("tv", 0.05)
+    )
+    eta = tv.eta
+    assert eta is not None
+    assert 0.0 < eta < 0.2
+    assert tv.level == pytest.approx(0.8 - eta, abs=0.0, rel=1e-15)
+    assert tv.scale == HorizonConformal.calibrate(large, profile, 0.2, shift=("tv", 0.05)).scale
+    kl = HorizonConformal.calibrate(
+        large, profile, 0.2, mixing=beta, train_lag=50, shift=("kl", 0.05)
+    )
+    assert kl.eta == eta
+    held = 1.0 - float(_shift_gap(0.2, ("kl", 0.05))) - eta
+    z = kl.level
+    assert 0.0 < z < 0.8 - eta
+    divergence = z * math.log(z / held) + (1 - z) * math.log((1 - z) / (1 - held))
+    assert divergence == pytest.approx(0.05, rel=1e-9, abs=0.0)
+    independent = rng.normal(size=(64, 1, 1))
+    assert HorizonConformal.calibrate(independent, [1.0], 0.4, mixing=lambda j: 0.0).level > 0.2
+    with pytest.raises(ValueError, match=r"can take all of the 0\.628"):
+        HorizonConformal.calibrate(independent, [1.0], 0.4, mixing=lambda j: 0.0, shift=("kl", 1.0))
+
+
+def test_calibrate_refuses_a_shift_it_cannot_read_or_hold() -> None:
+    """A ball it does not know, a radius it cannot read, a total variation of ``delta`` or more,
+    and a KL radius past the windows: 568,532 hold ``rho = 1`` at ``delta = 0.1``
+    (conformal_shift_budget.mac (3)), and past 1e15 the floats no longer count them."""
+    errors = np.ones((400, 2, 1))
+    for shift, message in (
+        (("wasserstein", 0.1), "the ball is 'tv' or 'kl'"),
+        (("tv", -0.01), "finite and at least 0"),
+        (("kl", math.nan), "finite and at least 0"),
+        (("kl", math.inf), "finite and at least 0"),
+        (("tv", 0.1), "no number of calibration windows certifies"),
+        (("tv", 0.5), "the band is infinite"),
+        (("kl", 1.0), "needs at least 568532 of them"),
+        (("kl", 5.0), "needs more than 1e15 of them"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            HorizonConformal.calibrate(errors, [1.0, 1.0], 0.1, shift=shift)  # type: ignore[arg-type]
 
 
 # --- the channel's region -------------------------------------------------------------------

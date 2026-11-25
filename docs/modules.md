@@ -125,6 +125,9 @@ adjustment set asserted gives `2.08`; with the confounder latent there is no sch
   **time-consistent nested-CVaR** aggregates that disagreement, where the risk-neutral sum averages
   one very bad step away.
 - A **Wasserstein-1 DRO** margin for distribution shift.
+- One conformal band for every step of a horizon (*experimental*), which can hold its level for
+  every deployed law within a stated total variation or Kullback-Leibler divergence of the
+  calibration windows' law.
 - **Rollout error tubes**: RK4 recursions at a Lipschitz rate or a state matrix, or Euler's on
   request and under `prescribe` by default, giving a time-varying uncertainty tube, safety
   tightening, and the horizon the tube trusts. The tube is a bound where the per-step error is one;
