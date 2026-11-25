@@ -104,8 +104,11 @@ def test_a_one_step_bias_is_maxima_s_closed_form(
     # an ulp of x0, less the target: each of its terms carries about 3 ulp(x0)/|y| relative
     # error, the case's own conditioning, not the plan's. At x0 = -1.78 and y = -2.8e-13 the bias
     # read 5.6e-4 off; with y at least 1% of the states its terms read within 4e-14 of the scale.
+    # Below |y| = 1e-150 its square is subnormal, with fewer bits than the tolerance assumes: at
+    # x0 = 2.5e-155 the bias read 6.033e-310 against 6.002e-310.
     phi = _rk4(a, b, DT)[0]
     assume(abs(phi * x0 - target) >= 1e-2 * max(abs(phi * x0), abs(target)))
+    assume(abs(phi * x0 - target) >= 1e-150)
     found = _one_step(a, b, x0, target, r, qf).planned_cost_bias(np.eye(1))
     expected = _coefficient(a, b, x0, target, r, qf)
     scale = found.optimism + abs(found.curvature)
