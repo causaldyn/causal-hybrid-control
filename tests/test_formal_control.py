@@ -67,8 +67,9 @@ FORMAL_LINKS = {
         ),
     },
     "chc.barrier": {
-        "cites": ("barrier_feasibility.mac", "barrier_feasibility.v"),
+        "cites": ("barrier_feasibility.mac", "barrier_feasibility.v", "exit_probability.mac"),
         "tests": (
+            "test_exit_probability.py::test_the_bound_holds_the_exact_exit_probability_of_a_scalar_loop",
             "test_barrier_margin_is_the_best_guaranteed_derivative",
             "test_barrier_safe_action_attains_the_margin",
             "test_barrier_margin_loss_saturates_at_the_channel",
@@ -76,6 +77,20 @@ FORMAL_LINKS = {
             "test_barrier_gamma_star_inverts_the_msm_radius",
             "test_barrier_admissible_interval_is_the_admissible_set",
             "test_barrier_filter_action_is_guaranteed",
+        ),
+    },
+    "chc.barrier._least_affine_margin": {
+        "cites": ("exit_probability.mac",),
+        "tests": (
+            "test_exit_probability.py::test_the_least_affine_margin_is_maxima_s_closed_form",
+        ),
+    },
+    "chc.barrier.exit_probability": {
+        "cites": ("exit_probability.mac",),
+        "tests": (
+            "test_exit_probability.py::test_the_bound_holds_the_exact_exit_probability_of_a_scalar_loop",
+            "test_exit_probability.py::test_the_two_dimensional_slack_is_the_exact_one",
+            "test_exit_probability.py::test_the_closed_form_tightens_with_alpha_and_the_start_as_stated",
         ),
     },
     "chc.plan.CausalPlan.decision_weight": {

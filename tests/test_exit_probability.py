@@ -25,6 +25,7 @@ from chc.barrier import (
     ExitProbability,
     QuadraticBarrier,
     _exit_bound,
+    _least_affine_margin,
     exit_probability,
     robust_safety_filter,
 )
@@ -181,6 +182,15 @@ def test_the_two_dimensional_slack_is_the_exact_one() -> None:
     assert gridded.scope == "states"
     assert gridded.slack == pytest.approx(min(margin(x) for x in grid), rel=1e-12, abs=0.0)
     assert reading.slack < gridded.slack
+
+
+def test_the_least_affine_margin_is_maxima_s_closed_form() -> None:
+    """STEP 6's ``r0 - q'Q^+ q`` on the two-dimensional loop, read directly: -2357033/2420101800."""
+    noise = _B2 @ _POLICY2.covariance @ _B2.T
+    least = _least_affine_margin(
+        _ELLIPSE, _A2 + _B2 @ _GAIN2, np.zeros(2), float(np.sum(_ELLIPSE.shape * noise)), 0.95
+    )
+    assert least == pytest.approx(-2357033 / 2420101800, rel=1e-12, abs=0.0)
 
 
 def test_leaving_a_wider_set_is_bounded_more_tightly() -> None:

@@ -223,6 +223,14 @@ FORMAL_LINKS = {
             "test_move_price_keep_error_is_the_keep_prices_spread",
         ),
     },
+    "chc.gate.ConformalPessimism": {
+        "cites": ("conformal_decision.mac",),
+        "tests": (
+            "test_conformal_decision.py::test_every_adversary_keeps_the_mean_within_the_bound",
+            "test_conformal_decision.py::test_the_bound_is_attained_up_to_the_last_gap_below_safe",
+            "test_conformal_decision.py::test_a_loss_that_rises_again_with_the_weight_breaks_the_bound",
+        ),
+    },
     "chc.gate.channel_drift_evalues": {
         "cites": ("dither_drift_evalue.mac",),
         "tests": (
