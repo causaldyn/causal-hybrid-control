@@ -25,7 +25,9 @@ import pytest
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
-from chc.allocation import _cut, _cvar, _cvar_weights, _onto, allocate, cvar_allocate
+from chc._allocation.planes import _onto
+from chc._allocation.readings import _cut, _cvar, _cvar_weights
+from chc.allocation import allocate, cvar_allocate
 from chc.response import (
     Channel,
     Exponential,
@@ -466,7 +468,7 @@ def test_readings_of_mixed_families_are_read_each_on_its_own_curves():
 @pytest.mark.parametrize(
     ("limit", "s_shaped"), [("max_boxes", True), ("rounds", False)], ids=["boxes", "rounds"]
 )
-def test_a_search_its_cap_stops_says_so_and_logs_its_gap(monkeypatch, caplog, limit, s_shaped):
+def test_a_search_its_cap_stops_says_so_and_logs_its_gap(allocation_patch, caplog, limit, s_shaped):
     """Stopped by its cap, on S-shaped curves after one box or on concave ones after one round of
     planes, the search says so, with the gap open, and logs one warning that carries it. At the
     level 1 the readings' mean gains from a move, so one round's planes leave the gap open."""
@@ -479,7 +481,7 @@ def test_a_search_its_cap_stops_says_so_and_logs_its_gap(monkeypatch, caplog, li
         readings, budget, periods, history = _readings(5, seed=3), BUDGET, PERIODS, HISTORY
         against, lower, upper = CURRENT, LOWER, UPPER
         cap = {}
-        monkeypatch.setattr("chc.allocation._ROUNDS", 1)
+        allocation_patch("_ROUNDS", 1)
     with caplog.at_level(logging.WARNING, logger="chc.allocation"):
         plan = cvar_allocate(
             readings,
@@ -892,22 +894,22 @@ def test_a_program_stalled_on_concave_curves_ends_the_search_with_its_gap(stall,
     ("builder", "level"),
     [("_readings", 1.0), ("_s_shaped_readings", 1.0), ("_readings", 0.001)],
 )
-def test_its_programs_keep_their_costs_out_of_highs_scaling(monkeypatch, builder, level):
+def test_its_programs_keep_their_costs_out_of_highs_scaling(allocation_patch, builder, level):
     """HiGHS folds a program's costs into its scaling when the least nonzero one is under 0.1. An
     excess cost of one over the worst share's readings stretched its factors to 2^15 at 400
     readings: the solution then missed 1e-10 once unscaled, and HiGHS solved the unscaled program
     again with its costs unperturbed, which at the level 1 cycled past eleven million iterations. On
     thirty readings every cost the planes pass is at least 0.1 where it is not zero, at the level
     1 and at 0.001, where the worst share is 0.03 of a reading."""
-    import chc.allocation
+    import chc._allocation.planes
 
-    real, least = chc.allocation.linprog, []
+    real, least = chc._allocation.planes.linprog, []
 
     def linprog(c, *args, **kwargs):
         least.append(float(np.min(np.abs(c[c != 0.0]))))
         return real(c, *args, **kwargs)
 
-    monkeypatch.setattr(chc.allocation, "linprog", linprog)
+    allocation_patch("linprog", linprog)
     plan = cvar_allocate(
         globals()[builder](30, seed=7),
         BUDGET,

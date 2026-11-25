@@ -16,12 +16,13 @@ import pytest
 from scipy.optimize import minimize
 
 import chc.allocation
+from chc._allocation.geo import _priced
+from chc._allocation.search import _marginal
 from chc.allocation import (
     MarginalReturnTarget,
     Totals,
     _Group,
     _on_envelopes,
-    _priced,
     _worths,
     allocate,
     allocate_geos,
@@ -520,7 +521,9 @@ def test_a_box_s_bound_is_its_envelopes_where_newton_s_method_closes_its_plan_on
     assert one.bound - alone.worth > 0.2
 
 
-def test_a_search_of_the_grid_reads_a_cell_s_slope_hundreds_of_times_not_millions(monkeypatch):
+def test_a_search_of_the_grid_reads_a_cell_s_slope_hundreds_of_times_not_millions(
+    allocation_patch,
+):
     """An envelope's chord holds its cell at one end of it at every price but the chord's slope,
     where its rate jumps across the chord. In a box Newton's method on the totals' prices stops at
     its first step that does not shrink their miss: the search of the grid at 1.6 reads a cell's
@@ -534,7 +537,7 @@ def test_a_search_of_the_grid_reads_a_cell_s_slope_hundreds_of_times_not_million
         reads += 1
         return slope(worth, rate)
 
-    monkeypatch.setattr(chc.allocation, "_slope", counted)
+    allocation_patch("_slope", counted)
     plan = allocate_geos(S_GRID, 1.6, 1, **S_BOX)
     assert (plan.stopped, plan.limit) == ("closed", None)
     assert reads < 5_000
@@ -905,7 +908,7 @@ def test_under_the_budget_alone_any_plan_is_priced_as_allocate_prices_it(seed):
     rates[:2] = 0.0, 10.0
     budget = _Group(np.arange(5), float(rates.sum()), float(rates.sum()), np.ones(5))
     [price] = _priced(worths, rates, np.zeros(5), upper, [budget], 1, 0.0, True)
-    alone = chc.allocation._marginal(worths, rates, upper, 1)
+    alone = _marginal(worths, rates, upper, 1)
     assert price == pytest.approx(alone, rel=1e-12, abs=0.0)
 
 

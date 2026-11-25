@@ -5,7 +5,9 @@ the pytest-xdist workers share the card rather than the first claiming 75% of it
 matmuls run in float32 rather than TF32, whose 10-bit mantissa no tolerance here was set for."""
 
 import gc
+import importlib
 import os
+import pkgutil
 from pathlib import Path
 
 import pytest
@@ -46,15 +48,39 @@ def _release_compiled_programs():
 
 
 @pytest.fixture
-def stall(monkeypatch):
+def allocation_patch(monkeypatch):
+    """Sets a global of ``chc.allocation`` for one test in every module that binds it: the module
+    and its private modules under ``chc._allocation``, which split one namespace into several, so
+    a name its code reads may be bound in more than one of them. A name none binds, or one bound
+    to different objects, is refused."""
+    import chc._allocation  # here, not above: the modules must load after float64 is enabled
+    import chc.allocation
+
+    modules = [chc.allocation] + [
+        importlib.import_module(f"chc._allocation.{found.name}")
+        for found in pkgutil.iter_modules(chc._allocation.__path__)
+    ]
+
+    def patch(name: str, value: object) -> None:
+        bound = [module for module in modules if name in vars(module)]
+        assert bound, f"no module of chc.allocation binds {name}"
+        assert len({id(vars(module)[name]) for module in bound}) == 1, name
+        for module in bound:
+            monkeypatch.setattr(module, name, value)
+
+    return patch
+
+
+@pytest.fixture
+def stall(allocation_patch):
     """Arms ``chc.allocation``'s linear programs so that the call numbered ``at`` returns a program
     HiGHS left unsolved: status 1, its iteration limit reached, as on planes it would pivot on
     without end, or 4, ended with its optimality conditions unmet after half as many iterations.
     The list returned records each call's iteration limit."""
-    import chc.allocation  # here, not above: the module must load after float64 is enabled
+    import chc._allocation.planes  # here, not above: the module must load after float64 is enabled
 
     def arm(at: int, status: int = 1) -> list[int]:
-        real, limits = chc.allocation.linprog, []
+        real, limits = chc._allocation.planes.linprog, []
 
         def linprog(*args, **kwargs):
             limits.append(kwargs["options"]["maxiter"])
@@ -66,7 +92,7 @@ def stall(monkeypatch):
                 )
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(chc.allocation, "linprog", linprog)
+        allocation_patch("linprog", linprog)
         return limits
 
     return arm

@@ -18,10 +18,10 @@ from hypothesis import strategies as st
 from scipy.optimize import minimize, minimize_scalar
 
 import chc.allocation
+from chc._allocation.curves import _bounded
 from chc.allocation import (
     MarginalReturnTarget,
     ReturnTarget,
-    _bounded,
     _on_envelopes,
     _slope,
     _split,
@@ -354,16 +354,18 @@ def test_a_schedule_on_concave_curves_with_carryover_closes_on_its_bound():
     assert np.all((plan.schedule >= LOWER - 1e-12) & (plan.schedule <= UPPER + 1e-12))
 
 
-def test_a_schedule_closes_on_its_bound_from_a_local_ascent_that_stopped_early(monkeypatch):
+def test_a_schedule_closes_on_its_bound_from_a_local_ascent_that_stopped_early(
+    allocation_patch,
+):
     """The polish after SLSQP finishes the ascent: from SLSQP stopped at 15 iterations, with cells
     inside their boxes that belong on a bound and slopes 0.5 apart, the active-set Newton steps
     close the Frank--Wolfe gap. A runner whose SLSQP stopped a little short read 'cap' there."""
-    real = chc.allocation.minimize
+    real = minimize
 
     def early(*args, **kwargs):
         return real(*args, **{**kwargs, "options": {"maxiter": 15, "ftol": 1e-15}})
 
-    monkeypatch.setattr(chc.allocation, "minimize", early)
+    allocation_patch("minimize", early)
     plan = allocate(
         CHANNELS, BUDGET, PERIODS, lower=LOWER, upper=UPPER, history=HISTORY, schedule=True
     )

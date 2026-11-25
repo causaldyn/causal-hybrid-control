@@ -24,7 +24,8 @@ from hypothesis import strategies as st
 from scipy import sparse
 from scipy.optimize import linprog
 
-import chc.allocation as allocation
+from chc._allocation.planes import _least, _outward, _planes, _product, _spans, _unit
+from chc._allocation.readings import _evened
 from chc.allocation import allocate_geos, cvar_allocate, minimax_allocate
 from chc.response import Channel, GeometricAdstock, Hill, MichaelisMenten, Power
 
@@ -117,7 +118,7 @@ def test_a_slope_highs_leaves_out_is_read_into_the_bound():
     bounds = [(0.0, 2.0), (0.0, 2.0**20)]
     highs = linprog(objective, A_ub=rows, b_ub=limits, bounds=bounds, method="highs")
     assert highs.fun == 1.0  # HiGHS's objective stands above the least
-    program = allocation._planes(objective, rows, limits, bounds, None, None)
+    program = _planes(objective, rows, limits, bounds, None, None)
     assert program.status == 0
     assert Fraction(program.fun) == Fraction(8191, 8192)
 
@@ -131,7 +132,7 @@ def test_a_rounding_highs_leaves_above_the_least_is_not_in_the_bound(divisor):
     least = Fraction(1) / Fraction(divisor)
     highs = linprog(objective, A_ub=rows, b_ub=limits, bounds=[(0.0, 1.0)], method="highs")
     assert Fraction(highs.fun) > least
-    program = allocation._planes(objective, rows, limits, [(0.0, 1.0)], None, None)
+    program = _planes(objective, rows, limits, [(0.0, 1.0)], None, None)
     assert Fraction(program.fun) <= least
     assert least - Fraction(program.fun) <= 4 * Fraction(math.ulp(float(least)))
 
@@ -228,7 +229,7 @@ def test_a_plan_grown_with_its_budget_keeps_its_split_and_bound_in_shares_of_it(
 
 @pytest.mark.parametrize("planner", ["minimax", "cvar", "crossing"])
 def test_a_program_is_written_in_powers_of_two_and_its_bound_comes_back_exactly(
-    monkeypatch, planner
+    allocation_patch, planner
 ):
     """The rates in the power of two at or below the budget a period, each held at most the budget,
     which the budget's row implies, and the returns in the power of two at or below the largest:
@@ -238,14 +239,14 @@ def test_a_program_is_written_in_powers_of_two_and_its_bound_comes_back_exactly(
     exactly, the cvar's bound over its weight 2. On the crossing readings at a budget of 1, the box
     four times that, the bound stays below the worst regret, the highest program's value scaled
     exactly."""
-    real, programs = allocation._planes, []
+    real, programs = _planes, []
 
     def recorded(objective, rows, limits, bounds, equal, totals, box=None, evened=None):
         program = real(objective, rows, limits, bounds, equal, totals, box, evened)
         programs.append((program, bounds, totals))
         return program
 
-    monkeypatch.setattr(allocation, "_planes", recorded)
+    allocation_patch("_planes", recorded)
     box = {"lower": np.zeros(2), "upper": np.full(2, 240.0), "history": np.zeros((0, 2))}
     if planner == "minimax":
         plan = minimax_allocate([_linear(200.0, 100.0), _linear(100.0, 200.0)], 120.0, 2, **box)
@@ -292,7 +293,7 @@ def test_a_program_is_written_in_powers_of_two_and_its_bound_comes_back_exactly(
 )
 def test_a_unit_is_the_power_of_two_at_or_below_an_amount(amount, unit):
     """A subnormal amount's among them; nothing's is 1."""
-    assert allocation._unit(amount) == unit
+    assert _unit(amount) == unit
 
 
 @settings(max_examples=300, deadline=None)
@@ -312,7 +313,7 @@ def test_the_bound_is_its_duals_exact_bound_rounded_down(data, rows, columns):
     low = draws(NUMBERS | st.just(-math.inf), columns)
     high = draws(NUMBERS | st.just(math.inf), columns)
     duals = draws(NUMBERS | st.sampled_from([math.nan, math.inf, -math.inf]), rows)
-    bound = allocation._least(objective, matrix, (least, most), (low, high), duals)
+    bound = _least(objective, matrix, (least, most), (low, high), duals)
     assert bound == _below(_exact(objective, matrix, (least, most), (low, high), duals))
 
 
@@ -333,7 +334,7 @@ def test_where_a_product_underflows_or_passes_2_to_300_the_bound_stays_below(dat
     sides = (draws(wide | st.just(-math.inf), rows), draws(wide | st.just(math.inf), rows))
     box = (draws(wide | st.just(-math.inf), columns), draws(wide | st.just(math.inf), columns))
     duals = draws(wide, rows)
-    bound = allocation._least(objective, matrix, sides, box, duals)
+    bound = _least(objective, matrix, sides, box, duals)
     exact = _exact(objective, matrix, sides, box, duals)
     assert bound == -math.inf or Fraction(bound) <= exact
 
@@ -345,18 +346,13 @@ def test_a_product_that_underflows_is_allowed_for():
     nothing stays nothing however small the dual."""
     objective, matrix = np.zeros(1), np.array([[2.0**-600]])
     sides, box = (np.array([-math.inf]), np.zeros(1)), (np.array([-1.0]), np.array([1.0]))
-    bound = allocation._least(objective, matrix, sides, box, np.array([-(2.0**-600)]))
+    bound = _least(objective, matrix, sides, box, np.array([-(2.0**-600)]))
     assert _exact(objective, matrix, sides, box, [-(2.0**-600)]) == -(Fraction(2) ** -1200)
     assert -2 * math.ulp(0.0) <= bound < 0.0
-    assert (
-        allocation._least(objective, np.array([[2.0**301]]), sides, box, np.array([-1.0]))
-        == -math.inf
-    )
+    assert _least(objective, np.array([[2.0**301]]), sides, box, np.array([-1.0])) == -math.inf
     # the dual's side is nothing, and its plane's entry leaves the column no reduced cost
     tiny = np.array([-(2.0**-1000)])
-    assert (
-        allocation._least(-(2.0**-900) * np.ones(1), np.array([[2.0**100]]), sides, box, tiny) == 0
-    )
+    assert _least(-(2.0**-900) * np.ones(1), np.array([[2.0**100]]), sides, box, tiny) == 0
     assert _exact(-(2.0**-900) * np.ones(1), np.array([[2.0**100]]), sides, box, tiny) == 0
 
 
@@ -369,9 +365,7 @@ def test_a_product_is_two_doubles_that_sum_to_it_or_its_rounding_and_a_miss(a, b
     """Factors under ``2**300``, subnormal ones among them: where the split misses nothing, the
     product's rounding and rest sum to it exactly; elsewhere the rest is nothing and the rounding
     within the miss of the product."""
-    upper, lower, miss = (
-        float(part[0]) for part in allocation._product(np.array([a]), np.array([b]))
-    )
+    upper, lower, miss = (float(part[0]) for part in _product(np.array([a]), np.array([b])))
     exact = Fraction(a) * Fraction(b)
     if miss == 0.0:
         assert Fraction(upper) + Fraction(lower) == exact
@@ -405,9 +399,7 @@ def test_no_bound_passes_the_least_of_a_small_program(data, rows, noise):
     low = draws(st.floats(-4.0, 0.0), 2)
     high = low + draws(st.floats(0.0, 4.0), 2)
     least = _vertex_least(objective, matrix, limits, low, high)
-    program = allocation._planes(
-        objective, matrix, limits, list(zip(low, high, strict=True)), None, None
-    )
+    program = _planes(objective, matrix, limits, list(zip(low, high, strict=True)), None, None)
     if least is None or program.status != 0:
         return
     assert Fraction(program.fun) <= least
@@ -421,7 +413,7 @@ def test_no_bound_passes_the_least_of_a_small_program(data, rows, noise):
         np.resize(noise, rows),
     ):
         exact = _exact(objective, matrix, sides, box, duals)
-        assert Fraction(allocation._least(objective, matrix, sides, box, duals)) <= exact <= least
+        assert Fraction(_least(objective, matrix, sides, box, duals)) <= exact <= least
 
 
 @settings(max_examples=200, deadline=None)
@@ -438,7 +430,7 @@ def test_a_box_s_span_holds_every_plane_s_exact_reach(data, rows, columns):
     limits = draws(NUMBERS, rows)
     low = draws(NUMBERS, columns)
     high = np.maximum(low, draws(NUMBERS, columns))
-    least, most = allocation._spans(matrix, limits, low, high)
+    least, most = _spans(matrix, limits, low, high)
     planes = list(zip(matrix, limits, strict=True))
 
     def level(row, limit, corner) -> Fraction:
@@ -473,8 +465,8 @@ def test_a_span_allows_for_a_product_rounded_toward_its_plane():
     off = Fraction(0.1) * 5 - Fraction(0.5)
     assert off == Fraction(1, 2**55)
     low, high = np.zeros(1), np.array([5.0])
-    least, _ = allocation._spans(np.array([[0.1, 1.0]]), np.array([0.5]), low, high)
-    _, most = allocation._spans(np.array([[-0.1, 1.0]]), np.array([-0.5]), low, high)
+    least, _ = _spans(np.array([[0.1, 1.0]]), np.array([0.5]), low, high)
+    _, most = _spans(np.array([[-0.1, 1.0]]), np.array([-0.5]), low, high)
     assert Fraction(least) <= -off
     assert Fraction(most) >= off
 
@@ -529,9 +521,9 @@ def test_a_free_eta_and_excesses_held_above_nothing_are_read_in_their_implied_bo
     gains, slopes, readings = PLANES
     objective, rows, limits, equal, least = _cvar_program(gains, slopes, readings, 1.0)
     bounds = [(0.0, 1.0), (0.0, 1.0), (None, None), *((0.0, None),) * 3]
-    low, high = allocation._spans(rows, limits, np.zeros(2), np.ones(2))
+    low, high = _spans(rows, limits, np.zeros(2), np.ones(2))
     box = [(0.0, 1.0), (0.0, 1.0), (low, high), *((0.0, math.nextafter(high - low, math.inf)),) * 3]
-    program = allocation._planes(objective, rows, limits, bounds, equal, [1.0], box)
+    program = _planes(objective, rows, limits, bounds, equal, [1.0], box)
     assert program.status == 0
     assert Fraction(program.fun) <= least
     assert float(least - Fraction(program.fun)) <= 1e-12
@@ -542,9 +534,9 @@ def test_a_free_eta_and_excesses_held_above_nothing_are_read_in_their_implied_bo
     )
     duals = np.concatenate([program.ineqlin.marginals * 1.001, program.eqlin.marginals])
     unbounded = (np.array([0.0, 0.0, -math.inf, *[0.0] * 3]), np.array([1.0, 1.0, *[math.inf] * 4]))
-    assert allocation._least(objective, matrix, sides, unbounded, duals) == -math.inf
+    assert _least(objective, matrix, sides, unbounded, duals) == -math.inf
     implied = tuple(np.array(ends, dtype=float) for ends in zip(*box, strict=True))
-    bound = allocation._least(objective, matrix, sides, implied, duals)
+    bound = _least(objective, matrix, sides, implied, duals)
     assert -math.inf < bound
     assert Fraction(bound) <= least
 
@@ -615,12 +607,12 @@ PLANNERS = {
 
 @pytest.mark.parametrize("planner", PLANNERS)
 def test_each_planner_reads_its_bound_in_a_box_that_holds_its_programs_solution(
-    monkeypatch, planner
+    allocation_patch, planner
 ):
     """Each planner reads its programs' bounds in the box its planes imply, its levels bounded where
     the program leaves them free or open above. HiGHS's solution of each program is a least point
     and lies in that box, to HiGHS's tolerance, and the bound read there is finite."""
-    real, solved = allocation._planes, []
+    real, solved = _planes, []
 
     def recorded(objective, rows, limits, bounds, equal, totals, box=None, evened=None):
         program = real(objective, rows, limits, bounds, equal, totals, box, evened)
@@ -628,7 +620,7 @@ def test_each_planner_reads_its_bound_in_a_box_that_holds_its_programs_solution(
             solved.append((program, bounds if box is None else box))
         return program
 
-    monkeypatch.setattr(allocation, "_planes", recorded)
+    allocation_patch("_planes", recorded)
     PLANNERS[planner]()
     assert solved
     for program, box in solved:
@@ -639,7 +631,7 @@ def test_each_planner_reads_its_bound_in_a_box_that_holds_its_programs_solution(
 
 
 @pytest.mark.parametrize("off", [1e-9, 1e-6, -1e-6])
-def test_duals_evened_reading_by_reading_lose_the_masses_bias(monkeypatch, off):
+def test_duals_evened_reading_by_reading_lose_the_masses_bias(allocation_patch, off):
     """Each reading's dual mass moved by its own share, as HiGHS's moved by up to 3e-7 on 400
     readings, lowers the bound by about that times the reach of eta's box; evened, so that no
     reading's mass passes its excess's cost and they come to eta's, the bound is back within
@@ -647,12 +639,12 @@ def test_duals_evened_reading_by_reading_lose_the_masses_bias(monkeypatch, off):
     gains, slopes, readings = PLANES
     objective, rows, limits, equal, least = _cvar_program(gains, slopes, readings, 1.0)
     bounds = [(0.0, 1.0), (0.0, 1.0), (None, None), *((0.0, None),) * 3]
-    low, high = allocation._spans(rows, limits, np.zeros(2), np.ones(2))
+    low, high = _spans(rows, limits, np.zeros(2), np.ones(2))
     box = [(0.0, 1.0), (0.0, 1.0), (low, high), *((0.0, math.nextafter(high - low, math.inf)),) * 3]
-    program = allocation._planes(objective, rows, limits, bounds, equal, [1.0], box)
+    program = _planes(objective, rows, limits, bounds, equal, [1.0], box)
     spread = 1.0 + off * np.array([1.0, 1.0, -1.0, -1.0, 2.0, 2.0])
     moved = program.ineqlin.marginals * spread
-    evened = allocation._evened(moved, np.array(readings), 3, 1.0, 3.0)
+    evened = _evened(moved, np.array(readings), 3, 1.0, 3.0)
     mass = np.bincount(readings, weights=-evened, minlength=3)
     assert np.all(mass <= 1.0 + 1e-15)
     assert mass.sum() == pytest.approx(3.0, rel=1e-15, abs=0.0)
@@ -662,26 +654,26 @@ def test_duals_evened_reading_by_reading_lose_the_masses_bias(monkeypatch, off):
         np.concatenate([limits, [1.0]]),
     )
     implied = tuple(np.array(ends, dtype=float) for ends in zip(*box, strict=True))
-    raw = allocation._least(
+    raw = _least(
         objective, matrix, sides, implied, np.concatenate([moved, program.eqlin.marginals])
     )
-    even = allocation._least(
+    even = _least(
         objective, matrix, sides, implied, np.concatenate([evened, program.eqlin.marginals])
     )
     assert Fraction(raw) <= Fraction(even) <= least
     assert float(least - Fraction(raw)) > 0.1 * abs(off)
     assert float(least - Fraction(even)) <= 1e-12
-    kept = allocation._planes(objective, rows, limits, bounds, equal, [1.0], box, lambda y: 0.0 * y)
+    kept = _planes(objective, rows, limits, bounds, equal, [1.0], box, lambda y: 0.0 * y)
     assert kept.fun == program.fun
-    real = allocation.linprog
+    real = linprog
 
     def moving(*args, **kwargs):
         solved = real(*args, **kwargs)
         solved.ineqlin.marginals = solved.ineqlin.marginals * spread
         return solved
 
-    monkeypatch.setattr(allocation, "linprog", moving)
-    evening = allocation._planes(
+    allocation_patch("linprog", moving)
+    evening = _planes(
         objective,
         rows,
         limits,
@@ -689,7 +681,7 @@ def test_duals_evened_reading_by_reading_lose_the_masses_bias(monkeypatch, off):
         equal,
         [1.0],
         box,
-        lambda y: allocation._evened(y, np.array(readings), 3, 1.0, 3.0),
+        lambda y: _evened(y, np.array(readings), 3, 1.0, 3.0),
     )
     assert evening.fun == even
 
@@ -706,7 +698,7 @@ def test_evened_masses_keep_under_their_cap_and_come_to_the_total(duals, total, 
     """A plane a reading, the cap 1: a mass past the cap is clamped to it; masses short of the total
     are raised in proportion to their room below the cap, a reading with no mass given none; masses
     past the total are scaled down to it."""
-    evened = allocation._evened(np.array(duals), np.arange(3), 3, 1.0, total)
+    evened = _evened(np.array(duals), np.arange(3), 3, 1.0, total)
     assert -evened == pytest.approx(masses, rel=1e-15, abs=0.0)
 
 
@@ -720,8 +712,8 @@ def test_a_bound_scaled_into_the_callers_units_stays_a_bound(value, factor, divi
     """Scaled from a program's units, a floor rounds down and a ceiling up, past the exact value;
     nothing stays nothing."""
     exact = Fraction(value) * Fraction(factor) / Fraction(divisor)
-    down = allocation._outward(value, factor, divisor, -math.inf)
-    up = allocation._outward(value, factor, divisor, math.inf)
+    down = _outward(value, factor, divisor, -math.inf)
+    up = _outward(value, factor, divisor, math.inf)
     if value == 0.0:
         assert down == up == 0.0
     if math.isfinite(down):
@@ -754,8 +746,8 @@ def test_a_bound_scaled_by_a_power_of_two_is_exact_where_a_double_holds_it(value
     rounding moved; where none does, among the subnormals, it is moved past the exact value, as a
     quotient by 3 is, though the double nearest a third, times 3, rounds back to 1."""
     exact = Fraction(value) * Fraction(factor) / Fraction(divisor)
-    down = allocation._outward(value, factor, divisor, -math.inf)
-    up = allocation._outward(value, factor, divisor, math.inf)
+    down = _outward(value, factor, divisor, -math.inf)
+    up = _outward(value, factor, divisor, math.inf)
     if math.isfinite(down):
         assert Fraction(down) <= exact
     if math.isfinite(up):
@@ -766,18 +758,18 @@ def test_a_bound_scaled_by_a_power_of_two_is_exact_where_a_double_holds_it(value
         assert down == up == quotient
 
 
-def test_a_plan_with_nothing_to_gain_closes_on_its_first_program(monkeypatch):
+def test_a_plan_with_nothing_to_gain_closes_on_its_first_program(allocation_patch):
     """A budget of nothing: every plan's worth is nothing, and so is the bound read from the first
     program's duals, exactly, and that closes the search, whose tolerance is a share of the bound.
     A bound a rounding below nothing would not close it before 500 rounds. The prices read on
     the curves at the plan after the search take programs of their own, not counted."""
-    real, programs = allocation._planes, []
+    real, programs = _planes, []
 
     def counted(*args, **kwargs):
         programs.append(None)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(allocation, "_planes", counted)
+    allocation_patch("_planes", counted)
     cells = [
         [Channel(ONE, MichaelisMenten(10.0), 1000.0), Channel(ONE, MichaelisMenten(20.0), 300.0)],
         [Channel(ONE, MichaelisMenten(5.0), 10.0), Channel(ONE, Hill(5.0, 2.0), 700.0)],
