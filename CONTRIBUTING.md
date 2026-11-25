@@ -77,6 +77,8 @@ keeps it; wherever it is installed, jax takes the GPU without being asked, so pi
 
 - **New dependencies need discussion first.** The locked set is small on purpose, and optional
   backends (`tigramite`, `lightgbm`, …) stay optional and lazily imported.
+- **New behaviour comes with its tests.** A pull request that adds or changes behaviour adds the
+  tests that show it, in the same pull request; a bug fix adds a test that fails without the fix.
 - **Tests are two-sided.** A test that only shows the good case passing does not establish that the
   bad case fails; assert both, and prefer a test that fails when the implementation is reverted.
 - **No number in a docstring, README or CHANGELOG that the test suite does not produce.** If a claim
