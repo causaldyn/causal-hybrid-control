@@ -283,8 +283,10 @@ the same steps costs more than 5.5e-7 more.
 - **Several levers a step.** A group norm's kink is a point in `m` dimensions, not a sign: a block
   proximal step or a second-order cone step would be needed. Not built; no test plan reaches it.
 
-**Limits.** `CausalPlan.shadow_prices` and the decision weight still read the masked derivative:
-an action on the kink is a free action there, and what its push leaves shows in their residual.
+**Limits.** No price reads the kink: `CausalPlan.shadow_prices`, `CausalPlan.decision_weight`
+and the misspecification weight refuse every plan held under a barrier, whose condition is a
+constraint of its own, and the kink is in that condition alone (corrected 2026-11-25; this
+paragraph said they read the masked derivative there).
 `prescribe` passes no `inner`: its held plans keep the default rounds (until 2026-11-25, below).
 
 ## Amended 2026-11-25: `prescribe`'s rounds, and the default deferred to 2.0
