@@ -39,6 +39,20 @@ experimental may change in any minor release (`docs/api/index.md`).
   back as often or more often, by up to 21 of 400 paths, and wrongly no more often: at most 1 of
   400 paths in a null cell, unset alike (ADR 0146, amended).
 
+### Documentation
+
+- **The barrier's drift-error room, read on 200 logs, and the default's calibration gap.** On the
+  unstable drift's logs of seeds 0 to 199, each plan held and certified under the fit's own
+  sensitivity at `gamma = 1.5`, the true plant stayed in the set over the certified steps on all
+  200 with `barrier_drift_error`'s bound (Clopper-Pearson 0.982 to 1) and on 173 without it, 0.865
+  (0.810 to 0.909): below the 0.95 the channel's radius states, since the default room does not
+  carry the drift's sampling error. The default stays in 1.x: the bound shortens the certified
+  steps there from 29.2 to 24.6 on average. The misspecification test keeps its rate of 0.9 on 20
+  logs, the union of the room's two 0.95 statements. `certify_safety(drift_error=)` and
+  `prescribe(barrier_drift_error=)` now state the gap and the bound's reach: at the held plans'
+  states inside the log's spread the drift's own error was 0.71 to 0.85 of the bound, beyond it 1.45
+  to 1.63 times it (ADR 0104). No value moves (ADR 0119, amended).
+
 ## [1.5.0] — 2026-11-25
 
 New opt-in features, so a minor release; no parameter's default changes. Added, each opt-in or

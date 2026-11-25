@@ -20,6 +20,8 @@ true plant's least `h` 0.34. A misspecification test holds the channel-only prom
 unstable logs, and `certify_safety(sensitivity=)` states it with these numbers.
 Amended 2026-11-07: the room may read a bound on the drift's error, opt-in (last section); with
 none it reads the channel's error alone, as before.
+Amended 2026-11-25: the drift-error room re-read on 200 logs, and the default's calibration gap
+stated (last section); the default and the test's rate stay.
 
 ## Context
 
@@ -200,3 +202,33 @@ deprecation cycle first.
   level already kept the true plant in on all 20, and the prefix is what a wider bound costs.
 - **Calibrate the bound on held-out horizons** (`chc.uncertainty.HorizonConformal`). It needs
   horizons held out of the fit, which `prescribe`'s log does not set aside.
+
+## Amended 2026-11-25: 200 logs, and the default's calibration gap
+
+The 20-log test could not tell a stay-in rate of 0.9 from one of 0.95, so the same plans were read
+on the unstable drift's logs of seeds 0 to 199, each held and certified under the fit's own
+sensitivity at `Gamma = 1.5`, with the bound and without it, in float64:
+
+| room | true plant in the set over the certified steps | Clopper-Pearson 95 % | mean certified steps |
+|---|---|---|---|
+| the channel's radius and the drift's bound | 200 of 200 | 0.982 to 1 | 24.6 |
+| the channel's radius alone, the default | 173 of 200, 0.865 | 0.810 to 0.909 | 29.2 |
+
+Seeds 0 to 19 are the test's logs, 19 of 20 without the bound, as above.
+
+- **The test keeps 0.9 on 20 logs.** The union of the room's two 0.95 statements, the radius's and
+  the bound's, promises a rate of 0.9, and the floor of 13 holds it there. A rate of 0.95 would
+  ask more than that union promises. On 200 logs the floors would be 166 at 0.9 and 179 at 0.95,
+  and the default room's 173 passes the first: no count of logs at 0.9 separates the two rooms
+  well, and the test that follows pins the separation on the one log of 20 the default room loses.
+- **The default certificate is below its own level.** Without the bound, the certificate held the
+  true plant on 0.865 of these logs, under the 0.95 its channel radius states: the radius does not
+  carry the drift's sampling error, and on an unstable drift that error alone takes the plant out
+  of the set on about one log in seven. This is a documented calibration gap of the default, and
+  `certify_safety(drift_error=)` and `prescribe(barrier_drift_error=)` state it. The default stays
+  in 1.x: reading the bound by default moves every barrier certificate a caller holds, and here it
+  shortens the certified steps from 29.2 to 24.6 on average.
+- **The bound's reach.** It is the drift's standard error at its root mean over the log's rows. At
+  the held plans' states of logs 0 and 18, inside the log's spread, the drift's own standard error
+  there was 0.71 to 0.85 of it (features `[1, x]`); beyond the spread ADR 0104 measured 1.45 to
+  1.63 times the root mean, so a plan that leaves the log meets more than the bound carries.

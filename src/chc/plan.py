@@ -3931,7 +3931,10 @@ def certify_safety(
             ``drift_error`` is a standard error, a root mean over the log's rows and its states;
             :func:`chc.prescribe` passes ``t sqrt(n)`` times it under ``barrier_drift_error``,
             ``t`` Student's at 0.975 and ``n`` the states, which reads it at the log's rows, not at
-            the plan's states, where a plan that leaves the log meets a larger error (ADR 0104).
+            the plan's states: at the held plans' states of two of the logs below, inside the log's
+            spread, the drift's own standard error was 0.71 to 0.85 of the root mean, and beyond
+            the spread 1.45 to 1.63 times it (ADR 0104), so a plan that leaves the log meets a
+            larger error than the bound.
             On the 20 unstable logs above, each plan held and certified under the fit's own
             sensitivity at ``gamma = 1.5`` and that bound (0.185 to 0.192), the true plant stayed
             in the set over the certified steps on every log, least ``h`` +0.72, where without it
@@ -3940,7 +3943,12 @@ def certify_safety(
             26, 24, 29, 28, 25, 21, 30 and 28, where they were 30 but on one log 29; 5 plans end
             ``infeasible``, and the cost is 5.7 % higher on average. On the stable drift (-1)
             every plan was certified on all 30 steps either way, its cost 0.43 % higher on
-            average. None reads the channel's error alone, as up to 1.2 (ADR 0119, amended).
+            average. On 200 unstable logs, seeds 0 to 199, the true plant stayed in the set over
+            the certified steps on all 200 with the bound and on 173 without it, 0.865, below the
+            0.95 the channel's radius states: without the bound the certificate does not carry
+            the drift's sampling error, a calibration gap of the default. None, the default, reads
+            the channel's error alone, as up to 1.2, and stays so in 1.x: the bound shortens the
+            certified steps there, 29.2 to 24.6 on average (ADR 0119, amended).
 
     Assumes the plant is control-affine, and checks it: the condition reads the drift and the
     channel at zero action, so a model whose field, seen through ``grad h``, is not affine in the

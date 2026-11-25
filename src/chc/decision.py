@@ -2633,9 +2633,16 @@ def prescribe(  # noqa: C901, PLR0912, PLR0915
             the certified steps where the drift is unstable: on the 20 logs
             :func:`chc.plan.certify_safety` reads, held at ``gamma = 1.5``, they fell from 29.95 to
             24.85 on average, and the true plant, which left the set on 1 log without it, left it
-            on none. Off by default, so the room reads the channel's error alone, as up to 1.2,
-            and nothing moves. With no constraint, or on a fit that gives no drift error, the
-            observational one, it raises.
+            on none. On 200 such logs it stayed in the set over the certified steps on all 200 with
+            the bound and on 173 without it, 0.865, below the 0.95 the channel's radius states: off,
+            the certificate does not carry the drift's sampling error, a calibration gap of the
+            default, which stays in 1.x since the bound shortens the certified steps, 29.2 to 24.6
+            on average there (ADR 0119). The bound is the error's root mean over the log's rows: at
+            the held plans' states of two of those logs, inside the log's spread, the drift's own
+            error was 0.71 to 0.85 of it, and beyond the spread 1.45 to 1.63 times it (ADR 0104).
+            Off by default, so the room reads the channel's error alone, as up to 1.2, and nothing
+            moves. With no constraint, or on a fit that gives no drift error, the observational
+            one, it raises.
         inner: how each of the held barrier's rounds is solved, under ``hold_constraints``
             (*experimental*): ``causal_plan``'s ``inner`` (:func:`chc.plan.causal_plan`).
             ``"diagonal"``, the default, is the descent every held plan took before. ``"orthant"``

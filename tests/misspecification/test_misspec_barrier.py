@@ -518,11 +518,13 @@ def test_on_twenty_logs_the_true_plant_stays_safe_where_the_room_reads_the_drift
     channel's radius and the drift's bound hold, each a 0.95 statement, so the true plant stays in
     the set over the certified steps at a rate of 0.9 at least, and 20 logs hold it to at least
     13, the floor a count at 0.9 falls below with probability 1/1000. It stayed in on all 20, least
-    ``h`` +0.72; without the drift's error it left on 1 (the test below pins that log). 20 logs
-    cannot tell 0.9 from 0.95: the floor fails with probability 0.8 at a rate of 0.53, and the
-    room of the channel alone, 19 of 20 here, passes it, which the next test does not
-    (``validation/misspec_power.mac`` STEP 6). The certified steps are the price: 24.85 on average,
-    19 to 30, where they were 29.95."""
+    ``h`` +0.72; without the drift's error it left on 1 (the test below pins that log). The floor
+    fails with probability 0.8 at a rate of 0.53, and the room of the channel alone, 19 of 20 here,
+    passes it, which the next test does not (``validation/misspec_power.mac`` STEP 6). On 200 logs,
+    seeds 0 to 199, the true plant stayed in on all 200 with the drift's error and on 173 without
+    it, 0.865, which passes a floor at 0.9 on 200 logs as well (166): the rate stays 0.9, the union
+    of the two 0.95 statements, on these 20 (ADR 0119, amended). The certified steps are the price:
+    24.85 on average, 19 to 30, where they were 29.95."""
     gamma, dt, horizon = 1.5, 0.1, 30
     start = jnp.zeros(1)
     cost = QuadraticCost(
