@@ -85,7 +85,13 @@ class _Warnings(logging.Handler):
 
 
 def _config(burn_in: int, block_length: int, **changes: float) -> GateConfig:
-    settings = {"delta": 0.0, "delta_harm": 0.02, "min_effect": 0.02, "horizon": 10**6}
+    settings = {
+        "delta": 0.0,
+        "delta_harm": 0.02,
+        "min_effect": 0.02,
+        "horizon": 10**6,
+        "rollback_restart": 0,
+    }
     return GateConfig(**(settings | changes), block_length=block_length, burn_in=burn_in)  # type: ignore[arg-type]
 
 
@@ -140,7 +146,9 @@ def _run(
 
 def _per_decision_lab(paths: int, decisions: int, batch: int, seed: int) -> float:
     """The gate as it runs without blocks on the lab's plant: the share of paths it deploys on."""
-    config = GateConfig(delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=decisions)
+    config = GateConfig(
+        delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=decisions, rollback_restart=0
+    )
     rng = np.random.default_rng(seed)
     deployed = 0
     for _ in range(paths):
@@ -296,7 +304,9 @@ def test_in_blocks_the_gate_logs_periods_as_its_decisions(caplog: pytest.LogCapt
 
 
 def test_without_blocks_the_gate_runs_as_before() -> None:
-    config = GateConfig(delta=0.02, delta_harm=0.02, min_effect=0.02, horizon=100)
+    config = GateConfig(
+        delta=0.02, delta_harm=0.02, min_effect=0.02, horizon=100, rollback_restart=0
+    )
     assert (config.block_length, config.burn_in) == (None, 0)
     assert DeploymentGate({"z": PLAN}, config).mode("z") == "shadow"
 
@@ -348,7 +358,7 @@ def test_blocks_outside_the_contract_are_refused(arguments: dict, match: str) ->
 
 def test_a_gate_refuses_a_batch_of_the_other_kind_or_of_other_blocks() -> None:
     blocks = DeploymentGate({"z": PLAN}, _config(1, 2))
-    plain = DeploymentGate({"z": PLAN}, GateConfig(0.0, 0.0, 0.1, 10))
+    plain = DeploymentGate({"z": PLAN}, GateConfig(0.0, 0.0, 0.1, 10, rollback_restart=0))
     one = ZoneBatch(np.ones(1), np.ones(1), np.ones(1), np.ones(1))
     with pytest.raises(TypeError, match="reads a BlockBatch, got ZoneBatch"):
         blocks.update({"z": one})
@@ -809,7 +819,7 @@ def test_a_restarted_rollback_reads_a_turn_long_after_the_deploy() -> None:
     ``delta_harm``, each rolled back on at most ``alpha_harm`` of the paths plus three standard
     errors (on 1, 1 and 0)."""
     bounds = {
-        (): (0.0, 0.10 + 3.0 * math.sqrt(0.10 * 0.90 / 150)),
+        (0,): (0.0, 0.10 + 3.0 * math.sqrt(0.10 * 0.90 / 150)),
         (250, None): (0.40 - 3.0 * math.sqrt(0.40 * 0.60 / 150), 1.0),
         (250, 10_000): (115 / 150 - 3.0 * math.sqrt(115 * 35 / 150**3), 1.0),
     }
@@ -951,6 +961,7 @@ def _without_a_share() -> tuple[list[str], list[float]]:  # noqa: C901, PLR0912,
             horizon=5000,
             centred=centred,
             alpha_futility=0.1,
+            rollback_restart=0,
         )
         gate = DeploymentGate({"a": ZonePlan(chi2=0.17, tv=0.16)}, config)
         for _ in range(120):

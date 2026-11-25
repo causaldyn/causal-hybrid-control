@@ -52,7 +52,9 @@ def _per_decision(
     """Per path, whether the gate, read after every ``batch`` decisions, deploys, and whether it
     logged a ``gate_carryover`` warning. ``reward(rng, action, state)`` returns the reward and the
     next state. A path stops at its deploy, or with ``whole_run`` runs all its decisions."""
-    config = GateConfig(delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=decisions)
+    config = GateConfig(
+        delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=decisions, rollback_restart=0
+    )
     deployed = np.zeros(paths, dtype=bool)
     warned = np.zeros(paths, dtype=bool)
     logger = logging.getLogger("chc.gate")

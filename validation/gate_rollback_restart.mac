@@ -1,0 +1,75 @@
+/* The rollback that starts again (GateConfig(rollback_restart = K)) against the rollback read
+   since the DEPLOY (rollback_restart = 0), with the drift alarm's epoch weights.
+
+   M_k >= 0 is the mixture over constant bets of the e-process started (k - 1) K decisions, or
+   blocks, after the DEPLOY, 1 until its start; M_1 is the one read since the DEPLOY. The weights
+   are w_1 = 9/10 and w_k = 1/(10 (k - 1) k). Read since the DEPLOY, the rollback's e-value is the
+   drift alarm's first epoch, U = w_1 M_1 + 1/10, every later epoch counted at its initial value.
+   Started again, with m starts opened, it is N = w_1 M_1 + sum(w_k M_k, k, 2, m) + 1/(10 m).
+
+   STEP 1  the weights sum to 1, and those of starts 2..m to (1/10)(1 - 1/m), so a start not yet
+           opened, counted at 1, carries 1/(10 m)
+   STEP 2  N - U = sum(w_k (M_k - 1), k, 2, m) >= -(1/10)(1 - 1/m) > -1/10 on every path, at every
+           m and every K: the bound is attained where every later start's mixture is 0, and N = U
+           at m = 1; checked against random nonnegative M_k at sample points
+   STEP 3  so N reaches 1/alpha_harm wherever U reaches 1/alpha_harm + 1/10: the restarted
+           rollback is never later than the one read since the DEPLOY at a threshold
+           log(1 + alpha_harm/10) nats higher, 0.005 nats at alpha_harm = 0.05
+   STEP 4  the start first opened at or after a turn T decisions after the DEPLOY is the
+           k = ceil(T/K) + 1-th, whose weight lies log(10 k (k - 1)) nats below 1: at T = 10000
+           and K = 50, 250 and 1000, 12.9, 9.7 and 7.0 nats
+
+   Run: timeout 300 maxima --very-quiet -Q -b validation/gate_rollback_restart.mac */
+
+display2d : false$
+fpprintprec : 8$
+load(simplify_sum)$
+pass(ok) := if ok then "(PASS)" else "(FAIL)"$
+
+w(k) := if k = 1 then 9/10 else 1/(10*(k - 1)*k)$
+
+/* STEP 1 */
+later : simplify_sum(sum(1/(10*(k - 1)*k), k, 2, m))$
+s1a : ratsimp(later - 1/10*(1 - 1/m))$
+s1b : limit(9/10 + 1/10*(1 - 1/m), m, inf)$
+s1c : makelist(sum(w(k), k, 1, j) + 1/(10*j) - 1, j, 1, 6)$
+print("STEP 1  sum of w_k, k = 2..m, less (1/10)(1 - 1/m):", s1a, "; all weights:", s1b,
+      "; opened weights + unopened less 1, m = 1..6:", s1c,
+      pass(s1a = 0 and s1b = 1 and every(lambda([x], x = 0), s1c)))$
+
+/* STEP 2 */
+U(M) := w(1)*M[1] + 1/10$
+N(M) := sum(w(k)*M[k], k, 1, length(M)) + 1/(10*length(M))$
+gap2(M) := ratsimp(N(M) - U(M) - sum(w(k)*(M[k] - 1), k, 2, length(M)))$
+s2a : makelist(gap2(makelist(concat(mm, k), k, 1, j)), j, 1, 6)$
+s2b : makelist(N(append([M1], makelist(0, k, 2, j))) - (U([M1]) - 1/10*(1 - 1/j)), j, 1, 6)$
+s2b : map(ratsimp, s2b)$
+s2c : N([M1]) - U([M1])$
+/* random nonnegative mixtures, exact rationals: the least N - U over them, against -1/10 */
+set_random_state(make_random_state(1125))$
+randompath(j) := makelist(random(10^6)/10^5 * (if random(3) = 0 then 0 else 1), k, 1, j)$
+s2d : lmin(makelist(block([M : randompath(1 + random(400))], N(M) - U(M)), i, 1, 300))$
+print("STEP 2  N - U less sum(w_k (M_k - 1)), m = 1..6:", s2a,
+      "; at M_k = 0 for k >= 2, N less (U - (1/10)(1 - 1/m)):", s2b, "; at m = 1:", s2c,
+      "; least N - U over 300 random paths:", float(s2d),
+      pass(every(lambda([x], x = 0), s2a) and every(lambda([x], x = 0), s2b) and s2c = 0
+           and s2d > -1/10))$
+
+/* STEP 3 */
+lag(a) := log(1 + a/10)$
+/* N's least value where U = 1/alpha + 1/10, m starts opened, less 1/alpha */
+s3 : ratsimp((1/a + 1/10) - 1/10*(1 - 1/m) - 1/a - 1/(10*m))$
+print("STEP 3  N at U = 1/alpha + 1/10, at its least, less 1/alpha + 1/(10 m):", s3,
+      "; the threshold's nats at alpha_harm 0.05 and 0.01:", float(lag(1/20)), float(lag(1/100)),
+      pass(s3 = 0 and abs(float(lag(1/20)) - 0.0049875) < 1e-6))$
+
+/* STEP 4 */
+startafter(T, K) := ceiling(T/K) + 1$
+below(T, K) := block([k : startafter(T, K)], log(10*k*(k - 1)))$
+s4 : map(lambda([K], float(below(10000, K))), [50, 250, 1000])$
+s4k : map(lambda([K], startafter(10000, K)), [50, 250, 1000])$
+s4w : ratsimp(1/w(41) - 16400)$
+print("STEP 4  turn at 10000: the start after it at K = 50, 250, 1000 is the", s4k,
+      "-th, its weight's nats below 1:", s4, "; 1/w_41 less 16400:", s4w,
+      pass(s4k = [201, 41, 11] and s4w = 0 and abs(s4[1] - 12.904) < 1e-3
+           and abs(s4[2] - 9.705) < 1e-3 and abs(s4[3] - 7.003) < 1e-3))$

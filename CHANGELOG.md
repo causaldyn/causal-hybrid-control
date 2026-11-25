@@ -5,6 +5,25 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
 experimental may change in any minor release (`docs/api/index.md`).
 
+## [Unreleased]
+
+### Deprecated
+
+- **A `GateConfig` whose rollback reads evidence and leaves `rollback_restart` unset emits a
+  `FutureWarning`**: not in blocks, or in blocks with a `rollback_baseline_share`. From 1.7.0 the
+  default is `rollback_restart=250`, the starts weighted as the drift alarm's epochs. Pass
+  `rollback_restart=0`, now accepted, to keep reading every decision since the DEPLOY; in blocks
+  without a share the rollback reads no evidence, and nothing warns. Why: read since the DEPLOY, a
+  candidate as good as the baseline for 5000 blocks and then 0.12 worse was rolled back within 3000
+  blocks of the turn on 0.070 of 1000 paths, and per decision a turn 10 000 decisions after the
+  DEPLOY was caught within 6000 on none of 200; started again every 250, on 0.340 and on all 200.
+  The restarted e-value is never below the one read since the DEPLOY less 0.1, the later starts'
+  weight (`validation/gate_rollback_restart.mac`), so no rollback comes later than that one's would
+  at `1 / alpha_harm + 0.1`, 0.005 nats higher at an `alpha_harm` of 0.05. On ADR 0146's 18 power
+  cells (shares 0.1 to 0.3, plain and centred, the lab's plant and the plants of order 1) it rolled
+  back as often or more often, by up to 21 of 400 paths, and wrongly no more often: at most 1 of
+  400 paths in a null cell, unset alike (ADR 0146, amended).
+
 ## [1.5.0] — 2026-11-25
 
 New opt-in features, so a minor release; no parameter's default changes. Added, each opt-in or

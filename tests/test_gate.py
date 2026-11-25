@@ -14,6 +14,7 @@ import dataclasses
 import json
 import logging
 import math
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -47,6 +48,7 @@ LAB = GateConfig(
     alpha_harm=0.05,
     drift_arl=1e4,
     rho=0.5,
+    rollback_restart=0,
 )
 
 
@@ -197,7 +199,14 @@ def _ones(n: int, *, candidate: float, baseline: float, logged: float, reward: f
 # leaves a lone zone in shadow at alpha = 0.05, and two deploy it.
 STRONG = _ones(6, candidate=2.0, baseline=1.0, logged=1.0, reward=1.0)
 NEUTRAL = _ones(1, candidate=1.0, baseline=1.0, logged=1.0, reward=0.5)
-LONE = GateConfig(delta=0.02, delta_harm=0.02, min_effect=0.02, horizon=10_000, drift_arl=100.0)
+LONE = GateConfig(
+    delta=0.02,
+    delta_harm=0.02,
+    min_effect=0.02,
+    horizon=10_000,
+    drift_arl=100.0,
+    rollback_restart=0,
+)
 
 
 def test_the_lab_closed_loop_is_reproduced_verdict_for_verdict() -> None:
@@ -230,7 +239,9 @@ def test_the_type_one_error_stays_below_alpha_when_read_after_every_decision() -
     """A lone zone whose candidate is exactly ``delta`` better, read after each of 1000
     decisions, against a one-sided z-test of the same increments read as often: the gate deploys
     it on none of 100 paths, the z-test on 28."""
-    config = GateConfig(delta=LAB.delta, delta_harm=0.02, min_effect=0.02, horizon=10**6)
+    config = GateConfig(
+        delta=LAB.delta, delta_harm=0.02, min_effect=0.02, horizon=10**6, rollback_restart=0
+    )
     rng = np.random.default_rng(20260928)
     plan, paths, decisions = BOUNDARY.plan, 100, 1000
     deployed = z_deployed = 0
@@ -258,7 +269,13 @@ def test_the_rules_apply_in_order() -> None:
     """DEPLOY on overwhelming evidence; a drift alarm rolls a deployed zone back and holds a
     shadow one; evidence against a deployed candidate rolls it back."""
     config = GateConfig(
-        delta=0.02, delta_harm=0.02, min_effect=0.02, horizon=10_000, alpha=0.1, drift_arl=100.0
+        delta=0.02,
+        delta_harm=0.02,
+        min_effect=0.02,
+        horizon=10_000,
+        alpha=0.1,
+        drift_arl=100.0,
+        rollback_restart=0,
     )
     plans = {"a": ZonePlan(0.1, 0.1), "b": ZonePlan(0.1, 0.1), "c": ZonePlan(0.1, 0.1)}
     gate = DeploymentGate(plans, config)
@@ -311,7 +328,9 @@ def test_a_candidate_better_by_less_than_the_margin_is_neither_deployed_nor_held
     the baseline would have earned 0 with the candidate's action, 94 neutral. The candidate is
     0.03 better, short of ``delta = 0.05`` and not harmful; betting on ``r`` instead of ``1 - r``
     in the harm e-process would hold it."""
-    config = GateConfig(delta=0.05, delta_harm=0.0, min_effect=0.02, horizon=10**6)
+    config = GateConfig(
+        delta=0.05, delta_harm=0.0, min_effect=0.02, horizon=10**6, rollback_restart=0
+    )
     reward = np.r_[np.ones(3), np.zeros(3), np.full(94, 0.5)]
     candidate = np.r_[np.full(3, 2.0), np.zeros(3), np.ones(94)]
     batch = ZoneBatch(
@@ -324,7 +343,9 @@ def test_a_candidate_better_by_less_than_the_margin_is_neither_deployed_nor_held
 def test_a_contrast_that_turns_is_deployed_on_its_first_half() -> None:
     """The documented premise: +0.06 for 3000 decisions, then -0.06, deploys before the turn."""
     pb, pc, batch = 0.5, 0.8, 50  # P(action 1); V_new - V_base = 0.3 (mu1 - mu0)
-    config = GateConfig(delta=0.0, delta_harm=0.0, min_effect=0.03, horizon=6000)
+    config = GateConfig(
+        delta=0.0, delta_harm=0.0, min_effect=0.03, horizon=6000, rollback_restart=0
+    )
     plan = ZonePlan(chi2=pc**2 / pb + (1 - pc) ** 2 / (1 - pb) - 1.0, tv=pc - pb)
     for path in range(5):
         rng = np.random.default_rng(path)
@@ -379,7 +400,7 @@ def test_a_restarted_rollback_catches_a_contrast_that_turns_after_its_deploy() -
     no rollback came before the turn."""
     settings = {"delta": 0.0, "delta_harm": 0.0, "min_effect": 0.03, "horizon": 6000}
     for restart, (least, most) in {
-        (): (0, 4),
+        (0,): (0, 4),
         (250, None): (45, 60),
         (250, 10_000): (56, 60),
     }.items():
@@ -426,12 +447,13 @@ def test_a_restarted_rollback_is_the_mixture_of_e_processes_started_on_its_grid(
 @pytest.mark.parametrize(
     ("changes", "error", "match"),
     [
-        ({"rollback_restart": 0}, ValueError, "rollback_restart must be at least 1"),
+        ({"rollback_restart": -1}, ValueError, "rollback_restart must be at least 0"),
         ({"rollback_restart": 2.5}, TypeError, "rollback_restart must be a whole number"),
         ({"rollback_restart": True}, TypeError, "rollback_restart must be a whole number"),
         ({"rollback_restart": 9, "rollback_horizon": 0}, ValueError, "at least 1"),
         ({"rollback_restart": 9, "rollback_horizon": 9.0}, TypeError, "whole number"),
         ({"rollback_horizon": 100}, ValueError, "rollback_horizon without a rollback_restart"),
+        ({"rollback_restart": 0, "rollback_horizon": 100}, ValueError, "rollback_restart above 0"),
         ({"rollback_restart": 9, "block_length": 2}, ValueError, "no evidence to start again"),
     ],
 )
@@ -442,12 +464,100 @@ def test_a_rollback_restart_outside_the_contract_is_refused(
         GateConfig(delta=0.0, delta_harm=0.0, min_effect=0.1, horizon=10, **changes)
 
 
+def _deployed_reads(
+    configs: list[GateConfig], reads: int, turn: int
+) -> list[list[tuple[str, float, int]]]:
+    """Lone zones, one per config, deployed by two STRONG batches and then read every 50
+    decisions on the same stream: the candidate takes action 1 with probability 0.8 against the
+    baseline's 0.5, as good as the baseline for ``turn`` reads and 0.12 worse after. Each gate's
+    verdict, rollback log e-value and starts opened at each read, up to its ROLLBACK."""
+    pb, pc, batch = 0.5, 0.8, 50
+    rng = np.random.default_rng(1125)
+    gates = [DeploymentGate({"z": ZonePlan(0.1, 0.1)}, config) for config in configs]
+    for gate in gates:
+        gate.update({"z": STRONG})
+        assert gate.update({"z": STRONG}) == {"z": "deploy"}
+    out: list[list[tuple[str, float, int]]] = [[] for _ in gates]
+    for read in range(reads):
+        a = rng.random(batch) < pc
+        mean = np.where(a, 0.3, 0.7) if read >= turn else np.full(batch, 0.5)
+        r = (rng.random(batch) < mean).astype(float)
+        logged = ZoneBatch(
+            r, np.where(a, pc, 1 - pc), np.where(a, pb, 1 - pb), np.where(a, pc, 1 - pc)
+        )
+        for gate, reads_so_far in zip(gates, out, strict=True):
+            if reads_so_far and reads_so_far[-1][0] == "rollback":
+                continue
+            verdict = gate.update({"z": logged})["z"]
+            evidence = gate._zones["z"].rollback
+            reads_so_far.append((verdict, evidence.log_value, getattr(evidence, "opened", 1)))
+    return out
+
+
+def test_an_unset_rollback_restart_warns_that_1_7_0_starts_it_every_250() -> None:
+    """Unset where the rollback reads evidence, per decision or in blocks with a baseline share,
+    ``GateConfig`` warns at the caller's line that 1.7.0 starts it again every 250 decisions with
+    the epoch weights, and names ``rollback_restart=0``. In blocks without a share, where the
+    rollback reads nothing, and with ``rollback_restart`` passed, it does not warn. ``0`` reads as
+    unset does, verdict for verdict and e-value for e-value."""
+    settings = {"delta": 0.02, "delta_harm": 0.02, "min_effect": 0.02, "horizon": 10_000}
+    blocks = {"block_length": 2, "burn_in": 1}
+    announced = r"from 1\.7\.0 .*every 250 .*epochs.*rollback_restart=0"
+    for changes in ({}, blocks | {"rollback_baseline_share": 0.2}):
+        with pytest.warns(FutureWarning, match=announced) as caught:
+            GateConfig(**settings | changes)  # type: ignore[arg-type]
+        assert len(caught) == 1
+        assert caught[0].filename == __file__
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for changes in (
+            blocks,
+            {"rollback_restart": 0},
+            {"rollback_restart": 250},
+            blocks | {"rollback_restart": 0},
+            blocks | {"rollback_baseline_share": 0.2, "rollback_restart": 0},
+        ):
+            GateConfig(**settings | changes)  # type: ignore[arg-type]
+    with pytest.warns(FutureWarning, match=announced):
+        unset = GateConfig(**settings)  # type: ignore[arg-type]
+    old, zero = _deployed_reads([unset, dataclasses.replace(unset, rollback_restart=0)], 100, 60)
+    assert old == zero
+    assert old[-1][0] == "rollback"
+
+
+def test_a_restarted_rollback_is_never_below_the_one_since_the_deploy_less_a_tenth() -> None:
+    """``validation/gate_rollback_restart.mac``: read since the DEPLOY the rollback's e-value is
+    ``U = 0.9 M_1 + 0.1``, and started again ``N = 0.9 M_1 + sum_(k >= 2) w_k M_k + 0.1 / m``
+    with ``m`` starts opened, whose later weights sum to ``0.1 (1 - 1 / m)``. So
+    ``N >= U - 0.1 (1 - 1 / m)`` at every read, whatever ``K``, and the restarted gate rolls back
+    no later than the first read at which ``U`` reaches ``1 / alpha_harm + 0.1``. Through the gate
+    on the same decisions: a candidate as good as the baseline for 3000 decisions after its
+    DEPLOY, which drains the starts' bets, then 0.12 worse. ``N`` fell below ``U`` by 0.049 to
+    0.058, so the 0.1 is not vacuous, and each grid rolled back 15 to 18 reads before ``U`` did."""
+    settings = {"delta": 0.02, "delta_harm": 0.02, "min_effect": 0.02, "horizon": 10_000}
+    grids = (0, 1, 7, 250)
+    configs = [GateConfig(**settings, rollback_restart=k) for k in grids]  # type: ignore[arg-type]
+    since_deploy, *restarted = _deployed_reads(configs, 160, 60)
+    assert since_deploy[-1][0] == "rollback"
+    u = [math.exp(log_u) for _, log_u, _ in since_deploy]
+    reached = next(t for t, value in enumerate(u) if value >= 1.0 / configs[0].alpha_harm + 0.1)
+    for reads in restarted:
+        assert reads[-1][0] == "rollback"
+        assert len(reads) - 1 <= reached
+        assert len(reads) < len(since_deploy)
+        n = [math.exp(log_n) for _, log_n, _ in reads]
+        for value, (_, _, opened), value_u in zip(n, reads, u, strict=False):
+            assert value >= value_u - 0.1 * (1.0 - 1.0 / opened) - 1e-12 * value_u
+        least = min(value - value_u for value, value_u in zip(n, u, strict=False))
+        assert -0.1 < least < -0.04
+
+
 def test_a_record_says_how_the_rollback_e_value_was_restarted(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """``log_rollback`` is the e-value the rule reads, on the scale of the restart the record names:
     unset, the e-process since the DEPLOY; set, the mixture over the starts."""
-    for restart, horizon in ((None, None), (250, None), (250, 10_000)):
+    for restart, horizon in ((0, None), (250, None), (250, 10_000)):
         config = GateConfig(
             delta=0.02,
             delta_harm=0.02,
@@ -521,7 +631,9 @@ def test_a_late_cost_is_warned_of_and_no_verdict_moves(
     the gate without blocks deploys it. The carryover check reads the reward on the actions 1 to 5
     decisions back and warns, naming the lag and the block design; the verdicts are those of a gate
     without the check."""
-    config = GateConfig(delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=6000)
+    config = GateConfig(
+        delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=6000, rollback_restart=0
+    )
     for path in range(5):
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="chc.gate"):
@@ -548,7 +660,9 @@ def test_a_deterministic_candidate_deployed_is_not_read_as_carryover(
     switch as carryover, worst where shadow and deployed decisions were as many, and warned on 26
     and 123 of these 200 paths at base 0.4 and 0.6. Read within each mode, after each batch as the
     gate reads it, the check stays near its level of 0.05 a zone: 9 and 4 of 200."""
-    config = GateConfig(delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=6000)
+    config = GateConfig(
+        delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=6000, rollback_restart=0
+    )
     warned = 0
     for path in range(200):
         caplog.clear()
@@ -566,7 +680,9 @@ def test_a_reward_on_the_present_action_alone_is_not_warned_of(
 ) -> None:
     """The same candidate without its late cost: an effect on the present decision only. Over 40
     paths of 6000 decisions it warned on 3 (0.070 of 200 paths)."""
-    config = GateConfig(delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=6000)
+    config = GateConfig(
+        delta=0.0, delta_harm=0.02, min_effect=0.02, horizon=6000, rollback_restart=0
+    )
     warned = 0
     for path in range(40):
         caplog.clear()
@@ -596,11 +712,13 @@ def test_experiment_is_chosen_only_when_shadow_is_too_slow_and_the_mixture_faste
         "near": BOUNDARY.plan,
     }
     spent = DeploymentGate(
-        plans, GateConfig(delta=0.02, delta_harm=0.02, min_effect=0.02, horizon=1)
+        plans,
+        GateConfig(delta=0.02, delta_harm=0.02, min_effect=0.02, horizon=1, rollback_restart=0),
     )
     assert spent.update({}) == {"heavy": "experiment", "far": "experiment", "near": "shadow"}
     ample = DeploymentGate(
-        plans, GateConfig(delta=0.02, delta_harm=0.02, min_effect=0.02, horizon=10**9)
+        plans,
+        GateConfig(delta=0.02, delta_harm=0.02, min_effect=0.02, horizon=10**9, rollback_restart=0),
     )
     assert ample.update({}) == {"heavy": "experiment", "far": "shadow", "near": "shadow"}
 
@@ -760,6 +878,7 @@ def futile() -> DeploymentGate:
         horizon=1,
         drift_arl=100.0,
         alpha_futility=0.1,
+        rollback_restart=0,
     )
     gate = DeploymentGate({"z": WIDE_NULL.plan}, config)
     assert gate.update({}) == {"z": "experiment"}
@@ -795,7 +914,12 @@ def test_a_candidate_better_by_delta_is_deployed_although_it_is_not_worth_min_ef
     cannot select it logs, and selects it: DEPLOY, the claim ``V_new - V_base > delta``, comes
     first."""
     config = GateConfig(
-        delta=0.0, delta_harm=0.0, min_effect=0.2, horizon=10**6, alpha_futility=0.1
+        delta=0.0,
+        delta_harm=0.0,
+        min_effect=0.2,
+        horizon=10**6,
+        alpha_futility=0.1,
+        rollback_restart=0,
     )
     reward = np.r_[np.ones(100), np.zeros(100), np.full(800, 0.5)]
     candidate = np.r_[np.full(100, 2.0), np.zeros(100), np.ones(800)]
@@ -819,7 +943,14 @@ def test_an_unchanged_channel_alarms_no_more_often_than_drift_arl() -> None:
     rng = np.random.default_rng(7)
     theta = np.array([0.25, 0.5])
     reads, arl = 20_000, 50.0
-    config = GateConfig(delta=0.02, delta_harm=0.02, min_effect=0.02, horizon=10**6, drift_arl=arl)
+    config = GateConfig(
+        delta=0.02,
+        delta_harm=0.02,
+        min_effect=0.02,
+        horizon=10**6,
+        drift_arl=arl,
+        rollback_restart=0,
+    )
 
     def alarms(shift: float) -> int:
         gate = DeploymentGate({"z": ZonePlan(0.1, 0.1)}, config)

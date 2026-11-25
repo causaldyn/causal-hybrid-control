@@ -247,7 +247,9 @@ documented, and what is not built yet. Every name below is importable from `chc`
   up that share of the candidate's gain. A rollback that reads every decision since the deploy is
   slow to see a candidate that turns worse long after it; with `rollback_restart` (*experimental*)
   its evidence also starts again every that many decisions or blocks, discarding none, and each
-  wrong rollback still has probability at most `alpha_harm`. See [`chc.gate`](api/gate.md).
+  wrong rollback still has probability at most `alpha_harm`. Left unset where the rollback reads
+  evidence, it warns that 1.7.0 starts it every 250; `rollback_restart=0` keeps the reading since
+  the deploy. See [`chc.gate`](api/gate.md).
 
 ## 6. Adapt: after deployment
 

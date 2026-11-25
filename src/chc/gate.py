@@ -198,6 +198,7 @@ from __future__ import annotations
 import functools
 import logging
 import math
+import warnings
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import ClassVar, Literal
@@ -343,7 +344,14 @@ class GateConfig:
     as the drift alarm's epochs are, 0.9 for the first and ``0.1 / ((k - 1) k)`` for the ``k``-th,
     or, with ``rollback_horizon`` (*experimental*), alike over the starts within that many
     decisions or blocks of the DEPLOY, and none after it: the first start then weighs less, and a
-    turn at the DEPLOY is read later.
+    turn at the DEPLOY is read later. ``0`` reads every decision since the DEPLOY, as unset does.
+    Unset where the rollback reads evidence, a gate not in blocks or one in blocks with a
+    ``rollback_baseline_share``, it warns (``FutureWarning``) that from 1.7.0 the default is
+    ``250`` with the epochs' weights. Under them the rollback's e-value is never below the one
+    read since the DEPLOY less 0.1, the later starts' share
+    (``validation/gate_rollback_restart.mac``), so it rolls back wherever that one reaches
+    ``1 / alpha_harm + 0.1``, and Ville's inequality bounds a wrong ROLLBACK as before. Pass ``0``
+    to keep today's reading.
 
     Raises:
         ValueError: on a margin outside ``[0, 1)``, a level or ``rho`` outside ``(0, 1)``, a
@@ -353,8 +361,8 @@ class GateConfig:
             leaves no period of a block to read, or is set without a ``block_length``, a
             ``check_burn_in`` or a ``rollback_baseline_share`` set without one, a
             ``rollback_baseline_share`` outside ``(0, 1)``, a negative ``carryover_lags``, a
-            ``rollback_restart`` or a ``rollback_horizon`` below 1, a ``rollback_horizon`` without
-            a ``rollback_restart``, or a ``rollback_restart`` in blocks without a
+            negative ``rollback_restart``, a ``rollback_horizon`` below 1 or without a
+            ``rollback_restart`` above 0, or a ``rollback_restart`` above 0 in blocks without a
             ``rollback_baseline_share``, whose rollback has no baseline block to read.
         TypeError: on a ``horizon``, ``block_length``, ``burn_in``, ``carryover_lags``,
             ``rollback_restart`` or ``rollback_horizon`` that is not a whole number: a float, or a
@@ -422,17 +430,17 @@ class GateConfig:
             raise ValueError(f"drift_arl must exceed 1, got {self.drift_arl}")
         if self.carryover_lags < 0:
             raise ValueError(f"carryover_lags must be at least 0, got {self.carryover_lags}")
-        for name in ("rollback_restart", "rollback_horizon"):
-            value = getattr(self, name)
-            if value is not None and value < 1:
-                raise ValueError(f"{name} must be at least 1, got {value}")
-        if self.rollback_horizon is not None and self.rollback_restart is None:
+        if self.rollback_restart is not None and self.rollback_restart < 0:
+            raise ValueError(f"rollback_restart must be at least 0, got {self.rollback_restart}")
+        if self.rollback_horizon is not None and self.rollback_horizon < 1:
+            raise ValueError(f"rollback_horizon must be at least 1, got {self.rollback_horizon}")
+        if self.rollback_horizon is not None and not self.rollback_restart:
             raise ValueError(
-                "rollback_horizon without a rollback_restart: the horizon weighs the rollback's"
-                " starts, and without a rollback_restart it has one"
+                "rollback_horizon without a rollback_restart above 0: the horizon weighs the"
+                " rollback's starts, and without a rollback_restart it has one"
             )
         if (
-            self.rollback_restart is not None
+            self.rollback_restart
             and self.block_length is not None
             and self.rollback_baseline_share is None
         ):
@@ -463,6 +471,19 @@ class GateConfig:
             raise ValueError(
                 f"burn_in must lie in [0, block_length) = [0, {self.block_length}), so that a"
                 f" block has a period to read, got {self.burn_in}"
+            )
+        if self.rollback_restart is None and (
+            self.block_length is None or self.rollback_baseline_share is not None
+        ):
+            warnings.warn(
+                "from 1.7.0 a deployed zone's rollback starts its evidence again every 250"
+                " decisions (blocks in blocks), the starts weighted as the drift alarm's epochs,"
+                " so that it reads a turn long after the DEPLOY; its e-value is never below"
+                " today's less 0.1, and the guarantee does not change. Pass rollback_restart=0 to"
+                " keep reading every decision since the DEPLOY, or rollback_restart=250 to read"
+                " so now.",
+                FutureWarning,
+                stacklevel=3,
             )
 
 
@@ -2287,7 +2308,7 @@ class DeploymentGate:
             return _Carryover(config.carryover_lags) if config.carryover_lags else None
 
         def rollback() -> _Evidence | _RestartEvidence:
-            if config.rollback_restart is None:
+            if not config.rollback_restart:
                 return _Evidence()
             return _RestartEvidence(config.rollback_restart, config.rollback_horizon)
 

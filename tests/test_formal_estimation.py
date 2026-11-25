@@ -185,6 +185,12 @@ FORMAL_LINKS = {
             "test_gate_blocks.py::test_in_blocks_a_deployed_candidate_that_is_worse_is_rolled_back_only_with_a_baseline",
         ),
     },
+    "chc.gate.GateConfig": {
+        "cites": ("gate_rollback_restart.mac",),
+        "tests": (
+            "test_gate.py::test_a_restarted_rollback_is_never_below_the_one_since_the_deploy_less_a_tenth",
+        ),
+    },
     "chc.gate.DeploymentGate._randomised_harm": {
         "cites": ("gate_block_rollback.mac",),
         "via": "DeploymentGate",

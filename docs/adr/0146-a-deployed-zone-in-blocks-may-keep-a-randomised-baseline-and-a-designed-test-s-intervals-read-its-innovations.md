@@ -63,6 +63,42 @@ not turn, within 8000 blocks, 6 of 1000 paths unset and with the epoch weights, 
 `alpha_harm` of 0.05; the six lab cells above, 1000 paths each, none at `K` 250 or 10 with either
 weighting. The default stays unset: which weights a default would carry, a turn at the DEPLOY or
 one long after it, is a separate decision.
+Amended 2026-11-25: **the default moves to `rollback_restart=250` with the epoch weights in
+1.7.0, after a `FutureWarning` in 1.6.0.** The epoch weights do not trade the DEPLOY for the late
+turn. Read since the DEPLOY, the rollback's e-value is `U = 0.9 M_1 + 0.1`, `M_1` the bets'
+mixture since the DEPLOY; started again with `m` starts opened, it is
+`N = 0.9 M_1 + sum_(k=2..m) w_k M_k + 0.1 / m`, and the later weights sum to `0.1 (1 - 1 / m)`.
+So `N >= U - 0.1` on every path and at every `K`, attained where every later start has lost all
+(`validation/gate_rollback_restart.mac`): the restarted rollback fires wherever `U` reaches
+`1 / alpha_harm + 0.1`, 0.005 nats past the threshold at an `alpha_harm` of 0.05. Read through the
+gate, on a candidate as good as the baseline for 3000 decisions after its DEPLOY and 0.12 worse
+after, `N` fell below `U` by at most 0.058 at `K` 1, 7 and 250, and each rolled back 15 to 18 reads
+before `U` did (`tests/test_gate.py`). Alike weights carry no such bound. Measured on the 18 power
+cells of the Consequences below, its three candidates that turn or are worse, centred and plain,
+at `q` 0.1, 0.2 and 0.3, 400 paths each, every setting on the same stream (unset, epochs every 10,
+50 and 250 blocks, alike every 250 over 10 000):
+
+| cell | unset | epochs, `K` 10 / 50 / 250 | alike |
+|---|---|---|---|
+| lab turn 40 blocks after the DEPLOY, centred, `q` 0.1 / 0.2 / 0.3 | 0.3125 / 0.965 / 0.9975 | at least as many in each, at most +0.035 | 0 / 0.53 / 0.96 |
+| the same, plain | 0.0875 / 0.46 / 0.6175 | at least as many, at most +0.0275 | 0 / 0.0875 / 0.2325 |
+| order 1, 0.1 worse from the DEPLOY, centred: every path; median blocks | 800 / 420 / 310 | 740-775 / 400-420 / 310 | 1265 / 760 / 550 |
+| the same, plain, within 4000 blocks | 0.3875 / 0.6525 / 0.82 | at least as many in each | 0.195 / 0.4625 / 0.6375 |
+| order 1, +0.1 for 100 blocks then 0.1 worse, centred, within 1900 | 0.895 / 0.9975 / 1 | 0.91-0.9175 / 0.9975 / 1 | 0.8025 / 0.9975 / 1 |
+| the same, plain | 0.0875 / 0.20 / 0.3275 | at least as many in each, at most +0.0525 | 0.0375 / 0.0925 / 0.17 |
+| wrong rollbacks: order 1's null, every share, plain and centred (the lab's null: 1000 paths, `K` 10 and 250, above) | 0, but 1 path at `q` 0.3 plain | the same | 0 |
+| before the turn of the +0.1 candidate, plain, `q` 0.3 | 1 path | 1 path | 0 |
+
+Per decision, the module's example turning after 3000 decisions was caught within 3000 on 3 of
+200 paths unset and on 179, 185 and 187 started every 50, 250 and 1000 decisions; turning after
+10 000, within 6000 on none of 200 unset and on all 200 at each `K`, after a median of 2400, 2150
+and 2175 decisions. The example's candidate as good as the baseline after its first 3000
+decisions was rolled back on none of 200 paths in the 20 000 after, unset or at any `K`. `K` = 250 is the measured default: 10 and 50 read a turn near
+the DEPLOY a little sooner, and a turn long after it later, since the start after the turn weighs
+less: after 10 000 decisions, 12.9, 9.7 and 7.0 nats below 1 at `K` 50, 250 and 1000, where 1000
+may open up to 1000 decisions after the turn. `0` keeps the reading since the DEPLOY; in blocks
+without a `rollback_baseline_share` the rollback has no evidence and the default reads nothing,
+as now.
 
 ## Context
 

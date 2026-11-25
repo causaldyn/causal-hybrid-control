@@ -55,6 +55,7 @@ CONFIG = GateConfig(
     alpha_harm=0.05,
     drift_arl=1e4,
     rho=0.5,
+    rollback_restart=0,
 )
 
 
