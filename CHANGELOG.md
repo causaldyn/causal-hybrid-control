@@ -5,7 +5,19 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); `chc.research` and the names marked
 experimental may change in any minor release (`docs/api/index.md`).
 
-## [Unreleased]
+## [1.5.0] — 2026-11-25
+
+New opt-in features, so a minor release; no parameter's default changes. Added, each opt-in or
+experimental (one module in the research tier): the probe for a dynamic plan's whole decision, a
+moving baseline for a switchback's design reading, a closed loop's K-step exit probability, a
+pessimism weight moved by the losses it realises, a distribution-shift budget for the horizon band,
+a plan's value under confounding that acts one step at a time with its breakdown `Gamma*`, a test
+that keeps or re-plans after a channel moves, the nuisances' sieve chosen on the moment's score, and
+a median-unbiased AR(1) coefficient for the lift fit. Fixes whose numbers move: the safeguarded
+barrier rounds keep the projection where next states join (of 293 held plans, 13 cheaper and 12
+certified on more steps, none worse); in the research tier, the explicit-constant certificate's
+`empirical_radius` is bisected and its Lipschitz constant is bounded rather than sampled, so its
+`rho`, `C` and conservatism move. The rest is documentation.
 
 ### Added
 
